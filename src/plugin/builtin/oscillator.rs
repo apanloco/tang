@@ -72,6 +72,9 @@ pub struct Oscillator {
     voices: HashMap<u8, Voice>,
     /// Detune in semitones, applied to all voices. Modulator-friendly.
     detune: f32,
+    /// The place in the list of what the detune is held to: 0 is nothing (the detune is as it is set), and a place `i` is the tone of the scale `crate::scale::SCALES[i - 1]` that is nearest
+    /// to it, counted from the key that is held.
+    quantize: usize,
     /// Output volume target (0.0–1.0). Modulator-friendly.
     volume: f32,
     /// Smoothed volume actually applied, ramping toward `volume` to avoid
@@ -217,8 +220,8 @@ fn noise_seed(begun: u32, u: usize) -> u32 {
     if x == 0 { 0x2545_F491 } else { x }
 }
 
-// waveform, detune, volume, attack, decay, sustain, release, pan, unison, spread, width, pulse, fm, fm_ratio, sub, sync, drift, velocity, bend
-pub const PARAM_COUNT: usize = 19;
+// waveform, detune, volume, attack, decay, sustain, release, pan, unison, spread, width, pulse, fm, fm_ratio, sub, sync, drift, velocity, bend, quantize
+pub const PARAM_COUNT: usize = 20;
 
 /// What the pitch wheel's full deflection is, in semitones each way, for each place in the `bend` list, and the place that the oscillator starts at (two semitones: what a
 /// keyboard's wheel is by default). The list is a choice and not a number so that the useful ranges (the 48 that an MPE controller's notes bend by) are a step apart.
@@ -291,6 +294,7 @@ impl Oscillator {
             // (Room for every key, the most that can sound: a note-on on the audio thread must not allocate.)
             voices: HashMap::with_capacity(KEYS),
             detune: 0.0,
+            quantize: 0,
             volume: 1.0,
             volume_smoothed: 1.0,
             pan: 0.0,
@@ -395,6 +399,12 @@ impl Plugin for Oscillator {
         let pulse = self.pulse;
         let fm_ratio = FM_RATIOS[self.fm_ratio.min(FM_RATIOS.len() - 1)];
         let sync = self.sync;
+        // The detune, once a block: as it is set, or (with a quantizer) at the tone of a scale that is nearest to it, counted from each key that is held (its own root), so that a modulator that
+        // moves the detune plays the steps of the scale. The wheel is added after it, and is not quantized.
+        let detune = match self.quantize.min(crate::scale::SCALES.len()) {
+            0 => self.detune,
+            place => crate::scale::nearest_tone(crate::scale::SCALES[place - 1].intervals, self.detune),
+        };
 
         // The drift, once a block: each oscillator of each voice goes to the place it was given, which is a number of its own voice's, and is given another every so often; what that comes to is
         // a number to multiply its frequency by (1 for no drift, so that a sound with none is the sound there always was).
@@ -539,7 +549,7 @@ impl Plugin for Oscillator {
 
                 // The wheels that bend this note: the master channel's, and its own channel's if it is not the master.
                 let wheel = self.bend[0] + if voice.channel > 0 { self.bend[usize::from(voice.channel)] } else { 0.0 };
-                let freq = Self::note_to_freq(note, self.detune + wheel * BEND_RANGES[self.bend_range.min(BEND_RANGES.len() - 1)]);
+                let freq = Self::note_to_freq(note, detune + wheel * BEND_RANGES[self.bend_range.min(BEND_RANGES.len() - 1)]);
                 // How loud it sounds: the envelope, and as much of the velocity as is asked for (none of it is 1 exactly).
                 voice.velocity_now += (voice.velocity - voice.velocity_now) * volume_alpha;
                 let level = voice.amp * ((1.0 - self.velocity) + self.velocity * voice.velocity_now);
@@ -790,6 +800,18 @@ impl Plugin for Oscillator {
                 group: vec!["Performance".into()],
                 ..Default::default()
             },
+            ParameterInfo {
+                index: 19,
+                name: "quantize".into(),
+                min: 0.0,
+                max: crate::scale::SCALES.len() as f32,
+                default: 0.0,
+                // (Off, and then the scales of the Piano tab by their short names, as the Piano tab's picker has them.)
+                labels: Some(std::iter::once("off".to_string()).chain(crate::scale::SCALES.iter().map(|scale| scale.short.to_string())).collect()),
+                step_count: crate::scale::SCALES.len() as u32,
+                group: vec!["Voice".into()],
+                ..Default::default()
+            },
         ]
     }
 
@@ -814,6 +836,7 @@ impl Plugin for Oscillator {
             16 => Some(self.drift),
             17 => Some(self.velocity),
             18 => Some(self.bend_range as f32),
+            19 => Some(self.quantize as f32),
             _ => None,
         }
     }
@@ -895,6 +918,11 @@ impl Plugin for Oscillator {
             }
             18 => {
                 self.bend_range = (value.round() as i64).clamp(0, BEND_RANGES.len() as i64 - 1) as usize;
+                Ok(())
+            }
+            19 => {
+                // (A place in the list: the nearest whole one, held to it.)
+                self.quantize = (value.round() as i64).clamp(0, crate::scale::SCALES.len() as i64) as usize;
                 Ok(())
             }
             _ => anyhow::bail!("no parameter with index {index}"),
@@ -980,7 +1008,7 @@ mod tests {
         let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
-            ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift", "velocity", "bend"]
+            ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift", "velocity", "bend", "quantize"]
         );
         // The waveform parameter is an enum, and so is the unison (a choice of how many).
         assert!(params[0].labels.is_some() && params[8].labels.is_some());
@@ -1748,7 +1776,7 @@ mod tests {
         assert_eq!(osc.get_parameter(FM), Some(1.0), "held to its top");
         osc.set_parameter(FM, -1.0).unwrap();
         assert_eq!(osc.get_parameter(FM), Some(0.0), "and to its bottom");
-        assert!(osc.set_parameter(19, 0.0).is_err() && osc.get_parameter(19).is_none(), "no parameter after them");
+        assert!(osc.set_parameter(20, 0.0).is_err() && osc.get_parameter(20).is_none(), "no parameter after them");
     }
 
     #[test]
@@ -2345,6 +2373,100 @@ mod tests {
         assert!((cents_from_440(&out[4800..]) - 299.98).abs() < 0.6, "{}", cents_from_440(&out[4800..]));
     }
 
+    const QUANTIZE: u32 = 19;
+
+    /// The pitch, in cents from 440 Hz, of a sine of the key `note` (69 is the A of 440 Hz) with `detune` semitones of detune and `quantize` set, as it sounds in the second half of 0.2 s.
+    fn quantized_cents(note: u8, detune: f32, quantize: f32) -> f32 {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(1, detune).unwrap();
+        osc.set_parameter(QUANTIZE, quantize).unwrap();
+        let out = render(&mut osc, &[note_on(note, 100, 0)], 9600);
+        cents_from_440(&out[4800..]) - 100.0 * (f32::from(note) - 69.0)
+    }
+
+    #[test]
+    fn the_quantizer_is_a_choice_that_starts_off_and_has_the_scales_of_the_piano_tab_after_it() {
+        let osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        let params = osc.parameters();
+        let quantize = &params[QUANTIZE as usize];
+        assert_eq!((quantize.name.as_str(), quantize.min, quantize.max, quantize.default), ("quantize", 0.0, crate::scale::SCALES.len() as f32, 0.0));
+        let labels = quantize.labels.as_ref().expect("a choice");
+        assert_eq!(labels.len(), crate::scale::SCALES.len() + 1);
+        assert_eq!(labels[0], "off");
+        assert!(labels[1..].iter().zip(crate::scale::SCALES).all(|(label, scale)| label == scale.short), "{labels:?}");
+        assert_eq!(quantize.group, ["Voice"]);
+        assert_eq!(params.len(), PARAM_COUNT);
+    }
+
+    #[test]
+    fn the_quantizer_round_trips_and_is_held_to_the_list() {
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        assert_eq!(osc.get_parameter(QUANTIZE), Some(0.0));
+        osc.set_parameter(QUANTIZE, 11.0).unwrap();
+        assert_eq!(osc.get_parameter(QUANTIZE), Some(11.0));
+        osc.set_parameter(QUANTIZE, 4.6).unwrap();
+        assert_eq!(osc.get_parameter(QUANTIZE), Some(5.0), "a place in the list: the nearest whole one");
+        osc.set_parameter(QUANTIZE, 99.0).unwrap();
+        assert_eq!(osc.get_parameter(QUANTIZE), Some(crate::scale::SCALES.len() as f32));
+        osc.set_parameter(QUANTIZE, -3.0).unwrap();
+        assert_eq!(osc.get_parameter(QUANTIZE), Some(0.0));
+    }
+
+    #[test]
+    fn a_detune_that_is_quantized_is_heard_at_the_nearest_tone_of_the_scale_counted_from_the_key() {
+        // The scales are counted from the key that is held (A here, and C: the same steps from each), so a detune is the number of semitones from it.
+        let place = |short: &str| 1.0 + crate::scale::SCALES.iter().position(|scale| scale.short == short).unwrap() as f32;
+        // Off, it is the detune that was set. Chromatic: the nearest semitone.
+        assert!((quantized_cents(69, 0.4, 0.0) - 40.0).abs() < 0.6);
+        assert!(quantized_cents(69, 0.4, place("chromatic")).abs() < 0.6, "0.4 goes to 0");
+        assert!((quantized_cents(69, 0.6, place("chromatic")) - 100.0).abs() < 0.6, "0.6 goes to 1");
+        // The minor pentatonic has 0 3 5 7 10: 1.4 goes to 0, 1.6 to 3, 8.6 to 10, and below the key as well: -1.6 to -2.
+        for (detune, tone) in [(1.4, 0.0), (1.6, 3.0), (4.1, 5.0), (8.6, 10.0), (-1.6, -2.0), (-4.0, -5.0)] {
+            let cents = quantized_cents(60, detune, place("min pent"));
+            assert!((cents - 100.0 * tone).abs() < 0.6, "{detune} goes to {tone}: {cents} cents");
+        }
+        // The same detune in a major scale (0 2 4 5 7 9 11): 3.4 goes to 4, where in the minor pentatonic it went to 3.
+        assert!((quantized_cents(60, 3.4, place("major")) - 400.0).abs() < 0.6);
+        assert!((quantized_cents(60, 3.4, place("min pent")) - 300.0).abs() < 0.6);
+    }
+
+    #[test]
+    fn a_quantizer_set_to_a_detune_that_is_on_the_scale_is_the_oscillator_with_none_to_the_last_bit() {
+        // (A detune that is a tone of the scale goes to itself exactly, so that the sound is the one it was: one key of each wave, with a detune of 3, a unison of three and a drift. One key and not a
+        // chord: the voices are in a hash map that is walked in another order each time, so that the sum of a chord differs by a rounding from one run to the next.)
+        for waveform in [Waveform::Sine, Waveform::Triangle, Waveform::Square, Waveform::Saw] {
+            let render_with = |quantize: f32| {
+                let mut osc = Oscillator::new(SAMPLE_RATE, waveform);
+                osc.set_parameter(1, 3.0).unwrap();
+                osc.set_parameter(8, 2.0).unwrap();
+                osc.set_parameter(16, 0.5).unwrap();
+                osc.set_parameter(QUANTIZE, quantize).unwrap();
+                render(&mut osc, &[note_on(48, 100, 0)], 4800)
+            };
+            assert_eq!(render_with(0.0), render_with(2.0), "the natural minor has the 3");
+        }
+    }
+
+    #[test]
+    fn the_wheel_is_added_after_the_quantizer_and_is_not_quantized() {
+        // A detune of 0.4 goes to 0, and a wheel a quarter of the way up (half a semitone of the two) bends the note by that and not to a tone: 50 cents, where the chromatic scale would have
+        // made it 0 or 100.
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(1, 0.4).unwrap();
+        osc.set_parameter(QUANTIZE, 15.0).unwrap();
+        let out = render(&mut osc, &[note_on(69, 100, 0), wheel(10240, 0)], 9600);
+        assert!((cents_from_440(&out[4800..]) - 50.0).abs() < 0.6, "{}", cents_from_440(&out[4800..]));
+        // And the sub is an octave under the note as it is heard: the pitch of the tone, not of the detune that was set.
+        let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
+        osc.set_parameter(1, 6.7).unwrap();
+        osc.set_parameter(14, 1.0).unwrap();
+        osc.set_parameter(QUANTIZE, 15.0).unwrap();
+        let out = render(&mut osc, &[note_on(69, 100, 0)], 9600);
+        let settled = out[4800..].to_vec();
+        let seven = 440.0 * 2.0f32.powf(7.0 / 12.0);
+        assert!(magnitude(&settled, seven) > 0.2 && magnitude(&settled, seven / 2.0) > 0.2, "the note at the seventh semitone and its sub an octave under");
+    }
+
     #[test]
     fn a_wheel_message_is_heard_at_its_frame_of_the_block() {
         let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Sine);
@@ -2491,7 +2613,7 @@ mod tests {
         let described: Vec<Described> = parameters[8..].iter().map(|p| (p.name.as_str(), p.unit.as_deref(), p.min, p.max, p.default, p.step_count)).collect();
         assert_eq!(
             described,
-            [("unison", None, 0.0, 6.0, 0.0, 6), ("spread", Some("st"), 0.0, 1.0, 0.15, 0), ("width", None, 0.0, 1.0, 0.5, 0), ("pulse", None, 0.05, 0.95, 0.5, 0), ("fm", None, 0.0, 1.0, 0.0, 0), ("fm_ratio", None, 0.0, 15.0, 1.0, 15), ("sub", None, 0.0, 1.0, 0.0, 0), ("sync", None, 1.0, 8.0, 1.0, 0), ("drift", None, 0.0, 1.0, 0.0, 0), ("velocity", None, 0.0, 1.0, 0.0, 0), ("bend", None, 0.0, 8.0, 2.0, 8)]
+            [("unison", None, 0.0, 6.0, 0.0, 6), ("spread", Some("st"), 0.0, 1.0, 0.15, 0), ("width", None, 0.0, 1.0, 0.5, 0), ("pulse", None, 0.05, 0.95, 0.5, 0), ("fm", None, 0.0, 1.0, 0.0, 0), ("fm_ratio", None, 0.0, 15.0, 1.0, 15), ("sub", None, 0.0, 1.0, 0.0, 0), ("sync", None, 1.0, 8.0, 1.0, 0), ("drift", None, 0.0, 1.0, 0.0, 0), ("velocity", None, 0.0, 1.0, 0.0, 0), ("bend", None, 0.0, 8.0, 2.0, 8), ("quantize", None, 0.0, 15.0, 0.0, 15)]
         );
         // (A unison is a choice of one to seven voices, named by how many; the bend a choice of how far the wheel goes.)
         assert_eq!(parameters[8].labels.as_deref().map(|l| l.join(" ")), Some("1 2 3 4 5 6 7".to_string()));
@@ -2503,7 +2625,7 @@ mod tests {
             osc.set_parameter(index as u32, p.min - 100.0).unwrap();
             assert_eq!(osc.get_parameter(index as u32), Some(p.min), "{} held to its bottom", p.name);
         }
-        assert!(osc.set_parameter(19, 0.0).is_err() && osc.get_parameter(19).is_none());
+        assert!(osc.set_parameter(20, 0.0).is_err() && osc.get_parameter(20).is_none());
         // A unison is a whole number of voices, and a bend a place in its list: a value between two is the nearer.
         for (set, got) in [(2.4, 2.0), (2.6, 3.0), (0.4, 0.0), (5.6, 6.0)] {
             osc.set_parameter(8, set).unwrap();

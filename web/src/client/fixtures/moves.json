@@ -4383,6 +4383,37 @@
                 "stepCount": 8,
                 "unit": null,
                 "value": 2.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 19,
+                "labels": [
+                  "off",
+                  "major",
+                  "minor",
+                  "harm minor",
+                  "mel minor",
+                  "dorian",
+                  "phrygian",
+                  "lydian",
+                  "mixolydian",
+                  "locrian",
+                  "maj pent",
+                  "min pent",
+                  "blues",
+                  "whole tone",
+                  "diminished",
+                  "chromatic"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "quantize",
+                "stepCount": 15,
+                "unit": null,
+                "value": 0.0
               }
             ],
             "pinned": [],
@@ -5180,6 +5211,37 @@
                 "stepCount": 8,
                 "unit": null,
                 "value": 2.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 19,
+                "labels": [
+                  "off",
+                  "major",
+                  "minor",
+                  "harm minor",
+                  "mel minor",
+                  "dorian",
+                  "phrygian",
+                  "lydian",
+                  "mixolydian",
+                  "locrian",
+                  "maj pent",
+                  "min pent",
+                  "blues",
+                  "whole tone",
+                  "diminished",
+                  "chromatic"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "quantize",
+                "stepCount": 15,
+                "unit": null,
+                "value": 0.0
               }
             ],
             "pinned": [],

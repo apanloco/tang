@@ -2011,13 +2011,13 @@ fn deleting_a_group_ungroups_its_members() {
 fn the_param_cursor_survives_moving_between_nodes_and_is_clamped() {
     // Moving the chain cursor swaps the parameter pane's contents but keeps the
     // parameter cursor's row, clamped to the new pane's length (a group's bus
-    // pane has two rows, an oscillator fourteen).
+    // pane has two rows, an oscillator twenty).
     let mut h = Harness::new(scene_group());
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Enter).press_n(KeyCode::Down, 7).press(KeyCode::Esc);
-    assert_eq!((h.s.param_state.selected, h.s.param_state.len), (7, 19));
+    assert_eq!((h.s.param_state.selected, h.s.param_state.len), (7, 20));
     h.goto(TreeAddress::Instrument(1));
-    assert_eq!((h.s.param_state.selected, h.s.param_state.len), (7, 19), "same row on the next oscillator");
+    assert_eq!((h.s.param_state.selected, h.s.param_state.len), (7, 20), "same row on the next oscillator");
     h.goto(TreeAddress::Group(0));
     assert_eq!((h.s.param_state.selected, h.s.param_state.len), (1, 2), "clamped to the bus pane");
 }
@@ -2626,10 +2626,10 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
         (0, "waveform".to_string(), "PluginParam { slot: 0, param_index: 0 }".to_string(), 0.5, 0.0, 4.0)
     );
 
-    // Further down the list are the lane's effects: the oscillator's nineteen
+    // Further down the list are the lane's effects: the oscillator's twenty
     // parameters, then the filter's `cutoff` (which the LFO drives already: the controller refuses a second cable) and its `resonance` (chain slot 1).
     h.goto(TreeAddress::Modulator { inst: 2, index: 0 });
-    h.press(KeyCode::Char('t')).press_n(KeyCode::Down, 20).press(KeyCode::Enter);
+    h.press(KeyCode::Char('t')).press_n(KeyCode::Down, 21).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
         ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"]

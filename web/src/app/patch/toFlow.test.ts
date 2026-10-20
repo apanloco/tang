@@ -1190,7 +1190,7 @@ describe("what a modulator's node can be drawn to", () => {
   test("is what it can still drive: the plugins it reaches and their parameters, but for those it drives already", () => {
     const flow = toFlow(tracerSnapshot.graph);
     const lfo = flow.nodes.find((node) => node.data.node === 2);
-    expect(lfo?.data.targets.map((group) => [group.name, group.params.length])).toEqual([["Oscillator", 19], ["Filter", 3]]);
+    expect(lfo?.data.targets.map((group) => [group.name, group.params.length])).toEqual([["Oscillator", 20], ["Filter", 3]]);
     expect(lfo?.data.targets[1]?.params.map((param) => param.name)).toEqual(["resonance", "type", "drive"]);
   });
 

@@ -171,6 +171,7 @@ mod tests {
                 row("drift", None, &["Voice"], 0),
                 row("velocity", None, &["Performance"], 0),
                 row("bend", None, &["Performance"], 8),
+                row("quantize", None, &["Voice"], 15),
             ]
         );
     }

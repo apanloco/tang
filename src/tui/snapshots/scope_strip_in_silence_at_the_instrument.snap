@@ -21,7 +21,7 @@ source: src/tui/golden_tests.rs
 │                                                ││  fm_ratio                 ◂ ×1 ▸                                  ┃│
 │                                                ││  sub                      ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.0┃│
 │                                                ││  sync                     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     1.0┃│
-│                                                ││  drift                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.0┃│
+│                                                ││  drift                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.0││
 │                                                ││  velocity                 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.0││
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
 ┌ Scope: Oscillator   wave   Time: 21 ms   Peak: — ────────────────────────────────────────────────────────────────────┐
@@ -54,7 +54,7 @@ c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbb
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................cb
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
-c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 bbbbbbbbbaaaaaaaaaabbbaaaabbbbbbbbbaaaaabbbbbbbbbabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

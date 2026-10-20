@@ -981,7 +981,7 @@ mod tests {
     // -- The example sessions --
 
     /// The example sessions of this repository that show what the built-in plugins do (the others name a plugin that has to be installed, or are somebody's saved sound).
-    const SOUND_EXAMPLES: [&str; 11] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml", "fold.toml", "wobble.toml", "gate.toml"];
+    const SOUND_EXAMPLES: [&str; 12] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml", "fold.toml", "wobble.toml", "gate.toml", "melody.toml"];
 
     fn example(name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(name);
@@ -1136,6 +1136,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The frequency of the signal in `window` from the places where it goes up through zero (each brought between two samples): for a wave that is centred, as a triangle is, which `pitch_of`
+    /// reads up to 5.6 cents wrong at some pitches (measured: F3 as 174.6 Hz less 5.6 cents) where this reads 0.01 cent.
+    fn pitch_by_crossings(window: &[f32], sample_rate: f32) -> f32 {
+        let crossings: Vec<f32> = window.windows(2).enumerate().filter(|(_, w)| w[0] < 0.0 && w[1] >= 0.0).map(|(i, w)| i as f32 + (-w[0]) / (w[1] - w[0])).collect();
+        (crossings.len() - 1) as f32 * sample_rate / (crossings[crossings.len() - 1] - crossings[0])
+    }
+
+    #[test]
+    fn the_melody_example_plays_only_the_notes_of_the_minor_pentatonic_counted_from_the_key_and_changes_note_on_the_eighths_of_its_tempo() {
+        // C4 held: a new number every eighth note (0.25 s at 120 beats a minute), held by `quantize` to the tones 0 3 5 7 10 of a minor pentatonic from the key, in any octave.
+        let out = play(&example("melody.toml"), &[60], 0.0, 4.5, 4.4);
+        let c4 = 440.0 * 2.0f32.powf(-9.0 / 12.0);
+        // The tone, in semitones from the key, of a window of 75 ms that begins `fraction` of the way into a step.
+        let tone_at = |step: usize, fraction: f32| {
+            let start = ((step as f32 + fraction) * 0.25 * 48_000.0) as usize;
+            let semitones = 12.0 * (pitch_by_crossings(&out[start..start + 3600], 48_000.0) / c4).log2();
+            let nearest = semitones.round();
+            assert!((semitones - nearest).abs() < 0.05, "step {step}: {semitones} semitones from the key is not a note");
+            assert!([0, 3, 5, 7, 10].contains(&(nearest as i32).rem_euclid(12)), "step {step}: {nearest} semitones from the key is not in the minor pentatonic");
+            nearest as i32
+        };
+        let steps: Vec<i32> = (0..16).map(|step| tone_at(step, 0.1)).collect();
+        // A step is one note all through (a number that goes faster than the eighths would change it halfway), and most steps are another note than the one before (a number goes slower than the
+        // eighths and a note is held for two: at most half of them; a random number is held to the same tone as the last about one time in eight).
+        for (step, &tone) in steps.iter().enumerate() {
+            assert_eq!(tone_at(step, 0.6), tone, "step {step} is one note");
+        }
+        let changes = steps.windows(2).filter(|pair| pair[0] != pair[1]).count();
+        assert!(changes >= 10, "the note changes at {changes} of 15 steps: {steps:?}");
+        assert!(steps.iter().collect::<std::collections::BTreeSet<_>>().len() >= 5, "it is a melody and not one note: {steps:?}");
     }
 
     #[test]
