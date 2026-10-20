@@ -4169,7 +4169,7 @@ almost as they are, the order of work, and the ten decisions that are the user's
 
 ### Sources as nodes (ideas)
 
-Two ideas for after the canvas can build what the engine has now; neither is started.
+Three ideas for after the canvas can build what the engine has now; none is started.
 
 **A keyboard as a node.** Today every note goes to every lane (`NoteInput`: hardware MIDI, the virtual piano and the browser's keys are one
 path) and each lane filters it by its own key range (`InstrumentLane.range`, `SetRange`). A keyboard node (the computer's keys, an on-screen
@@ -4184,6 +4184,12 @@ microphone, a line in) in place of an instrument would run through the same effe
 the modulator that goes with it (what the input puts out, as an LFO's output is). From there, Tang as a plugin (VST3 or CLAP) whose buffer
 comes from the DAW: `audio::Renderer` is already the one piece of code that the sound card's callback and the null backend run, so a plugin's
 `process` would be a third thing that drives it, with the input as the source node's buffer.
+
+**Audio and MIDI as cables** (2026-10-20, yours). Every node has inputs and outputs, and the connections of audio and of MIDI are cables that a person
+draws and takes out, as the modulation cables are: two oscillators into one reverb, a send, a bus into a bus, a keyboard (the computer's keys, a MIDI
+device) with a cable to each lane it plays. It contains the two ideas above (a keyboard node is a MIDI source, an audio input is an audio source). What
+the engine has and lacks, a staged path (audio cables first, as a routing table on the lanes and groups; then MIDI sources; then nodes between the keys
+and the synth; a general engine only if it is still wanted) and the decisions that are yours are in `docs/patch-graph.md`. Nothing is started.
 
 ## 14. Decisions and open questions
 
@@ -4275,3 +4281,4 @@ Open questions
 9. Whether the value of a macro should take cables: a MIDI control bound to it (a hardware knob turns the macro, and the knob on the screen follows) and an LFO (D48). It needs a port for the value on the node, a field of cross-mod in the engine and in the file (`mod_value`), the rule of reach and the page's handle, and the refactoring of f84 (the node's data keeps what a modulator drives as two lists) before a third kind of port. The other way is a MIDI control that has a value that a person can also set on the screen, so that a control is one node and a macro is a control that is not bound to hardware: the file's re-arming of a control that is not bound would have to say the difference.
 10. Whether a pattern that has been recorded should follow the session's tempo (D49): its events kept in beats and played at the tempo there is, so that a change of the tempo makes it faster or slower, as it does in a sequencer. A pattern keeps the tempo it was recorded at today: its events are frames of the audio thread's, and its length is its beats counted at its own `bpm`. It would change the saved form of a pattern (`frame` becomes a position in beats, and `bpm` of a pattern means nothing), the engine's player and the page's drawing of a pattern, and a pattern that is played in another tempo than it was played in would sound as it was not played.
 11. Whether what is done to a pattern should be undone by Undo (D50). A setting could be a step at once (the old value is read before the change, as for every setting; a setting that gave a lane its first pattern is put back as a clear). A clear and a recording take notes: the model has them (`PatternState.events`), so a step could hold them and put them back with the commands that the loader sends, but the result of a recording comes from the audio thread with no intent, so that the step that undoes it would be made in `poll` and not by `apply`, and a recording that is going on when the person presses Undo needs a rule (stop it? leave it?). Until then a clear is for good, as the terminal's `d` is, and the page's button should say so.
+12. The patch graph (§13, `docs/patch-graph.md`): the twelve decisions of its §9: how far (a routing table on the lanes and groups first, or a general engine), audio before MIDI, where a cable leaves a lane, cycles, latency compensation, whether a cable into a group is a membership, fan-in and levels, the law of mute and solo for routed audio, old sessions, where a key range lives, one source for the computer's keys, and the terminal's part.

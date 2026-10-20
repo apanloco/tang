@@ -2549,6 +2549,11 @@ generated TypeScript is current.
 
 - A patchable voice (track B, `builtin:patch`): a proposal, with what the engine has and lacks, the order of work and the ten decisions that
   are the user's, is `docs/track-b.md`; nothing of it is started
+- Audio and MIDI as cables (the user's idea of 2026-10-20: inputs and outputs on every node and connections that can be changed, "connect two
+  different osc to the same reverb", MIDI treated the same way): the session as a patch of lanes, buses, keyboards and cables of three kinds (audio,
+  MIDI, the modulation that exists). A proposal, with what the engine has and lacks, a staged path (audio cables as a routing table on the lanes and
+  groups first, then MIDI sources, then nodes between, a general engine only if wanted) and the twelve decisions that are the user's, is
+  `docs/patch-graph.md`; nothing of it is started. It contains the two ideas at the end of this list (a keyboard as a node, audio input as a source)
 - Recording audio output to WAV file
 - Auto-reconnect on audio device disconnect
 - Background/daemon mode with system tray icon
