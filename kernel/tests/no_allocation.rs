@@ -56,8 +56,10 @@ fn allocations_in<R>(f: impl FnOnce() -> R) -> (R, usize) {
 }
 
 const ST: PortSpec = PortSpec::audio(2);
+const SINGLE: PortSpec = PortSpec::single(2);
 
-/// The shape of a session: `lanes` sources, each through two effects, into one of two groups (or, for the odd ones out, straight to the master), and the groups into the master.
+/// The shape of a session: `lanes` sources, each through two effects (whose inputs are `single`: each is the buffer of the node before it), into one of two groups (or, for the odd
+/// ones out, straight to the master), and the groups into the master.
 fn session(lanes: usize) -> Patch<usize> {
     let mut patch = Patch::new();
     let (group_a, group_b, master) = (10_000, 10_001, 10_002);
@@ -67,8 +69,8 @@ fn session(lanes: usize) -> Patch<usize> {
     for lane in 0..lanes {
         let (fx1, fx2) = (lane + 1_000, lane + 2_000);
         patch.add_node(lane, NodeSpec::new(vec![], vec![ST], lane as u32));
-        patch.add_node(fx1, NodeSpec::new(vec![ST], vec![ST], lane as u32));
-        patch.add_node(fx2, NodeSpec::new(vec![ST], vec![ST], lane as u32));
+        patch.add_node(fx1, NodeSpec::new(vec![SINGLE], vec![ST], lane as u32));
+        patch.add_node(fx2, NodeSpec::new(vec![SINGLE], vec![ST], lane as u32));
         patch.connect(Port::new(lane, 0), Port::new(fx1, 0));
         patch.connect(Port::new(fx1, 0), Port::new(fx2, 0));
         let to = match lane % 3 {

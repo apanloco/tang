@@ -41,18 +41,25 @@ impl Rng {
     }
 }
 
-/// A patch that is drawn from a seed: 2 to 14 nodes with up to two ports each way, of one or two channels, ranks from 0 to 3 (so that many are equal), labels that are not in
-/// the order that the nodes are put in, and up to twice as many cables as nodes between ports of equal width, some of them twice. It has no cycle: a cable goes from a
-/// node to one that is later in an order that is drawn first and kept hidden.
+/// A patch that is drawn from a seed: 2 to 14 nodes with up to two ports each way, of one or two channels, half of the inputs `single` (drawn from a generator of their own, so
+/// that the shape of a patch is what it was before there were any), ranks from 0 to 3 (so that many are equal), labels that are not in the order that the nodes are put in, and up
+/// to twice as many cables as nodes between ports of equal width, some of them twice. It has no cycle: a cable goes from a node to one that is later in an order that is drawn
+/// first and kept hidden.
 pub fn random_patch(seed: u64) -> Patch<u32> {
     let mut rng = Rng::new(seed);
     let n = 2 + rng.below(13);
     let hidden = rng.shuffled(n); // the place of each node in the order that no cable goes against
     let labels = rng.shuffled(n); // the id of each node
     let width = |rng: &mut Rng| PortSpec::audio(1 + rng.below(2) as u16);
+    let mut kinds = Rng::new(seed ^ 0x51_9E_1E);
     let mut specs: Vec<NodeSpec> = Vec::new();
     for _ in 0..n {
-        let inputs = (0..rng.below(3)).map(|_| width(&mut rng)).collect::<Vec<_>>();
+        let inputs = (0..rng.below(3))
+            .map(|_| {
+                let port = width(&mut rng);
+                if kinds.chance(0.5) { PortSpec::single(port.channels) } else { port }
+            })
+            .collect::<Vec<_>>();
         let outputs = (0..rng.below(3)).map(|_| width(&mut rng)).collect::<Vec<_>>();
         specs.push(NodeSpec::new(inputs, outputs, rng.below(4) as u32));
     }
@@ -68,7 +75,7 @@ pub fn random_patch(seed: u64) -> Patch<u32> {
             continue;
         }
         let (o, i) = (rng.below(specs[a].outputs.len()), rng.below(specs[b].inputs.len()));
-        if specs[a].outputs[o] != specs[b].inputs[i] {
+        if specs[a].outputs[o].channels != specs[b].inputs[i].channels {
             continue;
         }
         let (from, to) = (Port::new(labels[a] as u32 * 3 + 11, o as u16), Port::new(labels[b] as u32 * 3 + 11, i as u16));

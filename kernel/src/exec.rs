@@ -257,6 +257,11 @@ mod tests {
         NodeSpec::new(vec![ST; inputs], vec![ST; outputs], rank)
     }
 
+    /// `spec`, with inputs that are `single`.
+    fn spec_single(inputs: usize, outputs: usize, rank: u32) -> NodeSpec {
+        NodeSpec::new(vec![PortSpec::single(2); inputs], vec![ST; outputs], rank)
+    }
+
     /// Nodes that are a function.
     struct Fns<F>(F);
 
@@ -360,6 +365,93 @@ mod tests {
         })
         .unwrap();
         assert_eq!(seen, vec![0u32; 6], "+0.0, not -0.0 (0x80000000)");
+    }
+
+    #[test]
+    fn a_negative_zero_through_a_single_input_arrives_as_it_is_and_through_a_sum_as_a_positive_zero() {
+        let sink_sees = |sink: NodeSpec| {
+            let mut patch = Patch::new();
+            patch.add_node(1, spec(0, 1, 0));
+            patch.add_node(2, sink);
+            patch.connect(Port::new(1, 0), Port::new(2, 0));
+            let plan = compile(&patch).unwrap();
+            let mut pool = fitted(&plan);
+            let mut seen = Vec::new();
+            run(&plan, &mut pool, 3, |id, io| {
+                if id == 1 {
+                    fill(&mut io.outputs_mut()[0], -0.0);
+                } else {
+                    seen = io.inputs()[0].iter().flatten().map(|x| x.to_bits()).collect();
+                }
+                Ok(())
+            })
+            .unwrap();
+            seen
+        };
+        assert_eq!(sink_sees(NodeSpec::new(vec![PortSpec::single(2)], vec![], 1)), vec![0x8000_0000u32; 6], "-0.0, which is what it was");
+        assert_eq!(sink_sees(spec(1, 0, 1)), vec![0u32; 6], "+0.0, as any sum is");
+    }
+
+    #[test]
+    fn a_node_that_works_in_place_on_a_single_input_is_the_only_one_that_sees_the_change_and_the_chain_runs_on_block_after_block() {
+        // 1 → 2 (single, in place, doubles) → 3 (single, in place, adds one) → 4 (a sum); 5 is fed by 1 as well, so 1's output is read by two and node 2's input is a sum of one that
+        // node 2 may spoil without the node 5 seeing it.
+        let mut patch = Patch::new();
+        patch.add_node(1, spec(0, 1, 0));
+        patch.add_node(2, spec_single(1, 1, 1));
+        patch.add_node(3, spec_single(1, 1, 2));
+        patch.add_node(4, spec(1, 0, 3));
+        patch.add_node(5, spec(1, 0, 4));
+        patch.connect(Port::new(1, 0), Port::new(2, 0));
+        patch.connect(Port::new(1, 0), Port::new(5, 0));
+        patch.connect(Port::new(2, 0), Port::new(3, 0));
+        patch.connect(Port::new(3, 0), Port::new(4, 0));
+        let plan = compile(&patch).unwrap();
+        let mut pool = fitted(&plan);
+        let (mut at_4, mut at_5) = (0.0, 0.0);
+        for block in 0..3 {
+            run(&plan, &mut pool, 2, |id, io| {
+                match id {
+                    1 => fill(&mut io.outputs_mut()[0], 3.0 + block as f32),
+                    2 | 3 => {
+                        for channel in &mut io.inputs_mut()[0] {
+                            for x in channel {
+                                *x = if id == 2 { *x * 2.0 } else { *x + 1.0 };
+                            }
+                        }
+                        io.forward(0, 0);
+                    }
+                    4 => at_4 = io.inputs()[0][0][0],
+                    _ => at_5 = io.inputs()[0][0][0],
+                }
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!((at_4, at_5), ((3.0 + block as f32) * 2.0 + 1.0, 3.0 + block as f32), "block {block}");
+        }
+    }
+
+    #[test]
+    fn a_single_input_with_no_cable_is_silence_even_in_a_buffer_that_another_node_filled() {
+        let mut patch = Patch::new();
+        patch.add_node(1, spec(0, 1, 0));
+        patch.add_node(2, spec_single(1, 0, 1));
+        let plan = compile(&patch).unwrap();
+        assert_eq!(plan.ops()[0].outputs[0], plan.ops()[1].inputs[0], "the premise: the two share a buffer, though no cable joins them");
+        let mut pool = fitted(&plan);
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            run(&plan, &mut pool, 5, |id, io| {
+                if id == 1 {
+                    fill(&mut io.outputs_mut()[0], 7.0);
+                } else {
+                    seen = io.inputs()[0].iter().flatten().copied().collect();
+                }
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(seen, vec![0.0; 10]);
+        }
     }
 
     #[test]

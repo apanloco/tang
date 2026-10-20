@@ -1,7 +1,8 @@
 //! The reference interpreter: slow, and obviously right. It has what a plan has not: a buffer of its own for every output that is kept for the whole block, and a sum
 //! made at an input from those, in the order that the sum is defined to be made in (the producers by their place in the order, and a producer's cables in the order they were
-//! drawn), starting from +0.0. No buffer is shared, nothing is fed on the way, and nothing is zeroed that was not made zero. A plan that is run by the executor must give
-//! what this gives, bit for bit: that is what finds the bugs of colouring, zeroing and feeding.
+//! drawn), starting from +0.0, except at an input that is `single` and has the one cable that is the only one that leaves its output: that is a copy of the output, bit for bit,
+//! the sign of a zero included. No buffer is shared, nothing is fed on the way, and nothing is zeroed that was not made zero. A plan that is run by the executor must give
+//! what this gives, bit for bit: that is what finds the bugs of colouring, zeroing, feeding and the sharing of a buffer between an output and the input that is it.
 
 use std::collections::HashMap;
 
@@ -28,6 +29,14 @@ pub fn run_reference<I: Id, C>(patch: &Patch<I>, order: &[I], frames: usize, nod
                 .map(|(at, c)| (place[&c.from.node], at))
                 .collect();
             feeding.sort_unstable();
+            // An input that is `single`, with one cable that is the only one to leave its output, is the output itself and not a sum of one.
+            if port.single && feeding.len() == 1 {
+                let cable = &patch.cables()[feeding[0].1];
+                if patch.cables().iter().filter(|other| other.from == cable.from).count() == 1 {
+                    inputs.push(made[&cable.from.node][usize::from(cable.from.port)].clone());
+                    continue;
+                }
+            }
             for (_, at) in feeding {
                 let cable = &patch.cables()[at];
                 let source = &made[&cable.from.node][usize::from(cable.from.port)];

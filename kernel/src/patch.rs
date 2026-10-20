@@ -13,11 +13,20 @@ impl<T: Copy + Eq + Hash + Debug> Id for T {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PortSpec {
     pub channels: u16,
+    /// Only an input has a use for it: see [`PortSpec::single`].
+    pub single: bool,
 }
 
 impl PortSpec {
+    /// A port whose input is a sum: it begins at +0.0 and the cables that end at it are added to it in plan order, a single cable too (`0.0 + -0.0` is `+0.0`).
     pub const fn audio(channels: u16) -> Self {
-        PortSpec { channels }
+        PortSpec { channels, single: false }
+    }
+
+    /// An input that is *its cable's buffer*, when it has exactly one cable and that cable is the only one that leaves its output: nothing is zeroed, added or copied, and the
+    /// node reads (and may work in place on) what the node before it made, bit for bit. With no cable it is silence, and with two or more it is a sum, as any input is.
+    pub const fn single(channels: u16) -> Self {
+        PortSpec { channels, single: true }
     }
 }
 

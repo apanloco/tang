@@ -7,6 +7,10 @@
 //! is a value that is a sum: it begins at +0.0 and the feeds are added to it in plan order, from the first feed to the op of the node (so a node with one cable has a sum
 //! of one, and `0.0 + -0.0` is `+0.0`, as the engine's mix is). Each value lives from where it begins to the op that reads it, and values that are not alive together share a
 //! buffer: the least number of buffers that fits, the lowest free one first. A buffer is zeroed where a value begins in it.
+//!
+//! **A single input** (`PortSpec::single`) that has one cable, which is the only cable that leaves its output, is not a sum: it is the output's own buffer. The output then lives
+//! to the op that reads it and the cable has no feed, so that nothing is zeroed, added or copied and the bits are the output's own (a negative zero stays one), which is what
+//! the stages of a chain want.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -185,8 +189,31 @@ pub fn compile<I: Id>(patch: &Patch<I>) -> Result<Plan<I>, CompileError<I>> {
         values[sum].start = values[sum].start.min(place[from_at[cable_at]]);
     }
 
-    // The buffers: values in the order they begin (those that begin together in the order made above), each into the lowest buffer of its width that is free.
-    let mut by_start: Vec<usize> = (0..values.len()).collect();
+    // The cables that are an input itself: to an input that is `single` and has no other cable, from an output that has no other cable. The input is the output's value, which
+    // then lives to the op that reads it.
+    let mut into_count: HashMap<(usize, u16), usize> = HashMap::new();
+    let mut out_count: HashMap<(usize, u16), usize> = HashMap::new();
+    for cable_at in 0..cables.len() {
+        *into_count.entry((to_at[cable_at], cables[cable_at].to.port)).or_default() += 1;
+        *out_count.entry((from_at[cable_at], cables[cable_at].from.port)).or_default() += 1;
+    }
+    let is_alias: Vec<bool> = (0..cables.len())
+        .map(|cable_at| {
+            let cable = &cables[cable_at];
+            nodes[to_at[cable_at]].1.inputs[usize::from(cable.to.port)].single && into_count[&(to_at[cable_at], cable.to.port)] == 1 && out_count[&(from_at[cable_at], cable.from.port)] == 1
+        })
+        .collect();
+    let mut alias_of: Vec<Option<usize>> = vec![None; values.len()];
+    for cable_at in (0..cables.len()).filter(|&cable_at| is_alias[cable_at]) {
+        let sum = sum_of[place[to_at[cable_at]]][usize::from(cables[cable_at].to.port)];
+        let output = output_of[place[from_at[cable_at]]][usize::from(cables[cable_at].from.port)];
+        alias_of[sum] = Some(output);
+        values[output].end = values[output].end.max(values[sum].end);
+    }
+
+    // The buffers: values in the order they begin (those that begin together in the order made above), each into the lowest buffer of its width that is free. An input that is an
+    // output has the output's.
+    let mut by_start: Vec<usize> = (0..values.len()).filter(|&value| alias_of[value].is_none()).collect();
     by_start.sort_by_key(|&value| values[value].start);
     let mut buffers: Vec<(u16, Option<usize>)> = Vec::new(); // channels, and the last op that the value in it is alive at
     let mut buffer_of = vec![0u32; values.len()];
@@ -200,16 +227,24 @@ pub fn compile<I: Id>(patch: &Patch<I>) -> Result<Plan<I>, CompileError<I>> {
         buffers[buffer].1 = Some(end);
         buffer_of[value] = buffer as u32;
     }
+    for value in 0..values.len() {
+        if let Some(output) = alias_of[value] {
+            buffer_of[value] = buffer_of[output];
+        }
+    }
 
     // The ops.
     let mut zero_at: Vec<Vec<u32>> = vec![Vec::new(); order.len()];
     for (value, v) in values.iter().enumerate() {
-        zero_at[v.start].push(buffer_of[value]);
+        if alias_of[value].is_none() {
+            zero_at[v.start].push(buffer_of[value]);
+        }
     }
     let mut ops = Vec::with_capacity(order.len());
     for (op_at, &at) in order.iter().enumerate() {
         let feeds = leaving[at]
             .iter()
+            .filter(|&&cable_at| !is_alias[cable_at])
             .map(|&cable_at| Feed { output: u32::from(cables[cable_at].from.port), into: buffer_of[sum_of[place[to_at[cable_at]]][usize::from(cables[cable_at].to.port)]] })
             .collect();
         ops.push(Op {
@@ -232,10 +267,16 @@ mod tests {
     use crate::testutil::{Rng, random_patch};
 
     const ST: PortSpec = PortSpec::audio(2);
+    const SINGLE: PortSpec = PortSpec::single(2);
 
     /// A node with `inputs` and `outputs` stereo ports.
     fn spec(inputs: usize, outputs: usize, rank: u32) -> NodeSpec {
         NodeSpec::new(vec![ST; inputs], vec![ST; outputs], rank)
+    }
+
+    /// A node with `inputs` stereo inputs that are `single`, and `outputs` stereo outputs.
+    fn spec_single(inputs: usize, outputs: usize, rank: u32) -> NodeSpec {
+        NodeSpec::new(vec![SINGLE; inputs], vec![ST; outputs], rank)
     }
 
     fn cable(patch: &mut Patch<u32>, from: (u32, u16), to: (u32, u16)) {
@@ -532,30 +573,174 @@ mod tests {
         assert!(plan.ops()[0].zero.contains(&plan.ops()[0].outputs[0]), "an output is zeroed before its op");
     }
 
+    // ---- single inputs -----------------------------------------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_single_input_with_one_cable_is_the_buffer_of_the_output_that_the_cable_comes_from_and_is_neither_zeroed_nor_fed() {
+        let mut patch = Patch::new();
+        patch.add_node(1, spec(0, 1, 0));
+        patch.add_node(2, spec_single(1, 1, 1));
+        patch.add_node(3, spec(1, 0, 2));
+        cable(&mut patch, (1, 0), (2, 0));
+        cable(&mut patch, (2, 0), (3, 0));
+        let plan = compile(&patch).unwrap();
+        let ops = plan.ops();
+        assert_eq!(ops[1].inputs[0], ops[0].outputs[0], "the one buffer");
+        assert!(ops[0].feeds.is_empty(), "nothing is fed to it");
+        let zeroed: Vec<u32> = ops.iter().flat_map(|op| op.zero.iter().copied()).collect();
+        assert_eq!(zeroed.iter().filter(|&&buffer| buffer == ops[0].outputs[0]).count(), 1, "zeroed once, where the output begins");
+        assert_eq!(ops[1].feeds.len(), 1, "the node after it has a sum, which is fed as ever");
+    }
+
+    #[test]
+    fn a_chain_of_single_inputs_is_laid_out_in_two_buffers_and_the_sum_at_its_end() {
+        let mut patch = Patch::new();
+        patch.add_node(1, spec(0, 1, 0));
+        patch.add_node(2, spec_single(1, 1, 0));
+        patch.add_node(3, spec_single(1, 1, 0));
+        patch.add_node(4, spec(1, 0, 0));
+        cable(&mut patch, (1, 0), (2, 0));
+        cable(&mut patch, (2, 0), (3, 0));
+        cable(&mut patch, (3, 0), (4, 0));
+        let plan = compile(&patch).unwrap();
+        let op = |node, inputs: &[u32], outputs: &[u32], zero: &[u32], feeds: &[(u32, u32)]| Op {
+            node,
+            inputs: inputs.to_vec(),
+            outputs: outputs.to_vec(),
+            zero: zero.to_vec(),
+            feeds: feeds.iter().map(|&(output, into)| Feed { output, into }).collect(),
+        };
+        // Each output lives to the node that reads it, so two of them are alive at any op, and the sum at the end is a third.
+        assert_eq!(
+            plan.ops(),
+            [op(1, &[], &[0], &[0], &[]), op(2, &[0], &[1], &[1], &[]), op(3, &[1], &[0], &[0, 2], &[(0, 2)]), op(4, &[2], &[], &[], &[])]
+        );
+        assert_eq!(plan.buffers(), [2, 2, 2]);
+    }
+
+    #[test]
+    fn a_single_input_with_two_cables_is_a_sum_like_any_other() {
+        let mut patch = Patch::new();
+        patch.add_node(1, spec(0, 1, 0));
+        patch.add_node(2, spec(0, 1, 1));
+        patch.add_node(3, spec_single(2, 0, 2));
+        cable(&mut patch, (1, 0), (3, 0));
+        cable(&mut patch, (2, 0), (3, 0));
+        let plan = compile(&patch).unwrap();
+        let ops = plan.ops();
+        let sum = ops[2].inputs[0];
+        assert_ne!(sum, ops[0].outputs[0]);
+        assert_ne!(sum, ops[1].outputs[0]);
+        assert_eq!((ops[0].feeds.len(), ops[1].feeds.len()), (1, 1), "each is fed to it");
+        assert!(ops[0].zero.contains(&sum) && !ops[1].zero.contains(&sum), "zeroed before the first feed, and once");
+    }
+
+    #[test]
+    fn a_single_input_with_no_cable_is_a_buffer_that_is_zeroed_before_its_node() {
+        let mut patch = Patch::new();
+        patch.add_node(1, spec(0, 1, 0));
+        patch.add_node(2, spec_single(1, 0, 1));
+        let plan = compile(&patch).unwrap();
+        let op = &plan.ops()[1];
+        assert_eq!(op.zero.iter().filter(|&&buffer| buffer == op.inputs[0]).count(), 1, "once, where its value begins, which is its own op");
+    }
+
+    #[test]
+    fn a_single_input_whose_cable_leaves_an_output_that_has_other_cables_is_a_sum_of_one() {
+        let mut patch = Patch::new();
+        patch.add_node(1, spec(0, 1, 0));
+        patch.add_node(2, spec_single(1, 0, 1));
+        patch.add_node(3, spec(1, 0, 2));
+        cable(&mut patch, (1, 0), (2, 0));
+        cable(&mut patch, (1, 0), (3, 0));
+        let plan = compile(&patch).unwrap();
+        let ops = plan.ops();
+        assert_ne!(ops[1].inputs[0], ops[0].outputs[0], "not the output's buffer: the other node reads it too, and this one may work in place");
+        assert_eq!(ops[0].feeds.len(), 2, "both are fed");
+    }
+
+    #[test]
+    fn two_single_inputs_are_not_the_one_buffer_of_the_output_that_both_have_a_cable_from() {
+        let mut patch = Patch::new();
+        patch.add_node(1, spec(0, 1, 0));
+        patch.add_node(2, spec_single(1, 0, 1));
+        patch.add_node(3, spec_single(1, 0, 2));
+        cable(&mut patch, (1, 0), (2, 0));
+        cable(&mut patch, (1, 0), (3, 0));
+        let plan = compile(&patch).unwrap();
+        let ops = plan.ops();
+        assert_ne!(ops[1].inputs[0], ops[2].inputs[0]);
+        assert!(ops[1].inputs[0] != ops[0].outputs[0] && ops[2].inputs[0] != ops[0].outputs[0]);
+        assert_eq!(ops[0].feeds.len(), 2);
+    }
+
+    #[test]
+    fn the_buffer_of_an_output_that_a_single_input_is_stays_taken_until_that_node_has_run() {
+        // 1 goes to 2 (single), and the nodes 3 and 4 run between them (the ranks say so): the order is 1, 3, 4, 2, 5, and neither 3 nor 4 takes the buffer that 1 made its output in.
+        let mut patch = Patch::new();
+        patch.add_node(1, spec(0, 1, 0));
+        patch.add_node(3, spec(0, 1, 1));
+        patch.add_node(4, spec(1, 1, 2));
+        patch.add_node(2, spec_single(1, 1, 3));
+        patch.add_node(5, spec(2, 0, 4));
+        cable(&mut patch, (1, 0), (2, 0));
+        cable(&mut patch, (3, 0), (4, 0));
+        cable(&mut patch, (4, 0), (5, 0));
+        cable(&mut patch, (2, 0), (5, 1));
+        let plan = compile(&patch).unwrap();
+        assert_eq!(plan.order().collect::<Vec<_>>(), [1, 3, 4, 2, 5]);
+        let held = plan.ops()[0].outputs[0];
+        assert_eq!(plan.ops()[3].inputs[0], held, "node 2 reads it");
+        for between in &plan.ops()[1..3] {
+            assert!(!between.inputs.contains(&held) && !between.outputs.contains(&held), "node {} does not have it", between.node);
+        }
+    }
+
     // ---- properties over seeded random patches --------------------------------------------------------------------------------------------------------
 
     /// What lives where, worked out from the patch and the order of the plan alone (not from what the plan says): (start, end, channels) of every output and every sum,
-    /// by the op that has it and the port.
+    /// by the op that has it and the port. An input that is `single`, has one cable, and has the only cable that leaves its output is not a sum: it is the output, which then
+    /// lives to the op that reads it (`alias` says which output an input is: by the op and the input, the op and the output).
     struct Lives {
         outputs: HashMap<(usize, usize), (usize, usize, u16)>,
         sums: HashMap<(usize, usize), (usize, usize, u16)>,
+        alias: HashMap<(usize, usize), (usize, usize)>,
+    }
+
+    /// Whether each cable of the patch is the whole of an input that is `single` and of an output (see `Lives`).
+    fn aliased(patch: &Patch<u32>) -> Vec<bool> {
+        let single = |c: &crate::patch::Cable<u32>| patch.nodes().iter().find(|(id, _)| *id == c.to.node).unwrap().1.inputs[usize::from(c.to.port)].single;
+        patch
+            .cables()
+            .iter()
+            .map(|c| single(c) && patch.cables().iter().filter(|o| o.to == c.to).count() == 1 && patch.cables().iter().filter(|o| o.from == c.from).count() == 1)
+            .collect()
     }
 
     fn lives(patch: &Patch<u32>, order: &[u32]) -> Lives {
         let place: HashMap<u32, usize> = order.iter().enumerate().map(|(at, id)| (*id, at)).collect();
         let spec_of: HashMap<u32, &NodeSpec> = patch.nodes().iter().map(|(id, spec)| (*id, spec)).collect();
+        let aliased = aliased(patch);
         let mut outputs = HashMap::new();
         let mut sums = HashMap::new();
+        let mut alias = HashMap::new();
         for (at, id) in order.iter().enumerate() {
             for (m, port) in spec_of[id].outputs.iter().enumerate() {
                 outputs.insert((at, m), (at, at, port.channels));
             }
             for (k, port) in spec_of[id].inputs.iter().enumerate() {
+                if let Some(cable) = patch.cables().iter().enumerate().find(|(c, cable)| aliased[*c] && cable.to.node == *id && usize::from(cable.to.port) == k).map(|(_, cable)| cable) {
+                    alias.insert((at, k), (place[&cable.from.node], usize::from(cable.from.port)));
+                    continue;
+                }
                 let first = patch.cables().iter().filter(|c| c.to.node == *id && usize::from(c.to.port) == k).map(|c| place[&c.from.node]).min().unwrap_or(at);
                 sums.insert((at, k), (first, at, port.channels));
             }
         }
-        Lives { outputs, sums }
+        for (&(reader, _), &(maker, m)) in &alias {
+            outputs.get_mut(&(maker, m)).unwrap().1 = reader;
+        }
+        Lives { outputs, sums, alias }
     }
 
     #[test]
@@ -624,6 +809,10 @@ mod tests {
                     values.push((start, end, channels, buffer, format!("output {m} of op {at}")));
                 }
                 for (k, &buffer) in op.inputs.iter().enumerate() {
+                    if let Some(&(maker, m)) = lives.alias.get(&(at, k)) {
+                        assert_eq!(buffer, plan.ops()[maker].outputs[m], "seed {seed}: input {k} of op {at} is output {m} of op {maker}");
+                        continue;
+                    }
                     let (start, end, channels) = lives.sums[&(at, k)];
                     values.push((start, end, channels, buffer, format!("sum {k} of op {at}")));
                 }
@@ -669,7 +858,9 @@ mod tests {
                     expected[lives.outputs[&(at, m)].0].push(op.outputs[m]);
                 }
                 for k in 0..op.inputs.len() {
-                    expected[lives.sums[&(at, k)].0].push(op.inputs[k]);
+                    if let Some(sum) = lives.sums.get(&(at, k)) {
+                        expected[sum.0].push(op.inputs[k]);
+                    }
                 }
             }
             for (at, op) in plan.ops().iter().enumerate() {
@@ -682,15 +873,18 @@ mod tests {
     }
 
     #[test]
-    fn a_feed_is_made_for_every_cable_into_the_buffer_of_the_sum_that_the_cable_ends_at() {
+    fn a_feed_is_made_for_every_cable_into_the_buffer_of_the_sum_that_the_cable_ends_at_and_for_none_that_is_an_input_itself() {
         for seed in 0..200 {
             let patch = random_patch(seed);
             let plan = compile(&patch).unwrap();
             let place: HashMap<u32, usize> = plan.order().enumerate().map(|(at, id)| (id, at)).collect();
+            let aliased = aliased(&patch);
             let mut expected: Vec<(usize, u32, u32)> = patch
                 .cables()
                 .iter()
-                .map(|c| (place[&c.from.node], u32::from(c.from.port), plan.ops()[place[&c.to.node]].inputs[usize::from(c.to.port)]))
+                .enumerate()
+                .filter(|(at, _)| !aliased[*at])
+                .map(|(_, c)| (place[&c.from.node], u32::from(c.from.port), plan.ops()[place[&c.to.node]].inputs[usize::from(c.to.port)]))
                 .collect();
             let mut have: Vec<(usize, u32, u32)> = plan.ops().iter().enumerate().flat_map(|(at, op)| op.feeds.iter().map(move |f| (at, f.output, f.into))).collect();
             expected.sort_unstable();
@@ -711,7 +905,7 @@ mod tests {
                 continue;
             }
             let (id, spec) = &with_both[rng.below(with_both.len())];
-            let (out, inp) = (0..spec.outputs.len() as u16).flat_map(|o| (0..spec.inputs.len() as u16).map(move |i| (o, i))).find(|&(o, i)| spec.outputs[o as usize] == spec.inputs[i as usize]).unzip();
+            let (out, inp) = (0..spec.outputs.len() as u16).flat_map(|o| (0..spec.inputs.len() as u16).map(move |i| (o, i))).find(|&(o, i)| spec.outputs[o as usize].channels == spec.inputs[i as usize].channels).unzip();
             let (Some(out), Some(inp)) = (out, inp) else { continue };
             patch.connect(Port::new(*id, out), Port::new(*id, inp));
             match compile(&patch) {
