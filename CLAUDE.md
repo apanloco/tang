@@ -1980,8 +1980,8 @@ Plugin loading is behind a trait. Three formats supported:
   every sample, all equally likely, with the level of a saw (the same RMS) and no pitch, so that `detune`, `pulse` and `spread` do nothing to it, and the envelope, `volume`, `pan`,
   `unison` and `width` do what they do to a wave (the oscillators of a unison are noises of their own, spread across the channels, and the sum is brought down by the root of how many
   there are). Each oscillator of each voice makes its numbers from a state of its own (`Voice::noise`: xorshift32, started from a hash of how many voices have begun and the
-  oscillator's place in the unison, `noise_seed`, which is never 0), and not from a stream that the voices share: the sum of a chord would then be dealt out in the order of the hash map,
-  and the same notes would sound a little different each run (`the_noise_of_a_chord_is_the_same_whatever_the_order_that_its_voices_are_summed_in`: its notes begin at frames of their
+  oscillator's place in the unison, `noise_seed`, which is never 0), and not from a stream that the voices share: the sum of a chord would then be dealt out in the order that the voices are walked in (the order of
+  their keys), and what a note got would depend on the chord that it is in (`the_noise_of_a_chord_is_the_same_whatever_the_order_that_its_voices_are_summed_in`: its notes begin at frames of their
   own, so that the voices are at different places of their attacks and a shared stream would show). Each key that is hit has noise of its own (a roll on one key is not the same burst
   again; a key that is hit again while it sounds goes on with its voice), and a run that plays the same notes has the same numbers. Not here: a colour (pink and brown noise; a low-pass after
   it does most of what they are for), and noise in the same lane as a wave (a second lane and a group sum them).
@@ -2013,8 +2013,9 @@ Plugin loading is behind a trait. Three formats supported:
   semitones), and a quantizer for the other parameters (a cable that holds what it drives to a step).
   TODO: the panic leaves what the effects have in hand (a reverb's tail, a delay's repeats) to ring out; a reset of the plugins on the audio thread (CLAP `reset`, LV2 and VST3 deactivate and activate again, the built-ins' own state) would make it silent at once. And a key for the page: its letters are the piano, Escape closes what is open and Control+P is the browser's print, so that the button is all it has.
   TODO: not here: the mod wheel (controller 1) as a vibrato, channel and polyphonic pressure (a cable from a MIDI learn control does them), a velocity curve and a wheel that springs by its own.
-  TODO: the voices are in a hash map that is walked in an order that changes from one run to the next, so that the sum of a chord differs by a rounding
-  from one run to another (the pinned test compares to a millionth); a fixed array of the 128 notes would have a fixed order, and would be faster.
+  The voices are kept in the order of their keys (`Voices`: a sorted vector with room for every key, so that a note-on does not allocate), and a block walks them as a slice, so that the
+  sum of a chord is the same bits in every instance and in every run (`a_chord_is_rendered_with_the_same_bits_by_every_oscillator`; step 70). It was a hash map, which walks its entries in
+  an order that is another for each map, so that a sum differed by a rounding from one run to the next: the oracle of `docs/patch-graph.md` §11.6 holds renders to a hash, and needs it.
   The old
   `builtin:sine`/`builtin:triangle`/`builtin:square` IDs still load (as
   aliases that start on that waveform) so older sessions keep working, but

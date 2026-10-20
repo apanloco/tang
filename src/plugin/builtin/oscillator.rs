@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
 use crate::plugin::{ParameterInfo, Plugin, Preset};
@@ -69,7 +68,7 @@ impl Waveform {
 /// notes attack and release independently.
 pub struct Oscillator {
     sample_rate: f32,
-    voices: HashMap<u8, Voice>,
+    voices: Voices,
     /// Detune in semitones, applied to all voices. Modulator-friendly.
     detune: f32,
     /// The place in the list of what the detune is held to: 0 is nothing (the detune is as it is set), and a place `i` is the tone of the scale `crate::scale::SCALES[i - 1]` that is nearest
@@ -259,6 +258,69 @@ const PULSE_MAX: f32 = 0.95;
 /// The keys of a keyboard: one voice for each is the most there can be.
 const KEYS: usize = 128;
 
+/// The voices that sound, one for each key that has one, kept in the order of their keys. A block walks them in that order, so that the sum of a chord is the same bits in
+/// every instance and in every run (a hash map walks its entries in an order that is another for each map, and a sum in another order is another rounding), and it walks a
+/// plain slice, which is faster than a map. Made with room for every key, so that a note-on does not allocate.
+struct Voices {
+    sorted: Vec<(u8, Voice)>,
+}
+
+impl Voices {
+    fn new() -> Self {
+        Voices { sorted: Vec::with_capacity(KEYS) }
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.sorted.is_empty()
+    }
+
+    /// Where the voice of `note` is, or where it would go.
+    fn place(&self, note: u8) -> Result<usize, usize> {
+        self.sorted.binary_search_by_key(&note, |(key, _)| *key)
+    }
+
+    fn get_mut(&mut self, note: u8) -> Option<&mut Voice> {
+        match self.place(note) {
+            Ok(at) => Some(&mut self.sorted[at].1),
+            Err(_) => None,
+        }
+    }
+
+    /// A voice for a key that has none yet (one that has one is replaced).
+    fn insert(&mut self, note: u8, voice: Voice) {
+        match self.place(note) {
+            Ok(at) => self.sorted[at].1 = voice,
+            Err(at) => self.sorted.insert(at, (note, voice)),
+        }
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (u8, &mut Voice)> {
+        self.sorted.iter_mut().map(|(note, voice)| (*note, voice))
+    }
+
+    #[cfg(test)]
+    fn values(&self) -> impl Iterator<Item = &Voice> {
+        self.sorted.iter().map(|(_, voice)| voice)
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
+        self.sorted.iter_mut().map(|(_, voice)| voice)
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&Voice) -> bool) {
+        self.sorted.retain(|(_, voice)| keep(voice));
+    }
+}
+
+impl std::ops::Index<&u8> for Voices {
+    type Output = Voice;
+
+    fn index(&self, note: &u8) -> &Voice {
+        &self.sorted[self.place(*note).expect("a voice for that key")].1
+    }
+}
+
 const PAN_MIN: f32 = -1.0;
 const PAN_MAX: f32 = 1.0;
 
@@ -292,7 +354,7 @@ impl Oscillator {
         Self {
             sample_rate,
             // (Room for every key, the most that can sound: a note-on on the audio thread must not allocate.)
-            voices: HashMap::with_capacity(KEYS),
+            voices: Voices::new(),
             detune: 0.0,
             quantize: 0,
             volume: 1.0,
@@ -454,27 +516,24 @@ impl Plugin for Oscillator {
                         // click when re-hitting a still-decaying note). The key is
                         // down, on this channel and as hard as it was hit.
                         let hit = f32::from(velocity) / 127.0;
-                        self.voices
-                            .entry(note)
-                            .and_modify(|v| {
-                                v.state = VoiceState::Attack;
-                                v.held = true;
-                                v.fast = false;
-                                v.channel = channel;
-                                v.velocity = hit;
-                            })
-                            .or_insert_with(|| {
-                                self.voices_begun = self.voices_begun.wrapping_add(1);
-                                let mut voice = Voice::new(self.voices_begun);
-                                voice.channel = channel;
-                                voice.velocity = hit;
-                                voice.velocity_now = hit;
-                                voice
-                            });
+                        if let Some(v) = self.voices.get_mut(note) {
+                            v.state = VoiceState::Attack;
+                            v.held = true;
+                            v.fast = false;
+                            v.channel = channel;
+                            v.velocity = hit;
+                        } else {
+                            self.voices_begun = self.voices_begun.wrapping_add(1);
+                            let mut voice = Voice::new(self.voices_begun);
+                            voice.channel = channel;
+                            voice.velocity = hit;
+                            voice.velocity_now = hit;
+                            self.voices.insert(note, voice);
+                        }
                     }
                     0x80 | 0x90 => {
                         // The key is up; under the pedal the note goes on sounding until the pedal goes up.
-                        if let Some(v) = self.voices.get_mut(&note) {
+                        if let Some(v) = self.voices.get_mut(note) {
                             v.held = false;
                             if !self.pedal {
                                 v.state = VoiceState::Release;
@@ -519,7 +578,7 @@ impl Plugin for Oscillator {
             // existing voices to suddenly change volume).
             const VOICE_GAIN: f32 = 0.25;
             let (mut sample_l, mut sample_r) = (0.0_f32, 0.0_f32);
-            for (&note, voice) in self.voices.iter_mut() {
+            for (note, voice) in self.voices.iter_mut() {
                 match voice.state {
                     VoiceState::Attack => {
                         voice.amp += attack_inc;
@@ -594,7 +653,7 @@ impl Plugin for Oscillator {
 
             // Drop fully-released voices.
             self.voices
-                .retain(|_, v| !(matches!(v.state, VoiceState::Release) && v.amp <= 0.0));
+                .retain(|v| !(matches!(v.state, VoiceState::Release) && v.amp <= 0.0));
 
             self.volume_smoothed += (self.volume - self.volume_smoothed) * volume_alpha;
             self.pan_smoothed += (self.pan - self.pan_smoothed) * volume_alpha;
@@ -2432,8 +2491,7 @@ mod tests {
 
     #[test]
     fn a_quantizer_set_to_a_detune_that_is_on_the_scale_is_the_oscillator_with_none_to_the_last_bit() {
-        // (A detune that is a tone of the scale goes to itself exactly, so that the sound is the one it was: one key of each wave, with a detune of 3, a unison of three and a drift. One key and not a
-        // chord: the voices are in a hash map that is walked in another order each time, so that the sum of a chord differs by a rounding from one run to the next.)
+        // (A detune that is a tone of the scale goes to itself exactly, so that the sound is the one it was: one key of each wave, with a detune of 3, a unison of three and a drift.)
         for waveform in [Waveform::Sine, Waveform::Triangle, Waveform::Square, Waveform::Saw] {
             let render_with = |quantize: f32| {
                 let mut osc = Oscillator::new(SAMPLE_RATE, waveform);
@@ -2465,6 +2523,23 @@ mod tests {
         let settled = out[4800..].to_vec();
         let seven = 440.0 * 2.0f32.powf(7.0 / 12.0);
         assert!(magnitude(&settled, seven) > 0.2 && magnitude(&settled, seven / 2.0) > 0.2, "the note at the seventh semitone and its sub an octave under");
+    }
+
+    #[test]
+    fn a_chord_is_rendered_with_the_same_bits_by_every_oscillator() {
+        // The voices of a chord are summed in the order of their keys, so that the same notes make the same samples in every instance and in every run. A render that is held to a
+        // hash (the oracle of `crate::oracle`) needs it, and a sum in another order is another rounding.
+        let chord = [note_on(48, 100, 0), note_on(52, 90, 0), note_on(55, 80, 0), note_on(60, 70, 0), note_on(64, 60, 0)];
+        let render_chord = || {
+            let mut osc = Oscillator::new(SAMPLE_RATE, Waveform::Saw);
+            osc.set_parameter(8, 2.0).unwrap(); // a unison of three
+            osc.set_parameter(16, 0.5).unwrap(); // and a drift
+            render(&mut osc, &chord, 4800)
+        };
+        let first = render_chord();
+        for run in 1..8 {
+            assert!(render_chord() == first, "oscillator {run} made other bits than the first");
+        }
     }
 
     #[test]
