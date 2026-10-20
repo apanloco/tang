@@ -507,7 +507,7 @@ the new one grows under today's structure until it equals it, and is then taken 
   block is 10 to 15 ns a node (0 frames); with stereo buffers, which have to be zeroed where a value begins and fed into the sums, 35 ns a node at 64 frames, 73 at 256 and 220 to 240 at 1,024 (it is
   memory, and P3's aliasing of a single cable and P7's skipping of silence are what take it away). A chain of 1,000 nodes is 78 µs a block of 256 frames (1.5% of the 5.33 ms), a fan-in of 1,000 sources
   55 µs, and a session's shape (64 lanes of four nodes, two groups: 259 nodes) 19 µs (0.35%).
-  *Built* (step 5, `src/plugin/chain/nodes.rs`, `src/plugin/ordered.rs`): the engine is run by the plan. `oracle::agree` holds it to `process_legacy` bit for bit over the always-on corpus in every test run and
+  *Built* (step 5, `src/plugin/chain/nodes.rs`, `src/plugin/ordered.rs`, which P2 took out again: the vectors are plain and the plan names the model's ids): the engine is run by the plan. `oracle::agree` holds it to `process_legacy` bit for bit over the always-on corpus in every test run and
   over all 960 renders, edits included, at 64, 256 and 1,024 frames, in the ignored test; the stored hashes of P0, which the old engine made, hold for the plan too (960 of 960 to the bit on macOS on Apple
   silicon). It cost what the loop did (release, M4 Pro, medians of `oracle::bench`, which times both now): the stress session with a chord of six at 256 frames 815 µs the loop and 816 µs the plan, nothing played
   366 and 366, one oscillator and a chord 28 and 28, and no block of either asks the allocator for memory. 36 mutants of the nodes, the schedule and `process` and 18 of `Ordered` are all caught. What the oracle found on the way: the
@@ -528,9 +528,46 @@ the new one grows under today's structure until it equals it, and is then taken 
   the engine keeps it, and a check that the engine's ids are the model's after every edit (the oracle's edits run it, and so do the tests of `src/app/` that compare the two) holds them
   together; (3) the plan names those ids and `Ordered`, which P1 made to give the plan keys, goes (an item that has an id needs none, and the plan finds it through a map made when the plan is). The
   commands that address things that are there stay positional, and go over to ids family by family when a step needs one to (P3's cables are by id from the start); the fixups go with P5.
+  *Built* (2026-10-20, step 72 of `docs/web-ui.md`, in three commits). (1) `src/ids.rs`: `NodeId` and `EdgeId`, re-exported by the model. (2) `AddInstrument`, `AddGroup`, `InsertEffect` and
+  `InsertGroupEffect` carry the model's id; a lane and a group keep it, and an id for each effect beside its mix (a lane that gives up its plugins keeps the mixes and the ids), and it goes
+  where the node goes; the loader, the controller and the journal send them. They are held to the model's by `LaneFacts` and `GroupFacts` in every test of `src/app/` that compares the engine
+  with the model (twelve failed first), by tests of the engine for effects put in, moved and taken out, and by the oracle, which compares the engine's lanes, groups and effect ids with the
+  model's after every block of every render (`Engine::facts`): 960 renders, edits and Undo included. 26 mutants of the plumbing, all caught (one lived: `Controller::add_group` had no test
+  on a real graph). (3) The plan names the model's ids (`Patch<NodeId>`, the mix is `NodeId::MASTER`), `Ordered` and its keys are gone (the vectors are plain), and a list of where each id
+  is, sorted by id and made when the plan is, is what a block finds a node by; a node that is not at its place any more is silence, never another node. Two nodes of one id do not compile.
+  16 mutants of that, all caught. The oracle renders the same bits (the stored hashes hold: 960 of 960, and the plan equals the loop), and the plan costs what it did (see step 72).
+  *What it does not do, and why:* the commands that address a thing that is there still name places, and the 51 fixups stay; they exist to keep a *modulator's* references valid, and P5 makes
+  those references cables between ports, so rewriting them to ids now would be written twice. The lanes and groups do not go into the arena yet: nothing needs it before P3 takes a lane apart.
 - **P3, take the lane apart, and draw audio cables.** The lane splits into instrument, effects and strip (volume, pan, mute, solo, meter), the oracle checking
   every split; the compile finds the latencies and puts the delays; cables are drawn in the page, in the terminal's patchbay and in the file. *To try, and the
   first thing you can see:* two oscillators into one reverb, a send, a sidechain, a multi-output instrument to separate effects.
+  **Cut, 2026-10-20 (P2 was done and P3 was next; each piece is a commit or a few, the oracle held to the old engine until the first cable is drawn, written here first so that it survives a restart):**
+  - **P3a, the lane and the group as rows of nodes in the plan** (engine only, nothing to see, the same bits). The data stays in `InstrumentLane` and `Group` (the 51 fixups and the
+    positional commands are P5's, and a lane that is taken apart in memory would put them all in the same commit); what changes is the plan: a lane is `Source` (the events through
+    range, remap, pattern and transpose, the modulators, the instrument, the volume and the tap after it) → `Fx(i)` for each effect (the plugin, the blend by the mix, the tap) →
+    `Strip` (the metronome's click, the fade of a mute or a solo, the meter, the learned controls); a group is `Bus` (the volume) → `Fx(i)` → `Strip` (pan, taps, fade, meter). The node
+    bodies are the old code cut at the seams that it already has, as free functions over the parts, so that they are what moves when the data does; the old monolithic `process` stays
+    as `process_legacy`'s (test builds) and is what `agree` holds the nodes to, until the first cable is drawn. A lane with no instrument runs none of its effects, as today (they
+    make silence). **The kernel learns one thing:** an input that takes one cable can be *the cable's buffer* (`PortSpec::single`: no sum, no zeroing, no feed), so that a chain of
+    nodes costs what the old chain did and gives its bits exactly (the old chain does not make `0.0 + -0.0` of anything between its stages; the sum at a group's bus and at the mix
+    stays a sum, since the old engine added into zeroed buffers there). An input that is `single` and has two cables is a sum, so P3b needs no other rule. The reference interpreter
+    knows it, and the executor is held to it over the random patches.
+  - **P3b, audio cables in the engine.** Commands that add and take out a cable between two ports by id (`AddCable`, `RemoveCable`), with a gain on each cable (a send level; 1.0 is no
+    multiplication, so that the bits of what is not drawn do not move); a cable that comes or goes ramps over one block, as a mute does; a cycle is refused (the command fails and nothing
+    changes: the compile is made on the side first); fan-in is the sum in plan order, and the order of the plan decides it (§11.3). The engine has the cables and nothing sends them yet.
+    Tests of the engine alone: two lanes into one effect equal the two renders added, a send, a cable that comes and goes does not click (the click detector of §11.6 is made here), the
+    plan is the same after the same edits in another order.
+  - **P3c, the model, the intents, the history, the file.** The model has audio cables (`EdgeId`s, a gain, undo that puts them back as they were, the graph a client gets has them as edges
+    that can be taken out); the form that they take beside the lane, the group and `group = n` is a decision that I write into this document before building it (the sugar must stay what
+    it is, and round-trip: §11.5). Mute and solo for routed audio: the law of §9.8, written for a graph, in the engine and in the page's copy of it (`audible.ts`), pinned by the same
+    kind of fixture. The saved file has `[[cable]]` for what the sugar cannot say.
+  - **P3d, the page.** Handles for audio ports on every node that has them, a cable dragged from an output to an input that takes it (the ports that take it light), its gain on the
+    cable, its removal, undo; `toFlow` and the mock engine learn it, pinned by the fixtures. *The first thing you can see:* two oscillators into one reverb.
+  - **P3e, the terminal's patchbay**: a matrix of outputs against inputs for the audio cables, `Enter` on a crosspoint, `+` and `-` for the gain; `tang --web` shows both.
+  - **P3f, latency.** `Plugin::latency` (CLAP, VST3 and LV2 say theirs; the built-ins say theirs: the Drive's 23 frames), the compile finds the latency of every path and puts a delay on the
+    shorter ones, so that a dry path and a path through a plugin that has latency are in step; the Drive no longer needs to be fully wet.
+  - **P3g, the ports that plugins have.** The outputs of a multi-output instrument and the sidechain input of an effect as ports (the chain takes the first stereo pair of Pianoteq's sixteen
+    outputs today, and gives silence to a sidechain).
 - **P4, events.** The event with its note id; keyboard, device, pattern, range, remap and transpose as nodes; MPE; time stamps; no hanging notes. *To try:* a
   split, a layer, two keyboards into one synth, an arpeggiator between the keys and the synth.
 - **P5, control.** Parameters as ports, modulators as nodes (the racks become layout), math nodes, the transport. *To try:* one LFO on two lanes, the quantizer
