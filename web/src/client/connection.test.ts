@@ -662,7 +662,7 @@ describe("adding a modulator", () => {
 
   /** The tracer with its lane in a group (a node of the group first, as the controller lists them). */
   function inAGroup(): Snapshot {
-    const group: Node = { id: 10, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0, muted: false, solo: false };
+    const group: Node = { id: 10, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" };
     const nodes = tracerSnapshot.graph.nodes.map((n) => (n.id === lane.id ? { ...n, parent: 10 } : n));
     return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [group, ...nodes] } };
   }

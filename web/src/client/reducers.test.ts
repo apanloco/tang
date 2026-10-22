@@ -44,7 +44,7 @@ function gainOf(snapshot: Snapshot, edge: number): number {
 
 /** The tracer with a group node (and a bus effect in it) added, for the gains that are about groups. */
 function withGroup(): { snapshot: Snapshot; group: Node } {
-  const group: Node = { id: 40, parent: null, name: "Pad", kind: "group", volume: 1, pan: 0, muted: false, solo: false };
+  const group: Node = { id: 40, parent: null, name: "Pad", kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" };
   return { snapshot: { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, group] } }, group };
 }
 
@@ -481,7 +481,7 @@ describe("a group renamed", () => {
   test("changes that group and nothing else: every other node is the object it was, the group is still a group of the same volume and pan", () => {
     const { snapshot: plain, group: first } = withGroup();
     // (A group that is not at its defaults, so that a volume and a pan that were lost would show.)
-    const group: Node = { ...first, kind: "group", volume: 0.5, pan: -0.25, muted: false, solo: false };
+    const group: Node = { ...first, kind: "group", volume: 0.5, pan: -0.25, muted: false, solo: false, route: "out" };
     const snapshot = { ...plain, graph: { ...plain.graph, nodes: plain.graph.nodes.map((n) => (n.id === group.id ? group : n)) } };
     const after = applied(snapshot, rename(group.id, "Strings"));
     for (const node of snapshot.graph.nodes) {

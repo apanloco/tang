@@ -41,6 +41,8 @@ describe("the mock engine's groups", () => {
       for (const list of ["nodes", "audio", "cables", "meters", "modulation"] as const) {
         if (JSON.stringify(shape[list]) !== JSON.stringify(row.after[list])) wrong.push(`${what}: ${list} are ${JSON.stringify(shape[list])}, not ${JSON.stringify(row.after[list])}`);
       }
+      // (The lanes and groups whose way out is cut: a list only for a session that has some.)
+      if (JSON.stringify(shape.routes ?? []) !== JSON.stringify(row.after.routes ?? [])) wrong.push(`${what}: the ways out that are cut are ${JSON.stringify(shape.routes ?? [])}, not ${JSON.stringify(row.after.routes ?? [])}`);
     }
     expect(wrong).toEqual([]);
   });

@@ -30036,6 +30036,7 @@
               "name": "Group 1",
               "pan": 0.0,
               "parent": null,
+              "route": "out",
               "solo": false,
               "volume": 1.0
             },
@@ -30541,6 +30542,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -31080,6 +31082,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -31765,6 +31768,7 @@
               "name": "Group 1",
               "pan": 0.0,
               "parent": null,
+              "route": "out",
               "solo": false,
               "volume": 1.0
             },
@@ -32270,6 +32274,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -32809,6 +32814,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -33712,6 +33718,7 @@
               "name": "Group 1",
               "pan": 0.0,
               "parent": null,
+              "route": "out",
               "solo": false,
               "volume": 1.0
             },
@@ -34217,6 +34224,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -34756,6 +34764,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -35461,6 +35470,7 @@
               "name": "Group 1",
               "pan": 0.0,
               "parent": null,
+              "route": "out",
               "solo": false,
               "volume": 1.0
             },
@@ -35966,6 +35976,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -36505,6 +36516,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -37348,6 +37360,7 @@
               "name": "Group 1",
               "pan": 0.0,
               "parent": null,
+              "route": "out",
               "solo": false,
               "volume": 1.0
             },
@@ -37853,6 +37866,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -38392,6 +38406,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -39518,6 +39533,7 @@
               "name": "Group 1",
               "pan": 0.0,
               "parent": null,
+              "route": "out",
               "solo": false,
               "volume": 1.0
             },
@@ -40023,6 +40039,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -40562,6 +40579,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -41794,6 +41812,7 @@
               "name": "Pad",
               "pan": 0.0,
               "parent": null,
+              "route": "out",
               "solo": false,
               "volume": 1.0
             },
@@ -42494,6 +42513,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -43047,6 +43067,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -43147,6 +43168,7 @@
               "pattern": null,
               "plugin": null,
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -44095,6 +44117,7 @@
               "name": "Pad",
               "pan": 0.0,
               "parent": null,
+              "route": "out",
               "solo": false,
               "volume": 1.0
             },
@@ -44795,6 +44818,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -45348,6 +45372,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -45448,6 +45473,7 @@
               "pattern": null,
               "plugin": null,
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -45584,6 +45610,2138 @@
               "slot": 7
             }
           ],
+          "rev": 1
+        }
+      }
+    },
+    {
+      "name": "the way out of a lane and of a group that is cut is put back by undo and cut again by redo; one that is as it is asked to be, and one of what is neither a lane nor a group, is no step; and a way out that is given back where the audio cables there are would make it go round is refused",
+      "rows": [
+        {
+          "events": [
+            {
+              "locked": true,
+              "rev": 1,
+              "type": "lockedSet"
+            }
+          ],
+          "history": {
+            "redo": null,
+            "undo": "lock the piano to its scale"
+          },
+          "intent": {
+            "locked": true,
+            "type": "setLocked"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "cut the way out of the lane of Oscillator"
+          },
+          "intent": {
+            "node": 5,
+            "route": "none",
+            "type": "setRoute"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "4>0 member",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "5 none"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "node": 0,
+            "route": "none",
+            "type": "setRoute"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "4>0 member",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "0 none",
+              "5 none"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "node": 5,
+            "route": "none",
+            "type": "setRoute"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "4>0 member",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "0 none",
+              "5 none"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "node": 2,
+            "route": "out",
+            "type": "setRoute"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "4>0 member",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "0 none",
+              "5 none"
+            ]
+          }
+        },
+        {
+          "error": "only a lane or a group has a way out",
+          "history": {
+            "redo": null,
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "node": 3,
+            "route": "none",
+            "type": "setRoute"
+          }
+        },
+        {
+          "error": "only a lane or a group has a way out",
+          "history": {
+            "redo": null,
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "node": 1,
+            "route": "none",
+            "type": "setRoute"
+          }
+        },
+        {
+          "error": "there is no node 4294967295",
+          "history": {
+            "redo": null,
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "node": 4294967295,
+            "route": "none",
+            "type": "setRoute"
+          }
+        },
+        {
+          "error": "there is no node 9999",
+          "history": {
+            "redo": null,
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "node": 9999,
+            "route": "none",
+            "type": "setRoute"
+          }
+        },
+        {
+          "error": "that cable would make the audio go round: it would feed what it comes from",
+          "history": {
+            "redo": null,
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "audioOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 3,
+              "port": {
+                "type": "audioIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "cut the way out of the lane of Oscillator"
+          },
+          "intent": {
+            "node": 2,
+            "route": "none",
+            "type": "setRoute"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "0 none",
+              "2 none",
+              "5 none"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "draw an audio cable"
+          },
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "audioOut"
+              }
+            },
+            "gain": 0.5,
+            "to": {
+              "node": 3,
+              "port": {
+                "type": "audioIn"
+              }
+            },
+            "type": "addCable"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "0 none",
+              "2 none",
+              "5 none"
+            ],
+            "sends": [
+              "#0 0>3 @0.5"
+            ]
+          }
+        },
+        {
+          "error": "giving that lane its way out would make the audio go round, by the cables there are",
+          "history": {
+            "redo": null,
+            "undo": "draw an audio cable"
+          },
+          "intent": {
+            "node": 2,
+            "route": "out",
+            "type": "setRoute"
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "draw an audio cable",
+            "undo": "cut the way out of the lane of Oscillator"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "0 none",
+              "2 none",
+              "5 none"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "cut the way out of the lane of Oscillator",
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "4>0 member",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "0 none",
+              "5 none"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "cut the way out of the lane of Oscillator",
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "node": 2,
+            "route": "out",
+            "type": "setRoute"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "4>0 member",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "0 none",
+              "5 none"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "cut the way out of Group 1",
+            "undo": "cut the way out of the lane of Oscillator"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "4>0 member",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "5 none"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "cut the way out of the lane of Oscillator",
+            "undo": "lock the piano to its scale"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "4>0 member",
+              "5>6 audio",
+              "6>4294967295 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "cut the way out of Group 1",
+            "undo": "cut the way out of the lane of Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "4>0 member",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "5 none"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "cut the way out of the lane of Oscillator",
+            "undo": "cut the way out of Group 1"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "4>0 member",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "0 none",
+              "5 none"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "draw an audio cable",
+            "undo": "cut the way out of the lane of Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "2>3 audio",
+              "3>4 audio",
+              "5>6 audio"
+            ],
+            "cables": [],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 5 audioOut peak",
+              "7 5 audioOut clips"
+            ],
+            "modulation": [],
+            "nodes": [
+              "0 - Group 1",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 2 Delay",
+              "5 - Oscillator",
+              "6 5 Drive",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "0 none",
+              "2 none",
+              "5 none"
+            ]
+          }
+        }
+      ],
+      "snapshot": {
+        "graph": {
+          "edges": [
+            {
+              "from": {
+                "node": 0,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 1,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 1,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 4294967295,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 2,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 3,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 3,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 4,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 4,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "member",
+              "to": {
+                "node": 0,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 5,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 6,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            },
+            {
+              "from": {
+                "node": 6,
+                "port": {
+                  "type": "audioOut"
+                }
+              },
+              "kind": "audio",
+              "to": {
+                "node": 4294967295,
+                "port": {
+                  "type": "audioIn"
+                }
+              }
+            }
+          ],
+          "nodes": [
+            {
+              "id": 0,
+              "kind": "group",
+              "muted": false,
+              "name": "Group 1",
+              "pan": 0.0,
+              "parent": null,
+              "route": "out",
+              "solo": false,
+              "volume": 1.0
+            },
+            {
+              "id": 1,
+              "kind": "effect",
+              "mix": 1.0,
+              "name": "Reverb",
+              "parent": 0,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:reverb",
+                "isInstrument": false,
+                "params": [
+                  {
+                    "default": 0.88,
+                    "group": [],
+                    "index": 0,
+                    "labels": null,
+                    "max": 0.99,
+                    "min": 0.1,
+                    "name": "decay",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.88
+                  },
+                  {
+                    "default": 0.85,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.3,
+                    "name": "size",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.85
+                  },
+                  {
+                    "default": 0.35,
+                    "group": [],
+                    "index": 2,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "damping",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.35
+                  },
+                  {
+                    "default": 0.04,
+                    "group": [],
+                    "index": 3,
+                    "labels": null,
+                    "max": 0.25,
+                    "min": 0.0,
+                    "name": "predelay",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.04
+                  },
+                  {
+                    "default": 0.7,
+                    "group": [],
+                    "index": 4,
+                    "labels": null,
+                    "max": 0.85,
+                    "min": 0.0,
+                    "name": "diffusion",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.7
+                  },
+                  {
+                    "default": 0.3,
+                    "group": [
+                      "Modulation"
+                    ],
+                    "index": 5,
+                    "labels": null,
+                    "max": 2.0,
+                    "min": 0.05,
+                    "name": "mod_rate",
+                    "stepCount": 0,
+                    "unit": "Hz",
+                    "value": 0.3
+                  },
+                  {
+                    "default": 0.5,
+                    "group": [
+                      "Modulation"
+                    ],
+                    "index": 6,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "mod_depth",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.5
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 7,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "width",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 80.0,
+                    "group": [],
+                    "index": 8,
+                    "labels": null,
+                    "max": 500.0,
+                    "min": 20.0,
+                    "name": "lowcut",
+                    "stepCount": 0,
+                    "unit": "Hz",
+                    "value": 80.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 9,
+                    "labels": null,
+                    "max": 2.0,
+                    "min": 0.0,
+                    "name": "level",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  }
+                ],
+                "pinned": [],
+                "presets": [
+                  {
+                    "id": "arcadia",
+                    "name": "Arcadia Dream Hall"
+                  },
+                  {
+                    "id": "cathedral",
+                    "name": "Cathedral"
+                  },
+                  {
+                    "id": "plate",
+                    "name": "Vintage Plate"
+                  },
+                  {
+                    "id": "room",
+                    "name": "Small Room"
+                  },
+                  {
+                    "id": "ambient",
+                    "name": "Ambient Wash"
+                  }
+                ]
+              }
+            },
+            {
+              "id": 2,
+              "kind": "instrument",
+              "muted": false,
+              "name": "Oscillator",
+              "parent": 0,
+              "pattern": null,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:osc",
+                "isInstrument": true,
+                "params": [
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 0,
+                    "labels": [
+                      "sine",
+                      "triangle",
+                      "square",
+                      "saw",
+                      "noise"
+                    ],
+                    "max": 4.0,
+                    "min": 0.0,
+                    "name": "waveform",
+                    "stepCount": 4,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 24.0,
+                    "min": -24.0,
+                    "name": "detune",
+                    "stepCount": 0,
+                    "unit": "st",
+                    "value": 0.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 2,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "volume",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.004,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 3,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "attack",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.004
+                  },
+                  {
+                    "default": 0.1,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 4,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "decay",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.1
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 5,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "sustain",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.012,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 6,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "release",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.012
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 7,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": -1.0,
+                    "name": "pan",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 8,
+                    "labels": [
+                      "1",
+                      "2",
+                      "3",
+                      "4",
+                      "5",
+                      "6",
+                      "7"
+                    ],
+                    "max": 6.0,
+                    "min": 0.0,
+                    "name": "unison",
+                    "stepCount": 6,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.15,
+                    "group": [],
+                    "index": 9,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "spread",
+                    "stepCount": 0,
+                    "unit": "st",
+                    "value": 0.15
+                  },
+                  {
+                    "default": 0.5,
+                    "group": [],
+                    "index": 10,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "width",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.5
+                  },
+                  {
+                    "default": 0.5,
+                    "group": [],
+                    "index": 11,
+                    "labels": null,
+                    "max": 0.95,
+                    "min": 0.05,
+                    "name": "pulse",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.5
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "FM"
+                    ],
+                    "index": 12,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "fm",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [
+                      "FM"
+                    ],
+                    "index": 13,
+                    "labels": [
+                      "×0.5",
+                      "×1",
+                      "×1.4",
+                      "×1.5",
+                      "×2",
+                      "×2.5",
+                      "×2.8",
+                      "×3",
+                      "×3.5",
+                      "×4",
+                      "×5",
+                      "×5.6",
+                      "×6",
+                      "×7",
+                      "×8",
+                      "×12"
+                    ],
+                    "max": 15.0,
+                    "min": 0.0,
+                    "name": "fm_ratio",
+                    "stepCount": 15,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "Voice"
+                    ],
+                    "index": 14,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "sub",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [
+                      "Voice"
+                    ],
+                    "index": 15,
+                    "labels": null,
+                    "max": 8.0,
+                    "min": 1.0,
+                    "name": "sync",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "Voice"
+                    ],
+                    "index": 16,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "drift",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "Performance"
+                    ],
+                    "index": 17,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "velocity",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 2.0,
+                    "group": [
+                      "Performance"
+                    ],
+                    "index": 18,
+                    "labels": [
+                      "off",
+                      "±1",
+                      "±2",
+                      "±3",
+                      "±5",
+                      "±7",
+                      "±12",
+                      "±24",
+                      "±48"
+                    ],
+                    "max": 8.0,
+                    "min": 0.0,
+                    "name": "bend",
+                    "stepCount": 8,
+                    "unit": null,
+                    "value": 2.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "Voice"
+                    ],
+                    "index": 19,
+                    "labels": [
+                      "off",
+                      "major",
+                      "minor",
+                      "harm minor",
+                      "mel minor",
+                      "dorian",
+                      "phrygian",
+                      "lydian",
+                      "mixolydian",
+                      "locrian",
+                      "maj pent",
+                      "min pent",
+                      "blues",
+                      "whole tone",
+                      "diminished",
+                      "chromatic"
+                    ],
+                    "max": 15.0,
+                    "min": 0.0,
+                    "name": "quantize",
+                    "stepCount": 15,
+                    "unit": null,
+                    "value": 0.0
+                  }
+                ],
+                "pinned": [],
+                "presets": []
+              },
+              "range": null,
+              "route": "out",
+              "solo": false,
+              "transpose": 0,
+              "volume": 1.0
+            },
+            {
+              "id": 3,
+              "kind": "effect",
+              "mix": 1.0,
+              "name": "Filter",
+              "parent": 2,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:filter",
+                "isInstrument": false,
+                "params": [
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 0,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "cutoff",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.707,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.5,
+                    "name": "resonance",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.707
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 2,
+                    "labels": [
+                      "lowpass",
+                      "highpass",
+                      "bandpass",
+                      "notch",
+                      "ladder",
+                      "acid",
+                      "ms20"
+                    ],
+                    "max": 6.0,
+                    "min": 0.0,
+                    "name": "type",
+                    "stepCount": 6,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 3,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 1.0,
+                    "name": "drive",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  }
+                ],
+                "pinned": [],
+                "presets": []
+              }
+            },
+            {
+              "id": 4,
+              "kind": "effect",
+              "mix": 1.0,
+              "name": "Delay",
+              "parent": 2,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:delay",
+                "isInstrument": false,
+                "params": [
+                  {
+                    "default": 0.375,
+                    "group": [],
+                    "index": 0,
+                    "labels": null,
+                    "max": 2.0,
+                    "min": 0.001,
+                    "name": "time",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.375
+                  },
+                  {
+                    "default": 0.45,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 0.95,
+                    "min": 0.0,
+                    "name": "feedback",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.45
+                  },
+                  {
+                    "default": 0.7,
+                    "group": [],
+                    "index": 2,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "tone",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.7
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 3,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "pingpong",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.5,
+                    "group": [
+                      "Modulation"
+                    ],
+                    "index": 4,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.05,
+                    "name": "mod_rate",
+                    "stepCount": 0,
+                    "unit": "Hz",
+                    "value": 0.5
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "Modulation"
+                    ],
+                    "index": 5,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "mod_depth",
+                    "stepCount": 0,
+                    "unit": "ms",
+                    "value": 0.0
+                  }
+                ],
+                "pinned": [],
+                "presets": [
+                  {
+                    "id": "slapback",
+                    "name": "Slapback"
+                  },
+                  {
+                    "id": "tape",
+                    "name": "Tape Echo"
+                  },
+                  {
+                    "id": "pingpong",
+                    "name": "Ping-Pong"
+                  },
+                  {
+                    "id": "dub",
+                    "name": "Dub Echo"
+                  },
+                  {
+                    "id": "chorus",
+                    "name": "Chorus"
+                  },
+                  {
+                    "id": "flanger",
+                    "name": "Flanger"
+                  },
+                  {
+                    "id": "doubler",
+                    "name": "Doubler"
+                  }
+                ]
+              }
+            },
+            {
+              "id": 5,
+              "kind": "instrument",
+              "muted": false,
+              "name": "Oscillator",
+              "parent": null,
+              "pattern": null,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:osc",
+                "isInstrument": true,
+                "params": [
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 0,
+                    "labels": [
+                      "sine",
+                      "triangle",
+                      "square",
+                      "saw",
+                      "noise"
+                    ],
+                    "max": 4.0,
+                    "min": 0.0,
+                    "name": "waveform",
+                    "stepCount": 4,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 24.0,
+                    "min": -24.0,
+                    "name": "detune",
+                    "stepCount": 0,
+                    "unit": "st",
+                    "value": 0.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 2,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "volume",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.004,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 3,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "attack",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.004
+                  },
+                  {
+                    "default": 0.1,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 4,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "decay",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.1
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 5,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "sustain",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.012,
+                    "group": [
+                      "Envelope"
+                    ],
+                    "index": 6,
+                    "labels": null,
+                    "max": 10.0,
+                    "min": 0.0,
+                    "name": "release",
+                    "stepCount": 0,
+                    "unit": "s",
+                    "value": 0.012
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 7,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": -1.0,
+                    "name": "pan",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 8,
+                    "labels": [
+                      "1",
+                      "2",
+                      "3",
+                      "4",
+                      "5",
+                      "6",
+                      "7"
+                    ],
+                    "max": 6.0,
+                    "min": 0.0,
+                    "name": "unison",
+                    "stepCount": 6,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.15,
+                    "group": [],
+                    "index": 9,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "spread",
+                    "stepCount": 0,
+                    "unit": "st",
+                    "value": 0.15
+                  },
+                  {
+                    "default": 0.5,
+                    "group": [],
+                    "index": 10,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "width",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.5
+                  },
+                  {
+                    "default": 0.5,
+                    "group": [],
+                    "index": 11,
+                    "labels": null,
+                    "max": 0.95,
+                    "min": 0.05,
+                    "name": "pulse",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.5
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "FM"
+                    ],
+                    "index": 12,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "fm",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [
+                      "FM"
+                    ],
+                    "index": 13,
+                    "labels": [
+                      "×0.5",
+                      "×1",
+                      "×1.4",
+                      "×1.5",
+                      "×2",
+                      "×2.5",
+                      "×2.8",
+                      "×3",
+                      "×3.5",
+                      "×4",
+                      "×5",
+                      "×5.6",
+                      "×6",
+                      "×7",
+                      "×8",
+                      "×12"
+                    ],
+                    "max": 15.0,
+                    "min": 0.0,
+                    "name": "fm_ratio",
+                    "stepCount": 15,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "Voice"
+                    ],
+                    "index": 14,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "sub",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [
+                      "Voice"
+                    ],
+                    "index": 15,
+                    "labels": null,
+                    "max": 8.0,
+                    "min": 1.0,
+                    "name": "sync",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "Voice"
+                    ],
+                    "index": 16,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "drift",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "Performance"
+                    ],
+                    "index": 17,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "velocity",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 2.0,
+                    "group": [
+                      "Performance"
+                    ],
+                    "index": 18,
+                    "labels": [
+                      "off",
+                      "±1",
+                      "±2",
+                      "±3",
+                      "±5",
+                      "±7",
+                      "±12",
+                      "±24",
+                      "±48"
+                    ],
+                    "max": 8.0,
+                    "min": 0.0,
+                    "name": "bend",
+                    "stepCount": 8,
+                    "unit": null,
+                    "value": 2.0
+                  },
+                  {
+                    "default": 0.0,
+                    "group": [
+                      "Voice"
+                    ],
+                    "index": 19,
+                    "labels": [
+                      "off",
+                      "major",
+                      "minor",
+                      "harm minor",
+                      "mel minor",
+                      "dorian",
+                      "phrygian",
+                      "lydian",
+                      "mixolydian",
+                      "locrian",
+                      "maj pent",
+                      "min pent",
+                      "blues",
+                      "whole tone",
+                      "diminished",
+                      "chromatic"
+                    ],
+                    "max": 15.0,
+                    "min": 0.0,
+                    "name": "quantize",
+                    "stepCount": 15,
+                    "unit": null,
+                    "value": 0.0
+                  }
+                ],
+                "pinned": [],
+                "presets": []
+              },
+              "range": null,
+              "route": "out",
+              "solo": false,
+              "transpose": 0,
+              "volume": 1.0
+            },
+            {
+              "id": 6,
+              "kind": "effect",
+              "mix": 1.0,
+              "name": "Drive",
+              "parent": 5,
+              "plugin": {
+                "currentPreset": null,
+                "format": "Built-in",
+                "id": "builtin:drive",
+                "isInstrument": false,
+                "params": [
+                  {
+                    "default": 0.0,
+                    "group": [],
+                    "index": 0,
+                    "labels": [
+                      "soft",
+                      "hard",
+                      "tube",
+                      "fold"
+                    ],
+                    "max": 3.0,
+                    "min": 0.0,
+                    "name": "type",
+                    "stepCount": 3,
+                    "unit": null,
+                    "value": 0.0
+                  },
+                  {
+                    "default": 0.35,
+                    "group": [],
+                    "index": 1,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "drive",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.35
+                  },
+                  {
+                    "default": 1.0,
+                    "group": [],
+                    "index": 2,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "tone",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 1.0
+                  },
+                  {
+                    "default": 0.5,
+                    "group": [],
+                    "index": 3,
+                    "labels": null,
+                    "max": 1.0,
+                    "min": 0.0,
+                    "name": "level",
+                    "stepCount": 0,
+                    "unit": null,
+                    "value": 0.5
+                  }
+                ],
+                "pinned": [],
+                "presets": [
+                  {
+                    "id": "warm",
+                    "name": "Warm"
+                  },
+                  {
+                    "id": "crunch",
+                    "name": "Crunch"
+                  },
+                  {
+                    "id": "fuzz",
+                    "name": "Fuzz"
+                  },
+                  {
+                    "id": "fold",
+                    "name": "Wavefolder"
+                  }
+                ]
+              }
+            },
+            {
+              "id": 4294967295,
+              "kind": "master",
+              "name": "Master",
+              "parent": null
+            }
+          ]
+        },
+        "meta": {
+          "bpm": 120.0,
+          "dirty": false,
+          "file": null,
+          "piano": {
+            "kind": "major",
+            "locked": false,
+            "notes": [
+              0,
+              2,
+              4,
+              5,
+              7,
+              9,
+              11
+            ],
+            "root": 0,
+            "scale": "C major"
+          },
+          "sampleRate": 48000.0
+        },
+        "rev": 0,
+        "telemetry": {
+          "meters": [
+            {
+              "kind": "peak",
+              "node": 4294967295,
+              "port": {
+                "type": "audioIn"
+              },
+              "slot": 0
+            },
+            {
+              "kind": "clips",
+              "node": 4294967295,
+              "port": {
+                "type": "audioIn"
+              },
+              "slot": 1
+            },
+            {
+              "kind": "peak",
+              "node": 0,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 2
+            },
+            {
+              "kind": "clips",
+              "node": 0,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 3
+            },
+            {
+              "kind": "peak",
+              "node": 2,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 4
+            },
+            {
+              "kind": "clips",
+              "node": 2,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 5
+            },
+            {
+              "kind": "peak",
+              "node": 5,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 6
+            },
+            {
+              "kind": "clips",
+              "node": 5,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 7
+            }
+          ],
+          "modulation": [],
           "rev": 1
         }
       }
@@ -46088,6 +48246,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -46729,6 +48888,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -47443,6 +49603,7 @@
               "name": "Pad",
               "pan": 0.0,
               "parent": null,
+              "route": "out",
               "solo": false,
               "volume": 1.0
             },
@@ -47803,6 +49964,7 @@
                 "high": 84,
                 "low": 36
               },
+              "route": "out",
               "solo": false,
               "transpose": 3,
               "volume": 0.5
@@ -48234,6 +50396,7 @@
                 "presets": []
               },
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -48247,6 +50410,7 @@
               "pattern": null,
               "plugin": null,
               "range": null,
+              "route": "out",
               "solo": false,
               "transpose": 0,
               "volume": 1.0
@@ -48720,6 +50884,7 @@
           "name": "Pad",
           "pan": 0.0,
           "parent": null,
+          "route": "out",
           "solo": false,
           "volume": 1.0
         },
@@ -48803,6 +50968,7 @@
           "name": "Group 2",
           "pan": 0.0,
           "parent": null,
+          "route": "out",
           "solo": false,
           "volume": 1.0
         },
@@ -49146,6 +51312,7 @@
             "presets": []
           },
           "range": null,
+          "route": "out",
           "solo": false,
           "transpose": 0,
           "volume": 1.0
@@ -49752,6 +51919,7 @@
             "presets": []
           },
           "range": null,
+          "route": "out",
           "solo": false,
           "transpose": 0,
           "volume": 1.0

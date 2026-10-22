@@ -166,6 +166,8 @@ export interface Shape {
   cables: string[];
   /** The audio cables that have been drawn between two places, a line each (`#id from>to @level`); none at all for a session that has none, as the controller's fixtures write it. */
   sends?: string[];
+  /** The lanes and groups whose way out is cut, a line each (`id none`); none at all when none is, as the controller's fixtures write it. */
+  routes?: string[];
   meters: string[];
   modulation: string[];
 }
@@ -175,17 +177,20 @@ const portKey = (port: Port): string => `${port.type}${"index" in port ? String(
 /**
  * What a session comes to, as the fixtures write it (`shape_of` in `app/testutil.rs`, by the same rules): a line for each node (its id, its
  * parent, its name), each link of the audio path (the node it leaves, the node it goes to, its kind), each cable (its id, the node it leaves
- * and the one it goes to, the port, its depth), each audio cable that has been drawn between two places (its id, the nodes, its level: `sends`, a list only when there are some) and each
+ * and the one it goes to, the port, its depth), each audio cable that has been drawn between two places (its id, the nodes, its level: `sends`, a list only when there are some), each lane
+ * and group whose way out is cut (`routes`, likewise) and each
  * entry of the two lists of the layout of the telemetry (the slot, the node, the port, the kind); the fingerprint of the layout is not part of it.
  */
 export function shapeOf(snapshot: Snapshot): Shape {
   const { nodes, edges } = snapshot.graph;
   const sends = edges.flatMap((e) => (e.kind === "cable" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} @${String(e.gain)}`] : []));
+  const routes = nodes.flatMap((n) => ((n.kind === "instrument" || n.kind === "group") && n.route === "none" ? [`${String(n.id)} none`] : []));
   return {
     nodes: nodes.map((n) => `${String(n.id)} ${n.parent === null ? "-" : String(n.parent)} ${n.name}`),
     audio: edges.flatMap((e) => (isLink(e) ? [`${String(e.from.node)}>${String(e.to.node)} ${e.kind}`] : [])),
     cables: edges.flatMap((e) => (e.kind === "modulation" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} ${portKey(e.to.port)} @${String(e.amount)}`] : [])),
     ...(sends.length > 0 ? { sends } : {}),
+    ...(routes.length > 0 ? { routes } : {}),
     meters: snapshot.telemetry.meters.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
     modulation: snapshot.telemetry.modulation.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
   };

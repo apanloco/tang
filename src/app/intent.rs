@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::graph::{Endpoint, NoteRange, PatternInfo};
 use crate::app::model::{EdgeId, MAX_FADE, ModSourceSlot, NodeId, SYNC_DIVISIONS};
 use crate::plugin::chain::{MAX_STEPS, MidiBindSource};
-use crate::session::NodeUi;
+use crate::session::{NodeUi, Route};
 
 /// What a front-end asks of the controller, naming the node it concerns.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -121,6 +121,12 @@ pub enum Intent {
     /// lane is in (its bus is heard for it) and every member of a soloed group. Saved with the session (`solo = true`). Refused, with nothing changed, for a node
     /// that is neither a lane nor a group.
     SetSolo { node: NodeId, solo: bool },
+    /// Cut or give back the way out of a lane or a group (the page's choice on the node; P3c-2 of `docs/patch-graph.md` §11.6): `node` is the node of the lane (its instrument's,
+    /// which an empty lane has too) or of the group. A lane's end goes to the bus of its group or to the mix (`out`, which every lane and group has to begin with) or, cut (`none`),
+    /// nowhere but the audio cables that start at it, so that an oscillator that is sent to a reverb can be heard only through it; a group's end goes to the mix, or is cut the same
+    /// way. The wiring changes at once, as a lane's group does, and the intent is told as a snapshot (the links of the graph change). Saved with the session (`route = "none"`). Refused,
+    /// with nothing changed, for a node that is neither a lane nor a group, and for a way out that is given back where the audio would go round, by the cables there are.
+    SetRoute { node: NodeId, route: Route },
     /// Set the scale of the piano (the Piano tab's): `scale` is a root and a kind of scale as the session file
     /// says it, `C major` or `F# dorian`, where the root may be a sharp or a flat, and the name of the kind
     /// short or long, in any case. The piano colours the notes of the scale, and drops the others when it is
@@ -762,6 +768,8 @@ mod tests {
             (Intent::SetRange { node: NodeId(2), range: None }, json!({"type": "setRange", "node": 2, "range": null})),
             (Intent::SetMute { node: NodeId(2), muted: true }, json!({"type": "setMute", "node": 2, "muted": true})),
             (Intent::SetSolo { node: NodeId(4), solo: false }, json!({"type": "setSolo", "node": 4, "solo": false})),
+            (Intent::SetRoute { node: NodeId(4), route: Route::None }, json!({"type": "setRoute", "node": 4, "route": "none"})),
+            (Intent::SetRoute { node: NodeId(2), route: Route::Out }, json!({"type": "setRoute", "node": 2, "route": "out"})),
             (Intent::SetScale { scale: "F# dorian".to_string() }, json!({"type": "setScale", "scale": "F# dorian"})),
             (Intent::SetLocked { locked: true }, json!({"type": "setLocked", "locked": true})),
             (Intent::SetBpm { bpm: 96.5 }, json!({"type": "setBpm", "bpm": 96.5})),

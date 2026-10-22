@@ -2760,6 +2760,7 @@
           "name": "Group 1",
           "pan": 0.0,
           "parent": null,
+          "route": "out",
           "solo": false,
           "volume": 1.0
         },
@@ -2797,6 +2798,7 @@
           "name": "Group 2",
           "pan": 0.0,
           "parent": null,
+          "route": "out",
           "solo": false,
           "volume": 1.0
         },
@@ -2821,6 +2823,7 @@
           "name": "Lead",
           "pan": 0.0,
           "parent": null,
+          "route": "out",
           "solo": false,
           "volume": 1.0
         },
@@ -3167,6 +3170,7 @@
             "high": 59,
             "low": 12
           },
+          "route": "out",
           "solo": false,
           "transpose": 0,
           "volume": 0.5
@@ -3525,6 +3529,7 @@
             "presets": []
           },
           "range": null,
+          "route": "out",
           "solo": false,
           "transpose": 7,
           "volume": 0.6
@@ -3970,6 +3975,7 @@
             "presets": []
           },
           "range": null,
+          "route": "out",
           "solo": false,
           "transpose": 0,
           "volume": 0.7
@@ -4314,6 +4320,7 @@
             "presets": []
           },
           "range": null,
+          "route": "out",
           "solo": false,
           "transpose": 0,
           "volume": 0.8

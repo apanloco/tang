@@ -14,7 +14,7 @@
 use crate::app::intent::{Intent, IntentError, ModulatorField};
 use crate::plugin;
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo, CrossModField, GroupWiring, LaneWiring, ModTargetKind, ModulatorLocation, group_target_member_mut, member_moves};
-use crate::session::NodeUi;
+use crate::session::{NodeUi, Route};
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -200,9 +200,9 @@ impl SessionModel {
         (
             self.instruments
                 .iter()
-                .map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effects.iter().map(|effect| effect.node).collect() })
+                .map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effects.iter().map(|effect| effect.node).collect(), route: lane.route })
                 .collect(),
-            self.groups.iter().map(|group| GroupWiring { node: group.node, effects: group.effects.iter().map(|effect| effect.node).collect() }).collect(),
+            self.groups.iter().map(|group| GroupWiring { node: group.node, effects: group.effects.iter().map(|effect| effect.node).collect(), route: group.route }).collect(),
         )
     }
 
@@ -220,6 +220,18 @@ impl SessionModel {
     pub fn loop_if_lane_goes_to(&self, inst: usize, group: Option<usize>) -> Option<String> {
         let (mut lanes, groups) = self.wiring();
         lanes.get_mut(inst)?.group = group.filter(|group| *group < groups.len());
+        self.wiring_loop(&lanes, &groups)
+    }
+
+    /// Why the audio would go round if the lane or the group at `node` had the way out `route`, with the cables there are: the reason, or None if it would not (or if `node` is
+    /// neither). Nothing is changed. Only a way out that is `Out` can close a loop: a link that is not there is on no path.
+    pub fn loop_if_route_is(&self, node: NodePath, route: Route) -> Option<String> {
+        let (mut lanes, mut groups) = self.wiring();
+        match node {
+            NodePath::Instrument(inst) => lanes.get_mut(inst)?.route = route,
+            NodePath::Group(group) => groups.get_mut(group)?.route = route,
+            _ => return None,
+        }
         self.wiring_loop(&lanes, &groups)
     }
 
@@ -1256,6 +1268,8 @@ pub struct InstrumentNode {
     pub muted: bool,
     /// Soloed: while anything is, only what is soloed is heard (and the group a soloed lane is in).
     pub solo: bool,
+    /// Where the lane's end goes: to the bus of its group or to the mix (`Route::Out`), or nowhere but its audio cables (`Route::None`).
+    pub route: Route,
     pub instrument: Option<PluginSlot>,
     pub effects: Vec<PluginSlot>,
     /// Lane-scoped modulators. Each target addresses a plugin in this chain by
@@ -1303,6 +1317,8 @@ pub struct GroupNode {
     pub muted: bool,
     /// Soloed: while anything is, only what is soloed is heard, and every member of this group.
     pub solo: bool,
+    /// Where the group's end goes: to the mix (`Route::Out`), or nowhere but its audio cables (`Route::None`).
+    pub route: Route,
     pub effects: Vec<PluginSlot>,
     /// Group-scoped modulators. Each target addresses a member instrument
     /// (`GroupMember`), a bus effect (`GroupBus`), or a sibling group modulator.
@@ -4975,6 +4991,7 @@ depth = 0.5
             volume: 1.0,
             muted: false,
             solo: false,
+            route: Route::Out,
             instrument: None,
             effects: vec![],
             modulators: vec![],

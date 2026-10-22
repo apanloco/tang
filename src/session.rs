@@ -12,6 +12,34 @@ pub struct RemapTarget {
     pub detune: f64,
 }
 
+/// The way out of a lane or a group (P3c-2 of `docs/patch-graph.md` §11.6): where what it makes goes when it has been through its chain. `Out` is the way a lane and a group are
+/// wired by themselves: a lane's to the bus of its group or, with no group, to the mix, and a group's to the mix. `None` cuts it, so that a lane is heard only through the audio
+/// cables that start at it (`[[cable]]`: its instrument's, or those of its effects), and a group only through its own. In the file it is `route = "none"` on the table of the lane or
+/// the group, and `out`, which is what it is without, is not written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "lowercase")]
+pub enum Route {
+    #[default]
+    Out,
+    None,
+}
+
+impl Route {
+    /// The word that the file and the page use for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Route::Out => "out",
+            Route::None => "none",
+        }
+    }
+
+    /// The route that a word names, exactly as `name` writes it.
+    pub fn parse(text: &str) -> Option<Route> {
+        [Route::Out, Route::None].into_iter().find(|route| route.name() == text)
+    }
+}
+
 /// Where a front-end draws a node, in the pixels of its canvas. The engine and the TUI do not use it, and it is kept when
 /// a session is saved: `ui = { x = 80, y = 120 }` on the node's table, the master's in a top-level `[ui]` table.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -118,6 +146,8 @@ pub struct GroupConfig {
     pub muted: bool,
     /// Soloed (`solo = true`): while anything is soloed, only what is soloed is heard.
     pub solo: bool,
+    /// Where the bus goes (`route = "none"`: nowhere but its own cables).
+    pub route: Route,
     pub effects: Vec<EffectConfig>,
     /// Group-scoped modulators. Their targets address member instruments
     /// (`member` + optional `slot`), bus effects (`bus`), or sibling
@@ -214,6 +244,8 @@ pub struct InstrumentSlotConfig {
     pub muted: bool,
     /// Soloed (`solo = true`): while anything is soloed, only what is soloed is heard.
     pub solo: bool,
+    /// Where the lane goes (`route = "none"`: nowhere but its own cables).
+    pub route: Route,
     pub instrument: Option<PluginConfig>,
     pub effects: Vec<EffectConfig>,
     /// The lane's modulators (their targets carry the chain slot they land on). They belong to the lane, not
@@ -435,6 +467,8 @@ struct GroupRaw {
     mute: bool,
     #[serde(default)]
     solo: bool,
+    #[serde(default)]
+    route: Option<String>,
     #[serde(default, rename = "effect")]
     effects: Vec<EffectConfig>,
     #[serde(default, rename = "modulator")]
@@ -472,6 +506,8 @@ struct InstrumentSlotRaw {
     mute: bool,
     #[serde(default)]
     solo: bool,
+    #[serde(default)]
+    route: Option<String>,
     #[serde(default, rename = "effect")]
     effects: Vec<EffectConfig>,
     #[serde(default)]
@@ -636,6 +672,15 @@ fn each_rack(raw: &SessionRaw, check: fn(&[ModulatorConfig], &str) -> anyhow::Re
     Ok(())
 }
 
+/// The route that a table's `route` says (`out` for a table that has none), or the reason it is not one, with the place of the table: a lane that goes nowhere is silent, so a word
+/// that is not a route is not read as the way a lane goes by itself, and the session is not loaded.
+fn route_of(word: Option<String>, place: &str) -> anyhow::Result<Route> {
+    match word {
+        None => Ok(Route::Out),
+        Some(word) => Route::parse(&word).ok_or_else(|| anyhow::anyhow!("{place}.route is \"{word}\": a way out is \"out\" or \"none\"")),
+    }
+}
+
 /// Parse session TOML text (the body of `load`, usable without a file).
 pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
     reject_non_finite(&content.parse::<toml::Table>()?)?;
@@ -645,19 +690,24 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
     let groups: Vec<GroupConfig> = raw
         .groups
         .into_iter()
-        .map(|g| GroupConfig {
-            name: g.name,
-            volume: g.volume as f32,
-            pan: (g.pan as f32).clamp(-1.0, 1.0),
-            muted: g.mute,
-            solo: g.solo,
-            effects: g.effects,
-            modulators: g.modulators,
-            ui: g.ui,
+        .enumerate()
+        .map(|(at, g)| {
+            Ok(GroupConfig {
+                name: g.name,
+                volume: g.volume as f32,
+                pan: (g.pan as f32).clamp(-1.0, 1.0),
+                muted: g.mute,
+                solo: g.solo,
+                route: route_of(g.route, &format!("group[{at}]"))?,
+                effects: g.effects,
+                modulators: g.modulators,
+                ui: g.ui,
+            })
         })
-        .collect();
+        .collect::<anyhow::Result<_>>()?;
     let mut instruments = Vec::new();
-    for slot in raw.instruments {
+    for (at, slot) in raw.instruments.into_iter().enumerate() {
+        let route = route_of(slot.route, &format!("instrument[{at}]"))?;
         let range = slot.range.as_deref().map(parse_range).transpose()?;
         let pattern = slot.pattern.map(parse_pattern_raw).transpose()?;
         let instrument = slot.plugin.map(|plugin| PluginConfig {
@@ -676,6 +726,7 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
             transpose: slot.transpose,
             muted: slot.mute,
             solo: slot.solo,
+            route,
             instrument,
             effects: slot.effects,
             modulators: slot.modulators,
@@ -905,6 +956,7 @@ pub struct SaveInstrumentSlot {
     pub transpose: i8,
     pub muted: bool,
     pub solo: bool,
+    pub route: Route,
     /// Lane-scoped modulators (targets carry their chain slot).
     pub modulators: Vec<SaveModulator>,
     pub instrument: Option<SaveInstrument>,
@@ -923,6 +975,7 @@ pub struct SaveGroup {
     pub pan: f32,
     pub muted: bool,
     pub solo: bool,
+    pub route: Route,
     pub effects: Vec<SaveEffect>,
     /// Group-scoped modulators (targets address members / bus effects).
     pub modulators: Vec<SaveModulator>,
@@ -1075,12 +1128,19 @@ struct GroupOut {
     mute: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     solo: bool,
+    /// Only written when it is `none`.
+    #[serde(skip_serializing_if = "is_out")]
+    route: Route,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "effect")]
     effects: Vec<EffectOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
     modulators: Vec<ModulatorOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ui: Option<NodeUiOut>,
+}
+
+fn is_out(route: &Route) -> bool {
+    *route == Route::Out
 }
 
 fn is_default_volume_f32(v: &f32) -> bool {
@@ -1145,6 +1205,9 @@ struct InstrumentSlotOut {
     mute: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     solo: bool,
+    /// Only written when it is `none`.
+    #[serde(skip_serializing_if = "is_out")]
+    route: Route,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "effect")]
     effects: Vec<EffectOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1473,6 +1536,7 @@ pub fn to_toml(
                 pan: g.pan,
                 mute: g.muted,
                 solo: g.solo,
+                route: g.route,
                 effects: g.effects.iter().map(effect_to_out).collect(),
                 modulators: mods_to_out(&g.modulators),
                 ui: g.ui.map(NodeUiOut::from),
@@ -1527,6 +1591,7 @@ pub fn to_toml(
                     group: slot.group,
                     mute: slot.muted,
                     solo: slot.solo,
+                    route: slot.route,
                     effects: slot.effects.iter().map(effect_to_out).collect(),
                     pattern: slot.pattern.as_ref().map(|p| {
                         PatternOut {
@@ -2128,7 +2193,7 @@ mod tests {
     #[test]
     fn mute_and_solo_are_written_by_to_toml_only_when_on() {
         let lane = |muted: bool, solo: bool| SaveInstrumentSlot { muted, solo, ..placed_lane(None) };
-        let group = |muted: bool, solo: bool| SaveGroup { name: None, volume: 1.0, pan: 0.0, muted, solo, effects: vec![], modulators: vec![], ui: None };
+        let group = |muted: bool, solo: bool| SaveGroup { name: None, volume: 1.0, pan: 0.0, muted, solo, effects: vec![], modulators: vec![], ui: None, route: Route::Out };
         let text = to_toml(&[lane(true, false), lane(false, true), lane(true, true), lane(false, false)], &[group(true, false), group(false, true), group(false, false)], &[], None, None, None).unwrap();
         let config = parse(&text).unwrap();
         assert_eq!(config.instruments.iter().map(|l| (l.muted, l.solo)).collect::<Vec<_>>(), [(true, false), (false, true), (true, true), (false, false)]);
@@ -2136,6 +2201,52 @@ mod tests {
         assert_eq!(text.matches("mute = true").count(), 3, "{text}");
         assert_eq!(text.matches("solo = true").count(), 3, "{text}");
         assert!(!text.contains("false"), "nothing that is off is written: {text}");
+    }
+
+    #[test]
+    fn a_route_is_read_from_a_lane_and_a_group_and_is_out_when_a_file_has_none() {
+        let config = parse(
+            "[[group]]\nroute = \"none\"\n[[group]]\nroute = \"out\"\n[[group]]\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\nroute = \"none\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\nroute = \"out\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.instruments.iter().map(|lane| lane.route).collect::<Vec<_>>(), [Route::None, Route::Out, Route::Out]);
+        assert_eq!(config.groups.iter().map(|group| group.route).collect::<Vec<_>>(), [Route::None, Route::Out, Route::Out]);
+    }
+
+    #[test]
+    fn a_route_that_is_not_one_refuses_the_session_and_says_where() {
+        // (A lane that goes nowhere is silent, so a word that is nearly "none" is not read as "out": the session is not loaded.)
+        for (text, place) in [
+            ("[[instrument]]\nplugin = \"builtin:osc\"\nroute = \"nowhere\"\n", "instrument[0].route"),
+            ("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument]]\nplugin = \"builtin:osc\"\nroute = \"None\"\n", "instrument[1].route"),
+            ("[[group]]\n[[group]]\nroute = \"mix\"\n[[instrument]]\nplugin = \"builtin:osc\"\n", "group[1].route"),
+        ] {
+            let error = parse(text).err().unwrap_or_else(|| panic!("{text} loads")).to_string();
+            assert!(error.contains(place) && error.contains("\"out\" or \"none\""), "{error}");
+        }
+        // A route that is not a word at all is the parser's to refuse.
+        assert!(parse("[[instrument]]\nplugin = \"builtin:osc\"\nroute = true\n").is_err());
+    }
+
+    #[test]
+    fn a_route_is_written_by_to_toml_only_when_it_is_none() {
+        let lane = |route: Route| SaveInstrumentSlot { route, ..placed_lane(None) };
+        let group = |route: Route| SaveGroup { name: None, volume: 1.0, pan: 0.0, muted: false, solo: false, route, effects: vec![], modulators: vec![], ui: None };
+        let text = to_toml(&[lane(Route::None), lane(Route::Out)], &[group(Route::Out), group(Route::None)], &[], None, None, None).unwrap();
+        let config = parse(&text).unwrap();
+        assert_eq!(config.instruments.iter().map(|l| l.route).collect::<Vec<_>>(), [Route::None, Route::Out]);
+        assert_eq!(config.groups.iter().map(|g| g.route).collect::<Vec<_>>(), [Route::Out, Route::None]);
+        assert_eq!(text.matches("route = \"none\"").count(), 2, "{text}");
+        assert_eq!(text.matches("route").count(), 2, "nothing that is the way it always was is written: {text}");
+    }
+
+    #[test]
+    fn a_route_is_named_as_the_file_names_it() {
+        assert_eq!((Route::Out.name(), Route::None.name()), ("out", "none"));
+        assert_eq!((Route::parse("out"), Route::parse("none"), Route::parse("None"), Route::parse("")), (Some(Route::Out), Some(Route::None), None, None));
     }
 
     #[test]
@@ -2263,6 +2374,7 @@ range = "C4-C8"
                 }],
                 pattern: None,
                 ui: None,
+                route: Route::Out,
             },
             SaveInstrumentSlot {
                 muted: false,
@@ -2283,6 +2395,7 @@ range = "C4-C8"
                 effects: vec![],
                 pattern: None,
                 ui: None,
+                route: Route::Out,
             },
         ];
 
@@ -2331,6 +2444,7 @@ range = "C4-C8"
             }],
             pattern: None,
             ui: None,
+            route: Route::Out,
         }];
 
         save(&path, &instruments, &[], &[], None, None, None).unwrap();
@@ -2383,6 +2497,7 @@ range = "C4-C8"
             effects: vec![],
             pattern: None,
             ui: None,
+            route: Route::Out,
         }];
 
         save(&path, &instruments, &[], &[], None, None, None).unwrap();
@@ -2436,6 +2551,7 @@ range = "C4-C8"
             effects: vec![],
             pattern: None,
             ui: None,
+            route: Route::Out,
         }];
 
         save(&path, &instruments, &[], &[], None, None, None).unwrap();
@@ -2489,6 +2605,7 @@ range = "C4-C8"
             effects: vec![],
             pattern: None,
             ui: None,
+            route: Route::Out,
         }];
 
         save(&path, &instruments, &[], &[], None, None, None).unwrap();
@@ -2532,6 +2649,7 @@ range = "C4-C8"
             effects: vec![],
             pattern: None,
             ui: None,
+            route: Route::Out,
         }];
 
         save(&path, &instruments, &[], &[], None, None, None).unwrap();
@@ -2588,6 +2706,7 @@ range = "C4-C8"
             }],
             pattern: None,
             ui: None,
+            route: Route::Out,
         }];
         save(&path, &instruments, &[], &[], None, None, None).unwrap();
 
@@ -2627,6 +2746,7 @@ range = "C4-C8"
             effects: vec![],
             pattern: None,
             ui: None,
+            route: Route::Out,
         };
         let instruments = vec![member(Some(0)), member(Some(0)), member(None)];
         let groups = vec![SaveGroup {
@@ -2645,6 +2765,7 @@ range = "C4-C8"
             }],
             modulators: vec![],
             ui: None,
+            route: Route::Out,
         }];
         save(&path, &instruments, &groups, &[], None, None, None).unwrap();
 
@@ -2691,6 +2812,7 @@ range = "C4-C8"
             effects: vec![],
             pattern: None,
             ui: None,
+            route: Route::Out,
         };
         let groups = vec![SaveGroup {
             muted: false,
@@ -2736,6 +2858,7 @@ range = "C4-C8"
                 ui: None,
             }],
             ui: None,
+            route: Route::Out,
         }];
         save(&path, &[member], &groups, &[], None, None, None).unwrap();
 
@@ -2798,6 +2921,7 @@ range = "C4-C8"
             effects: vec![],
             pattern: None,
             ui: None,
+            route: Route::Out,
         }];
 
         save(&path, &instruments, &[], &[], None, None, None).unwrap();
@@ -2907,6 +3031,7 @@ plugin = "builtin:osc"
             effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:filter".into(), mix: 1.0, preset: None, params: vec![], ui }],
             pattern: None,
             ui,
+            route: Route::Out,
         }
     }
 
@@ -2922,6 +3047,7 @@ plugin = "builtin:osc"
             effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:reverb".into(), mix: 1.0, preset: None, params: vec![], ui: at(1100.0, 40.0) }],
             modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: at(800.0, -120.5) }],
             ui: at(800.0, 40.0),
+            route: Route::Out,
         };
         let text = to_toml(&[placed_lane(at(80.0, 120.0))], &[group], &[], None, at(1200.0, 300.0), None).unwrap();
         // Whole numbers are written without a point, and it is one line for a node, in the table of the node.
@@ -2990,6 +3116,7 @@ plugin = "builtin:osc"
             effects: vec![SaveEffect { pinned: vec!["mix".into(), "width".into()], ..bare_effect("builtin:reverb") }],
             modulators: vec![],
             ui: None,
+            route: Route::Out,
         };
         let text = to_toml(&[lane], &[group], &[], None, None, None).unwrap();
         for line in [r#"pinned = ["sustain", "detune"]"#, r#"pinned = ["cutoff"]"#, r#"pinned = ["mix", "width"]"#] {
@@ -3065,6 +3192,7 @@ plugin = "builtin:osc"
             effects: vec![],
             pattern: None,
             ui: None,
+            route: Route::Out,
         }];
         let piano = PianoConfig { scale: Some("F# dorian".into()), locked: false };
         save(&path, &instruments, &[], &[], Some(&piano), None, None).unwrap();
@@ -3094,6 +3222,7 @@ plugin = "builtin:osc"
             effects: vec![],
             pattern: None,
             ui: None,
+            route: Route::Out,
         };
         save(&path, &[lane], &[], &[], None, None, None).unwrap();
         assert_eq!(load(path.to_str().unwrap()).unwrap().instruments.len(), 1);
@@ -3120,6 +3249,7 @@ plugin = "builtin:osc"
             effects: vec![],
             pattern: None,
             ui: None,
+            route: Route::Out,
         }]
     }
 
@@ -3201,6 +3331,7 @@ plugin = "builtin:osc"
                 effects: vec![],
                 pattern: None,
                 ui: None,
+                route: Route::Out,
             }]
         };
 
@@ -3314,7 +3445,7 @@ plugin = "builtin:osc"
             cable(CablePlace::BusEffect { group: 0, effect: 0 }, CablePlace::Master, 0.3),
             cable(CablePlace::Group(0), CablePlace::Group(1), 2.0),
         ];
-        let bus = SaveGroup { name: None, volume: 1.0, pan: 0.0, muted: false, solo: false, effects: vec![], modulators: vec![], ui: None };
+        let bus = SaveGroup { name: None, volume: 1.0, pan: 0.0, muted: false, solo: false, effects: vec![], modulators: vec![], ui: None, route: Route::Out };
         let text = to_toml(&one_lane(), &[bus], &cables, None, None, None).unwrap();
         assert!(text.contains("[[cable]]\nfrom = \"instrument[0]\"\nto = \"instrument[0].effect[1]\"\n\n"), "no level of one: {text}");
         assert!(text.contains("[[cable]]\nfrom = \"group[0].effect[0]\"\nto = \"master\"\ngain = 0.3\n"), "a level as it was typed: {text}");
@@ -3367,6 +3498,7 @@ plugin = "builtin:osc"
                 in_key: true,
             }),
             ui: None,
+            route: Route::Out,
         }];
         save(&path, &instruments, &[], &[], None, None, None).unwrap();
 

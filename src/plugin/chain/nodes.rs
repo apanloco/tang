@@ -376,6 +376,7 @@ const FROM_GROUP: u64 = 8 << 32;
 const TO_EFFECT: u64 = 9 << 32;
 const TO_BUS: u64 = 10 << 32;
 const TO_MASTER: u64 = 11 << 32;
+const CUT: u64 = 12 << 32;
 const NO_GROUP: u64 = u32::MAX as u64;
 
 impl Shape {
@@ -392,10 +393,16 @@ impl Shape {
         for lane in lanes {
             self.list.push(LANE | u64::from(lane.node.0));
             self.list.push(GROUP_OF | lane.group.and_then(|g| groups.get(g)).map_or(NO_GROUP, |group| u64::from(group.node.0)));
+            if lane.route == Route::None {
+                self.list.push(CUT);
+            }
             self.list.extend(lane.effect_nodes.iter().map(|effect| EFFECT | u64::from(effect.0)));
         }
         for group in groups {
             self.list.push(GROUP | u64::from(group.node.0));
+            if group.route == Route::None {
+                self.list.push(CUT);
+            }
             self.list.extend(group.effect_nodes.iter().map(|effect| EFFECT | u64::from(effect.0)));
         }
         for cable in cables {
@@ -443,6 +450,8 @@ pub(crate) struct LaneWiring {
     pub node: NodeId,
     pub group: Option<usize>,
     pub effects: Vec<NodeId>,
+    /// Whether the lane's end goes anywhere: to the bus of its group, or to the mix (`Route::Out`), or nowhere but its cables (`Route::None`).
+    pub route: Route,
 }
 
 /// What the plan needs to know of a group: its id and the ids of its bus effects.
@@ -450,13 +459,15 @@ pub(crate) struct LaneWiring {
 pub(crate) struct GroupWiring {
     pub node: NodeId,
     pub effects: Vec<NodeId>,
+    /// Whether the group's end goes to the mix (`Route::Out`) or nowhere but its cables (`Route::None`).
+    pub route: Route,
 }
 
 /// The wiring of the lanes and the groups as the engine has them.
 fn wiring_of(lanes: &[InstrumentLane], groups: &[Group]) -> (Vec<LaneWiring>, Vec<GroupWiring>) {
     (
-        lanes.iter().map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effect_nodes.clone() }).collect(),
-        groups.iter().map(|group| GroupWiring { node: group.node, effects: group.effect_nodes.clone() }).collect(),
+        lanes.iter().map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effect_nodes.clone(), route: lane.route }).collect(),
+        groups.iter().map(|group| GroupWiring { node: group.node, effects: group.effect_nodes.clone(), route: group.route }).collect(),
     )
 }
 
@@ -535,8 +546,11 @@ fn build_patch(patch: &mut Patch<Stage>, lanes: &[LaneWiring], groups: &[GroupWi
             from = Stage::Fx(*effect);
         }
         patch.connect(Port::new(from, 0), Port::new(Stage::Tail(lane.node), 0));
-        let to = lane.group.and_then(|g| groups.get(g)).map_or(Stage::Master, |group| Stage::Head(group.node));
-        patch.connect(Port::new(Stage::Tail(lane.node), 0), Port::new(to, 0));
+        // (A lane whose way out is cut has no link out of its tail: what it makes goes to its cables, from the nodes that they start at, and nowhere else.)
+        if lane.route == Route::Out {
+            let to = lane.group.and_then(|g| groups.get(g)).map_or(Stage::Master, |group| Stage::Head(group.node));
+            patch.connect(Port::new(Stage::Tail(lane.node), 0), Port::new(to, 0));
+        }
     }
     for group in groups {
         let mut from = Stage::Head(group.node);
@@ -545,7 +559,9 @@ fn build_patch(patch: &mut Patch<Stage>, lanes: &[LaneWiring], groups: &[GroupWi
             from = Stage::Fx(*effect);
         }
         patch.connect(Port::new(from, 0), Port::new(Stage::Tail(group.node), 0));
-        patch.connect(Port::new(Stage::Tail(group.node), 0), Port::new(Stage::Master, 0));
+        if group.route == Route::Out {
+            patch.connect(Port::new(Stage::Tail(group.node), 0), Port::new(Stage::Master, 0));
+        }
     }
     let cables = cables.filter_map(|(id, from, to)| {
         let rank = start_rank(from, lanes, groups).filter(|_| end_exists(to, lanes, groups))?;
@@ -699,6 +715,13 @@ impl Schedule {
                 debug_assert!(false, "the plan of the lanes and groups does not compile: {error}");
             }
         }
+    }
+
+    /// Why the audio would go round in the wiring of `lanes` and `groups` as they are, with the cables there are: what a way out that is given back is checked by, after it is
+    /// set (the cables were drawn into a wiring that had its way out cut, and the link that is made again may close a loop with them). None if it goes one way through it.
+    pub(super) fn route_problem(&self, lanes: &[InstrumentLane], groups: &[Group], channels: usize) -> Option<String> {
+        let (lane_wiring, group_wiring) = wiring_of(lanes, groups);
+        wiring_loop(&lane_wiring, &group_wiring, self.cables.iter().map(|cable| (cable.id, cable.from, cable.to)), channels)
     }
 
     /// Draw a cable (see `GraphCommand::AddCable`): it is put among the cables by its id, so that the plan is the same whatever the order the cables were drawn in, if both its
@@ -1138,6 +1161,75 @@ mod tests {
         lanes[1].group = Some(0);
         schedule.refresh(&lanes, &groups, 2, 64);
         assert_eq!(feeds(&schedule, &lanes, &groups), pairs(&[("lane 0 tail", "mix"), ("lane 1 tail", "group 0 head"), ("group 0 tail", "mix")]));
+    }
+
+    #[test]
+    fn a_lane_or_a_group_whose_way_out_is_cut_feeds_nothing_and_the_others_feed_as_they_did() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (lanes(4), groups(2));
+        lanes[1].group = Some(0);
+        lanes[2].group = Some(1);
+        lanes[3].group = Some(1);
+        lanes[0].route = Route::None; // would feed the mix
+        lanes[1].route = Route::None; // would feed group 0
+        groups[1].route = Route::None; // would feed the mix
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(feeds(&schedule, &lanes, &groups), pairs(&[("lane 2 tail", "group 1 head"), ("lane 3 tail", "group 1 head"), ("group 0 tail", "mix")]));
+        // The nodes are all there: the tail of a lane that goes nowhere still runs (it is measured, and it is what its mute is made at).
+        let order = order(&schedule, &lanes, &groups);
+        for node in ["lane 0 tail", "lane 1 tail", "group 1 tail"] {
+            assert!(order.iter().any(|name| name == node), "{node} is in {order:?}");
+        }
+        // Given back, they feed as they did.
+        lanes[0].route = Route::Out;
+        lanes[1].route = Route::Out;
+        groups[1].route = Route::Out;
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(
+            feeds(&schedule, &lanes, &groups),
+            pairs(&[("lane 0 tail", "mix"), ("lane 1 tail", "group 0 head"), ("lane 2 tail", "group 1 head"), ("lane 3 tail", "group 1 head"), ("group 0 tail", "mix"), ("group 1 tail", "mix")])
+        );
+    }
+
+    #[test]
+    fn the_plan_is_made_again_when_a_way_out_is_cut_or_given_back_and_not_when_it_is_set_to_what_it_is() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (lanes(2), groups(1));
+        schedule.refresh(&lanes, &groups, 2, 64);
+        let made = schedule.compiles;
+        lanes[0].route = Route::Out;
+        groups[0].route = Route::Out;
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made, "the way out that it has");
+        lanes[0].route = Route::None;
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 1, "a lane's way out that is cut");
+        lanes[0].route = Route::None;
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 1, "cut again");
+        groups[0].route = Route::None;
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 2, "a group's");
+        lanes[0].route = Route::Out;
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 3, "given back");
+    }
+
+    #[test]
+    fn what_a_lane_that_has_its_way_out_cut_would_have_closed_a_loop_with_is_not_one() {
+        // A group's output sent to an effect of a lane that is in the group is a loop (the lane feeds the group, which feeds the lane); with the lane's way out cut it is not.
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (lanes(1), groups(1));
+        with_effects(&mut lanes[0], 1);
+        lanes[0].group = Some(0);
+        let (group, fx) = (groups[0].node, lanes[0].effect_nodes[0]);
+        draw(&mut schedule, 1, CableFrom::Group(group), CableTo::Effect(fx), &lanes, &groups);
+        assert!(schedule.cable_ids().is_empty(), "the loop is not drawn");
+        lanes[0].route = Route::None;
+        draw(&mut schedule, 1, CableFrom::Group(group), CableTo::Effect(fx), &lanes, &groups);
+        assert_eq!(schedule.cable_ids(), [EdgeId(1)], "no loop: the lane does not feed the group");
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(order(&schedule, &lanes, &groups), ["lane 0 head", "group 0 head", "group 0 tail", "cable 1", "lane 0 fx 0", "lane 0 tail", "mix"]);
     }
 
     #[test]

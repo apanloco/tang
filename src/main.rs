@@ -272,6 +272,7 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
             transpose: 0,
             muted: false,
             solo: false,
+            route: session::Route::Out,
             instrument: Some(session::PluginConfig {
                 plugin: "builtin:osc".into(),
                 preset: None,

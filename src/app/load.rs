@@ -18,7 +18,7 @@ use crate::app::model::{
     sync_name, tempo_of_patterns,
 };
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo, GraphCommand, ModulatorLocation};
-use crate::session::NodeUi;
+use crate::session::{NodeUi, Route};
 use crate::telemetry::SlotAllocator;
 use crate::{plugin, session};
 
@@ -231,6 +231,10 @@ pub fn load_session(
         if group_config.solo {
             send(cmd_tx, GraphCommand::SetGroupSolo { group: g_idx, solo: true })?;
         }
+        // (The cables come last, so a way out that is cut is cut before one that needs it so is drawn.)
+        if group_config.route == Route::None {
+            send(cmd_tx, GraphCommand::SetGroupRoute { group: g_idx, route: Route::None })?;
+        }
         let mut group_effects: Vec<PluginSlot> = Vec::new();
         let mut group_bus_params = Vec::new();
         for (fx_idx, effect_config) in group_config.effects.iter().enumerate() {
@@ -288,6 +292,7 @@ pub fn load_session(
             pan: group_config.pan,
             muted: group_config.muted,
             solo: group_config.solo,
+            route: group_config.route,
             effects: group_effects,
             // Group modulators are loaded after the instruments, once member
             // chains are known (so member-target param names resolve).
@@ -504,6 +509,9 @@ pub fn load_session(
         if inst_config.solo {
             send(cmd_tx, GraphCommand::SetSolo { inst: inst_idx, solo: true })?;
         }
+        if inst_config.route == Route::None {
+            send(cmd_tx, GraphCommand::SetLaneRoute { inst: inst_idx, route: Route::None })?;
+        }
 
         // Apply instrument transpose.
         if inst_config.transpose != 0 {
@@ -579,6 +587,7 @@ pub fn load_session(
             volume,
             muted: inst_config.muted,
             solo: inst_config.solo,
+            route: inst_config.route,
             instrument: instrument_slot,
             effects,
             modulators,
@@ -1967,6 +1976,43 @@ depth = 0.2
         let Err(error) = try_load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = nan\n") else { panic!("a value that is not a number is refused") };
         let error = format!("{error:#}");
         assert!(error.contains("instrument[0].modulator[0].value") && error.contains("is not a finite number"), "{error}");
+    }
+
+    #[test]
+    fn a_lane_and_a_group_whose_way_out_a_file_cuts_are_so_in_the_model_and_the_engine_and_the_others_are_not() {
+        let run = load(
+            "[[group]]\nroute = \"none\"\n[[group]]\n[[group]]\nroute = \"out\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\nroute = \"none\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\nroute = \"none\"\n",
+        );
+        let lanes: Vec<Route> = run.model.instruments.iter().map(|lane| lane.route).collect();
+        assert_eq!(lanes, [Route::None, Route::Out, Route::None]);
+        let groups: Vec<Route> = run.model.groups.iter().map(|group| group.route).collect();
+        assert_eq!(groups, [Route::None, Route::Out, Route::Out]);
+        // (The engine starts every lane and group with its way out, so only what a file cuts is sent.)
+        let sent: Vec<&str> = run.commands.iter().map(String::as_str).filter(|c| c.contains("Route")).collect();
+        assert_eq!(sent, ["SetGroupRoute group=0 route=none", "SetLaneRoute inst=0 route=none", "SetLaneRoute inst=2 route=none"]);
+    }
+
+    #[test]
+    fn a_cable_that_would_make_the_audio_go_round_only_through_a_way_out_that_is_cut_is_loaded_when_it_is_cut_and_refused_when_it_is_not() {
+        // The group's output to an effect of a lane that is in the group.
+        let text = |route: &str| {
+            format!(
+                "[[group]]\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n{route}\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n\
+                 [[cable]]\nfrom = \"group[0]\"\nto = \"instrument[0].effect[0]\"\n"
+            )
+        };
+        let error = try_load(&text("")).expect_err("a loop is not loaded").to_string();
+        assert!(error.contains("cable[0]") && error.contains("go round"), "{error}");
+        let run = load(&text("route = \"none\""));
+        assert_eq!(run.model.cables.len(), 1);
+        assert_eq!(run.model.instruments[0].route, Route::None);
+        // The route is sent before the cable, which the engine would refuse otherwise.
+        let sent: Vec<&str> = run.commands.iter().map(String::as_str).filter(|c| c.contains("Route") || c.starts_with("AddCable")).collect();
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert!(sent[0].starts_with("SetLaneRoute") && sent[1].starts_with("AddCable"), "{sent:?}");
     }
 
     #[test]

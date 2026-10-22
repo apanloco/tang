@@ -6,8 +6,8 @@
 // members. The chain runs head, effects, tail; a lane's tail runs into its group's head, or into the mix, and a group's into the mix. A cable leaves the head of a lane (what its instrument puts
 // out), an effect or the tail of a group (its output), and ends at an effect, the head of a group (its bus) or the mix. The audio goes round if those stages have a cycle: the plan does not compile.
 // The graph has one node for a lane's instrument and one for a group, which stand for their head and their tail as the cable at them says (a cable from a group leaves its tail, a cable to a group
-// ends at its head), so the stages are made from the nodes and the kind of end.
-import type { Edge, Endpoint, Graph, Node, NodeId, WireError } from "../protocol";
+// ends at its head), so the stages are made from the nodes and the kind of end. A lane or a group whose way out is cut (`route` is `none`) has no link out of its tail.
+import type { Edge, Endpoint, Graph, Node, NodeId, Route, WireError } from "../protocol";
 import { isAudioCable } from "./cables";
 
 /** The master's node id, as the server numbers it (`NodeId::MASTER`). */
@@ -53,17 +53,19 @@ export function cableEnds(graph: Graph, from: Endpoint, to: Endpoint): Ends | { 
   return { from: first, to: { kind: end.kind === "group" ? "groupBus" : "effect", node: end.id } };
 }
 
-/** The wiring of a lane: its instrument's node, the effects of its chain in order, and the group it is in (none for the mix). */
+/** The wiring of a lane: its instrument's node, the effects of its chain in order, the group it is in (none for the mix) and its way out (`none`: its tail feeds nothing). */
 export interface LaneWiring {
   node: NodeId;
   effects: NodeId[];
   group: NodeId | null;
+  route: Route;
 }
 
-/** The wiring of a group: its node and the effects of its bus in order. */
+/** The wiring of a group: its node, the effects of its bus in order and its way out (`none`: its tail feeds nothing). */
 export interface GroupWiring {
   node: NodeId;
   effects: NodeId[];
+  route: Route;
 }
 
 /** The lanes and the groups of a session as the plan wires them, in the order of the graph (`SessionModel::wiring`). */
@@ -77,9 +79,40 @@ export function wiringOf(graph: Graph): Wiring {
   const chain = (owner: NodeId): NodeId[] => graph.nodes.filter((n) => n.kind === "effect" && n.parent === owner).map((n) => n.id);
   const groupIds = new Set(graph.nodes.filter((n) => n.kind === "group").map((n) => n.id));
   return {
-    lanes: graph.nodes.filter((n) => n.kind === "instrument").map((n) => ({ node: n.id, effects: chain(n.id), group: n.parent !== null && groupIds.has(n.parent) ? n.parent : null })),
-    groups: graph.nodes.filter((n) => n.kind === "group").map((n) => ({ node: n.id, effects: chain(n.id) })),
+    lanes: graph.nodes.flatMap((n) => (n.kind === "instrument" ? [{ node: n.id, effects: chain(n.id), group: n.parent !== null && groupIds.has(n.parent) ? n.parent : null, route: n.route }] : [])),
+    groups: graph.nodes.flatMap((n) => (n.kind === "group" ? [{ node: n.id, effects: chain(n.id), route: n.route }] : [])),
   };
+}
+
+/**
+ * The links of the audio path that the nodes of a graph have, in the order that `SessionModel::graph` lists them: each group's chain (the group, its bus effects, and then the master unless
+ * its way out is cut), then each lane's (the instrument, its effects, and then its group by a link of kind `member`, or the master by one of kind `audio`, unless its way out is cut).
+ * A chain whose way out is cut ends at its last node. There is no master among the nodes of a session that has none: its links end nowhere, and are left out.
+ */
+export function linksOf(nodes: readonly Node[]): Edge[] {
+  const master = nodes.find((n) => n.kind === "master");
+  const groupIds = new Set(nodes.filter((n) => n.kind === "group").map((n) => n.id));
+  const link = (from: NodeId, to: NodeId, kind: "audio" | "member"): Edge => ({ from: { node: from, port: { type: "audioOut" } }, to: { node: to, port: { type: "audioIn" } }, kind });
+  const chain = (owner: Node, sink: { node: NodeId; kind: "audio" | "member" } | null): Edge[] => {
+    const through = nodes.filter((n) => n.kind === "effect" && n.parent === owner.id).map((n) => n.id);
+    const edges: Edge[] = [];
+    let from = owner.id;
+    for (const node of through) {
+      edges.push(link(from, node, "audio"));
+      from = node;
+    }
+    if (sink) edges.push(link(from, sink.node, sink.kind));
+    return edges;
+  };
+  const toMaster = master ? { node: master.id, kind: "audio" as const } : null;
+  return [
+    ...nodes.flatMap((n) => (n.kind === "group" ? chain(n, n.route === "out" ? toMaster : null) : [])),
+    ...nodes.flatMap((n) => {
+      if (n.kind !== "instrument") return [];
+      const sink = n.parent !== null && groupIds.has(n.parent) ? { node: n.parent, kind: "member" as const } : toMaster;
+      return chain(n, n.route === "out" ? sink : null);
+    }),
+  ];
 }
 
 // The stages, as the names of the nodes of the plan: a lane's or a group's head and tail, an effect, the mix.
@@ -128,11 +161,11 @@ export function goesRound(wiring: Wiring, cables: readonly Ends[]): boolean {
   const groups = new Set(wiring.groups.map((g) => g.node));
   for (const lane of wiring.lanes) {
     chain(head(lane.node), lane.effects, tail(lane.node));
-    link(tail(lane.node), lane.group !== null && groups.has(lane.group) ? head(lane.group) : MIX);
+    if (lane.route === "out") link(tail(lane.node), lane.group !== null && groups.has(lane.group) ? head(lane.group) : MIX);
   }
   for (const group of wiring.groups) {
     chain(head(group.node), group.effects, tail(group.node));
-    link(tail(group.node), MIX);
+    if (group.route === "out") link(tail(group.node), MIX);
   }
   for (const cable of cables) link(startStage(cable.from), endStage(cable.to));
   // A cycle is found by walking each stage once, with the stages on the way marked.
@@ -161,6 +194,18 @@ export function laneLoops(graph: Graph, lane: NodeId, group: NodeId | null): boo
   // (A group that is not one of the wiring's is no group to `goesRound`: the lane goes into the mix.)
   const moved = wiring.lanes.map((l) => (l.node === lane ? { ...l, group } : l));
   return goesRound({ ...wiring, lanes: moved }, cablesOf(graph));
+}
+
+/**
+ * Whether the audio would go round if the lane or the group `node` had the way out `route`, with the cables there are (`SessionModel::loop_if_route_is`). Only a way out that is `out` can close a loop
+ * (a link that is not there is on no path), and what is no lane or group of the graph makes none.
+ */
+export function routeLoops(graph: Graph, node: NodeId, route: Route): boolean {
+  const wiring = wiringOf(graph);
+  return goesRound(
+    { lanes: wiring.lanes.map((l) => (l.node === node ? { ...l, route } : l)), groups: wiring.groups.map((g) => (g.node === node ? { ...g, route } : g)) },
+    cablesOf(graph),
+  );
 }
 
 /**

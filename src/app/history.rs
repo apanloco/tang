@@ -21,6 +21,7 @@ use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, Mod
 use crate::app::journal::{Journal, lane_words};
 use crate::app::model::{EdgeId, Made, NodeId, NodePath, PluginSlot};
 use crate::piano_filter::PianoMode;
+use crate::session::Route;
 
 /// How long after one change of a thing the next change of it may come and still be the same step.
 pub const SAME_STEP: Duration = Duration::from_millis(1000);
@@ -336,6 +337,21 @@ impl Controller {
         }
     }
 
+    /// What a lane or a group is called in the words of a step of its way out, and which way out it has: none for a node that is neither.
+    fn lane_or_group_route(&self, node: NodeId) -> Option<(String, Route)> {
+        match self.model.locate(node)? {
+            NodePath::Instrument(inst) => {
+                let lane = &self.model.instruments[inst];
+                Some((lane_words(lane), lane.route))
+            }
+            NodePath::Group(group) => {
+                let bus = &self.model.groups[group];
+                Some((bus.display_name(group), bus.route))
+            }
+            _ => None,
+        }
+    }
+
     /// What `intent` is to the history, read from the session before it is applied: the step that puts back what it will change
     /// (so it is the value it will overwrite that is read), or that it cannot be undone.
     pub(super) fn plan_history(&self, intent: &Intent) -> Plan {
@@ -391,6 +407,14 @@ impl Controller {
             Intent::SetSolo { node, solo } => match self.lane_or_group_flags(*node) {
                 Some((name, _, was)) if was != *solo => {
                     step(format!("{} {name}", if *solo { "solo" } else { "unsolo" }), Intent::SetSolo { node: *node, solo: was }, None)
+                }
+                _ => Plan::Nothing,
+            },
+            // (As a mute is: a node that is neither a lane nor a group is refused, and what is as it is asked to be changes nothing: no step is kept for either.)
+            Intent::SetRoute { node, route } => match self.lane_or_group_route(*node) {
+                Some((name, was)) if was != *route => {
+                    let label = if *route == Route::None { format!("cut the way out of {name}") } else { format!("give {name} its way out") };
+                    step(label, Intent::SetRoute { node: *node, route: was }, None)
                 }
                 _ => Plan::Nothing,
             },
@@ -624,6 +648,7 @@ mod tests {
     use crate::app::intent::{Applied, Event, IntentError, ModulatorKind, PatternField};
     use crate::app::model::{Made, ModSourceSlot, NodePath, SessionModel};
     use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load, wire};
+    use crate::session::Route;
     use crate::plugin::chain::{CableFrom, CableTo};
     use crate::session::NodeUi;
 
@@ -1352,6 +1377,73 @@ rate = 3.0
         assert!(ctl.apply(Intent::SetMute { node: reverb, muted: true }).is_err());
         assert!(ctl.apply(Intent::SetSolo { node: NodeId::MASTER, solo: true }).is_err());
         assert_eq!(undo_label(&ctl), None);
+    }
+
+    #[test]
+    fn cutting_and_giving_back_a_way_out_are_steps_in_the_words_of_the_lane_or_the_group_that_undo_puts_back_in_the_model_and_the_engine() {
+        let (engine, mut ctl, clock) = controller();
+        let (instrument, group) = (lane(&ctl), node(&ctl, NodePath::Group(0)));
+        let step = |ctl: &mut Controller, intent: Intent| {
+            clock.advance(Duration::from_secs(5));
+            ctl.apply(intent).unwrap();
+        };
+        step(&mut ctl, Intent::SetRoute { node: instrument, route: Route::None });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("cut the way out of the lane of Oscillator"));
+        step(&mut ctl, Intent::SetRoute { node: group, route: Route::None });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("cut the way out of Pad"));
+        step(&mut ctl, Intent::SetRoute { node: instrument, route: Route::Out });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("give the lane of Oscillator its way out"));
+        step(&mut ctl, Intent::SetRoute { node: group, route: Route::Out });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("give Pad its way out"));
+        sent(&engine);
+
+        // Undo puts each back as it was, in the model and in the engine, the last first.
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.groups[0].route, Route::None);
+        assert_eq!(redo_label(&ctl).as_deref(), Some("give Pad its way out"));
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[0].route, Route::None);
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        assert_eq!((ctl.model.instruments[0].route, ctl.model.groups[0].route), (Route::Out, Route::Out));
+        assert_eq!(
+            sent(&engine),
+            ["SetGroupRoute group=0 route=none", "SetLaneRoute inst=0 route=none", "SetGroupRoute group=0 route=out", "SetLaneRoute inst=0 route=out"]
+        );
+        ctl.redo().unwrap();
+        assert_eq!(ctl.model.instruments[0].route, Route::None, "the first step again");
+        assert_eq!(sent(&engine), ["SetLaneRoute inst=0 route=none"]);
+    }
+
+    #[test]
+    fn a_way_out_that_is_as_it_is_asked_to_be_or_that_is_refused_keeps_no_step_and_what_could_be_redone_is_still_to_redo() {
+        let (_engine, mut ctl, _clock) = controller();
+        let (instrument, reverb) = (lane(&ctl), node(&ctl, NodePath::Effect { inst: 0, index: 0 }));
+        ctl.apply(Intent::SetRoute { node: instrument, route: Route::None }).unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(redo_label(&ctl).as_deref(), Some("cut the way out of the lane of Oscillator"));
+        // The way out that the lane has is not a change: it keeps no step, and does not end what could be redone.
+        ctl.apply(Intent::SetRoute { node: instrument, route: Route::Out }).unwrap();
+        assert_eq!(undo_label(&ctl), None);
+        assert_eq!(redo_label(&ctl).as_deref(), Some("cut the way out of the lane of Oscillator"));
+        // Nor does a way out of what is neither a lane nor a group.
+        assert!(ctl.apply(Intent::SetRoute { node: reverb, route: Route::None }).is_err());
+        assert!(ctl.apply(Intent::SetRoute { node: NodeId::MASTER, route: Route::None }).is_err());
+        assert_eq!(undo_label(&ctl), None);
+        assert_eq!(redo_label(&ctl).as_deref(), Some("cut the way out of the lane of Oscillator"));
+    }
+
+    #[test]
+    fn a_lane_whose_way_out_is_cut_that_is_taken_out_comes_back_by_undo_with_its_way_out_cut() {
+        let (engine, mut ctl, _clock) = controller();
+        let instrument = lane(&ctl);
+        ctl.apply(Intent::SetRoute { node: instrument, route: Route::None }).unwrap();
+        ctl.apply(Intent::RemoveNode { node: instrument }).unwrap();
+        // (There is no audio thread to hand the lane back: reading what was sent answers for it.)
+        sent(&engine);
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[0].route, Route::None, "the lane is handed back whole");
+        assert_eq!(ctl.model.instruments[0].node, instrument);
     }
 
     #[test]
@@ -5239,6 +5331,7 @@ size = 0.5
         let add_group = |members: Vec<NodeId>| Op::Do(Intent::AddGroup { members });
         let cable = |modulator: NodeId, node: NodeId, index: u32| Op::Do(Intent::AddModEdge { modulator, to: Endpoint { node, port: Port::Param { index } } });
         let put_in = |node: NodeId, group: Option<NodeId>| Op::Do(Intent::SetLaneGroup { node, group });
+        let route = |node: NodeId, route: Route| Op::Do(Intent::SetRoute { node, route });
 
         let mut scripts: Vec<(&str, Vec<Op>)> = vec![
             ("a parameter that was set is put back and set again", vec![set(detune, 3.0), undo(), redo(), undo(), undo(), redo(), redo()]),
@@ -6131,6 +6224,33 @@ size = 0.5
                     Op::Do(Intent::MoveEffect { node: p_bus[1], index: 2 }),
                     undo(),
                     undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                ],
+            ),
+            (
+                "the way out of a lane and of a group that is cut is put back by undo and cut again by redo; one that is as it is asked to be, and one of what is neither a lane nor a group, is no step; and a way out that is given back where the audio cables there are would make it go round is refused",
+                SENDS,
+                vec![
+                    lock(),
+                    route(s.lane[1], Route::None),
+                    route(s.group, Route::None),
+                    route(s.lane[1], Route::None),
+                    route(s.lane[0], Route::Out),
+                    route(s.fx[0], Route::None),
+                    route(s.bus, Route::None),
+                    route(NodeId::MASTER, Route::None),
+                    route(NodeId(9_999), Route::None),
+                    draw_cable(s.group, s.fx[0], None),
+                    route(s.lane[0], Route::None),
+                    draw_cable(s.group, s.fx[0], Some(0.5)),
+                    route(s.lane[0], Route::Out),
+                    undo(),
+                    undo(),
+                    route(s.lane[0], Route::Out),
                     undo(),
                     undo(),
                     redo(),

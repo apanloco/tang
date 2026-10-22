@@ -28,6 +28,7 @@ export type { PianoMeta } from "./generated/PianoMeta";
 export type { Plugin } from "./generated/Plugin";
 export type { Port } from "./generated/Port";
 export type { Preset } from "./generated/Preset";
+export type { Route } from "./generated/Route";
 export type { ServerMessage } from "./generated/ServerMessage";
 export type { SlotKind } from "./generated/SlotKind";
 export type { Snapshot } from "./generated/Snapshot";

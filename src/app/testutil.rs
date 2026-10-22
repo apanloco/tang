@@ -32,6 +32,8 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetGroupVolume { group, value } => format!("SetGroupVolume group={group} value={value:.3}"),
         C::SetGroupPan { group, value } => format!("SetGroupPan group={group} value={value:.3}"),
         C::SetGroupMute { group, muted } => format!("SetGroupMute group={group} muted={muted}"),
+        C::SetGroupRoute { group, route } => format!("SetGroupRoute group={group} route={}", route.name()),
+        C::SetLaneRoute { inst, route } => format!("SetLaneRoute inst={inst} route={}", route.name()),
         C::SetGroupSolo { group, solo } => format!("SetGroupSolo group={group} solo={solo}"),
         C::SetGroupMix { group, index, value } => {
             format!("SetGroupMix group={group} fx={index} value={value:.3}")
@@ -1303,7 +1305,8 @@ impl plugin::Plugin for DropProbe {
 }
 
 /// What a session comes to, for the fixtures of what the intents of groups and the history do: the nodes (their id, their parent and their name), the
-/// audio path, the modulation cables, the audio cables that have been drawn between two places (`sends`, a list only when there are some), and the two lists of the layout of
+/// audio path, the modulation cables, the audio cables that have been drawn between two places (`sends`, a list only when there are some), the lanes and groups whose way out is cut
+/// (`routes`, likewise), and the two lists of the layout of
 /// the telemetry (without its fingerprint), each entry as a line of text the web client's tests make of its own copy by the same rules (`shapeOf` in
 /// `web/src/client/fixtures.ts`).
 pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value {
@@ -1352,6 +1355,15 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
     });
     if !sends.is_empty() {
         shape["sends"] = serde_json::json!(sends);
+    }
+    // The lanes and groups whose way out is cut: a line each, and no list at all when none is, so that the fixtures of the sessions that cut none are as they were.
+    let routes: Vec<String> = list(&wire["graph"]["nodes"])
+        .iter()
+        .filter(|n| matches!(text(&n["kind"]).as_str(), "instrument" | "group") && text(&n["route"]) == "none")
+        .map(|n| format!("{} none", n["id"]))
+        .collect();
+    if !routes.is_empty() {
+        shape["routes"] = serde_json::json!(routes);
     }
     shape
 }

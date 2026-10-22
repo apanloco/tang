@@ -637,6 +637,46 @@ describe("muting and soloing a lane or a group", () => {
   });
 });
 
+describe("cutting and giving back the way out of a lane or a group", () => {
+  const routeOf = (client: Client, node: number) => {
+    const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+    return found?.kind === "instrument" || found?.kind === "group" ? found.route : "neither";
+  };
+  /** Whether the audio path has a link out of the lane or group `node`'s chain into the master, which a cut way out takes away. */
+  const linkToMaster = (client: Client): boolean => client.state.snapshot?.graph.edges.some((e) => (e.kind === "audio" || e.kind === "member") && e.to.node === MASTER) ?? false;
+
+  test("resolves true when the lane has the way out, which the session shows with the links of the audio path, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(routeOf(client, oscillator.id)).toBe("out");
+    expect(linkToMaster(client)).toBe(true);
+    expect(await editor.setRoute(oscillator.id, "none")).toBe(true);
+    expect(routeOf(client, oscillator.id)).toBe("none");
+    expect(linkToMaster(client), "the link into the master is gone").toBe(false);
+    expect(await editor.setRoute(oscillator.id, "out")).toBe(true);
+    expect(routeOf(client, oscillator.id)).toBe("out");
+    expect(client.state.snapshot?.graph, "the way out given back is the graph that there was").toEqual(tracerSnapshot.graph);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused for a node that is neither a lane nor a group: it resolves false, and the page says what it could not do and why", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.setRoute(filter.id, "none")).toBe(false);
+    expect(await editor.setRoute(lfo.id, "out")).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not cut the way out of Filter: only a lane or a group has a way out",
+      "Could not give LFO its way out: only a lane or a group has a way out",
+    ]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.setRoute(oscillator.id, "none")).toBe(false);
+    expect(said(notices)).toEqual(["Could not cut the way out of Oscillator: Not connected to the server."]);
+  });
+});
+
 describe("moving a node", () => {
   const placeOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.ui;
 

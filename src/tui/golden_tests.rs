@@ -23,7 +23,9 @@ use crate::app::load::load_session;
 use crate::app::testutil::{DropProbe, described, recording, stub_engine};
 use crate::plugin::PluginInfo;
 use crate::plugin::chain::{MidiBindSource, MidiLearnedNotification, ModulatorLocation};
+use crate::app::graph::{Endpoint, Port};
 use crate::session;
+use crate::session::Route;
 
 const SAMPLE_RATE: f32 = 48_000.0;
 const BLOCK: usize = 256;
@@ -6837,6 +6839,99 @@ fn m_and_s_are_steps_of_the_history_and_a_browsers_mute_shows_in_the_tree() {
     }
     assert!(h.tree()[0].ends_with("[mute]"), "{:?}", h.tree()[0]);
     assert!(h.tree().iter().any(|label| label.starts_with("  ♪ Oscillator") && label.ends_with("[solo]")), "{:?}", h.tree());
+}
+
+// ---------------------------------------------------------------------------
+// The way out of a lane and of a group
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w_cuts_and_gives_back_the_way_out_of_the_lane_that_the_cursor_is_in_and_the_tree_says_so() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Instrument(2));
+    h.press(KeyCode::Char('w'));
+    assert_eq!(h.commands(), ["SetLaneRoute inst=2 route=none"]);
+    assert_eq!(h.s.ctl.model.instruments[2].route, Route::None);
+    assert!(h.tree().iter().any(|label| label.starts_with("♪ Oscillator  [Built-in]") && label.ends_with("  [no out]")), "{:?}", h.tree());
+    // It is a flag among the others: after the mute and the solo.
+    h.press(KeyCode::Char('M')).press(KeyCode::Char('S'));
+    assert!(h.tree().iter().any(|label| label.starts_with("♪ Oscillator  [Built-in]") && label.ends_with("  [mute] [solo] [no out]")), "{:?}", h.tree());
+    // The key toggles: pressed again it gives the way out back.
+    h.commands();
+    h.press(KeyCode::Char('w'));
+    assert_eq!(h.commands(), ["SetLaneRoute inst=2 route=out"]);
+    assert!(h.tree().iter().all(|label| !label.contains("[no out]")), "{:?}", h.tree());
+    // And from anything of the lane's: its effect, its modulator.
+    h.goto(TreeAddress::Effect { inst: 2, index: 0 }).press(KeyCode::Char('w'));
+    assert_eq!(h.commands(), ["SetLaneRoute inst=2 route=none"]);
+    h.goto(TreeAddress::Modulator { inst: 2, index: 0 }).press(KeyCode::Char('w'));
+    assert_eq!(h.commands(), ["SetLaneRoute inst=2 route=out"]);
+}
+
+#[test]
+fn w_cuts_the_way_out_of_the_group_that_the_cursor_is_in_and_the_header_says_so() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Char('w'));
+    assert_eq!(h.commands(), ["SetGroupRoute group=0 route=none"]);
+    assert!(h.tree()[0].starts_with("▦ Pad") && h.tree()[0].ends_with("  [no out]"), "{:?}", h.tree()[0]);
+    // From the group's bus effect and its modulator as well.
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 }).press(KeyCode::Char('w'));
+    assert_eq!(h.commands(), ["SetGroupRoute group=0 route=out"]);
+    h.goto(TreeAddress::GroupModulator { group: 0, index: 0 }).press(KeyCode::Char('w'));
+    assert_eq!(h.commands(), ["SetGroupRoute group=0 route=none"]);
+    // (A member of the group is a lane of its own: its way out is not the group's.)
+    h.goto(TreeAddress::Instrument(0)).press(KeyCode::Char('w'));
+    assert_eq!(h.commands(), ["SetLaneRoute inst=0 route=none"]);
+    assert_eq!(h.s.ctl.model.groups[0].route, Route::None);
+}
+
+#[test]
+fn w_is_a_step_of_the_history_and_a_way_out_that_would_make_the_audio_go_round_is_not_given_back() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::Instrument(0)).press(KeyCode::Char('w'));
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("cut the way out of the lane of Oscillator"));
+    h.commands();
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(h.commands(), ["SetLaneRoute inst=0 route=out"]);
+    assert_eq!(h.s.ctl.model.instruments[0].route, Route::Out);
+    // The group's output sent to the filter of a lane that is in the group is a loop (the lane feeds the group, which feeds the lane); with the lane's way out cut it is none,
+    // and the key does not give the way out back.
+    h.goto(TreeAddress::Instrument(1)).press(KeyCode::Char('w'));
+    let (group, filter) = (h.s.ctl.model.groups[0].node, h.s.ctl.model.instruments[1].effects[0].node);
+    let drawn = h.s.ctl.apply(Intent::AddCable {
+        from: Endpoint { node: group, port: Port::AudioOut },
+        to: Endpoint { node: filter, port: Port::AudioIn },
+        gain: None,
+    });
+    assert!(drawn.is_ok(), "{drawn:?}");
+    h.commands();
+    h.press(KeyCode::Char('w'));
+    assert_eq!(h.commands(), Vec::<String>::new(), "refused: the audio would go round");
+    assert_eq!(h.s.ctl.model.instruments[1].route, Route::None);
+}
+
+#[test]
+fn w_is_for_the_chain_and_a_way_out_that_a_file_cuts_is_in_the_tree() {
+    let mut h = Harness::new(
+        [
+            "[[group]]\nname = \"Pad\"\nroute = \"none\"\n",
+            "[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\nroute = \"none\"\n",
+            "[[instrument]]\nplugin = \"builtin:osc\"\n",
+        ]
+        .concat(),
+    );
+    assert!(h.tree()[0].starts_with("▦ Pad") && h.tree()[0].ends_with("[no out]"), "{:?}", h.tree());
+    assert!(h.tree().iter().filter(|label| label.contains("[no out]")).count() == 2, "{:?}", h.tree());
+    // Not on the other tabs, and not in the parameter pane.
+    h.goto(TreeAddress::Instrument(1)).press(KeyCode::Enter).press(KeyCode::Char('w'));
+    assert_eq!(h.commands(), Vec::<String>::new());
+    h.press(KeyCode::Esc);
+    for tab in ['2', '3', '4'] {
+        h.press(KeyCode::Char(tab)).press(KeyCode::Char('w'));
+        assert_eq!(h.commands(), Vec::<String>::new(), "tab {tab}");
+    }
+    assert_eq!(h.s.ctl.model.instruments.iter().map(|lane| lane.route).collect::<Vec<_>>(), [Route::None, Route::Out]);
 }
 
 #[test]

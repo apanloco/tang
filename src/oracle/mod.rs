@@ -40,7 +40,7 @@ use self::edits::{Counts, Edit};
 use crate::piano_filter::PianoFilter;
 use crate::plugin::chain::{AudioGraph, GraphCommand, MidiLearnedNotification, PatternNotification};
 use crate::plugin::{Plugin, Runtime};
-use crate::session;
+use crate::session::{self, Route};
 use crate::telemetry::{self, Telemetry};
 
 /// What an engine is built from: the ends of the channels that the controller talks to it by, and the cells it publishes in. `main` wires an `AudioGraph` with the same.
@@ -141,6 +141,17 @@ impl Scenario {
     pub fn has_cables(&self) -> bool {
         self.session.contains("[[cable]]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddCable { .. }))
     }
+
+    /// Whether a lane or a group has its way out cut, in its file or by its edits: the old loop has no such thing either (every lane goes to its group's bus or the mix).
+    pub fn has_cut_routes(&self) -> bool {
+        self.session.contains("route = \"none\"")
+            || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::Route { route: Route::None, .. } | Edit::RouteGroup { route: Route::None, .. }))
+    }
+
+    /// Whether the loop that the plan replaced can run it: it has no audio cables and no way out that is cut, which that loop is from before.
+    pub fn is_in_the_old_loop(&self) -> bool {
+        !self.has_cables() && !self.has_cut_routes()
+    }
 }
 
 /// What a session of `sessions/` is played with: a chord (C3, E3 and G3) from a tenth of a second, the pitch wheel up a quarter of its range and back, the pedal down while the
@@ -230,17 +241,36 @@ const CABLE_EDITS: [(u64, Edit); 11] = [
     (40_000, Edit::Undo),
 ];
 
-/// The scenarios that edit the cables of a session while it plays.
+/// What is done to the way out of the lanes and the group of `CABLED` while it plays: lane 1 is sent to the reverb of the group and its way out is cut (it is heard through the reverb
+/// and the cable only), the group's way out is cut too and the reverb sent to the mix, lane 1's way out is given back and Undo cuts it again, the lane is taken out with its cut way
+/// out and its cables, put back by Undo, taken out again by Redo and put back, and the way out of the group is given back. Each is made (`Counts` says so: none is skipped or
+/// refused).
+const ROUTE_EDITS: [(u64, Edit); 11] = [
+    (8_000, Edit::AddCable { from: 2, to: 3, gain: 0.5 }),
+    (12_000, Edit::Route { lane: 1, route: Route::None }),
+    (16_000, Edit::RouteGroup { group: 0, route: Route::None }),
+    (20_000, Edit::AddCable { from: 5, to: 4, gain: 0.7 }),
+    (24_000, Edit::Route { lane: 1, route: Route::Out }),
+    (26_000, Edit::Undo),
+    (28_000, Edit::RemoveLane { lane: 1 }),
+    (32_000, Edit::Undo),
+    (36_000, Edit::Redo),
+    (38_000, Edit::Undo),
+    (40_000, Edit::RouteGroup { group: 0, route: Route::Out }),
+];
+
+/// The scenarios that edit the cables and the ways out of a session while it plays.
 pub fn edited() -> Vec<Scenario> {
-    vec![Scenario {
-        id: format!("edited:cables@{BLOCK}"),
+    let scenario = |name: &str, edits: &[(u64, Edit)]| Scenario {
+        id: format!("edited:{name}@{BLOCK}"),
         session: CABLED.to_string(),
         block: BLOCK,
         rate: RATE,
         frames: SESSION_FRAMES,
         script: performance(),
-        edits: CABLE_EDITS.to_vec(),
-    }]
+        edits: edits.to_vec(),
+    };
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -685,7 +715,7 @@ mod tests {
 
     #[test]
     fn the_plan_gives_what_the_loop_it_replaced_gave_bit_for_bit() {
-        let differences: Vec<String> = always_on().iter().filter(|scenario| !scenario.has_cables()).filter_map(|scenario| agree(scenario, &legacy, &engine)).collect();
+        let differences: Vec<String> = always_on().iter().filter(|scenario| scenario.is_in_the_old_loop()).filter_map(|scenario| agree(scenario, &legacy, &engine)).collect();
         assert!(differences.is_empty(), "the engine on the plan is not the engine of the loop:\n{}", differences.join("\n"));
     }
 
@@ -712,12 +742,14 @@ mod tests {
     #[test]
     fn the_edits_of_the_cable_scenarios_are_all_made_and_a_cable_is_heard_when_it_is_drawn() {
         for r in always_on_renders().iter().filter(|r| r.id.starts_with("edited:")) {
-            assert_eq!(r.edits, Counts { applied: CABLE_EDITS.len(), skipped: 0, refused: 0 }, "{}", r.id);
+            let made = edited().iter().find(|scenario| scenario.id == r.id).map(|scenario| scenario.edits.len()).expect("a scenario of the corpus");
+            assert_eq!(r.edits, Counts { applied: made, skipped: 0, refused: 0 }, "{}", r.id);
             assert!(r.fingerprint.peak > 0.01, "{} is heard", r.id);
         }
         // The first cable of the scenario (lane 1's instrument into the reverb on the bus) is heard: without the edits the render is another, and it is the same until the block
         // that has the edit (the reverb puts out its tail only, and a tail takes a while to begin: it is not at the first frame of the cable).
         let scenario = edited().remove(0);
+        assert!(scenario.id.starts_with("edited:cables"));
         let drawn = render(&scenario, &engine);
         let plain = render(&Scenario { edits: Vec::new(), ..scenario }, &engine);
         let first = drawn.samples.iter().zip(&plain.samples).position(|(x, y)| x.to_bits() != y.to_bits()).expect("the cable is heard");
@@ -727,7 +759,28 @@ mod tests {
     #[test]
     fn the_scenarios_that_have_cables_are_those_that_the_loop_the_plan_replaced_is_not_held_to() {
         let with: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cables()).map(|scenario| scenario.id.clone()).collect();
-        assert_eq!(with, ["session:patched@256", "session:sends@256", "edited:cables@256"]);
+        assert_eq!(with, ["session:patched@256", "session:routed@256", "session:sends@256", "edited:cables@256", "edited:routes@256"]);
+    }
+
+    #[test]
+    fn the_scenarios_that_cut_a_way_out_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
+        let cut: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cut_routes()).map(|scenario| scenario.id.clone()).collect();
+        assert_eq!(cut, ["session:routed@256", "edited:routes@256"]);
+        // (A scenario that has no cable and no cut is what the loop can run: there are many of them, and every generated session is one.)
+        assert!(always_on().iter().filter(|scenario| scenario.is_in_the_old_loop()).count() > 20);
+        assert!(always_on().iter().filter(|scenario| scenario.id.starts_with("generated:")).all(|scenario| scenario.is_in_the_old_loop()));
+    }
+
+    #[test]
+    fn a_way_out_that_is_cut_is_heard_not_in_the_mix_but_through_its_cables_in_the_routed_session() {
+        // The session that cuts the ways out (`routed.toml`) is heard, and the lanes that have no way out are in it only through their cables: without the cable of lane 1 to the mix
+        // (half of itself), what is rendered is another, and it is as loud as the lanes that have their way out and the cables of the others make it.
+        let scenario = sessions().into_iter().find(|scenario| scenario.id.starts_with("session:routed")).expect("a session of the corpus");
+        let with = render(&scenario, &engine);
+        assert!(fingerprint(&with).peak > 0.01, "it is heard");
+        let without = Scenario { session: scenario.session.replace("[[cable]]\nfrom = \"instrument[1]\"\nto = \"master\"\ngain = 0.5\n", ""), ..scenario };
+        let alone = render(&without, &engine);
+        assert_ne!(with.samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>(), alone.samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>(), "lane 1 is heard through its cable and in no other way");
     }
 
     #[test]

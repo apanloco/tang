@@ -11,6 +11,7 @@ use crate::app::controller::Controller;
 use crate::app::graph::{Endpoint, NoteRange, Port};
 use crate::app::intent::{Gain, Intent, ModulatorKind};
 use crate::app::model::{NodeId, ParamKind, PluginSlot};
+use crate::session::Route;
 
 /// A request that a front-end makes.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +53,10 @@ pub enum Edit {
     CableGain { cable: usize, gain: f32 },
     /// A cable, by its place among the cables that there are, taken out.
     RemoveCable { cable: usize },
+    /// The way out of a lane cut or given back.
+    Route { lane: usize, route: Route },
+    /// The way out of a group (a place among the groups) cut or given back.
+    RouteGroup { group: usize, route: Route },
     Undo,
     Redo,
 }
@@ -221,6 +226,8 @@ impl Edit {
                 }
                 Intent::RemoveEdge { edge: cables[cable % cables.len()].id }
             }
+            Edit::Route { lane: l, route } => Intent::SetRoute { node: lane(*l)?.node, route: *route },
+            Edit::RouteGroup { group: g, route } => Intent::SetRoute { node: group(*g)?.node, route: *route },
             Edit::Undo => Intent::Undo,
             Edit::Redo => Intent::Redo,
         })
@@ -279,6 +286,21 @@ plugin = "builtin:osc"
         assert_eq!(Edit::Mute { lane: 5, muted: true }.resolve(&ctl), Some(Intent::SetMute { node: second, muted: true }), "5 is 1 of 2");
         let bus = ctl.model.groups[0].node;
         assert_eq!(Edit::SoloGroup { group: 3, solo: true }.resolve(&ctl), Some(Intent::SetSolo { node: bus, solo: true }));
+    }
+
+    #[test]
+    fn a_way_out_is_the_way_out_of_a_place_among_the_lanes_or_the_groups_and_wraps_round_them() {
+        let mut ctl = controller(TWO_LANES);
+        let (first, second, bus) = (ctl.model.instruments[0].node, ctl.model.instruments[1].node, ctl.model.groups[0].node);
+        assert_eq!(Edit::Route { lane: 1, route: Route::None }.resolve(&ctl), Some(Intent::SetRoute { node: second, route: Route::None }));
+        assert_eq!(Edit::Route { lane: 4, route: Route::Out }.resolve(&ctl), Some(Intent::SetRoute { node: first, route: Route::Out }), "4 is 0 of 2");
+        assert_eq!(Edit::RouteGroup { group: 2, route: Route::None }.resolve(&ctl), Some(Intent::SetRoute { node: bus, route: Route::None }), "2 is 0 of 1");
+        assert_eq!(Edit::Route { lane: 0, route: Route::None }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::RouteGroup { group: 0, route: Route::None }.make(&mut ctl), Outcome::Applied);
+        assert_eq!((ctl.model.instruments[0].route, ctl.model.groups[0].route), (Route::None, Route::None));
+        // A session with no group has nothing for a group's way out to aim at.
+        let mut none = controller("[[instrument]]\nplugin = \"builtin:osc\"\n");
+        assert_eq!(Edit::RouteGroup { group: 0, route: Route::None }.make(&mut none), Outcome::Skipped);
     }
 
     #[test]

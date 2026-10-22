@@ -1267,6 +1267,8 @@ function run(snapshot: Snapshot, rows: readonly HistoryRow[]): string[] {
         }
         // (The audio cables that have been drawn between two places: a list only for a session that has some.)
         if (JSON.stringify(shape.sends ?? []) !== JSON.stringify(row.shape.sends ?? [])) wrong.push(`${what}: the audio cables are ${JSON.stringify(shape.sends ?? [])}, not ${JSON.stringify(row.shape.sends ?? [])}`);
+        // (The lanes and groups whose way out is cut: likewise a list only for a session that has some.)
+        if (JSON.stringify(shape.routes ?? []) !== JSON.stringify(row.shape.routes ?? [])) wrong.push(`${what}: the ways out that are cut are ${JSON.stringify(shape.routes ?? [])}, not ${JSON.stringify(row.shape.routes ?? [])}`);
       }
     }
     if (canonical(server.history) !== canonical(row.history)) wrong.push(`${what}: history ${canonical(server.history)}, not ${canonical(row.history)}`);

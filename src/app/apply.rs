@@ -17,6 +17,7 @@ use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, MAX_STEPS, ModulatorLocation};
 use crate::scale::ScaleSetting;
 use crate::session::NodeUi;
+use crate::session::Route;
 use crate::{plugin, session};
 
 /// What an intent did, for `apply` to tell.
@@ -77,6 +78,7 @@ impl Controller {
             Intent::SetRange { node, range } => Done::Event(self.set_range(node, range)?),
             Intent::SetMute { node, muted } => Done::Event(self.set_mute(node, muted)?),
             Intent::SetSolo { node, solo } => Done::Event(self.set_solo(node, solo)?),
+            Intent::SetRoute { node, route } => self.set_route_intent(node, route)?,
             Intent::SetScale { scale } => Done::Event(self.set_scale(&scale)?),
             Intent::SetLocked { locked } => Done::Event(self.set_locked(locked)),
             Intent::SetBpm { bpm } => Done::Event(self.set_bpm(bpm)?),
@@ -365,6 +367,31 @@ impl Controller {
             _ => unreachable!("`lane_or_group` says a lane or a group"),
         }
         Ok(Event::SoloSet { node, solo })
+    }
+
+    /// Cut or give back the way out of a lane or a group, in the model and in the audio thread, which makes its plan again (`Intent::SetRoute`). A way out that is given back is
+    /// refused where the audio would go round with the cables there are (the lane's end would feed its group's bus, which a cable may feed the lane from); cutting one makes no loop.
+    fn set_route_intent(&mut self, node: NodeId, route: Route) -> Result<Done, IntentError> {
+        let path = match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
+            path @ (NodePath::Instrument(_) | NodePath::Group(_)) => path,
+            _ => return Err(invalid("only a lane or a group has a way out")),
+        };
+        if route == Route::Out {
+            let what = if matches!(path, NodePath::Instrument(_)) { "giving that lane its way out" } else { "giving that group its way out" };
+            refuse_a_loop(self.model.loop_if_route_is(path, route), what)?;
+        }
+        match path {
+            NodePath::Instrument(inst) => {
+                self.model.instruments[inst].route = route;
+                let _ = self.cmd_tx.send(GraphCommand::SetLaneRoute { inst, route });
+            }
+            NodePath::Group(group) => {
+                self.model.groups[group].route = route;
+                let _ = self.cmd_tx.send(GraphCommand::SetGroupRoute { group, route });
+            }
+            _ => unreachable!("a lane or a group, found above"),
+        }
+        Ok(Done::Restructured)
     }
 
     /// The scale of the piano, which the threads that send notes and the Piano tab read: it is nothing of the audio thread's.
@@ -971,7 +998,7 @@ mod tests {
     use crate::app::graph::{Graph, NodeKind};
     use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load};
     use crate::plugin::chain::{CableFrom, CableTo, ModTargetKind, ModulatorLocation};
-    use crate::session::NodeUi;
+    use crate::session::{NodeUi, Route};
 
     /// A group with a bus filter and an LFO, a member with a reverb, and a lane
     /// with no instrument plugin.
@@ -1405,6 +1432,116 @@ plugin = "builtin:reverb"
         ctl.apply(Intent::SetSolo { node: group, solo: false }).unwrap();
         let text = saved(&ctl);
         assert!(!text.contains("mute") && !text.contains("solo"), "{text}");
+    }
+
+    #[test]
+    fn set_route_cuts_the_way_out_of_a_lane_and_a_group_in_the_model_and_the_engine_and_says_the_structure_changed() {
+        let (engine, mut ctl) = controller();
+        let (instrument, empty, group) = (lane(&ctl), node(&ctl, NodePath::Instrument(1)), node(&ctl, NodePath::Group(0)));
+        let applied = ctl.apply(Intent::SetRoute { node: instrument, route: Route::None }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: the links of the graph change, so it is told by a snapshot");
+        assert_eq!(ctl.model.instruments.iter().map(|lane| lane.route).collect::<Vec<_>>(), [Route::None, Route::Out]);
+        assert_eq!(sent(&engine), ["SetLaneRoute inst=0 route=none"]);
+        assert!(ctl.dirty);
+
+        let applied = ctl.apply(Intent::SetRoute { node: group, route: Route::None }).unwrap();
+        assert_eq!(applied, Applied::restructured(2));
+        assert_eq!(ctl.model.groups[0].route, Route::None);
+        assert_eq!(sent(&engine), ["SetGroupRoute group=0 route=none"]);
+
+        // A lane with no instrument has a way out, and it is that lane's alone.
+        ctl.apply(Intent::SetRoute { node: empty, route: Route::None }).unwrap();
+        assert_eq!(sent(&engine), ["SetLaneRoute inst=1 route=none"]);
+
+        ctl.apply(Intent::SetRoute { node: instrument, route: Route::Out }).unwrap();
+        ctl.apply(Intent::SetRoute { node: group, route: Route::Out }).unwrap();
+        assert_eq!(sent(&engine), ["SetLaneRoute inst=0 route=out", "SetGroupRoute group=0 route=out"]);
+        assert_eq!((ctl.model.instruments[0].route, ctl.model.groups[0].route), (Route::Out, Route::Out));
+    }
+
+    #[test]
+    fn set_route_refuses_what_is_neither_a_lane_nor_a_group() {
+        let (engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let bus = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
+        let lfo = node(&ctl, NodePath::Modulator { at: ModulatorLocation::Group(0), index: 0 });
+        for node in [reverb, bus, lfo] {
+            assert_eq!(ctl.apply(Intent::SetRoute { node, route: Route::None }), Err(invalid("only a lane or a group has a way out")), "{node:?}");
+        }
+        // (The master is a node of the graph and not of the model, so it is not found, as it is for every intent.)
+        for node in [NodeId(9_999), NodeId::MASTER] {
+            assert_eq!(ctl.apply(Intent::SetRoute { node, route: Route::None }), Err(IntentError::NotFound(node)));
+        }
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+    }
+
+    #[test]
+    fn a_way_out_is_not_given_back_when_the_audio_would_go_round_and_nothing_changes() {
+        let (engine, mut ctl, n) = sends();
+        // The group's output goes to the drive of lane 1, which is in no group. With the lane's way out cut it can be put in the group: it feeds nothing.
+        draw(&mut ctl, out(n.group), into(n.fx[2]), None).unwrap();
+        ctl.apply(Intent::SetRoute { node: n.lane[1], route: Route::None }).unwrap();
+        ctl.apply(Intent::SetLaneGroup { node: n.lane[1], group: Some(n.group) }).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+        // Given back, it would feed the group that feeds it.
+        let error = ctl.apply(Intent::SetRoute { node: n.lane[1], route: Route::Out }).unwrap_err();
+        assert!(error.to_string().contains("go round"), "{error}");
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.rev, ctl.model.instruments[1].route), (rev, Route::None));
+        // A lane whose way out may be given back is given it, and cutting one is not looked at.
+        ctl.apply(Intent::SetRoute { node: n.lane[0], route: Route::None }).unwrap();
+        ctl.apply(Intent::SetRoute { node: n.lane[0], route: Route::Out }).unwrap();
+        assert_eq!(ctl.model.instruments[0].route, Route::Out);
+    }
+
+    #[test]
+    fn a_cable_is_not_drawn_that_would_make_the_audio_go_round_unless_the_way_out_that_it_goes_round_by_is_cut() {
+        let (engine, mut ctl, n) = sends();
+        // Lane 0 is in the group: the group's output into lane 0's delay is a loop (the lane feeds the group, which feeds the lane).
+        let error = draw(&mut ctl, out(n.group), into(n.fx[1]), None).unwrap_err();
+        assert!(error.to_string().contains("go round"), "{error}");
+        ctl.apply(Intent::SetRoute { node: n.lane[0], route: Route::None }).unwrap();
+        sent(&engine);
+        draw(&mut ctl, out(n.group), into(n.fx[1]), None).unwrap();
+        assert_eq!(sent(&engine).len(), 1);
+        assert_eq!(ctl.model.cables.len(), 1);
+    }
+
+    #[test]
+    fn a_group_is_given_back_its_way_out_whatever_the_ways_out_of_the_lanes_are() {
+        let (_engine, mut ctl, n) = sends();
+        // Lane 0 is in the group and its way out is cut, so that the group's output can go into its delay: given back, the lane would make a loop. The group's way out has nothing to do with it
+        // (and a lane that has the group's place among the lanes is not the group).
+        ctl.apply(Intent::SetRoute { node: n.lane[0], route: Route::None }).unwrap();
+        draw(&mut ctl, out(n.group), into(n.fx[1]), None).unwrap();
+        ctl.apply(Intent::SetRoute { node: n.group, route: Route::None }).unwrap();
+        ctl.apply(Intent::SetRoute { node: n.group, route: Route::Out }).unwrap();
+        assert_eq!((ctl.model.groups[0].route, ctl.model.instruments[0].route), (Route::Out, Route::None));
+        // The lane's own is still refused.
+        let error = ctl.apply(Intent::SetRoute { node: n.lane[0], route: Route::Out }).unwrap_err();
+        assert!(error.to_string().contains("go round"), "{error}");
+    }
+
+    #[test]
+    fn what_has_its_way_out_cut_is_what_a_session_saves() {
+        let (_engine, mut ctl) = controller();
+        let (instrument, group) = (lane(&ctl), node(&ctl, NodePath::Group(0)));
+        ctl.apply(Intent::SetRoute { node: instrument, route: Route::None }).unwrap();
+        ctl.apply(Intent::SetRoute { node: group, route: Route::None }).unwrap();
+        let saved = |ctl: &Controller| {
+            let (instruments, groups, cables) = crate::app::save::to_save(&ctl.model);
+            crate::session::to_toml(&instruments, &groups, &cables, None, None, None).unwrap()
+        };
+        let text = saved(&ctl);
+        assert_eq!(text.matches("route = \"none\"").count(), 2, "{text}");
+        let again = load(&text).model;
+        assert_eq!((again.instruments[0].route, again.groups[0].route), (Route::None, Route::None));
+        ctl.apply(Intent::SetRoute { node: instrument, route: Route::Out }).unwrap();
+        ctl.apply(Intent::SetRoute { node: group, route: Route::Out }).unwrap();
+        assert!(!saved(&ctl).contains("route"));
     }
 
     fn place(ctl: &mut Controller, node: NodeId, x: f32, y: f32) -> Result<Applied, IntentError> {

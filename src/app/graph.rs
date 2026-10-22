@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::model::{EdgeId, FieldTarget, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel};
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
-use crate::session::NodeUi;
+use crate::session::{NodeUi, Route};
 
 /// A session as a front-end draws it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -62,15 +62,16 @@ pub struct Node {
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum NodeKind {
     /// An instrument lane: the instrument plugin (null while the lane is empty),
-    /// the key range it answers to, its host-side output volume, whether it is muted or soloed and its pattern (null while it has none).
-    Instrument { plugin: Option<Plugin>, range: Option<NoteRange>, transpose: i8, volume: f32, muted: bool, solo: bool, pattern: Option<PatternInfo> },
+    /// the key range it answers to, its host-side output volume, whether it is muted or soloed, where its end goes (`route`: to its group's bus or the mix, or nowhere but its
+    /// audio cables) and its pattern (null while it has none).
+    Instrument { plugin: Option<Plugin>, range: Option<NoteRange>, transpose: i8, volume: f32, muted: bool, solo: bool, route: Route, pattern: Option<PatternInfo> },
     /// An effect in a lane's chain or in a group's bus chain, with its dry/wet mix.
     Effect { plugin: Plugin, mix: f32 },
     /// A modulator, lane-scoped or group-scoped. What it drives are its modulation
     /// edges.
     Modulator { source: ModulatorSource },
-    /// A submix group: its volume and stereo balance, and whether it is muted or soloed.
-    Group { volume: f32, pan: f32, muted: bool, solo: bool },
+    /// A submix group: its volume and stereo balance, whether it is muted or soloed, and where its end goes (`route`: to the master, or nowhere but its audio cables).
+    Group { volume: f32, pan: f32, muted: bool, solo: bool, route: Route },
     /// The master mix.
     Master,
 }
@@ -327,12 +328,12 @@ impl SessionModel {
                 parent: None,
                 name: group.display_name(g),
                 ui: None,
-                kind: NodeKind::Group { volume: group.volume, pan: group.pan, muted: group.muted, solo: group.solo },
+                kind: NodeKind::Group { volume: group.volume, pan: group.pan, muted: group.muted, solo: group.solo, route: group.route },
             });
             nodes.extend(group.effects.iter().map(|fx| effect_node(fx, group.node)));
             nodes.extend(group.modulators.iter().map(|m| modulator_node(m, group.node)));
-            // Out of the group, through its bus effects, to the master.
-            audio_chain(&mut edges, group.node, group.effects.iter().map(|fx| fx.node), NodeId::MASTER, EdgeKind::Audio);
+            // Out of the group, through its bus effects, to the master (unless its way out is cut: then the chain ends at its last effect).
+            audio_chain(&mut edges, group.node, group.effects.iter().map(|fx| fx.node), (group.route == Route::Out).then_some((NodeId::MASTER, EdgeKind::Audio)));
         }
 
         for lane in &self.instruments {
@@ -351,17 +352,18 @@ impl SessionModel {
                     volume: lane.volume,
                     muted: lane.muted,
                     solo: lane.solo,
+                    route: lane.route,
                     pattern: lane.pattern.as_ref().map(PatternState::info),
                 },
             });
             nodes.extend(lane.effects.iter().map(|fx| effect_node(fx, lane.node)));
             nodes.extend(lane.modulators.iter().map(|m| modulator_node(m, lane.node)));
-            // Out of the instrument, through the lane's effects, to its group or the master.
-            let (sink, last) = match group {
+            // Out of the instrument, through the lane's effects, to its group or the master (unless its way out is cut).
+            let sink = match group {
                 Some(group) => (group.node, EdgeKind::Member),
                 None => (NodeId::MASTER, EdgeKind::Audio),
             };
-            audio_chain(&mut edges, lane.node, lane.effects.iter().map(|fx| fx.node), sink, last);
+            audio_chain(&mut edges, lane.node, lane.effects.iter().map(|fx| fx.node), (lane.route == Route::Out).then_some(sink));
         }
 
         nodes.push(Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master });
@@ -469,8 +471,8 @@ impl SessionModel {
 }
 
 /// The edges of a serial audio chain: out of `first`, in and out of each of
-/// `through`, into `sink`. The last link, the one into `sink`, is of kind `last`.
-fn audio_chain(edges: &mut Vec<Edge>, first: NodeId, through: impl Iterator<Item = NodeId>, sink: NodeId, last: EdgeKind) {
+/// `through`, and into the node of `sink`, if there is one, by a link of the kind that it says (a chain whose way out is cut has none).
+fn audio_chain(edges: &mut Vec<Edge>, first: NodeId, through: impl Iterator<Item = NodeId>, sink: Option<(NodeId, EdgeKind)>) {
     let mut from = first;
     for node in through {
         edges.push(Edge {
@@ -480,11 +482,13 @@ fn audio_chain(edges: &mut Vec<Edge>, first: NodeId, through: impl Iterator<Item
         });
         from = node;
     }
-    edges.push(Edge {
-        from: Endpoint { node: from, port: Port::AudioOut },
-        to: Endpoint { node: sink, port: Port::AudioIn },
-        kind: last,
-    });
+    if let Some((sink, last)) = sink {
+        edges.push(Edge {
+            from: Endpoint { node: from, port: Port::AudioOut },
+            to: Endpoint { node: sink, port: Port::AudioIn },
+            kind: last,
+        });
+    }
 }
 
 fn effect_node(slot: &PluginSlot, parent: NodeId) -> Node {
@@ -853,7 +857,7 @@ plugin = "builtin:osc"
             [(pad, None), (bus, Some(pad)), (lane0, Some(pad)), (filter, Some(lane0)), (lane1, None), (NodeId::MASTER, None)]
         );
         assert_eq!(node(&graph, pad).name, "Pad");
-        assert_eq!(node(&graph, pad).kind, NodeKind::Group { volume: 0.8, pan: -0.25, muted: false, solo: false });
+        assert_eq!(node(&graph, pad).kind, NodeKind::Group { volume: 0.8, pan: -0.25, muted: false, solo: false, route: Route::Out });
         assert!(matches!(&node(&graph, bus).kind, NodeKind::Effect { mix, .. } if *mix == 0.6));
     }
 
@@ -867,6 +871,41 @@ plugin = "builtin:osc"
         };
         assert_eq!(flags(model.groups[0].node), (false, true));
         assert_eq!(model.instruments.iter().map(|lane| flags(lane.node)).collect::<Vec<_>>(), [(true, false), (true, true), (false, false)]);
+    }
+
+    #[test]
+    fn a_lane_and_a_group_say_which_way_out_they_have_and_no_link_leaves_one_that_is_cut() {
+        let model = load(
+            "[[group]]\nroute = \"none\"\n[[group.effect]]\nplugin = \"builtin:reverb\"\n\
+             [[group]]\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\nroute = \"none\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\ngroup = 1\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\nroute = \"none\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\n",
+        )
+        .model;
+        let graph = model.graph();
+        let route = |id: NodeId| match &node(&graph, id).kind {
+            NodeKind::Instrument { route, .. } | NodeKind::Group { route, .. } => *route,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(model.groups.iter().map(|group| route(group.node)).collect::<Vec<_>>(), [Route::None, Route::Out]);
+        assert_eq!(model.instruments.iter().map(|lane| route(lane.node)).collect::<Vec<_>>(), [Route::None, Route::Out, Route::None, Route::Out]);
+        let (g0, g1, bus) = (model.groups[0].node, model.groups[1].node, model.groups[0].effects[0].node);
+        let (l0, l1, l2, l3, filter) = (model.instruments[0].node, model.instruments[1].node, model.instruments[2].node, model.instruments[3].node, model.instruments[0].effects[0].node);
+        assert_eq!(
+            graph.edges,
+            [
+                // group 0: out of its bus effect, to nowhere; group 1 to the master.
+                audio(out(g0), into(bus)),
+                audio(out(g1), into(NodeId::MASTER)),
+                // lane 0, in group 0, has its filter and no link into the group; lane 1 is a member of group 1; lane 2, in no group, goes nowhere; lane 3 goes to the master.
+                audio(out(l0), into(filter)),
+                member(out(l1), into(g1)),
+                audio(out(l3), into(NodeId::MASTER)),
+            ]
+        );
+        assert_eq!(model.instruments[2].node, l2);
     }
 
     #[test]
@@ -1741,14 +1780,14 @@ depth = 0.2
         assert_eq!(serde_json::to_value(MidiControl::Velocity).unwrap(), json!({"type": "velocity"}));
         assert_eq!(serde_json::to_value(MidiControl::Key).unwrap(), json!({"type": "key"}));
         assert_eq!(
-            serde_json::to_value(NodeKind::Instrument { plugin: None, range: Some(NoteRange { low: 36, high: 83 }), transpose: -12, volume: 0.5, muted: true, solo: false, pattern: None })
+            serde_json::to_value(NodeKind::Instrument { plugin: None, range: Some(NoteRange { low: 36, high: 83 }), transpose: -12, volume: 0.5, muted: true, solo: false, route: Route::None, pattern: None })
                 .unwrap(),
-            json!({"kind": "instrument", "plugin": null, "range": {"low": 36, "high": 83}, "transpose": -12, "volume": 0.5, "muted": true, "solo": false, "pattern": null})
+            json!({"kind": "instrument", "plugin": null, "range": {"low": 36, "high": 83}, "transpose": -12, "volume": 0.5, "muted": true, "solo": false, "route": "none", "pattern": null})
         );
         assert_eq!(serde_json::to_value(NodeKind::Master).unwrap(), json!({"kind": "master"}));
         assert_eq!(
-            serde_json::to_value(NodeKind::Group { volume: 1.0, pan: 0.0, muted: false, solo: true }).unwrap(),
-            json!({"kind": "group", "volume": 1.0, "pan": 0.0, "muted": false, "solo": true})
+            serde_json::to_value(NodeKind::Group { volume: 1.0, pan: 0.0, muted: false, solo: true, route: Route::Out }).unwrap(),
+            json!({"kind": "group", "volume": 1.0, "pan": 0.0, "muted": false, "solo": true, "route": "out"})
         );
     }
 

@@ -320,6 +320,13 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       if ((node?.kind !== "instrument" && node?.kind !== "group") || node.solo === intent.solo) return "nothing";
       return step(`${intent.solo ? "solo" : "unsolo"} ${laneOrGroupWords(node)}`, { type: "setSolo", node: intent.node, solo: node.solo }, null);
     }
+    // (As a mute is: what is neither a lane nor a group is refused, and a way out that is as it is asked to be changes nothing.)
+    case "setRoute": {
+      const node = nodeOf(intent.node);
+      if ((node?.kind !== "instrument" && node?.kind !== "group") || node.route === intent.route) return "nothing";
+      const words = laneOrGroupWords(node);
+      return step(intent.route === "none" ? `cut the way out of ${words}` : `give ${words} its way out`, { type: "setRoute", node: intent.node, route: node.route }, null);
+    }
     case "setNodeUi": {
       const node = nodeOf(intent.node);
       if (!node) return "nothing";

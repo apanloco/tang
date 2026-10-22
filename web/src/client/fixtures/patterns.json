@@ -5312,6 +5312,7 @@
           "name": "Group 1",
           "pan": 0.0,
           "parent": null,
+          "route": "out",
           "solo": false,
           "volume": 1.0
         },
@@ -5742,6 +5743,7 @@
             "presets": []
           },
           "range": null,
+          "route": "out",
           "solo": false,
           "transpose": 0,
           "volume": 1.0
@@ -6270,6 +6272,7 @@
             "presets": []
           },
           "range": null,
+          "route": "out",
           "solo": false,
           "transpose": 0,
           "volume": 1.0
@@ -6283,6 +6286,7 @@
           "pattern": null,
           "plugin": null,
           "range": null,
+          "route": "out",
           "solo": false,
           "transpose": 0,
           "volume": 1.0

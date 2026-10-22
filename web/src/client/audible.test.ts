@@ -13,10 +13,10 @@ function graphOf(flags: number): { graph: Graph; groups: number[]; lanes: number
   const groups = [10, 11];
   const lanes = [20, 21, 22, 23];
   const nodes: Node[] = [
-    ...groups.map((id, place): Node => ({ id, parent: null, name: `Group ${String(place + 1)}`, kind: "group", volume: 1, pan: 0, ...bits(place) })),
+    ...groups.map((id, place): Node => ({ id, parent: null, name: `Group ${String(place + 1)}`, kind: "group", volume: 1, pan: 0, route: "out", ...bits(place) })),
     ...lanes.map((id, place): Node => {
       const group = audibleFixture.lanes[place];
-      return { id, parent: group === null || group === undefined ? null : (groups[group] ?? null), name: "Oscillator", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, pattern: null, ...bits(2 + place) };
+      return { id, parent: group === null || group === undefined ? null : (groups[group] ?? null), name: "Oscillator", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, route: "out", pattern: null, ...bits(2 + place) };
     }),
   ];
   return { graph: { nodes, edges: [] }, groups, lanes };

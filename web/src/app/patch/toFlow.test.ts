@@ -57,6 +57,7 @@ const instrumentOf = (id: NodeId, withPlugin: Plugin | null, parent: NodeId | nu
   volume: 1,
   muted: false,
   solo: false,
+  route: "out",
   pattern: null,
 });
 
@@ -75,7 +76,7 @@ const modulator = (id: NodeId, parent: NodeId): Node => ({
 const envelope = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
 const control = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "CC 74", kind: "modulator", source: { type: "midiLearn", control: { type: "cc", number: 74 }, learning: false } });
 
-const group = (id: NodeId): Node => ({ id, parent: null, name: `Group ${String(id)}`, kind: "group", volume: 1, pan: 0, muted: false, solo: false });
+const group = (id: NodeId): Node => ({ id, parent: null, name: `Group ${String(id)}`, kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" });
 
 const master: Node = { id: MASTER, parent: null, name: "Master", kind: "master" };
 

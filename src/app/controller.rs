@@ -55,7 +55,7 @@ use crate::plugin::chain::{
     CHAIN_CHANNELS, CableFrom, CableProblem, CableTo, GraphCommand, MidiLearnedNotification, ModTarget, ModTargetKind, ModulatorLocation, PatternNotification,
 };
 use crate::plugin::{self, Plugin, Runtime};
-use crate::session::{self, PianoConfig};
+use crate::session::{self, PianoConfig, Route};
 use crate::telemetry::Telemetry;
 
 /// How often `poll` looks for newly connected devices.
@@ -413,6 +413,7 @@ impl Controller {
             volume: 1.0,
             muted: false,
             solo: false,
+            route: Route::Out,
             instrument: None,
             effects: Vec::new(),
             modulators: Vec::new(),
@@ -442,6 +443,7 @@ impl Controller {
             pan: 0.0,
             muted: false,
             solo: false,
+            route: Route::Out,
             effects: Vec::new(),
             modulators: Vec::new(),
             meter,

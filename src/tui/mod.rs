@@ -46,6 +46,7 @@ use crate::piano_filter::PianoMode;
 use crate::plugin;
 use crate::plugin::chain::{GraphCommand, ModulatorLocation};
 use crate::scale::{ScaleSetting, NOTE_NAMES};
+use crate::session::Route;
 use crate::telemetry;
 
 const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Help"];
@@ -889,14 +890,14 @@ impl State {
         self.selected_address()?.inst()
     }
 
-    /// The lane or the group that the selected entry of the tree is of, with whether it is muted and whether it is soloed: what `M` and `S` ask the
-    /// intents for.
-    fn selected_lane_or_group(&self) -> Option<(NodeId, bool, bool)> {
+    /// The lane or the group that the selected entry of the tree is of, with whether it is muted, whether it is soloed and which way out it has: what `M`, `S` and
+    /// `w` ask the intents for.
+    fn selected_lane_or_group(&self) -> Option<(NodeId, bool, bool, Route)> {
         match self.selected_address().copied()? {
             TreeAddress::Group(group) | TreeAddress::GroupEffect { group, .. } | TreeAddress::GroupModulator { group, .. } => {
-                self.ctl.model.groups.get(group).map(|bus| (bus.node, bus.muted, bus.solo))
+                self.ctl.model.groups.get(group).map(|bus| (bus.node, bus.muted, bus.solo, bus.route))
             }
-            address => address.inst().and_then(|inst| self.ctl.model.instruments.get(inst)).map(|lane| (lane.node, lane.muted, lane.solo)),
+            address => address.inst().and_then(|inst| self.ctl.model.instruments.get(inst)).map(|lane| (lane.node, lane.muted, lane.solo, lane.route)),
         }
     }
 
@@ -2666,13 +2667,20 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // its effects, its modulators and its pattern are the lane's; a group's header, its bus effects and its
         // modulators are the group's), as the page's M and S buttons do.
         KeyCode::Char('M') if s.active_tab == 0 && !s.focus_params => {
-            if let Some((node, muted, _)) = s.selected_lane_or_group() {
+            if let Some((node, muted, _, _)) = s.selected_lane_or_group() {
                 s.apply(Intent::SetMute { node, muted: !muted });
             }
         }
         KeyCode::Char('S') if s.active_tab == 0 && !s.focus_params => {
-            if let Some((node, _, solo)) = s.selected_lane_or_group() {
+            if let Some((node, _, solo, _)) = s.selected_lane_or_group() {
                 s.apply(Intent::SetSolo { node, solo: !solo });
+            }
+        }
+        // 'w' (chain focus) — cut the way out of the lane or the group that the selected entry is of, or give it back: where its end goes (its group's bus or the mix),
+        // or nowhere but its audio cables. A way out that would make the audio go round is refused (logged), as the page's is.
+        KeyCode::Char('w') if s.active_tab == 0 && !s.focus_params => {
+            if let Some((node, _, _, route)) = s.selected_lane_or_group() {
+                s.apply(Intent::SetRoute { node, route: if route == Route::Out { Route::None } else { Route::Out } });
             }
         }
 
@@ -4306,14 +4314,11 @@ fn depth_percent(depth: f32) -> String {
 /// Render one instrument and its children (pattern, effects, lane mod rack).
 /// `prefix` is prepended to every label so the whole sub-tree can be nested
 /// under a group header.
-/// What the tree says at the end of a lane's or a group's line of whether it is muted and whether it is soloed: `  [mute]`, `  [solo]` or both.
-fn flags_label(muted: bool, solo: bool) -> String {
-    match (muted, solo) {
-        (false, false) => String::new(),
-        (true, false) => "  [mute]".to_string(),
-        (false, true) => "  [solo]".to_string(),
-        (true, true) => "  [mute] [solo]".to_string(),
-    }
+/// What the tree says at the end of a lane's or a group's line of whether it is muted, whether it is soloed and whether its way out is cut: `  [mute]`, `  [solo]` and `  [no out]`,
+/// the ones that there are, in that order, after two spaces.
+fn flags_label(muted: bool, solo: bool, route: Route) -> String {
+    let flags: Vec<&str> = [(muted, "[mute]"), (solo, "[solo]"), (route == Route::None, "[no out]")].into_iter().filter_map(|(on, word)| on.then_some(word)).collect();
+    if flags.is_empty() { String::new() } else { format!("  {}", flags.join(" ")) }
 }
 
 fn push_instrument_entries(
@@ -4335,7 +4340,7 @@ fn push_instrument_entries(
         String::new()
     };
     entries.push(TreeEntry {
-        label: format!("{prefix}{plugin_label}{range_label}{transpose_label}{}", flags_label(inst.muted, inst.solo)),
+        label: format!("{prefix}{plugin_label}{range_label}{transpose_label}{}", flags_label(inst.muted, inst.solo, inst.route)),
         address: TreeAddress::Instrument(inst_idx),
         node: inst.node,
         color: None,
@@ -4430,7 +4435,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
             String::new()
         };
         entries.push(TreeEntry {
-            label: format!("\u{25a6} {name}{vol}{}", flags_label(group.muted, group.solo)),
+            label: format!("\u{25a6} {name}{vol}{}", flags_label(group.muted, group.solo, group.route)),
             address: TreeAddress::Group(g_idx),
             node: group.node,
             color: Some(Color::Cyan),
@@ -4596,6 +4601,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  v          Set instrument volume".into(),
         "  M          Mute / unmute the lane or group (a mute wins over a solo)".into(),
         "  S          Solo / unsolo it (while anything is soloed only it is heard)".into(),
+        "  w          Cut / give back the way out of the lane or group (it is heard only through its audio cables)".into(),
         "  a          Add effect after selected".into(),
         "  d          Delete selected".into(),
         "  m          Add modulator (lane rack; group rack on a group node)".into(),

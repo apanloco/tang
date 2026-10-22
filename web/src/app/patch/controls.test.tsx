@@ -370,7 +370,7 @@ describe("a host-side gain of a node", () => {
 
   test("shows a group's volume and pan, over their ranges, and pan goes back to the middle", async () => {
     const withGroup: Snapshot = structuredClone(tracerSnapshot);
-    withGroup.graph.nodes.push({ id: 77, parent: null, name: "Group 1", kind: "group", volume: 0.8, pan: -0.5, muted: false, solo: false });
+    withGroup.graph.nodes.push({ id: 77, parent: null, name: "Group 1", kind: "group", volume: 0.8, pan: -0.5, muted: false, solo: false, route: "out" });
     const { requests } = await rig(
       <div data-testid="group">
         <GainControl node={77} gain="groupVolume" />

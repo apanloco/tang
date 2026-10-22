@@ -391,6 +391,7 @@
           "presets": []
         },
         "range": null,
+        "route": "out",
         "solo": false,
         "transpose": 0,
         "volume": 0.1

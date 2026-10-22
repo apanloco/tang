@@ -4,7 +4,7 @@
 // to a plain request is what a person needs: the node that was made (the intent does not name it:
 // a client finds it in the session it is then given), and, when the server refuses, a notice that
 // says what could not be done and why, in the names the canvas shows.
-import type { EdgeId, Endpoint, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternField, Plugin, Port } from "../protocol";
+import type { EdgeId, Endpoint, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternField, Plugin, Port, Route } from "../protocol";
 import type { Client } from "./connection";
 import { isModulation } from "./cables";
 import { MODULATOR_LABELS } from "./modulatorKinds";
@@ -51,6 +51,7 @@ const DOING: Record<Intent["type"], string> = {
   setRange: "set the keys of a lane",
   setMute: "mute or unmute a lane or a group",
   setSolo: "solo or unsolo a lane or a group",
+  setRoute: "cut or give back the way out of a lane or a group",
   setScale: "set the scale of the piano",
   setLocked: "lock or unlock the piano",
   setBpm: "set the tempo",
@@ -192,6 +193,14 @@ export class Editor {
   /** Solo or unsolo the lane or group `node`: while anything is soloed only what is soloed is heard. True if it was done (the page says why if it was not). */
   setSolo(node: NodeId, solo: boolean): Promise<boolean> {
     return this.#attempt(`${solo ? "solo" : "unsolo"} ${this.#name(node)}`, { type: "setSolo", node, solo });
+  }
+
+  /**
+   * Cut (`none`) or give back (`out`) the way out of the lane or group `node`: where its end goes, to the bus of its group or the mix, or nowhere but its audio cables. True if it was done (the
+   * page says why if it was not: a way out that is given back where the audio would go round, by the cables there are).
+   */
+  setRoute(node: NodeId, route: Route): Promise<boolean> {
+    return this.#attempt(route === "none" ? `cut the way out of ${this.#name(node)}` : `give ${this.#name(node)} its way out`, { type: "setRoute", node, route });
   }
 
   /**

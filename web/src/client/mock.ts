@@ -25,6 +25,7 @@ import type {
   PatternInfo,
   Plugin,
   Port,
+  Route,
   ServerMessage,
   Snapshot,
   StampedEvent,
@@ -50,7 +51,7 @@ import { parseScale } from "./scales";
 import { stepsOutput, stepsPlace } from "./steps";
 import { rateAt } from "./tempo";
 import { fractionOf, isLog, valueAt } from "./travel";
-import { cableEnds, cableLoops, effectLoops, laneLoops } from "./wiring";
+import { cableEnds, cableLoops, effectLoops, laneLoops, linksOf, routeLoops } from "./wiring";
 
 export interface MockOptions {
   /** The session it serves; the tracer by default. */
@@ -665,7 +666,7 @@ function addInstrumentOutcome(snapshot: Snapshot, plugin: string, counters: Coun
   const master = nodes.find((n) => n.kind === "master");
   if (!master) return invalid("the session has no master to hear a lane");
 
-  const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume, muted: false, solo: false, pattern: null };
+  const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume, muted: false, solo: false, route: "out", pattern: null };
   const atNode = nodes.indexOf(master);
   const link: Edge = { from: { node: added.id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };
   const firstCable = edges.findIndex(isModulation);
@@ -835,6 +836,22 @@ function setLaneGroupOutcome(snapshot: Snapshot, node: NodeId, group: NodeId | n
 }
 
 /**
+ * The way out of a lane or a group cut or given back, as the controller does it (`set_route_intent`): the node has to be a lane or a group (the master is no node of the model, as far as the
+ * controller goes), and a way out that is given back is refused where the audio would go round with the cables there are. The links of the audio path are then the graph's for the nodes as they
+ * are (`linksOf`): a chain whose way out is cut ends at its last node, and one that is given back goes into its group or the mix again, where the graph lists it.
+ */
+function setRouteOutcome(snapshot: Snapshot, node: NodeId, route: Route): Outcome {
+  const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
+  if (!found) return noNode(node);
+  if (found.kind !== "instrument" && found.kind !== "group") return invalid("only a lane or a group has a way out");
+  if (route === "out" && routeLoops(snapshot.graph, node, route)) {
+    return invalid(`giving that ${found.kind === "instrument" ? "lane" : "group"} its way out would make the audio go round, by the cables there are`);
+  }
+  const nodes = snapshot.graph.nodes.map((n) => (n.id === node && (n.kind === "instrument" || n.kind === "group") ? { ...n, route } : n));
+  return { restructured: { ...snapshot, graph: { nodes, edges: [...linksOf(nodes), ...snapshot.graph.edges.filter((e) => !isLink(e))] } } };
+}
+
+/**
  * A group added at the end, with the lanes in `members` put in it, as the controller does it (`add_group_intent`): every member is looked at
  * first, and one that is no lane refuses the whole. The graph lists the groups (each with its effects and modulators), then the lanes, then the
  * master, so the group goes before the first lane; its link to the master comes after the links of the groups there are, and its two meters in
@@ -851,7 +868,7 @@ function addGroupOutcome(snapshot: Snapshot, members: readonly NodeId[], counter
   if (!master) return invalid("the session has no master to hear a group");
 
   const id = counters.node();
-  const added: Node = { id, parent: null, name: `Group ${nodes.filter((n) => n.kind === "group").length + 1}`, kind: "group", volume: 1, pan: 0, muted: false, solo: false };
+  const added: Node = { id, parent: null, name: `Group ${nodes.filter((n) => n.kind === "group").length + 1}`, kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" };
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const inLane = (node: NodeId): boolean => {
     const found = byId.get(node);
@@ -962,6 +979,7 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "setPinned") return pinnedOutcome(snapshot, intent.node, intent.params);
   if (intent.type === "renameGroup") return renameGroupOutcome(snapshot, intent.node, intent.name);
   if (intent.type === "setLaneGroup") return setLaneGroupOutcome(snapshot, intent.node, intent.group);
+  if (intent.type === "setRoute") return setRouteOutcome(snapshot, intent.node, intent.route);
   if (intent.type === "addGroup") return addGroupOutcome(snapshot, intent.members, counters);
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
   if (intent.type === "addInstrument") return addInstrumentOutcome(snapshot, intent.plugin, counters, catalog);
