@@ -50,6 +50,11 @@ use crate::session::Route;
 use crate::telemetry;
 
 const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Help"];
+/// The tabs by their place in `TAB_NAMES`, which is what `State::active_tab` is.
+const TAB_SESSION: usize = 0;
+const TAB_PIANO: usize = 1;
+const TAB_SCOPE: usize = 2;
+const TAB_HELP: usize = 3;
 const TAB_SEP: &str = " │ ";
 
 /// Addresses a specific node in the instrument tree.
@@ -467,7 +472,7 @@ impl State {
             ctl,
             clip,
             web: None,
-            active_tab: 0,
+            active_tab: TAB_SESSION,
             chain_state: ListState::new(tree_entries.len()),
             param_state: ListState::new(param_len),
             tree_entries,
@@ -759,7 +764,7 @@ impl State {
     /// events of the terminal and the requests of the browsers (which can take the node away): there is no frame between them and it. (The tests' keys do it in `process_event`.)
     fn sync_strip(&mut self) {
         let selected = self.selected_signal().map(|(node, _)| node);
-        self.strip.sync(&mut self.ctl, self.active_tab == 0, selected);
+        self.strip.sync(&mut self.ctl, self.active_tab == TAB_SESSION, selected);
     }
 
     /// A lane modulator by instrument + lane-global index.
@@ -2394,18 +2399,18 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 log::warn!("Panic: the channel to the audio thread was full, and {lost} messages were lost");
             }
         }
-        KeyCode::Char('1') => s.active_tab = 0,
-        KeyCode::Char('2') => s.active_tab = 1,
-        KeyCode::Char('3') => s.active_tab = 2,
-        KeyCode::Char('4') => s.active_tab = 3,
+        KeyCode::Char('1') => s.active_tab = TAB_SESSION,
+        KeyCode::Char('2') => s.active_tab = TAB_PIANO,
+        KeyCode::Char('3') => s.active_tab = TAB_SCOPE,
+        KeyCode::Char('4') => s.active_tab = TAB_HELP,
         KeyCode::Tab => s.active_tab = (s.active_tab + 1) % TAB_NAMES.len(),
         KeyCode::BackTab => s.active_tab = (s.active_tab + TAB_NAMES.len() - 1) % TAB_NAMES.len(),
 
         // ---- Piano tab ----
-        KeyCode::Char('k') if s.active_tab == 1 => {
+        KeyCode::Char('k') if s.active_tab == TAB_PIANO => {
             s.open_scale_selector();
         }
-        KeyCode::Char('l') if s.active_tab == 1 => {
+        KeyCode::Char('l') if s.active_tab == TAB_PIANO => {
             let new_mode = match s.ctl.piano_filter.mode() {
                 PianoMode::Highlight => PianoMode::Locked,
                 PianoMode::Locked => PianoMode::Highlight,
@@ -2414,24 +2419,24 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 log::info!("Piano mode → {}", new_mode.label());
             }
         }
-        KeyCode::Char('[') if s.active_tab == 1 && s.piano_view_octave > 0 => {
+        KeyCode::Char('[') if s.active_tab == TAB_PIANO && s.piano_view_octave > 0 => {
             s.piano_view_octave -= 1;
         }
-        KeyCode::Char(']') if s.active_tab == 1 && s.piano_view_octave < 8 => {
+        KeyCode::Char(']') if s.active_tab == TAB_PIANO && s.piano_view_octave < 8 => {
             s.piano_view_octave += 1;
         }
 
         // ---- Session tab: the scope of the node under the chain cursor, under the chain and the parameters ----
-        KeyCode::Char('o') if s.active_tab == 0 => s.strip.on = !s.strip.on,
-        KeyCode::Char('O') if s.active_tab == 0 => s.strip.scope.toggle_kind(),
+        KeyCode::Char('o') if s.active_tab == TAB_SESSION => s.strip.on = !s.strip.on,
+        KeyCode::Char('O') if s.active_tab == TAB_SESSION => s.strip.scope.toggle_kind(),
 
         // ---- Scope tab ----
-        KeyCode::Char('v') if s.active_tab == 2 => s.scope.toggle_kind(),
-        KeyCode::Left if s.active_tab == 2 => s.scope.faster(),
-        KeyCode::Right if s.active_tab == 2 => s.scope.slower(),
+        KeyCode::Char('v') if s.active_tab == TAB_SCOPE => s.scope.toggle_kind(),
+        KeyCode::Left if s.active_tab == TAB_SCOPE => s.scope.faster(),
+        KeyCode::Right if s.active_tab == TAB_SCOPE => s.scope.slower(),
 
         // 'i' — replace instrument on the selected instrument slot.
-        KeyCode::Char('i') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('i') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some(TreeAddress::Instrument(_)) = s.selected_address().copied() {
                 s.open_selector(SelectorMode::Instrument);
             }
@@ -2444,7 +2449,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // (The lane is made by the intent a browser's "+ Instrument" asks for, a step
         // of the history: the catalog has to name the oscillator, as the scan has long
         // before anyone presses a key; if it does not, there is no lane to fill.)
-        KeyCode::Char('n') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('n') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if s.apply(Intent::AddInstrument { plugin: "builtin:osc".to_string() }).is_some() {
                 // Move the cursor onto the new lane so the selector fills it.
                 let new_idx = s.ctl.model.instruments.len().saturating_sub(1);
@@ -2460,7 +2465,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // 'R' — set the key range of the selected instrument, or rename the
         // selected group (range doesn't apply to groups).
-        KeyCode::Char('R') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('R') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some(TreeAddress::Group(group)) = s.selected_address().copied() {
                 let initial = s
                     .ctl
@@ -2489,7 +2494,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // Session: contextual add (chain focus only).
         // Instrument/Effect → add effect.
-        KeyCode::Char('a') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('a') if s.active_tab == TAB_SESSION && !s.focus_params => {
             match s.selected_address().copied() {
                 Some(TreeAddress::Instrument(_) | TreeAddress::Effect { .. }) => {
                     s.open_selector(SelectorMode::Effect);
@@ -2509,7 +2514,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // 'm' (param focus) — modulate the selected parameter: open a popup to
         // bind it to a new or existing lane modulator.
-        KeyCode::Char('m') if s.active_tab == 0 && s.focus_params => {
+        KeyCode::Char('m') if s.active_tab == TAB_SESSION && s.focus_params => {
             match s.selected_address().copied() {
                 Some(TreeAddress::Instrument(_) | TreeAddress::Effect { .. }) => {
                     s.open_modulate();
@@ -2529,14 +2534,14 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // 'l' (param focus) — MIDI learn: bind the next CC / pitch-bend to the
         // selected parameter (plugin param or modulator field).
-        KeyCode::Char('l') if s.active_tab == 0 && s.focus_params => {
+        KeyCode::Char('l') if s.active_tab == TAB_SESSION && s.focus_params => {
             s.learn_selected_param();
         }
 
         // 'm' (chain focus) — add an empty LFO modulator to the instrument's
         // lane rack. (In param focus, `m` modulates the selected parameter —
         // handled above.)
-        KeyCode::Char('m') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('m') if s.active_tab == TAB_SESSION && !s.focus_params => {
             // On a group / group-bus node, add a group-scoped modulator; on an
             // instrument-side node, add a lane modulator.
             let group = match s.selected_address().copied() {
@@ -2562,14 +2567,14 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // 'g' (chain focus) — assign the selected instrument to a group
         // (new, existing, or ungroup), via a popup.
-        KeyCode::Char('g') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('g') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some(TreeAddress::Instrument(inst)) = s.selected_address().copied() {
                 s.open_group_assign(inst);
             }
         }
 
         // 'p' — open preset selector for the selected plugin slot.
-        KeyCode::Char('p') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('p') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some(addr) = s.selected_address().copied() {
                 let target = match addr {
                     TreeAddress::Instrument(inst) => Some((inst, 0)),
@@ -2583,7 +2588,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // 't' — add modulation target (when modulator selected).
-        KeyCode::Char('t') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('t') if s.active_tab == TAB_SESSION && !s.focus_params => {
             match s.selected_address().copied() {
                 Some(TreeAddress::Modulator { inst, index }) => {
                     s.open_target_selector(inst, index);
@@ -2597,7 +2602,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // Ctrl+R — clear the pattern of the lane (on its Pattern or Instrument node), as `d` on the pattern does. (Before `r`, which records, whatever
         // the modifiers: the help said Ctrl+R clears, and it recorded.)
-        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) && s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) && s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some(TreeAddress::Pattern(inst) | TreeAddress::Instrument(inst)) = s.selected_address().copied() {
                 if s.ctl.model.instruments.get(inst).is_some_and(|lane| lane.pattern.is_some()) {
                     s.clear_pattern(inst);
@@ -2606,7 +2611,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // 'r' — toggle pattern recording (on Pattern or Instrument node).
-        KeyCode::Char('r') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('r') if s.active_tab == TAB_SESSION && !s.focus_params => {
             let target = match s.selected_address().copied() {
                 Some(TreeAddress::Pattern(inst)) => Some(inst),
                 Some(TreeAddress::Instrument(inst)) => Some(inst),
@@ -2620,7 +2625,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // 'b' — edit BPM.
-        KeyCode::Char('b') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('b') if s.active_tab == TAB_SESSION && !s.focus_params => {
             s.bpm_editing = Some(EditState {
                 input: TextInputState::new(&format!("{:.0}", s.ctl.model.bpm)),
                 param_name: "BPM".to_string(),
@@ -2630,7 +2635,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // 'x' — edit the dry/wet mix of the selected effect (host-side blend).
-        KeyCode::Char('x') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('x') if s.active_tab == TAB_SESSION && !s.focus_params => {
             let effect = match s.selected_address().copied() {
                 Some(TreeAddress::Effect { inst, index }) => {
                     s.ctl.model.instruments.get(inst).and_then(|n| n.effects.get(index))
@@ -2647,7 +2652,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // 'v' — edit the output volume of the selected instrument or group
         // (host-side gain, applied before effects). UI range 0–4.
-        KeyCode::Char('v') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('v') if s.active_tab == TAB_SESSION && !s.focus_params => {
             let target = match s.selected_address().copied() {
                 Some(TreeAddress::Group(group)) => {
                     s.ctl.model.groups.get(group).map(|g| (g.node, Gain::GroupVolume, g.volume))
@@ -2666,25 +2671,25 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // 'M' / 'S' (chain focus) — mute or solo the lane or the group that the selected entry is of (the instrument,
         // its effects, its modulators and its pattern are the lane's; a group's header, its bus effects and its
         // modulators are the group's), as the page's M and S buttons do.
-        KeyCode::Char('M') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('M') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some((node, muted, _, _)) = s.selected_lane_or_group() {
                 s.apply(Intent::SetMute { node, muted: !muted });
             }
         }
-        KeyCode::Char('S') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('S') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some((node, _, solo, _)) = s.selected_lane_or_group() {
                 s.apply(Intent::SetSolo { node, solo: !solo });
             }
         }
         // 'w' (chain focus) — cut the way out of the lane or the group that the selected entry is of, or give it back: where its end goes (its group's bus or the mix),
         // or nowhere but its audio cables. A way out that would make the audio go round is refused (logged), as the page's is.
-        KeyCode::Char('w') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('w') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some((node, _, _, route)) = s.selected_lane_or_group() {
                 s.apply(Intent::SetRoute { node, route: if route == Route::Out { Route::None } else { Route::Out } });
             }
         }
 
-        KeyCode::Char('d') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('d') if s.active_tab == TAB_SESSION && !s.focus_params => {
             let sel = s.chain_state.selected;
             if sel < s.tree_entries.len() {
                 let addr = s.tree_entries[sel].address;
@@ -2730,7 +2735,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // Enter: focus params or open value editor.
-        KeyCode::Enter if s.active_tab == 0 => {
+        KeyCode::Enter if s.active_tab == TAB_SESSION => {
             if s.focus_params {
                 let sel = s.chain_state.selected;
                 let pa = s.param_state.selected;
@@ -2813,7 +2818,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 }
             }
         }
-        KeyCode::Esc if s.active_tab == 0 => {
+        KeyCode::Esc if s.active_tab == TAB_SESSION => {
             if s.param_filtering {
                 // Cancel filter input, clear filter text.
                 s.param_filtering = false;
@@ -2829,7 +2834,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // '/' — activate parameter filter (only for plugin nodes, not modulators).
-        KeyCode::Char('/') if s.active_tab == 0 && s.focus_params && !s.param_filtering => {
+        KeyCode::Char('/') if s.active_tab == TAB_SESSION && s.focus_params && !s.param_filtering => {
             let sel = s.chain_state.selected;
             if sel < s.tree_entries.len() {
                 let is_plugin = matches!(
@@ -2843,16 +2848,16 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // Parameter adjustment.
-        KeyCode::Left if s.active_tab == 0 && s.focus_params && !s.param_filtering => {
+        KeyCode::Left if s.active_tab == TAB_SESSION && s.focus_params && !s.param_filtering => {
             s.adjust_param(-1.0, modifiers);
         }
-        KeyCode::Right if s.active_tab == 0 && s.focus_params && !s.param_filtering => {
+        KeyCode::Right if s.active_tab == TAB_SESSION && s.focus_params && !s.param_filtering => {
             s.adjust_param(1.0, modifiers);
         }
 
         // Reorder effects / reorder instruments.
         KeyCode::Up
-            if s.active_tab == 0
+            if s.active_tab == TAB_SESSION
                 && !s.focus_params
                 && modifiers.contains(KeyModifiers::SHIFT) =>
         {
@@ -2899,7 +2904,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
         KeyCode::Down
-            if s.active_tab == 0
+            if s.active_tab == TAB_SESSION
                 && !s.focus_params
                 && modifiers.contains(KeyModifiers::SHIFT) =>
         {
@@ -2955,39 +2960,39 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // Navigation.
         KeyCode::Up => match s.active_tab {
-            0 if s.focus_params => s.param_state.up(),
-            0 => {
+            TAB_SESSION if s.focus_params => s.param_state.up(),
+            TAB_SESSION => {
                 s.chain_state.up();
                 s.sync_param_state();
             }
-            3 => s.help_offset = s.help_offset.saturating_sub(1),
+            TAB_HELP => s.help_offset = s.help_offset.saturating_sub(1),
             _ => {}
         },
         KeyCode::Down => match s.active_tab {
-            0 if s.focus_params => s.param_state.down(),
-            0 => {
+            TAB_SESSION if s.focus_params => s.param_state.down(),
+            TAB_SESSION => {
                 s.chain_state.down();
                 s.sync_param_state();
             }
-            3 => s.help_offset += 1,
+            TAB_HELP => s.help_offset += 1,
             _ => {}
         },
         KeyCode::PageUp => match s.active_tab {
-            0 if s.focus_params => s.param_state.page_up(20),
-            0 => {
+            TAB_SESSION if s.focus_params => s.param_state.page_up(20),
+            TAB_SESSION => {
                 s.chain_state.page_up(20);
                 s.sync_param_state();
             }
-            3 => s.help_offset = s.help_offset.saturating_sub(20),
+            TAB_HELP => s.help_offset = s.help_offset.saturating_sub(20),
             _ => {}
         },
         KeyCode::PageDown => match s.active_tab {
-            0 if s.focus_params => s.param_state.page_down(20),
-            0 => {
+            TAB_SESSION if s.focus_params => s.param_state.page_down(20),
+            TAB_SESSION => {
                 s.chain_state.page_down(20);
                 s.sync_param_state();
             }
-            3 => s.help_offset += 20,
+            TAB_HELP => s.help_offset += 20,
             _ => {}
         },
         _ => {}
@@ -3007,7 +3012,7 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
             }
 
             // Action bar.
-            if s.active_tab == 0 {
+            if s.active_tab == TAB_SESSION {
                 let sel = s.chain_state.selected;
                 let addr = s.tree_entries.get(sel).map(|e| &e.address);
                 let actions = action_bar_items(addr, s.focus_params);
@@ -3018,7 +3023,7 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
             }
 
             match s.active_tab {
-                0 => {
+                TAB_SESSION => {
                     if s.areas.chain_inner.contains((x, y).into()) {
                         if s.chain_state.click_at(y, s.areas.chain_inner) {
                             s.focus_params = false;
@@ -3055,7 +3060,7 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
                         }
                     }
                 }
-                3 => {
+                TAB_HELP => {
                     let total = s.help_lines.len();
                     if ScrollView::is_scrollbar_hit(x, s.areas.content, total) {
                         s.help_offset =
@@ -3067,12 +3072,12 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if s.scrollbar_dragging && s.active_tab == 3 {
+            if s.scrollbar_dragging && s.active_tab == TAB_HELP {
                 let total = s.help_lines.len();
                 s.help_offset = ScrollView::offset_from_scrollbar(y, s.areas.content, total);
-            } else if s.param_scrollbar_dragging && s.active_tab == 0 {
+            } else if s.param_scrollbar_dragging && s.active_tab == TAB_SESSION {
                 s.param_state.select_from_scrollbar(y, s.areas.param_inner);
-            } else if s.param_dragging && s.active_tab == 0 {
+            } else if s.param_dragging && s.active_tab == TAB_SESSION {
                 if let Some(val) = bar_value_at(x, s.areas.param_inner) {
                     if let Some((min, max)) = s.selected_param_range() {
                         let mapped = min + val * (max - min);
@@ -3087,25 +3092,25 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
             s.param_scrollbar_dragging = false;
         }
         MouseEventKind::ScrollUp => match s.active_tab {
-            0 if s.focus_params => {
+            TAB_SESSION if s.focus_params => {
                 for _ in 0..3 { s.param_state.up_nowrap(); }
             }
-            0 => {
+            TAB_SESSION => {
                 for _ in 0..3 { s.chain_state.up_nowrap(); }
                 s.sync_param_state();
             }
-            3 => s.help_offset = s.help_offset.saturating_sub(3),
+            TAB_HELP => s.help_offset = s.help_offset.saturating_sub(3),
             _ => {}
         },
         MouseEventKind::ScrollDown => match s.active_tab {
-            0 if s.focus_params => {
+            TAB_SESSION if s.focus_params => {
                 for _ in 0..3 { s.param_state.down_nowrap(); }
             }
-            0 => {
+            TAB_SESSION => {
                 for _ in 0..3 { s.chain_state.down_nowrap(); }
                 s.sync_param_state();
             }
-            3 => s.help_offset += 3,
+            TAB_HELP => s.help_offset += 3,
             _ => {}
         },
         _ => {}
@@ -3142,9 +3147,10 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
     s.areas.content = content_area;
     s.areas.action_bar = action_area;
 
-    let session_label = if s.ctl.dirty { "(1) Session *" } else { "(1) Session" };
-    let tab_names: &[&str] = &[session_label, TAB_NAMES[1], TAB_NAMES[2], TAB_NAMES[3]];
-    frame.render_widget(TabBar::new(tab_names, s.active_tab), tab_area);
+    let session_label = if s.ctl.dirty { "(1) Session *" } else { TAB_NAMES[TAB_SESSION] };
+    let mut tab_names = TAB_NAMES.to_vec();
+    tab_names[TAB_SESSION] = session_label;
+    frame.render_widget(TabBar::new(&tab_names, s.active_tab), tab_area);
 
     // The right side of the tab bar: the web interface when there is one, the CLIP
     // light while it is lit, then the BPM. The web label gives way first: it is
@@ -3176,7 +3182,7 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
     }
 
     match s.active_tab {
-        0 => {
+        TAB_SESSION => {
             // The scope of the node under the cursor, if it is on and there is room, takes the foot of the tab: the chain and the parameters are what is above it.
             let (session_area, strip_area) = scope_view::split_for_strip(content_area, s.strip.on);
             // Pre-compute approximate inner heights and sync scroll offsets
@@ -3251,17 +3257,17 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
                 render_save_as_popup(frame, area, sa);
             }
         }
-        1 => {
+        TAB_PIANO => {
             render_piano_tab(frame, content_area, s);
             if let Some(ss) = &s.scale_selector {
                 render_scale_selector_popup(frame, area, ss);
             }
         }
-        2 => {
+        TAB_SCOPE => {
             s.scope.take(&s.ctl.telemetry.scope, Instant::now());
             scope_view::render(frame, content_area, &s.scope, s.ctl.sample_rate);
         }
-        3 => render_help(frame, content_area, &s.help_lines, s.help_offset),
+        TAB_HELP => render_help(frame, content_area, &s.help_lines, s.help_offset),
         _ => {}
     }
 
