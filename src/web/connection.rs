@@ -513,7 +513,8 @@ mod tests {
         rig.send(json!({"type": "panic"}));
         let played = rig.played();
         assert_eq!(played.len(), 16 + 3 + 16 + 16, "pedal up on every channel, the three held notes ended, all notes off and all sound off on every channel");
-        assert_eq!(played[16..19], [(0, [0x80, 60, 0]), (0, [0x80, 62, 0]), (0, [0x80, 72, 0])], "the notes held, the lowest first");
+        let to_all = |bytes: [u8; 3]| MidiEvent::from_source(crate::source::Source::BROADCAST, 0, bytes);
+        assert_eq!(played[16..19], [to_all([0x80, 60, 0]), to_all([0x80, 62, 0]), to_all([0x80, 72, 0])], "the notes held, the lowest first, as no source's: every lane hears a panic");
         assert!(rig.held.held().is_empty(), "and nothing is held after it");
         // What the connection held is let go of: closing it ends no note a second time.
         rig.conn.close();

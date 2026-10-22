@@ -11,7 +11,7 @@ use crate::ids::{EdgeId, NodeId};
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget, Route};
-use crate::source::Events;
+use crate::source::{Events, MAX_SOURCES, Source, SourceSet};
 use crate::telemetry::{self, Meter, MeterSlots, Slot, Telemetry};
 
 mod nodes;
@@ -1558,8 +1558,8 @@ fn lane_member_ordinal(instruments: &[InstrumentLane], inst: usize) -> Option<(u
 }
 
 /// Build the trigger MIDI for a group's modulators: note events whose note
-/// falls within any member's range (members with no range match all notes),
-/// plus all non-note events. Drives group-scoped envelope modulators so the
+/// falls within the range of a member that hears their source (members with no range match all notes),
+/// plus the non-note events whose source a member hears (all of them, for a group with no member). Drives group-scoped envelope modulators so the
 /// group envelope opens whenever any member would sound a note.
 fn build_group_midi(
     instruments: &[InstrumentLane],
@@ -1568,18 +1568,19 @@ fn build_group_midi(
     out: &mut Vec<(u64, [u8; 3])>,
 ) {
     out.clear();
-    for (_source, frame, bytes) in midi.iter() {
+    let is_member = |lane: &&InstrumentLane| lane.group == Some(group);
+    let has_members = instruments.iter().any(|lane| is_member(&lane));
+    for (source, frame, bytes) in midi.iter() {
         let status = bytes[0] & 0xF0;
-        if matches!(status, 0x80 | 0x90) {
+        let heard = if matches!(status, 0x80 | 0x90) {
+            // A note is the group's if a member hears its source and has it in its range.
             let note = bytes[1];
-            let in_any = instruments
-                .iter()
-                .filter(|l| l.group == Some(group))
-                .any(|l| l.range.is_none_or(|(lo, hi)| note >= lo && note <= hi));
-            if in_any {
-                out.push((frame, bytes));
-            }
+            instruments.iter().filter(is_member).any(|l| l.hears(source) && l.range.is_none_or(|(lo, hi)| note >= lo && note <= hi))
         } else {
+            // What is no note is the group's if a member hears its source (or if it has no member, as it always was).
+            !has_members || instruments.iter().filter(is_member).any(|l| l.hears(source))
+        };
+        if heard {
             out.push((frame, bytes));
         }
     }
@@ -2370,6 +2371,19 @@ pub enum GraphCommand {
     SetLaneGroup {
         inst: usize,
         group: Option<usize>,
+    },
+    /// Set the sources that a lane hears (P4a of `docs/patch-graph.md` §11.6): its first step drops the events of the others, before its range, and what the sources it stops hearing
+    /// have sounding in it is let go of (note-offs, a pedal that goes up, a wheel that is centred), a few events a block, so that nothing hangs.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller sends the sources a lane hears when it has MIDI cables to work them out from: the next step of P4"))]
+    SetLaneSources {
+        inst: usize,
+        sources: SourceSet,
+    },
+    /// A source is gone, a MIDI device that was unplugged: what it was holding would be held for ever, and every lane lets go of what it has sounding from it. A lane goes on hearing the
+    /// source, if it is in its set, so that the device is heard again when it is plugged in.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller says that a device has gone when it has a watcher that sees devices go: the next step of P4"))]
+    ReleaseSource {
+        source: Source,
     },
     /// Cut or give back the way out of a lane (`Route`): its end goes to the bus of its group, or to the mix if it has none, or nowhere. The wiring is changed at once, as a lane's group
     /// is, and is not made if the audio would go round with it, by the cables there are (logged).
@@ -3332,6 +3346,47 @@ fn store_taps(taps: &[Tap], telemetry: Option<&Telemetry>, stage: TapStage, bufs
 // InstrumentLane — one instrument + effect chain
 // ---------------------------------------------------------------------------
 
+/// How many events a lane lets go of in a block, at most: what a source holds that is more than this is let go of over the blocks after it (a source holds ten notes at the most in
+/// any hands), so that the lists that the lane's events are made in have room for them.
+const RELEASES_PER_BLOCK: usize = 32;
+
+/// What one source has sounding in a lane, as far as the lane has passed it on (P4a of `docs/patch-graph.md` §11.6): the notes that are held (a bit for each, a word for each channel),
+/// the channels whose sustain pedal is down and the channels whose pitch wheel is away from its centre. It is what the lane lets go of when it stops hearing the source, so that no
+/// note hangs, a pedal does not hold what nobody plays and a wheel does not leave the pitch bent.
+#[derive(Clone, Copy, Default)]
+struct Sounding {
+    notes: [u128; 16],
+    pedal: u16,
+    bent: u16,
+}
+
+impl Sounding {
+    /// Whether the source has nothing sounding.
+    fn is_none(&self) -> bool {
+        self.pedal == 0 && self.bent == 0 && self.notes.iter().all(|&channel| channel == 0)
+    }
+
+    /// Write down what an event that the lane passed on does to what is sounding: a note-on holds the note and a note-off (or a note-on with no velocity) lets go of it, all notes off
+    /// and all sound off let go of the notes of their channel, the pedal is down from 64 up, and the wheel is away from its centre (8192) or at it.
+    fn note(&mut self, bytes: [u8; 3]) {
+        let channel = (bytes[0] & 0x0F) as usize;
+        let bit = 1u16 << channel;
+        match bytes[0] & 0xF0 {
+            0x90 if bytes[2] > 0 => self.notes[channel] |= 1u128 << (bytes[1] & 0x7F),
+            0x80 | 0x90 => self.notes[channel] &= !(1u128 << (bytes[1] & 0x7F)),
+            0xB0 => match bytes[1] {
+                64 if bytes[2] >= 64 => self.pedal |= bit,
+                64 => self.pedal &= !bit,
+                120 | 123 => self.notes[channel] = 0,
+                _ => {}
+            },
+            0xE0 if bytes[1] as u16 | (bytes[2] as u16) << 7 == 8192 => self.bent &= !bit,
+            0xE0 => self.bent |= bit,
+            _ => {}
+        }
+    }
+}
+
 struct InstrumentLane {
     /// The id that the model gave the lane, which its instrument plugin is named by too. It comes with `AddInstrument` and goes where the lane goes.
     node: NodeId,
@@ -3376,6 +3431,12 @@ struct InstrumentLane {
     /// is sounding a note on that channel, so one instrument's expression can't
     /// bleed into another's modulators.
     active_note_channels: [u16; 16],
+    /// The sources the lane hears: every source until it is told otherwise (`SetLaneSources`). Its first step drops the events of the others, before the range.
+    sources: SourceSet,
+    /// What each source has sounding in the lane (`Sounding`), for every source, since any of them can be let go of.
+    sounding: Box<[Sounding; MAX_SOURCES]>,
+    /// The sources that the lane is letting go of what they have sounding in it, a few events a block (`release_sounding`).
+    releasing: SourceSet,
     /// Muted: never heard (a mute wins over a solo). Its notes, modulators and pattern go on.
     muted: bool,
     /// Soloed: while anything is, only what is soloed is heard.
@@ -3429,6 +3490,9 @@ impl InstrumentLane {
             transpose: 0,
             group: None,
             active_note_channels: [0; 16],
+            sources: SourceSet::ALL,
+            sounding: Box::new([Sounding::default(); MAX_SOURCES]),
+            releasing: SourceSet::NONE,
             muted: false,
             solo: false,
             route: Route::Out,
@@ -3460,12 +3524,83 @@ impl InstrumentLane {
             .unwrap_or(48000.0)
     }
 
-    /// Filter MIDI events by this instrument's key range.
+    /// Whether the lane hears the events of `source`: it is in the lane's set, or it is no source's (a panic is heard by every lane).
+    fn hears(&self, source: Source) -> bool {
+        source.is_broadcast() || self.sources.contains(source)
+    }
+
+    /// Hear the sources in `sources` from now on. What the sources that are let go of have sounding in the lane is let go of (`release_sounding`); a source that is heard again, while it
+    /// is being let go of, is not: it is heard, and what it holds it holds.
+    fn hear(&mut self, sources: SourceSet) {
+        let dropped = self.sources.minus(sources);
+        let added = sources.minus(self.sources);
+        self.sources = sources;
+        self.releasing = self.releasing.minus(added).or(dropped);
+    }
+
+    /// Write down what an event that the lane passes on does to what its source has sounding (for a broadcast, what every source has).
+    fn remember(&mut self, source: Source, bytes: [u8; 3]) {
+        let (first, last) = if source.is_broadcast() { (0, MAX_SOURCES) } else { (source.number() as usize, source.number() as usize + 1) };
+        for held in &mut self.sounding[first..last] {
+            held.note(bytes);
+        }
+    }
+
+    /// Let go of what the sources that the lane has stopped hearing have sounding in it: for each, the note-offs of its notes, and then the pedal going up where it is down and the wheel
+    /// going back to its centre where it is away from it. They go first among the events that the lane's remap, pattern, transpose and modulators see, so that the pattern that a held key
+    /// plays stops and a control that learned a key lets go. At most `RELEASES_PER_BLOCK` events a block (what is left is for the next); a source that has nothing left is let go of no more.
+    fn release_sounding(&mut self) {
+        if self.releasing.is_empty() {
+            return;
+        }
+        let mut room = RELEASES_PER_BLOCK;
+        for source in self.releasing.iter() {
+            let held = &mut self.sounding[source.number() as usize];
+            for channel in 0..16u8 {
+                let notes = &mut held.notes[channel as usize];
+                while *notes != 0 && room > 0 {
+                    let note = notes.trailing_zeros() as u8;
+                    *notes &= !(1u128 << note);
+                    let count = &mut self.active_note_channels[channel as usize];
+                    *count = count.saturating_sub(1);
+                    self.filtered_midi.push((0, [0x80 | channel, note, 0]));
+                    room -= 1;
+                }
+            }
+            // (A source that still has notes has used the room up, so its pedal and its wheel go after them, in the next block.)
+            for channel in 0..16u8 {
+                let bit = 1u16 << channel;
+                if held.pedal & bit != 0 && room > 0 {
+                    held.pedal &= !bit;
+                    self.filtered_midi.push((0, [0xB0 | channel, 64, 0]));
+                    room -= 1;
+                }
+                if held.bent & bit != 0 && room > 0 {
+                    held.bent &= !bit;
+                    self.filtered_midi.push((0, [0xE0 | channel, 0x00, 0x40]));
+                    room -= 1;
+                }
+            }
+            if held.is_none() {
+                self.releasing = self.releasing.without(source);
+            }
+            if room == 0 {
+                break;
+            }
+        }
+    }
+
+    /// Filter MIDI events by the sources the lane hears and by its key range.
+    /// What a source that the lane has stopped hearing had sounding is let go of first.
     /// Note-on/note-off: only pass if note is within range (inclusive).
     /// CC, pitch bend, channel pressure, etc.: always pass through.
     fn filter_midi(&mut self, midi_events: Events<'_>) {
         self.filtered_midi.clear();
-        for (_source, frame, bytes) in midi_events.iter() {
+        self.release_sounding();
+        for (source, frame, bytes) in midi_events.iter() {
+            if !self.hears(source) {
+                continue;
+            }
             let status = bytes[0] & 0xF0;
             let ch = (bytes[0] & 0x0F) as usize;
             match status {
@@ -3483,6 +3618,7 @@ impl InstrumentLane {
                             self.active_note_channels[ch] =
                                 self.active_note_channels[ch].saturating_sub(1);
                         }
+                        self.remember(source, bytes);
                         self.filtered_midi.push((frame, bytes));
                     }
                 }
@@ -3495,6 +3631,7 @@ impl InstrumentLane {
                 // modulators. (A non-MPE controller on channel 1 is unaffected.)
                 0xA0 | 0xB0 | 0xD0 | 0xE0 => {
                     if ch == 0 || self.active_note_channels[ch] > 0 {
+                        self.remember(source, bytes);
                         self.filtered_midi.push((frame, bytes));
                     }
                 }
@@ -4713,6 +4850,16 @@ impl AudioGraph {
                                 }
                             }
                         }
+                    }
+                }
+                GraphCommand::SetLaneSources { inst, sources } => {
+                    if let Some(lane) = self.instruments.get_mut(inst) {
+                        lane.hear(sources);
+                    }
+                }
+                GraphCommand::ReleaseSource { source } => {
+                    for lane in &mut self.instruments {
+                        lane.releasing = lane.releasing.with(source);
                     }
                 }
                 GraphCommand::SetLaneRoute { inst, route } => {
@@ -9856,6 +10003,415 @@ mod tests {
         let kept: Vec<u8> = lane.filtered_midi.iter().map(|(_, b)| b[0]).collect();
         assert!(kept.contains(&0xd3), "own-channel pressure kept: {kept:02x?}");
         assert!(kept.contains(&0xb0), "global CC kept: {kept:02x?}");
+    }
+
+    // -- Sources (P4a of docs/patch-graph.md §11.6): what a lane hears, and what it lets go of when it stops hearing a source --
+
+    const DEVICE_A: Source = Source::device(0);
+    const DEVICE_B: Source = Source::device(1);
+
+    /// What `lane` passes on from a block of events from the given sources (all at frame 0), as bytes.
+    fn heard_by(lane: &mut InstrumentLane, events: &[(Source, [u8; 3])]) -> Vec<[u8; 3]> {
+        let list: Vec<(u64, [u8; 3])> = events.iter().map(|&(_, bytes)| (0, bytes)).collect();
+        let sources: Vec<Source> = events.iter().map(|&(source, _)| source).collect();
+        lane.filter_midi(Events::new(&list, &sources));
+        lane.filtered_midi.iter().map(|&(_, bytes)| bytes).collect()
+    }
+
+    /// The set of exactly these sources.
+    fn only(sources: &[Source]) -> SourceSet {
+        sources.iter().fold(SourceSet::NONE, |set, &source| set.with(source))
+    }
+
+    /// The note-offs of the notes `from` to `to` (not including it) on channel 1.
+    fn offs(from: u8, to: u8) -> Vec<[u8; 3]> {
+        (from..to).map(|note| [0x80, note, 0]).collect()
+    }
+
+    #[test]
+    fn a_lane_hears_every_source_until_it_is_told_otherwise() {
+        let mut lane = InstrumentLane::new(test_node());
+        let block = [
+            (Source::KEYS, [0x90, 60, 100]),
+            (DEVICE_A, [0x90, 62, 100]),
+            (DEVICE_B, [0x90, 64, 100]),
+            (Source::LAST, [0x90, 66, 100]),
+            (Source::BROADCAST, [0xB0, 123, 0]),
+        ];
+        assert_eq!(heard_by(&mut lane, &block), block.map(|(_, bytes)| bytes));
+    }
+
+    #[test]
+    fn a_lane_hears_the_sources_in_its_set_and_nothing_from_the_others() {
+        let mut lane = InstrumentLane::new(test_node());
+        lane.hear(only(&[DEVICE_A]));
+        let block = [
+            (Source::KEYS, [0x90, 60, 100]),
+            (DEVICE_A, [0x90, 62, 100]),
+            (DEVICE_B, [0x90, 64, 100]),
+            (DEVICE_A, [0xB0, 1, 64]),
+            (DEVICE_B, [0xB0, 1, 20]),
+            (Source::KEYS, [0xE0, 0, 90]),
+        ];
+        assert_eq!(heard_by(&mut lane, &block), [[0x90, 62, 100], [0xB0, 1, 64]], "its notes and its controllers, and no others");
+        lane.hear(only(&[Source::KEYS, DEVICE_B]));
+        // (The note of the device that is not heard any more is let go of first.)
+        assert_eq!(heard_by(&mut lane, &block), [[0x80, 62, 0], [0x90, 60, 100], [0x90, 64, 100], [0xB0, 1, 20], [0xE0, 0, 90]]);
+    }
+
+    #[test]
+    fn a_lane_that_hears_no_source_hears_what_is_no_sources_and_nothing_else() {
+        let mut lane = InstrumentLane::new(test_node());
+        lane.hear(SourceSet::NONE);
+        let block = [(Source::KEYS, [0x90, 60, 100]), (DEVICE_A, [0xB0, 1, 64]), (Source::BROADCAST, [0xB0, 123, 0]), (Source::BROADCAST, [0x80, 60, 0])];
+        assert_eq!(heard_by(&mut lane, &block), [[0xB0, 123, 0], [0x80, 60, 0]], "a panic reaches a lane whatever it hears");
+    }
+
+    #[test]
+    fn the_events_that_a_lane_hears_keep_their_frames() {
+        let mut lane = InstrumentLane::new(test_node());
+        lane.hear(only(&[DEVICE_B]));
+        let list = [(0, [0x90, 60, 100]), (17, [0x90, 62, 100]), (200, [0x80, 62, 0])];
+        let sources = [DEVICE_A, DEVICE_B, DEVICE_B];
+        lane.filter_midi(Events::new(&list, &sources));
+        assert_eq!(lane.filtered_midi, [(17, [0x90, 62, 100]), (200, [0x80, 62, 0])]);
+    }
+
+    #[test]
+    fn a_source_that_the_lane_stops_hearing_has_its_notes_ended_before_the_events_of_the_next_block() {
+        let mut lane = InstrumentLane::new(test_node());
+        heard_by(&mut lane, &[(DEVICE_A, [0x90, 60, 100]), (DEVICE_A, [0x90, 64, 100]), (DEVICE_A, [0x91, 67, 100])]);
+        assert_eq!((lane.active_note_channels[0], lane.active_note_channels[1]), (2, 1));
+        lane.hear(only(&[Source::KEYS]));
+        let heard = heard_by(&mut lane, &[(Source::KEYS, [0x90, 72, 100])]);
+        assert_eq!(heard, [[0x80, 60, 0], [0x80, 64, 0], [0x81, 67, 0], [0x90, 72, 100]], "the notes of the device end, channel by channel, and then the block's own");
+        assert_eq!((lane.active_note_channels[0], lane.active_note_channels[1]), (1, 0), "the lane's count of the channels that sound follows");
+        assert!(heard_by(&mut lane, &[]).is_empty(), "and nothing is let go of twice");
+    }
+
+    #[test]
+    fn a_pedal_that_is_down_goes_up_and_a_wheel_that_is_away_from_its_centre_is_centred_when_the_source_is_let_go_of() {
+        let mut lane = InstrumentLane::new(test_node());
+        heard_by(
+            &mut lane,
+            &[
+                (DEVICE_A, [0x93, 60, 100]), // a note on channel 4, so that its controllers are heard on it
+                (DEVICE_A, [0xB0, 64, 127]),
+                (DEVICE_A, [0xB3, 64, 64]), // down from 64 up
+                (DEVICE_A, [0xE0, 0x00, 0x60]),
+                (DEVICE_A, [0xE3, 0x00, 0x20]),
+                (DEVICE_A, [0xB0, 1, 64]), // the mod wheel is a controller that is not let go of
+            ],
+        );
+        lane.hear(only(&[Source::KEYS]));
+        let heard = heard_by(&mut lane, &[]);
+        assert_eq!(heard, [[0x83, 60, 0], [0xB0, 64, 0], [0xE0, 0x00, 0x40], [0xB3, 64, 0], [0xE3, 0x00, 0x40]], "the notes first, and then each channel's pedal and wheel");
+    }
+
+    #[test]
+    fn a_pedal_that_went_up_and_a_wheel_that_is_back_at_its_centre_are_not_let_go_of() {
+        let mut lane = InstrumentLane::new(test_node());
+        heard_by(
+            &mut lane,
+            &[
+                (DEVICE_A, [0xB0, 64, 127]),
+                (DEVICE_A, [0xB0, 64, 63]), // up: under 64
+                (DEVICE_A, [0xE0, 0x00, 0x60]),
+                (DEVICE_A, [0xE0, 0x00, 0x40]), // 8192: the centre
+            ],
+        );
+        lane.hear(only(&[Source::KEYS]));
+        assert!(heard_by(&mut lane, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_note_that_ended_is_not_let_go_of_whether_it_ended_by_a_note_off_a_note_on_with_no_velocity_all_notes_off_or_all_sound_off() {
+        let mut lane = InstrumentLane::new(test_node());
+        heard_by(
+            &mut lane,
+            &[
+                (DEVICE_A, [0x90, 60, 100]),
+                (DEVICE_A, [0x80, 60, 0]), // ended by a note-off
+                (DEVICE_A, [0x90, 61, 100]),
+                (DEVICE_A, [0x90, 61, 0]), // and by a note-on with no velocity
+                (DEVICE_A, [0x90, 62, 100]), // this one is still sounding
+                (DEVICE_A, [0x91, 63, 100]),
+                (DEVICE_A, [0xB1, 123, 0]), // all notes off, on channel 2 (it is heard: the lane has a note there)
+                (DEVICE_A, [0x92, 64, 100]),
+                (DEVICE_A, [0xB2, 120, 0]), // all sound off, on channel 3
+                (DEVICE_A, [0x93, 65, 100]), // and this one
+            ],
+        );
+        lane.hear(only(&[Source::KEYS]));
+        assert_eq!(heard_by(&mut lane, &[]), [[0x80, 62, 0], [0x83, 65, 0]], "what is left is the note on channel 1 and the one on channel 4");
+    }
+
+    #[test]
+    fn a_wheel_that_is_a_step_either_side_of_its_centre_is_centred_when_the_source_is_let_go_of() {
+        let mut lane = InstrumentLane::new(test_node());
+        heard_by(
+            &mut lane,
+            &[
+                (DEVICE_A, [0x91, 60, 100]), // a note on channel 2, so that its wheel is heard
+                (DEVICE_A, [0xE0, 0x01, 0x40]), // 8193
+                (DEVICE_A, [0xE1, 0x7F, 0x3F]), // 8191
+            ],
+        );
+        lane.hear(only(&[Source::KEYS]));
+        assert_eq!(heard_by(&mut lane, &[]), [[0x81, 60, 0], [0xE0, 0x00, 0x40], [0xE1, 0x00, 0x40]]);
+    }
+
+    #[test]
+    fn a_note_off_on_another_channel_is_not_the_end_of_a_note() {
+        let mut lane = InstrumentLane::new(test_node());
+        heard_by(&mut lane, &[(DEVICE_A, [0x90, 60, 100]), (DEVICE_A, [0x81, 60, 0])]);
+        lane.hear(only(&[Source::KEYS]));
+        assert_eq!(heard_by(&mut lane, &[]), [[0x80, 60, 0]]);
+    }
+
+    #[test]
+    fn what_a_source_has_sounding_is_its_own_and_the_others_are_not_let_go_of_with_it() {
+        let mut lane = InstrumentLane::new(test_node());
+        heard_by(&mut lane, &[(Source::KEYS, [0x90, 60, 100]), (DEVICE_A, [0x90, 64, 100]), (DEVICE_B, [0x90, 67, 100])]);
+        lane.hear(only(&[Source::KEYS, DEVICE_B]));
+        assert_eq!(heard_by(&mut lane, &[]), [[0x80, 64, 0]], "the device that went");
+        lane.hear(only(&[DEVICE_B]));
+        assert_eq!(heard_by(&mut lane, &[]), [[0x80, 60, 0]], "and then the keys");
+    }
+
+    #[test]
+    fn a_source_that_is_heard_again_before_it_is_let_go_of_keeps_what_it_has_sounding() {
+        let mut lane = InstrumentLane::new(test_node());
+        heard_by(&mut lane, &[(DEVICE_A, [0x90, 60, 100])]);
+        lane.hear(SourceSet::NONE);
+        lane.hear(SourceSet::ALL);
+        assert!(heard_by(&mut lane, &[]).is_empty(), "it was never let go of");
+        lane.hear(SourceSet::NONE);
+        assert_eq!(heard_by(&mut lane, &[]), [[0x80, 60, 0]], "and it still has its note, which goes now");
+    }
+
+    #[test]
+    fn a_set_that_is_told_again_lets_go_of_nothing() {
+        let mut lane = InstrumentLane::new(test_node());
+        heard_by(&mut lane, &[(DEVICE_A, [0x90, 60, 100])]);
+        lane.hear(SourceSet::ALL);
+        lane.hear(SourceSet::ALL);
+        assert!(heard_by(&mut lane, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_source_that_has_more_sounding_than_a_block_lets_go_of_is_let_go_of_over_the_blocks_after_it() {
+        let mut lane = InstrumentLane::new(test_node());
+        let notes: Vec<(Source, [u8; 3])> = (0..100u8).map(|note| (DEVICE_A, [0x90, note, 100])).collect();
+        heard_by(&mut lane, &notes);
+        lane.hear(only(&[Source::KEYS]));
+        let blocks: Vec<Vec<[u8; 3]>> = (0..5).map(|_| heard_by(&mut lane, &[])).collect();
+        assert_eq!(blocks, [offs(0, 32), offs(32, 64), offs(64, 96), offs(96, 100), vec![]], "{RELEASES_PER_BLOCK} events a block, and then nothing");
+        assert_eq!(lane.active_note_channels, [0; 16]);
+    }
+
+    #[test]
+    fn the_pedal_and_the_wheel_of_a_source_go_after_its_notes_when_there_are_many() {
+        let mut lane = InstrumentLane::new(test_node());
+        let mut block: Vec<(Source, [u8; 3])> = (0..40u8).map(|note| (DEVICE_A, [0x90, note, 100])).collect();
+        block.push((DEVICE_A, [0xB0, 64, 127]));
+        block.push((DEVICE_A, [0xE0, 0x00, 0x60]));
+        heard_by(&mut lane, &block);
+        lane.hear(only(&[Source::KEYS]));
+        let blocks: Vec<Vec<[u8; 3]>> = (0..3).map(|_| heard_by(&mut lane, &[])).collect();
+        let mut second = offs(32, 40);
+        second.extend([[0xB0, 64, 0], [0xE0, 0x00, 0x40]]);
+        assert_eq!(blocks, [offs(0, 32), second, vec![]]);
+    }
+
+    #[test]
+    fn the_pedal_of_a_source_goes_up_in_the_next_block_when_its_notes_have_used_the_room() {
+        let mut lane = InstrumentLane::new(test_node());
+        let mut block: Vec<(Source, [u8; 3])> = (0..RELEASES_PER_BLOCK as u8).map(|note| (DEVICE_A, [0x90, note, 100])).collect();
+        block.push((DEVICE_A, [0xB0, 64, 127]));
+        heard_by(&mut lane, &block);
+        lane.hear(only(&[Source::KEYS]));
+        let blocks: Vec<Vec<[u8; 3]>> = (0..3).map(|_| heard_by(&mut lane, &[])).collect();
+        assert_eq!(blocks, [offs(0, RELEASES_PER_BLOCK as u8), vec![[0xB0, 64, 0]], vec![]], "the notes fill the block, and the pedal is not let go of for want of room");
+    }
+
+    #[test]
+    fn the_wheel_of_a_source_is_centred_in_the_next_block_when_its_notes_and_its_pedal_have_used_the_room() {
+        let mut lane = InstrumentLane::new(test_node());
+        let mut block: Vec<(Source, [u8; 3])> = (0..RELEASES_PER_BLOCK as u8 - 1).map(|note| (DEVICE_A, [0x90, note, 100])).collect();
+        block.push((DEVICE_A, [0xB0, 64, 127]));
+        block.push((DEVICE_A, [0xE0, 0x00, 0x60]));
+        heard_by(&mut lane, &block);
+        lane.hear(only(&[Source::KEYS]));
+        let blocks: Vec<Vec<[u8; 3]>> = (0..3).map(|_| heard_by(&mut lane, &[])).collect();
+        let mut first = offs(0, RELEASES_PER_BLOCK as u8 - 1);
+        first.push([0xB0, 64, 0]);
+        assert_eq!(blocks, [first, vec![[0xE0, 0x00, 0x40]], vec![]]);
+    }
+
+    #[test]
+    fn a_source_that_is_being_let_go_of_is_still_let_go_of_when_the_lane_is_told_another_set() {
+        let mut lane = InstrumentLane::new(test_node());
+        let notes: Vec<(Source, [u8; 3])> = (0..40u8).map(|note| (DEVICE_A, [0x90, note, 100])).collect();
+        heard_by(&mut lane, &notes);
+        lane.hear(only(&[Source::KEYS]));
+        assert_eq!(heard_by(&mut lane, &[]), offs(0, 32));
+        // Another source is let in before the rest of the device's notes have gone.
+        lane.hear(only(&[Source::KEYS, DEVICE_B]));
+        assert_eq!(heard_by(&mut lane, &[]), offs(32, 40), "what was being let go of still is");
+    }
+
+    #[test]
+    fn the_room_of_a_block_is_shared_by_the_sources_that_are_let_go_of_in_the_order_of_their_numbers() {
+        let mut lane = InstrumentLane::new(test_node());
+        let mut block: Vec<(Source, [u8; 3])> = (0..20u8).map(|note| (DEVICE_B, [0x90, note, 100])).collect();
+        block.extend((20..40u8).map(|note| (DEVICE_A, [0x90, note, 100])));
+        heard_by(&mut lane, &block);
+        lane.hear(only(&[Source::KEYS]));
+        let first = heard_by(&mut lane, &[]);
+        let second = heard_by(&mut lane, &[]);
+        // Device A is the lower number: its twenty, and then twelve of the other's twenty; the rest of the other's in the next block.
+        assert_eq!(first, [offs(20, 40), offs(0, 12)].concat());
+        assert_eq!(second, offs(12, 20));
+    }
+
+    #[test]
+    fn notes_that_the_lane_did_not_pass_on_are_not_let_go_of() {
+        let mut lane = InstrumentLane::new(test_node());
+        lane.range = Some((60, 72));
+        let heard = heard_by(&mut lane, &[(DEVICE_A, [0x90, 40, 100]), (DEVICE_A, [0x90, 64, 100]), (DEVICE_A, [0x90, 90, 100])]);
+        assert_eq!(heard, [[0x90, 64, 100]]);
+        lane.hear(only(&[Source::KEYS]));
+        assert_eq!(heard_by(&mut lane, &[]), [[0x80, 64, 0]]);
+    }
+
+    #[test]
+    fn a_broadcast_that_ends_a_note_ends_it_for_every_source_that_had_it() {
+        let mut lane = InstrumentLane::new(test_node());
+        heard_by(&mut lane, &[(DEVICE_A, [0x90, 60, 100]), (DEVICE_B, [0x90, 60, 100]), (Source::KEYS, [0x90, 62, 100]), (Source::KEYS, [0xB0, 64, 127])]);
+        heard_by(&mut lane, &[(Source::BROADCAST, [0x80, 60, 0]), (Source::BROADCAST, [0xB0, 64, 0])]);
+        lane.hear(SourceSet::NONE);
+        assert_eq!(heard_by(&mut lane, &[]), [[0x80, 62, 0]], "the pedal went up and the note of the keys that the panic did not name is what is left");
+    }
+
+    #[test]
+    fn a_group_hears_the_events_of_the_sources_that_its_members_hear_by_their_ranges() {
+        let mut first = InstrumentLane::new(test_node());
+        first.group = Some(0);
+        first.hear(only(&[DEVICE_A]));
+        let mut second = InstrumentLane::new(test_node());
+        second.group = Some(0);
+        second.range = Some((60, 72));
+        second.hear(only(&[Source::KEYS]));
+        let outside = InstrumentLane::new(test_node()); // in no group, and hears everything: it is nobody's but its own
+        let lanes = [first, second, outside];
+        let list = [(0, [0x90, 40, 100]), (0, [0x90, 40, 101]), (0, [0x90, 64, 100]), (0, [0x90, 64, 101]), (0, [0xB0, 1, 9]), (0, [0xB0, 1, 8])];
+        let sources = [Source::KEYS, DEVICE_A, Source::KEYS, DEVICE_B, Source::KEYS, DEVICE_B];
+        let mut out = Vec::new();
+        build_group_midi(&lanes, 0, Events::new(&list, &sources), &mut out);
+        // 40 from the keys: the first member does not hear the keys and the second has not 40 in its range. 40 from the device: the first member hears it, and has no range. 64 from the keys: the
+        // second member hears it and has 64. 64 from the other device: nobody. A controller from the keys: the second member hears the keys; from the other device: nobody.
+        assert_eq!(out, [(0, [0x90, 40, 101]), (0, [0x90, 64, 100]), (0, [0xB0, 1, 9])]);
+    }
+
+    #[test]
+    fn a_group_with_no_member_hears_no_notes_and_every_other_event() {
+        let lanes = [InstrumentLane::new(test_node())];
+        let list = [(0, [0x90, 60, 100]), (0, [0xB0, 1, 9])];
+        let mut out = Vec::new();
+        build_group_midi(&lanes, 0, Events::new(&list, &[DEVICE_A, DEVICE_B]), &mut out);
+        assert_eq!(out, [(0, [0xB0, 1, 9])]);
+    }
+
+    /// One block of `graph` with these events (at frame 0) from these sources, and what it put out.
+    fn process_from(graph: &mut AudioGraph, events: &[(Source, [u8; 3])]) -> Vec<Vec<f32>> {
+        let list: Vec<(u64, [u8; 3])> = events.iter().map(|&(_, bytes)| (0, bytes)).collect();
+        let sources: Vec<Source> = events.iter().map(|&(source, _)| source).collect();
+        let mut out = make_output();
+        graph.process_events(Events::new(&list, &sources), &mut out).unwrap();
+        out
+    }
+
+    /// The number that every sample of `out` is.
+    fn the_one_level(out: &[Vec<f32>]) -> f32 {
+        let first = out[0][0];
+        assert!(out.iter().flatten().all(|&s| s == first), "one level: {:?}", &out[0][..4]);
+        first
+    }
+
+    #[test]
+    fn a_lane_plays_the_notes_of_the_sources_it_hears_and_no_others() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[Source::KEYS]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[DEVICE_A]) }).unwrap();
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(DEVICE_A, [0x90, 60, 100])])), 0.5, "the device plays the lane that hears it");
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(Source::KEYS, [0x80, 60, 0])])), 0.5, "and the keys cannot end its note");
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(Source::KEYS, [0x90, 62, 100])])), 0.75, "the keys play the other lane");
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(DEVICE_A, [0x80, 60, 0])])), 0.25, "the device lets go of its lane's note");
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(Source::KEYS, [0x80, 62, 0])])), 0.0);
+    }
+
+    #[test]
+    fn a_lane_that_stops_hearing_a_source_lets_go_of_the_note_that_it_was_playing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(DEVICE_A, [0x90, 60, 100])])), 0.25);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[Source::KEYS]) }).unwrap();
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.0, "the note ended in the block that took the command");
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(DEVICE_A, [0x90, 62, 100])])), 0.0, "and the device is not heard");
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(Source::KEYS, [0x90, 62, 100])])), 0.25, "the keys are");
+    }
+
+    #[test]
+    fn a_source_that_is_gone_is_let_go_of_by_the_lanes_that_hear_it_and_is_heard_again_when_it_plays() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(DEVICE_A, [0x90, 60, 100])])), 0.25);
+        cmd_tx.send(GraphCommand::ReleaseSource { source: DEVICE_A }).unwrap();
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.0, "its key was held and nothing will let go of it");
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(DEVICE_A, [0x90, 64, 100])])), 0.25, "and a device that comes back is heard");
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.25, "and what it plays is not let go of by what the lane was told when it was gone");
+    }
+
+    #[test]
+    fn a_source_that_is_gone_is_let_go_of_only_where_it_had_something_sounding() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[Source::KEYS]) }).unwrap();
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(Source::KEYS, [0x90, 60, 100])])), 0.75);
+        cmd_tx.send(GraphCommand::ReleaseSource { source: DEVICE_A }).unwrap();
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.75, "the keys are not the device that went");
+        cmd_tx.send(GraphCommand::ReleaseSource { source: Source::KEYS }).unwrap();
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.0);
+    }
+
+    #[test]
+    fn a_command_for_a_lane_that_is_not_there_changes_nothing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 7, sources: SourceSet::NONE }).unwrap();
+        assert_eq!(the_one_level(&process_from(&mut graph, &[(DEVICE_A, [0x90, 60, 100])])), 0.25);
+    }
+
+    #[test]
+    fn a_block_in_which_a_source_is_let_go_of_asks_the_allocator_for_nothing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        let notes: Vec<(Source, [u8; 3])> = (0..100u8).map(|note| (DEVICE_A, [0x90, note, 100])).collect();
+        process_from(&mut graph, &notes);
+        process_from(&mut graph, &[]);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[Source::KEYS]) }).unwrap();
+        let mut out = make_output();
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            // Four blocks that let go of the hundred notes, and two after them.
+            for _ in 0..6 {
+                graph.process_events(Events::keys(&[]), &mut out).unwrap();
+            }
+        });
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
     }
 
     /// Changing a parameter that a modulator targets must move the modulator's

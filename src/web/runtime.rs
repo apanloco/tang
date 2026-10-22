@@ -134,6 +134,7 @@ mod tests {
     use super::*;
     use crate::app::intent::{Gain, Intent};
     use crate::app::testutil::{self, DropProbe, StubEngine, load};
+    use crate::source::{MidiEvent, Source};
     use crate::web::testclient::{self, recv, said, tell, until_closed, wait_until};
 
     /// The tracer: an oscillator through a filter whose cutoff an LFO drives.
@@ -349,10 +350,12 @@ depth = 0.5
         while heard.len() < 16 + 1 + 16 + 16 {
             heard.push(live.engine.midi_rx.recv_timeout(Duration::from_secs(5)).unwrap());
         }
-        assert_eq!(heard[0], (0, [0xB0, 64, 0]), "the pedal goes up first");
-        assert_eq!(heard[16], (0, [0x80, 64, 0]), "then the note that is held");
-        assert_eq!(heard[17], (0, [0xB0, 123, 0]), "then all notes off");
-        assert_eq!(heard[33], (0, [0xB0, 120, 0]), "then all sound off");
+        // (Every lane hears a panic, whatever sources it hears: it is no source's.)
+        let to_all = |bytes: [u8; 3]| MidiEvent::from_source(Source::BROADCAST, 0, bytes);
+        assert_eq!(heard[0], to_all([0xB0, 64, 0]), "the pedal goes up first");
+        assert_eq!(heard[16], to_all([0x80, 64, 0]), "then the note that is held");
+        assert_eq!(heard[17], to_all([0xB0, 123, 0]), "then all notes off");
+        assert_eq!(heard[33], to_all([0xB0, 120, 0]), "then all sound off");
         // The tab is closed after it: the note was ended, and is not ended a second time.
         drop(a);
         assert!(live.engine.midi_rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing more was sent");

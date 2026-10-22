@@ -28,13 +28,11 @@ impl Source {
     }
 
     /// Its number, 0 for the keys: below `MAX_SOURCES`, or 255 for `BROADCAST`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the lanes hear by the number of a source: the next commit of P4a"))]
     pub const fn number(self) -> u8 {
         self.0
     }
 
     /// Whether this is `BROADCAST`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the lanes hear a broadcast whatever their set is: the next commit of P4a"))]
     pub const fn is_broadcast(self) -> bool {
         self.0 == u8::MAX
     }
@@ -52,10 +50,8 @@ impl fmt::Display for Source {
 
 /// A set of sources, one bit for each: what a lane hears.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(not(test), expect(dead_code, reason = "a lane has the set of sources it hears: the next commit of P4a"))]
 pub struct SourceSet(u64);
 
-#[cfg_attr(not(test), expect(dead_code, reason = "a lane has the set of sources it hears: the next commit of P4a"))]
 impl SourceSet {
     /// Every source, those that are not there yet too: what a lane hears until it is told otherwise.
     pub const ALL: SourceSet = SourceSet(u64::MAX);
@@ -63,11 +59,13 @@ impl SourceSet {
     pub const NONE: SourceSet = SourceSet(0);
 
     /// The set that has the sources whose bits `bits` has (bit `n` is the source numbered `n`).
+    #[cfg(test)]
     pub const fn from_bits(bits: u64) -> SourceSet {
         SourceSet(bits)
     }
 
     /// The bits of the set.
+    #[cfg(test)]
     pub const fn bits(self) -> u64 {
         self.0
     }
@@ -93,6 +91,7 @@ impl SourceSet {
     }
 
     /// The sources that both have.
+    #[cfg(test)]
     pub const fn and(self, other: SourceSet) -> SourceSet {
         SourceSet(self.0 & other.0)
     }
