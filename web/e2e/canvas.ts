@@ -48,6 +48,18 @@ export const audioIn = (target: Locator): Locator => target.locator('.react-flow
 /** The audio cables that have been drawn (the links of the audio path, which are not drawn by anybody, are not among them). */
 export const sends = (page: Page): Locator => page.locator(".tang-cable--send");
 
+/** The output of events of a source of notes, where a cable of notes is started. */
+export const notesOut = (target: Locator): Locator => target.locator('.react-flow__handle[data-handleid="eventsOut"]');
+
+/** The input of events of a lane, where a cable of notes ends. */
+export const notesIn = (target: Locator): Locator => target.locator('.react-flow__handle[data-handleid="eventsIn"]');
+
+/** The cables of notes that have been drawn, from a source to a lane (the links by which a lane hears every source, which nobody draws, are not among them). */
+export const notesCables = (page: Page): Locator => page.locator(".tang-cable--notes");
+
+/** The links by which a lane that no cable of notes ends at hears every source, which the session has by itself. */
+export const hearsLinks = (page: Page): Locator => page.locator(".tang-cable--hears");
+
 /** The port of a setting of a modulator (an LFO's rate, a stage of an envelope), where a cable from another modulator ends. */
 export const setting = (modulator: Locator, name: string): Locator => modulator.locator(`.react-flow__handle[data-handleid="${name}"]`);
 

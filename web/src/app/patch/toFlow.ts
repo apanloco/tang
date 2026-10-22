@@ -53,8 +53,8 @@ export const STEPS_EXTRA = 64 + 8;
 export const STEPS_NODE_HEIGHT = MODULATOR_SETTINGS_HEIGHT + STEPS_EXTRA;
 /** The master: its name and its meter, the scope under them and the choices of the scope's view (measured in a browser: 223). */
 export const MASTER_HEIGHT = 228;
-/** A source of notes: its header, the line that says what it is and where it is plugged in, and the room at its foot. */
-export const SOURCE_HEIGHT = HEADER_HEIGHT + 40 + NODE_PADDING;
+/** A source of notes: its header, the line that says what it is and where it is plugged in (18) and the room at its foot (12) (measured in a browser: 74). */
+export const SOURCE_HEIGHT = HEADER_HEIGHT + 18 + 12;
 /** A scope that an instrument, an effect or a group shows below its controls, with the choices of its view and its time: this much taller (measured in a browser: 157). */
 export const NODE_SCOPE_HEIGHT = 157;
 /** The pattern of a lane, under its controls (record, clear and its length, its three switches, the line that says what it is), as tall whatever it shows: a lane's node is this much taller (measured in a browser: 97, in both states of the record button). */
