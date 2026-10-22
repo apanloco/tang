@@ -122,6 +122,10 @@ mod tests {
         fn sources_of(&self, name: &str) -> SourceSet {
             self.open.borrow().iter().filter(|(open, _)| open.contains(name)).fold(SourceSet::NONE, |set, (_, source)| set.with(*source))
         }
+
+        fn open_names(&self) -> Vec<String> {
+            self.open.borrow().iter().map(|(name, _)| name.clone()).collect()
+        }
     }
 
     fn controller(session: &str) -> (StubEngine, Controller) {
@@ -183,6 +187,21 @@ mod tests {
         ports.plug_in("Launchkey Mini MK4 37 MIDI Out", Source::device(0));
         ctl.poll_at(t0 + Duration::from_secs(4));
         assert_eq!(lane_sources_told(&engine), ["SetLaneSources inst=1 sources=[1, 3]"]);
+    }
+
+    #[test]
+    fn the_controller_says_which_inputs_are_open_as_the_watcher_has_them_and_none_without_a_watcher() {
+        let (_engine, mut ctl) = controller(SOURCES);
+        assert_eq!(ctl.inputs(), Vec::<String>::new(), "no one watches the devices: none is open as far as it knows");
+        let ports = Ports::default();
+        ports.plug_in("Launchkey Mini MK4 37 MIDI Out", Source::device(0));
+        ports.plug_in("Seaboard RISE", Source::device(1));
+        ctl.watch_devices(Box::new(ports.clone()));
+        assert_eq!(ctl.inputs(), ["Launchkey Mini MK4 37 MIDI Out", "Seaboard RISE"], "in the order they were opened");
+        ports.unplug("Launchkey Mini MK4 37 MIDI Out");
+        assert_eq!(ctl.inputs(), ["Seaboard RISE"], "the watcher's list as it is when it is asked, and not as it was when the watching began");
+        ports.plug_in("Launchkey Mini MK4 37 MIDI Out", Source::device(0));
+        assert_eq!(ctl.inputs(), ["Seaboard RISE", "Launchkey Mini MK4 37 MIDI Out"], "a device that came back is the last one opened");
     }
 
     #[test]

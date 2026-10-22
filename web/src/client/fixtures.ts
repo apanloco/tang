@@ -13,6 +13,7 @@ import fields from "./fixtures/fields.json";
 import filenames from "./fixtures/filenames.json";
 import groups from "./fixtures/groups.json";
 import history from "./fixtures/history.json";
+import inputs from "./fixtures/inputs.json";
 import audible from "./fixtures/audible.json";
 import audibleCables from "./fixtures/audibleCables.json";
 import audioCables from "./fixtures/audioCables.json";
@@ -144,6 +145,12 @@ export const historyFixture = history as unknown as { snapshot: Snapshot; script
  * the controller (`the_web_clients_fixture_of_file_names_is_current`, `session::plain_file_name`).
  */
 export const filenamesFixture = filenames;
+
+/**
+ * Which of the MIDI inputs that are open a device of a session stands for, for some sets of inputs and some names: a row is the inputs, a name and the inputs that name stands for, in the order
+ * they are open, as `midi::matching` finds them (`the_web_clients_fixture_of_what_a_device_stands_for_is_current`).
+ */
+export const inputsFixture = inputs;
 
 /**
  * The rate, in cycles or steps a second, that the engine goes at for each of the note lengths that a modulator can follow the tempo by, at five tempos (`plugin::chain::rate_at_tempo`): a row

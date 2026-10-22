@@ -79,6 +79,10 @@ pub trait DeviceWatcher {
 
     /// The sources of the open devices that the device called `name` in a session stands for: none while it is not plugged in.
     fn sources_of(&self, name: &str) -> SourceSet;
+
+    /// The names of the devices that are open, in the order they were opened: what a client can make a source of. (With the `web` feature or in tests only: it is the web interface that tells clients.)
+    #[cfg(any(test, feature = "web"))]
+    fn open_names(&self) -> Vec<String>;
 }
 
 impl DeviceWatcher for crate::midi::MidiManager {
@@ -88,6 +92,11 @@ impl DeviceWatcher for crate::midi::MidiManager {
 
     fn sources_of(&self, name: &str) -> SourceSet {
         crate::midi::MidiManager::sources_of(self, name)
+    }
+
+    #[cfg(any(test, feature = "web"))]
+    fn open_names(&self) -> Vec<String> {
+        crate::midi::MidiManager::open_names(self)
     }
 }
 
@@ -1133,6 +1142,13 @@ impl Controller {
         self.sync_lane_sources();
     }
 
+    /// The names of the MIDI inputs that are open, in the order they were opened: what a client can make a source of (`AddSource`). None while no one watches the devices (a program that
+    /// has no MIDI subsystem, or that has not looked yet). (With the `web` feature or in tests only: it is the web interface that tells clients.)
+    #[cfg(any(test, feature = "web"))]
+    pub fn inputs(&self) -> Vec<String> {
+        self.devices.as_ref().map_or_else(Vec::new, |devices| devices.open_names())
+    }
+
     /// Housekeeping, to be called on every iteration of the front-end's loop.
     pub fn poll(&mut self) -> Polled {
         self.poll_at(Instant::now())
@@ -1309,6 +1325,10 @@ mod tests {
             fn sources_of(&self, _: &str) -> SourceSet {
                 SourceSet::NONE
             }
+
+            fn open_names(&self) -> Vec<String> {
+                Vec::new()
+            }
         }
         let t0 = Instant::now();
         let (handles, _engine) = testutil::stub_engine();
@@ -1333,6 +1353,10 @@ mod tests {
 
         fn sources_of(&self, _: &str) -> SourceSet {
             SourceSet::NONE
+        }
+
+        fn open_names(&self) -> Vec<String> {
+            Vec::new()
         }
     }
 
@@ -1375,6 +1399,10 @@ mod tests {
 
             fn sources_of(&self, _: &str) -> SourceSet {
                 SourceSet::NONE
+            }
+
+            fn open_names(&self) -> Vec<String> {
+                Vec::new()
             }
         }
         impl Drop for Watcher {

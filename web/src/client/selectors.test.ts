@@ -6,7 +6,7 @@ import { audibleAt, cableDepthOf, cableGainOf, cableSourceOf, chainPlaceOf, enve
 import type { Node, Snapshot } from "../protocol";
 import type { Removal } from "./selectors";
 
-const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, catalog: null, history: { undo: null, redo: null }, reconnects: 0, probed: [] });
+const stateOf = (snapshot: Snapshot | null): ClientState => ({ status: "open", problem: null, hello: null, snapshot, catalog: null, inputs: [], history: { undo: null, redo: null }, reconnects: 0, probed: [] });
 
 const state = stateOf(tracerSnapshot);
 const oscillator = nodeNamed(tracerSnapshot, "Oscillator");

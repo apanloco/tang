@@ -89,6 +89,10 @@ pub enum ServerMessage {
     /// Which of the nodes that a `Probes` request named are watched now: those that have a signal and a ring (the engine has a few, shared by every client). A node that
     /// is left out may be watched later, if a ring comes free, and its frames come then.
     Probes { nodes: Vec<NodeId> },
+    /// The MIDI inputs that are open, by name, in the order they were opened: what a client can make a source of (`AddSource` with a device of that name). Sent after the history, and
+    /// again whenever the list changes (a device is plugged in or pulled out); it replaces what the client had. It is not part of the session (a session names devices that are not
+    /// plugged in too), and a program that has no MIDI subsystem tells an empty list.
+    Inputs { names: Vec<String> },
     /// The intent of the request `req_id` was applied; the session is at `rev`.
     Ack { req_id: u32, rev: u64 },
     /// The intent of the request `req_id` was not applied.
@@ -314,6 +318,11 @@ mod message_tests {
             ),
             (ServerMessage::History { undo: None, redo: Some("move an effect".to_string()) }, json!({"type": "history", "undo": null, "redo": "move an effect"})),
             (ServerMessage::Probes { nodes: vec![NodeId(3)] }, json!({"type": "probes", "nodes": [3]})),
+            (
+                ServerMessage::Inputs { names: vec!["Launchkey Mini MK4 37 MIDI Out".to_string(), "Seaboard RISE".to_string()] },
+                json!({"type": "inputs", "names": ["Launchkey Mini MK4 37 MIDI Out", "Seaboard RISE"]}),
+            ),
+            (ServerMessage::Inputs { names: vec![] }, json!({"type": "inputs", "names": []})),
         ];
         for (message, json) in cases {
             assert_eq!(wire(&message), json, "{message:?}");

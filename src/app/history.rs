@@ -4105,6 +4105,10 @@ plugin = "builtin:reverb"
             fn sources_of(&self, _: &str) -> crate::source::SourceSet {
                 crate::source::SourceSet::NONE
             }
+
+            fn open_names(&self) -> Vec<String> {
+                Vec::new()
+            }
         }
         struct Sink {
             _says: Says,

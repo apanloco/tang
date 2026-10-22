@@ -1119,6 +1119,10 @@ mod tests {
         fn sources_of(&self, name: &str) -> crate::source::SourceSet {
             self.0.iter().filter(|(open, _)| open.contains(name)).fold(crate::source::SourceSet::NONE, |set, (_, source)| set.with(*source))
         }
+
+        fn open_names(&self) -> Vec<String> {
+            self.0.iter().map(|(name, _)| (*name).to_string()).collect()
+        }
     }
 
     /// How little sound a lane that is not played makes, in the sum of the squares of a few blocks: the pan of an oscillator is smoothed, and what is left of it after four blocks is a few

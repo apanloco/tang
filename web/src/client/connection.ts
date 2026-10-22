@@ -70,6 +70,12 @@ export interface ClientState {
   /** What the server can add, as it last said (the one of the connection before, while this one is made good); null until it has. It is no part of the session: telling it changes nothing in `snapshot`. */
   catalog: Catalog | null;
   /**
+   * The MIDI inputs the server says are open, by name and in the order it opened them, as it last said: what a source of notes can be made of (`addSource`). None until it says (and where it
+   * has no MIDI). It is no part of the session either (a session names devices that are not plugged in), and it is the server's own: the one of the connection before stays while this one is
+   * made good, and the server tells it again.
+   */
+  inputs: readonly string[];
+  /**
    * What Undo and Redo would do, in the words of a button (null for what they would not): the server's history, as it last said. It is no part of the
    * session either, and it is the server's own: gone with the connection, and told again by the server the connection is made good to.
    */
@@ -132,6 +138,7 @@ export class Client {
     hello: null,
     snapshot: null,
     catalog: null,
+    inputs: [],
     history: NO_HISTORY,
     reconnects: 0,
     probed: [],
@@ -361,6 +368,12 @@ export class Client {
         // The whole of it each time: what the scan has found so far replaces what it had found.
         this.#set({ catalog: { entries: message.entries, scanning: message.scanning } });
         break;
+      case "inputs": {
+        // The whole of it each time, and nothing is told to the page that is the same.
+        const { inputs } = this.store.getState();
+        if (inputs.length !== message.names.length || inputs.some((name, i) => name !== message.names[i])) this.#set({ inputs: message.names });
+        break;
+      }
       case "probes": {
         // The whole of it each time, and nothing is told to the page that is the same.
         const { probed } = this.store.getState();

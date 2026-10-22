@@ -1450,6 +1450,110 @@ describe("the catalog of plugins", () => {
   });
 });
 
+describe("the MIDI inputs that are open", () => {
+  const launchkey = "Launchkey Mini MK4 37 MIDI Out";
+  const seaboard = "Seaboard RISE";
+
+  test("are none until the server says, and none on the mock unless it is given some", async () => {
+    const client = connect(new MockServer());
+    expect(client.state.inputs).toEqual([]);
+    await until(() => client.state.status === "open", "the session");
+    await quiet();
+    expect(client.state.inputs).toEqual([]);
+  });
+
+  test("are what the server says, by name and in its order, with the session", async () => {
+    const client = await open(new MockServer({ inputs: [seaboard, launchkey] }));
+    await until(() => client.state.inputs.length === 2, "the inputs");
+    expect(client.state.inputs).toEqual([seaboard, launchkey]);
+  });
+
+  test("follow a device that is plugged in or pulled out, each telling replacing the last", async () => {
+    const server = new MockServer({ inputs: [seaboard] });
+    const client = await open(server);
+    await until(() => client.state.inputs.length === 1, "the first list");
+    server.announceInputs([seaboard, launchkey]);
+    await until(() => client.state.inputs.length === 2, "the device that came");
+    expect(client.state.inputs).toEqual([seaboard, launchkey]);
+    server.announceInputs([launchkey]);
+    await until(() => client.state.inputs.length === 1, "the device that went");
+    expect(client.state.inputs).toEqual([launchkey]);
+    server.announceInputs([]);
+    await until(() => client.state.inputs.length === 0, "the last device going");
+    expect(client.state.inputs).toEqual([]);
+  });
+
+  test("are no part of the session, which they leave alone", async () => {
+    const server = new MockServer({ inputs: [seaboard] });
+    const client = await open(server);
+    const before = client.state.snapshot;
+    server.announceInputs([seaboard, launchkey]);
+    await until(() => client.state.inputs.length === 2, "the inputs");
+    expect(client.state.snapshot).toBe(before);
+    expect(client.state.snapshot?.meta.dirty).toBe(false);
+    expect(client.state.snapshot?.rev).toBe(0);
+  });
+
+  test("are kept while the connection is made good, and told again by the server it comes back to", async () => {
+    const server = new MockServer({ inputs: [seaboard] });
+    const client = await open(server);
+    await until(() => client.state.inputs.length === 1, "the inputs");
+    server.drop();
+    await until(() => client.state.status === "reconnecting", "the loss");
+    expect(client.state.inputs).toEqual([seaboard]); // what it knew is still there
+    server.announceInputs([launchkey]); // while it was away: nobody hears of it
+    await until(() => client.state.status === "open" && client.state.inputs[0] === launchkey, "the inputs after the reconnection");
+    expect(client.state.inputs).toEqual([launchkey]);
+  });
+
+  /** A connection to `server` that writes down every message it is told. */
+  function listener(server: MockServer) {
+    const heard: ServerMessage[] = [];
+    const transport = server.transport();
+    transport.connect({
+      open: () => undefined,
+      text: (data) => {
+        heard.push(JSON.parse(data) as ServerMessage);
+      },
+      binary: () => undefined,
+      close: () => undefined,
+    });
+    return { heard, transport, told: () => heard.filter((message) => message.type === "inputs").length };
+  }
+
+  test("are not told to a connection that has not subscribed", async () => {
+    const server = new MockServer({ inputs: [seaboard] });
+    const { heard, transport, told } = listener(server);
+    await quiet();
+    server.announceInputs([seaboard, launchkey]);
+    await quiet();
+    expect(heard.map((message) => message.type)).toEqual(["hello"]);
+    expect(told()).toBe(0);
+    transport.close();
+  });
+
+  test("are told again when the list is not what the connection was told, and not when it is the same", async () => {
+    const server = new MockServer({ inputs: [seaboard] });
+    const { heard, transport, told } = listener(server);
+    await quiet();
+    transport.send(JSON.stringify({ type: "subscribe" }));
+    await quiet();
+    expect(told()).toBe(1);
+    server.announceInputs([seaboard]);
+    await quiet();
+    expect(told()).toBe(1);
+    server.announceInputs([seaboard, launchkey]);
+    await quiet();
+    expect(told()).toBe(2);
+    expect(heard.at(-1)).toEqual({ type: "inputs", names: [seaboard, launchkey] });
+    // (The order is part of it: a list that has the same names in another order is another list.)
+    server.announceInputs([launchkey, seaboard]);
+    await quiet();
+    expect(told()).toBe(3);
+    transport.close();
+  });
+});
+
 describe("what Undo and Redo would do", () => {
   const nothing = { undo: null, redo: null };
 
@@ -1492,13 +1596,13 @@ describe("what Undo and Redo would do", () => {
     expect(valueOf(client, filter, 0)).toBe(0.3);
   });
 
-  test("is told to a connection when it subscribes, after the snapshot and the catalog, and not before", async () => {
+  test("is told to a connection when it subscribes, after the snapshot and the catalog, and before the MIDI inputs, and not before", async () => {
     const server = new MockServer();
     const { heard, send, close } = raw(server);
     await quiet();
     send({ type: "subscribe" });
     await quiet();
-    expect(heard).toEqual(["hello", "snapshot", "catalog", "history null/null"]);
+    expect(heard).toEqual(["hello", "snapshot", "catalog", "history null/null", "inputs"]);
     close();
   });
 
@@ -3941,6 +4045,31 @@ describe("what the server says", () => {
     await until(() => client.state.history.undo === null && client.state.history.redo !== null, "the last history");
     expect(client.state.history).toEqual({ undo: null, redo: "set mix" });
     expect(changes).toBe(3);
+  });
+
+  test("a list of inputs replaces the one before it, whole, and one that says the same changes nothing", async () => {
+    const server = new MockServer();
+    const client = scripted([
+      server.hello(),
+      { type: "snapshot", snapshot: tracerSnapshot },
+      { type: "inputs", names: ["Seaboard RISE"] },
+      { type: "inputs", names: ["Seaboard RISE"] },
+      { type: "inputs", names: ["Seaboard RISE", "Launchkey"] },
+      { type: "inputs", names: [] },
+    ]);
+    // (The messages come in one go, after this: every change of the store is counted from here.)
+    let seen = client.state.inputs;
+    let changes = 0;
+    client.store.subscribe((state) => {
+      if (state.inputs !== seen) {
+        seen = state.inputs;
+        changes += 1;
+      }
+    });
+    await until(() => changes === 3, "the three lists that are not the one before");
+    await quiet();
+    expect(changes).toBe(3);
+    expect(client.state.inputs).toEqual([]);
   });
 
   test("through a transport the client has left is not listened to", async () => {

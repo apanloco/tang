@@ -116,6 +116,13 @@ fn take_out<C>(open: &mut Vec<Open<C>>, gone: &[usize]) -> Vec<Source> {
     sources
 }
 
+/// The names of the devices that are open, in the order they were opened. A name is open once (`plan` opens a name that is listed twice once), so that each is what a session names a device by.
+/// (Compiled with the `web` feature or in tests only: it is the web interface that tells clients which inputs are open.)
+#[cfg(any(test, feature = "web"))]
+fn names_of<C>(open: &[Open<C>]) -> Vec<String> {
+    open.iter().map(|device| device.name.clone()).collect()
+}
+
 pub struct MidiManager {
     notes: NoteInput,
     device_filter: Option<String>,
@@ -222,6 +229,12 @@ impl MidiManager {
 
     pub fn connection_count(&self) -> usize {
         self.open.len()
+    }
+
+    /// The names of the MIDI inputs that are open, in the order they were opened: what a client can make a source of (`AddSource`).
+    #[cfg(any(test, feature = "web"))]
+    pub fn open_names(&self) -> Vec<String> {
+        names_of(&self.open)
     }
 
     /// The sources of the open devices that the device called `name` in a session stands for (none while it is not plugged in).
@@ -390,5 +403,89 @@ mod tests {
         assert_eq!(take_out(&mut open, &[]), [], "none gone, none taken out");
         assert_eq!(take_out(&mut open, &[0, 1]), [Source::device(1), Source::device(3)]);
         assert!(open.is_empty());
+    }
+
+    /// Which of the inputs that are open a device of a session stands for, for some inputs and some names, as the web client's tests read it (`web/src/client/fixtures/inputs.json`): they
+    /// pin the page's `inputsStoodFor`, which says of a device node that it is plugged in, to `matching`. A row is the inputs that are open, the name of a device, and the inputs that
+    /// it stands for, in the order they are open. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_device_stands_for_is_current() {
+        #[derive(serde::Serialize)]
+        struct Row {
+            open: Vec<&'static str>,
+            name: &'static str,
+            stands: Vec<&'static str>,
+        }
+        let sets: [&[&'static str]; 5] = [
+            &["Launchkey Mini MK4 37 MIDI Out", "Launchkey Mini MK4 37 DAW Out", "ROLI Airwave Expression", "IAC Driver Bus 1", "IAC Driver Bus 10"],
+            &["Seaboard RISE"],
+            &[],
+            // (Names that are not ASCII: the case of a letter is the language's, and a sigma at the end of a word is another letter.)
+            &["Ünïcode Keys", "İstanbul Pad", "ODYSSEUS Σ", "straße Pad", "ΟΔΥΣΣΕΥΣ"],
+            &["Keys", "Keys", "keys"],
+        ];
+        let names = [
+            "ROLI Airwave Expression",
+            "Launchkey Mini MK4 37",
+            "Launchkey Mini MK4 37 MIDI Out",
+            "airwave",
+            "IAC Driver Bus 1",
+            "IAC Driver Bus",
+            "  Launchkey  ",
+            "\u{a0}Seaboard\u{2003}",
+            // (The next line and the byte order mark: the first is white space to Rust and not to the page's own `trim`, which takes the second, and Rust does not.)
+            "\u{85}Seaboard\u{85}",
+            "\u{feff}Seaboard",
+            "",
+            "   ",
+            "Pianoteq",
+            "launchkey mini mk4 37 midi out and more",
+            "Seaboard",
+            "seaboard rise",
+            "RISE",
+            "ÜNÏCODE",
+            "ünïcode keys",
+            "İSTANBUL",
+            "istanbul",
+            "odysseus σ",
+            "ODYSSEUS ς",
+            "STRASSE",
+            "straße",
+            "οδυσσευς",
+            "οδυσσευσ",
+            "Keys",
+            "KEYS",
+        ];
+        let mut rows = Vec::new();
+        for open in sets {
+            let ports: Vec<(&str, Source)> = open.iter().enumerate().map(|(nth, &name)| (name, Source::device(nth))).collect();
+            for name in names {
+                let found = matching(&ports, name);
+                let stands = open.iter().enumerate().filter(|&(nth, _)| found.contains(Source::device(nth))).map(|(_, &input)| input).collect();
+                rows.push(Row { open: open.to_vec(), name, stands });
+            }
+        }
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "rows": crate::app::testutil::wire(&rows) })).unwrap() + "\n";
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/inputs.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what a device stands for now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn the_names_of_the_devices_that_are_open_are_in_the_order_they_were_opened() {
+        let mut open = vec![device("Seaboard", 1), device("Launchkey", 0), device("IAC", 2)];
+        assert_eq!(names_of(&open), ["Seaboard", "Launchkey", "IAC"], "the order of the list and not of the sources they have");
+        take_out(&mut open, &[0]);
+        open.push(device("Seaboard", 1));
+        assert_eq!(names_of(&open), ["Launchkey", "IAC", "Seaboard"], "a device that has gone and come back is the last one opened");
+        assert!(names_of::<()>(&[]).is_empty(), "no device is open: no name");
     }
 }

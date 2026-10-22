@@ -68,6 +68,8 @@ export interface MockOptions {
   clock?: () => number;
   /** The files that are in the directory of the session's file besides its own, which a save as does not write over (none by default). */
   files?: readonly string[];
+  /** The MIDI inputs it says are open, by name, which a source of notes can be made of (none by default: the mock has no MIDI). */
+  inputs?: readonly string[];
 }
 
 /**
@@ -1151,6 +1153,8 @@ export class MockServer {
   #catalog: { entries: readonly CatalogEntry[]; scanning: boolean };
   /** How many times the catalog has been told (it is the `rev` of the message). */
   #catalogRev = 0;
+  /** The MIDI inputs that are open, as the clients are told (and were told last: a list that is the same as that is not told again). */
+  #inputs: readonly string[];
   readonly #counters: Counters;
   /** The files of the directory of the session's file: what the options say, and the file the session has (it is there, or it is written when it is saved). */
   readonly #files: Set<string>;
@@ -1171,6 +1175,7 @@ export class MockServer {
     this.#options = options;
     this.#snapshot = options.snapshot ?? tracerSnapshot;
     this.#catalog = options.catalog ?? { entries: builtinCatalog, scanning: false };
+    this.#inputs = options.inputs ?? [];
     this.#counters = new Counters(this.#snapshot);
     this.#files = new Set([...(options.files ?? []), ...(this.#snapshot.meta.file === null ? [] : [this.#snapshot.meta.file])]);
   }
@@ -1224,6 +1229,19 @@ export class MockServer {
     for (const connection of this.#connections) {
       if (connection.subscribed) connection.tell(this.#catalogMessage());
     }
+  }
+
+  /** A MIDI device is plugged in or pulled out: the subscribed clients are told the inputs that are open now, if that is not what they were told. */
+  announceInputs(names: readonly string[]): void {
+    if (names.length === this.#inputs.length && names.every((name, i) => name === this.#inputs[i])) return;
+    this.#inputs = names;
+    for (const connection of this.#connections) {
+      if (connection.subscribed) connection.tell(this.#inputsMessage());
+    }
+  }
+
+  #inputsMessage(): ServerMessage {
+    return { type: "inputs", names: [...this.#inputs] };
   }
 
   #catalogMessage(): ServerMessage {
@@ -1324,6 +1342,7 @@ export class MockServer {
         connection.tell({ type: "snapshot", snapshot: this.#snapshot });
         connection.tell(this.#catalogMessage());
         connection.tell(this.#historyMessage());
+        connection.tell(this.#inputsMessage());
         break;
       case "telemetry":
         connection.wantTelemetry(message.channels);

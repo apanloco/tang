@@ -34,6 +34,8 @@ pub struct Owner {
     catalog_told: (u64, bool),
     /// What the clients were last told Undo and Redo would do.
     history_told: HistoryState,
+    /// What the clients were last told of the MIDI inputs that are open.
+    inputs_told: Vec<String>,
 }
 
 impl Owner {
@@ -44,7 +46,8 @@ impl Owner {
         ctl.subscribe(Box::new(HubSink { hub: hub.clone(), shared: shared.clone() }));
         let catalog_told = (ctl.catalog.rev(), ctl.catalog.is_scanning());
         let history_told = ctl.history_state();
-        Owner { hub, shared, requests, catalog_told, history_told }
+        let inputs_told = ctl.inputs();
+        Owner { hub, shared, requests, catalog_told, history_told, inputs_told }
     }
 
     /// Answer every request that is waiting, in the order they came. How many.
@@ -81,11 +84,12 @@ impl Owner {
         let applied = match request {
             OwnerRequest::Subscribe { client } => {
                 // Subscribed and sent the snapshot in one step: no event can come between. The
-                // catalog and what can be undone are not part of the session, and follow it.
+                // catalog, what can be undone and the MIDI inputs that are open are not part of the session, and follow it.
                 if self.hub.subscribe(client) {
                     self.send(client, &ServerMessage::Snapshot { snapshot: ctl.snapshot() });
                     self.send(client, &Self::catalog(ctl));
                     self.send(client, &Self::history(ctl));
+                    self.send(client, &Self::inputs(ctl));
                 }
                 None
             }
@@ -117,6 +121,11 @@ impl Owner {
         ServerMessage::Catalog { rev: ctl.catalog.rev(), scanning: ctl.catalog.is_scanning(), entries: ctl.catalog.entries() }
     }
 
+    /// The MIDI inputs that are open, as a client is told of them.
+    fn inputs(ctl: &Controller) -> ServerMessage {
+        ServerMessage::Inputs { names: ctl.inputs() }
+    }
+
     /// What Undo and Redo would do, as a client is told of it.
     fn history(ctl: &Controller) -> ServerMessage {
         let HistoryState { undo, redo } = ctl.history_state();
@@ -140,9 +149,10 @@ impl Owner {
     }
 
     /// Keep what the connections read current: the session's revision, and the
-    /// meaning of the telemetry slots, which the clients are told when it changes, and
-    /// the plugin catalog, as the scan finds more. Call it regularly (a few times a
-    /// second): the model can change without an intent, under the TUI's hands.
+    /// meaning of the telemetry slots, which the clients are told when it changes,
+    /// the plugin catalog, as the scan finds more, and the MIDI inputs that are open, as devices
+    /// come and go. Call it regularly (a few times a second): the model can change without an
+    /// intent, under the TUI's hands.
     pub fn refresh(&mut self, ctl: &Controller) {
         self.shared.rev.store(ctl.rev, Ordering::Relaxed);
         let catalog = (ctl.catalog.rev(), ctl.catalog.is_scanning());
@@ -152,6 +162,12 @@ impl Owner {
         }
         // (What the TUI does through the controller changes what can be undone too, with no request.)
         self.tell_history(ctl);
+        // (A device that is plugged in or pulled out is found by the controller's look at the ports, and what can be made a source follows it.)
+        let inputs = ctl.inputs();
+        if inputs != self.inputs_told {
+            self.hub.broadcast(&Self::text(&ServerMessage::Inputs { names: inputs.clone() }));
+            self.inputs_told = inputs;
+        }
         let layout = ctl.model.telemetry_layout();
         // (A snapshot carries the layout, and sets it in `shared` when it is sent: then
         // there is nothing to tell here.)
@@ -176,6 +192,7 @@ mod tests {
     use tokio::sync::mpsc::Receiver as ClientQueue;
 
     use super::*;
+    use crate::app::controller::DeviceWatcher;
     use crate::app::intent::{Gain, Intent};
     use crate::app::model::NodeId;
     use crate::app::testutil::{self, StubEngine, load};
@@ -231,9 +248,10 @@ mod tests {
         rig.tx.send(OwnerRequest::Subscribe { client }).unwrap();
         assert_eq!(rig.owner.serve(&mut rig.ctl), 1);
         let first = said(&mut queue);
-        assert_eq!(types(&first), ["snapshot", "catalog", "history"], "the snapshot, what can be added to it, and what can be undone");
+        assert_eq!(types(&first), ["snapshot", "catalog", "history", "inputs"], "the snapshot, what can be added to it, what can be undone, and which MIDI inputs are open");
         assert_eq!(first[1], json!({"type": "catalog", "rev": 0, "scanning": false, "entries": []}));
         assert_eq!(first[2], json!({"type": "history", "undo": null, "redo": null}));
+        assert_eq!(first[3], json!({"type": "inputs", "names": []}), "a program that watches no device has none open");
         assert_eq!(first[0]["snapshot"]["rev"], 0);
         assert_eq!(first[0]["snapshot"]["graph"]["nodes"].as_array().unwrap().len(), 3, "two lanes and the master");
 
@@ -266,9 +284,9 @@ mod tests {
         rig.tx.send(OwnerRequest::Apply { client: early, req_id: 9, intent }).unwrap();
         rig.owner.serve(&mut rig.ctl);
         let heard = said(&mut late_queue);
-        assert_eq!(types(&heard), ["snapshot", "catalog", "history", "event"]);
+        assert_eq!(types(&heard), ["snapshot", "catalog", "history", "inputs", "event"]);
         assert_eq!(heard[0]["snapshot"]["rev"], 3);
-        assert_eq!(heard[3]["event"]["rev"], 4);
+        assert_eq!(heard[4]["event"]["rev"], 4);
     }
 
     #[test]
@@ -336,8 +354,8 @@ mod tests {
 
     #[test]
     fn a_client_that_does_not_keep_up_is_evicted_and_the_session_goes_on() {
-        // (A queue of the three that a client is sent when it subscribes: the snapshot, the catalog and what can be undone.)
-        let mut rig = rig_with(SESSION, 3);
+        // (A queue of the four that a client is sent when it subscribes: the snapshot, the catalog, what can be undone and the MIDI inputs that are open.)
+        let mut rig = rig_with(SESSION, 4);
         let (slow, mut slow_queue) = rig.hub.connect();
         let (quick, mut quick_queue) = rig.hub.connect();
         for client in [slow, quick] {
@@ -527,7 +545,7 @@ mod tests {
         rig.tx.send(OwnerRequest::Subscribe { client }).unwrap();
         rig.owner.serve(&mut rig.ctl);
         let first = said(&mut queue);
-        assert_eq!(types(&first), ["snapshot", "catalog", "history"]);
+        assert_eq!(types(&first), ["snapshot", "catalog", "history", "inputs"]);
         assert_eq!(first[1]["rev"], 1);
         assert_eq!(first[1]["scanning"], true, "the scan is not over");
         assert_eq!(first[1]["entries"], json!([{"id": "builtin:osc", "name": "Oscillator", "format": "Built-in", "isInstrument": true, "params": 4, "presets": 2}]));
@@ -633,10 +651,104 @@ mod tests {
         rig.tx.send(OwnerRequest::Subscribe { client: late }).unwrap();
         rig.owner.serve(&mut rig.ctl);
         let told = said(&mut late_queue);
-        assert_eq!(types(&told), ["snapshot", "catalog", "history"]);
+        assert_eq!(types(&told), ["snapshot", "catalog", "history", "inputs"]);
         assert_eq!(told[2], json!({"type": "history", "undo": "set volume", "redo": null}));
         rig.owner.refresh(&rig.ctl);
         assert!(said(&mut early_queue).is_empty() && said(&mut late_queue).is_empty());
+    }
+
+    /// A watcher of the devices whose open inputs a test sets, as the MIDI manager has them.
+    #[derive(Clone, Default)]
+    struct Inputs(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+    impl Inputs {
+        fn plug_in(&self, name: &str) {
+            self.0.borrow_mut().push(name.to_string());
+        }
+
+        fn unplug(&self, name: &str) {
+            self.0.borrow_mut().retain(|open| open != name);
+        }
+    }
+
+    impl DeviceWatcher for Inputs {
+        fn poll_new_devices(&mut self) -> crate::midi::DeviceChanges {
+            crate::midi::DeviceChanges::default()
+        }
+
+        fn sources_of(&self, _: &str) -> crate::source::SourceSet {
+            crate::source::SourceSet::NONE
+        }
+
+        fn open_names(&self) -> Vec<String> {
+            self.0.borrow().clone()
+        }
+    }
+
+    #[test]
+    fn a_client_is_told_which_inputs_are_open_with_the_snapshot_and_again_when_a_device_comes_or_goes_and_not_otherwise() {
+        let mut rig = rig();
+        let devices = Inputs::default();
+        devices.plug_in("Seaboard RISE");
+        rig.ctl.watch_devices(Box::new(devices.clone()));
+        // (Nobody is there to be told when the device is found: the list that the owner started with was empty.)
+        rig.owner.refresh(&rig.ctl);
+
+        let (client, mut queue) = rig.hub.connect();
+        let (_plain, mut plain_queue) = rig.hub.connect();
+        rig.tx.send(OwnerRequest::Subscribe { client }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        let first = said(&mut queue);
+        assert_eq!(types(&first), ["snapshot", "catalog", "history", "inputs"]);
+        assert_eq!(first[3], json!({"type": "inputs", "names": ["Seaboard RISE"]}), "the list as it is when the client subscribes");
+        rig.owner.refresh(&rig.ctl);
+        assert!(said(&mut queue).is_empty(), "nothing changed: nothing is said");
+
+        devices.plug_in("Launchkey Mini MK4 37 MIDI Out");
+        rig.owner.refresh(&rig.ctl);
+        assert_eq!(said(&mut queue), [json!({"type": "inputs", "names": ["Seaboard RISE", "Launchkey Mini MK4 37 MIDI Out"]})], "the whole list, whole");
+        rig.owner.refresh(&rig.ctl);
+        assert!(said(&mut queue).is_empty(), "once");
+
+        devices.unplug("Seaboard RISE");
+        rig.owner.refresh(&rig.ctl);
+        assert_eq!(said(&mut queue), [json!({"type": "inputs", "names": ["Launchkey Mini MK4 37 MIDI Out"]})]);
+
+        devices.unplug("Launchkey Mini MK4 37 MIDI Out");
+        rig.owner.refresh(&rig.ctl);
+        assert_eq!(said(&mut queue), [json!({"type": "inputs", "names": []})], "none is open: a list that is empty, and not no word");
+        assert!(said(&mut plain_queue).is_empty(), "a client that has not subscribed is told nothing");
+
+        // A client that comes late is told the list as it is, and nobody is told it twice.
+        devices.plug_in("IAC Driver Bus 1");
+        rig.owner.refresh(&rig.ctl);
+        said(&mut queue);
+        let (late, mut late_queue) = rig.hub.connect();
+        rig.tx.send(OwnerRequest::Subscribe { client: late }).unwrap();
+        rig.owner.serve(&mut rig.ctl);
+        assert_eq!(said(&mut late_queue)[3], json!({"type": "inputs", "names": ["IAC Driver Bus 1"]}));
+        rig.owner.refresh(&rig.ctl);
+        assert!(said(&mut queue).is_empty() && said(&mut late_queue).is_empty());
+    }
+
+    #[test]
+    fn an_owner_that_starts_when_devices_are_open_does_not_tell_them_again_to_the_first_client() {
+        // (The TUI starts the web interface on a program that has found its devices.)
+        let (handles, _engine) = testutil::stub_engine();
+        let mut ctl = Controller::new(load(SESSION).model, handles, None);
+        let devices = Inputs::default();
+        devices.plug_in("Seaboard RISE");
+        ctl.watch_devices(Box::new(devices.clone()));
+        let hub = Arc::new(Hub::new(64));
+        let shared = Arc::new(Shared::new(ctl.rev, ctl.model.telemetry_layout()));
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut owner = Owner::new(&mut ctl, hub.clone(), shared, rx);
+        let (client, mut queue) = hub.connect();
+        tx.send(OwnerRequest::Subscribe { client }).unwrap();
+        owner.serve(&mut ctl);
+        assert_eq!(said(&mut queue)[3], json!({"type": "inputs", "names": ["Seaboard RISE"]}));
+        owner.refresh(&ctl);
+        assert!(said(&mut queue).is_empty(), "it was told with the snapshot");
     }
 
     #[test]

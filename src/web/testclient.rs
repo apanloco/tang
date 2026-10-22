@@ -65,7 +65,7 @@ pub async fn tell(client: &mut Client, message: Value) {
 }
 
 /// Subscribe, and take what the server says to a client that has: the snapshot, the plugin
-/// catalog after it, and what Undo and Redo would do. The snapshot.
+/// catalog after it, what Undo and Redo would do, and which MIDI inputs are open. The snapshot.
 pub async fn subscribe(client: &mut Client) -> Value {
     tell(client, json!({"type": "subscribe"})).await;
     let snapshot = said(client).await;
@@ -74,6 +74,8 @@ pub async fn subscribe(client: &mut Client) -> Value {
     assert_eq!(catalog["type"], "catalog", "the catalog follows the snapshot: {catalog}");
     let history = said(client).await;
     assert_eq!(history["type"], "history", "what can be undone follows the catalog: {history}");
+    let inputs = said(client).await;
+    assert_eq!(inputs["type"], "inputs", "the MIDI inputs that are open follow what can be undone: {inputs}");
     snapshot
 }
 

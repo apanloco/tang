@@ -355,10 +355,11 @@ async fn a_browser_undoes_and_redoes_what_it_turned_and_is_told_what_it_can_do_a
     let mut late = connect(&tang).await;
     assert_eq!(next_json(&mut late).await["type"], "hello");
     tell(&mut late, json!({"type": "subscribe"})).await;
-    let first = [next_json(&mut late).await, next_json(&mut late).await, next_json(&mut late).await];
+    let first = [next_json(&mut late).await, next_json(&mut late).await, next_json(&mut late).await, next_json(&mut late).await];
     let types: Vec<&str> = first.iter().map(|m| m["type"].as_str().unwrap()).collect();
-    assert_eq!(types, ["snapshot", "catalog", "history"]);
+    assert_eq!(types, ["snapshot", "catalog", "history", "inputs"]);
     assert_eq!(first[2], json!({"type": "history", "undo": "set resonance", "redo": null}));
+    assert!(first[3]["names"].is_array(), "the MIDI inputs that are open, whichever they are on this machine: {}", first[3]);
 }
 
 #[tokio::test]
@@ -375,9 +376,12 @@ async fn a_browser_is_told_what_plugins_can_be_added_and_never_where_they_are_in
     let mut told = Vec::new();
     let osc = loop {
         let message = next_json(&mut client).await;
-        // (What can be undone follows the first catalog: there is nothing yet.)
+        // (What can be undone follows the first catalog: there is nothing yet. So do the MIDI inputs that are open, whichever they are on this machine.)
         if message["type"] == "history" {
             assert_eq!(message, json!({"type": "history", "undo": null, "redo": null}));
+            continue;
+        }
+        if message["type"] == "inputs" {
             continue;
         }
         assert_eq!(message["type"], "catalog", "nothing else is told to a client that only listens: {message}");
