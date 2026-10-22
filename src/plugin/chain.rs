@@ -3385,8 +3385,19 @@ struct InstrumentLane {
     /// over the buffer, so that a mute is not a step.
     heard_at: f32,
     /// The gain the lane's output is to be heard at in the buffer that is being processed, 1 or 0 (what `heard_at` goes to): worked out for every lane before the lanes run,
-    /// from the mutes and solos of all of them and of the groups (see `AudioGraph::process`).
+    /// from the mutes and solos of all of them and of the groups and from what the cables send (see `Schedule::set_gates`).
     heard_goal: f32,
+    /// Whether the lane is let in by the solo, for what it is: nothing is soloed, or it is, or its group is (a mute is not looked at: see `own`).
+    solo_heard: bool,
+    /// Whether what a cable sends to the lane, from something that is heard, lets it in (see `Schedule::set_gates`).
+    live: bool,
+    /// Whether a cable ends in the lane's chain: only such a lane has a head gate.
+    receives: bool,
+    /// The gain that the lane's own sound went into its chain at when the last buffer ended, and is to go at in this one: 1, and 0 for a lane that cables end in while something
+    /// else is soloed, so that what it puts out is what it is sent (the head gate). It goes there over the buffer, but at once for a lane that was not heard when the last buffer
+    /// ended, and not at all (it stays where it was) for one that is not to be heard when this one ends: see `run_head`.
+    head_at: f32,
+    head_goal: f32,
 }
 
 impl InstrumentLane {
@@ -3422,7 +3433,22 @@ impl InstrumentLane {
             route: Route::Out,
             heard_at: 1.0,
             heard_goal: 1.0,
+            solo_heard: true,
+            live: false,
+            receives: false,
+            head_at: 1.0,
+            head_goal: 1.0,
         }
+    }
+
+    /// Whether the lane is heard for what it is: not muted, and let in by the solo.
+    fn own(&self) -> bool {
+        !self.muted && self.solo_heard
+    }
+
+    /// Whether the lane's chain is heard: for what the lane is, or for what is sent to it.
+    fn out(&self) -> bool {
+        !self.muted && (self.solo_heard || self.live)
     }
 
     /// Get the sample rate. Derived from the instrument if loaded, otherwise a sensible default.
@@ -3736,9 +3762,18 @@ struct Group {
     heard_at: f32,
     /// The gain the bus is to be heard at in the buffer that is being processed (see `InstrumentLane::heard_goal`).
     heard_goal: f32,
+    /// Whether the group is let in by the solo, for what it is: nothing is soloed, or it is, or a lane in it is.
+    solo_heard: bool,
+    /// Whether what is sent to the group (to its bus, or to an effect of it, or by a lane in it that is heard for what it is sent) from something that is heard lets it in.
+    live: bool,
 }
 
 impl Group {
+    /// Whether the bus is heard: for what the group is, or for what is sent to it.
+    fn out(&self) -> bool {
+        !self.muted && (self.solo_heard || self.live)
+    }
+
     fn new(node: NodeId) -> Self {
         Group {
             node,
@@ -3761,6 +3796,8 @@ impl Group {
             route: Route::Out,
             heard_at: 1.0,
             heard_goal: 1.0,
+            solo_heard: true,
+            live: false,
         }
     }
 
@@ -5355,21 +5392,9 @@ impl AudioGraph {
         // The plan for the lanes and groups as they are now, and room for this block.
         self.schedule.refresh(&self.instruments, &self.groups, self.num_channels, frames);
 
-        // Whether anything is soloed: then only what is soloed is heard (and what a soloed lane or group needs to be: see below).
-        let any_solo = self.instruments.iter().any(|lane| lane.solo) || self.groups.iter().any(|group| group.solo);
-        // What each bus is heard at: a group that is not muted is heard when nothing is soloed, when it is, and when a lane in it is.
-        for gi in 0..self.groups.len() {
-            let member_solo = self.instruments.iter().any(|lane| lane.solo && lane.group == Some(gi));
-            let group = &mut self.groups[gi];
-            group.heard_goal = if !group.muted && (!any_solo || group.solo || member_solo) { 1.0 } else { 0.0 };
-        }
-        // What each lane is heard at: its own mute and solo (its group's mute is the bus's), and a soloed group's.
-        for lane in self.instruments.iter_mut() {
-            let group_solo = lane.group.and_then(|g| self.groups.get(g)).is_some_and(|g| g.solo);
-            lane.heard_goal = if !lane.muted && (!any_solo || lane.solo || group_solo) { 1.0 } else { 0.0 };
-        }
-        // What each audio cable is to be at: what its owner is heard at, times the level that was set.
-        self.schedule.set_cable_goals(&self.instruments, &self.groups);
+        // What each bus, each lane and each audio cable is heard at, and what each lane's own sound goes into its chain at: the mutes and solos of the lanes and groups, and what the
+        // cables send from what is heard (the law of mute and solo, see `Schedule::set_gates`).
+        self.schedule.set_gates(&mut self.instruments, &mut self.groups);
 
         // Group-scoped modulators: tick each group's modulators (envelopes are
         // triggered by the union of its members' ranges), resolve cross-mod,
@@ -6423,6 +6448,353 @@ mod tests {
         assert!(blocks[1].iter().flatten().all(|&s| s == 0.5));
     }
 
+    // -- the law of mute and solo for what a cable carries (P3c-2b of `docs/patch-graph.md` §11.6) --
+    //
+    // A lane or a group that is not soloed, while something is, is not heard for what it is: but it is heard for what is sent to it by a cable from a node that is heard, carrying
+    // only that (a lane puts none of its own sound into its chain: a head gate, which a lane that no cable ends in has none of).
+
+    /// The mix at the end of `blocks` buffers after the notes, the same at every sample.
+    fn steady_mix(graph: &mut AudioGraph, blocks: usize) -> f32 {
+        let out = blocks_of(graph, blocks, &[]).pop().unwrap();
+        let first = out[0][0];
+        assert!(out.iter().flatten().all(|&s| s == first), "a steady mix: {:?}", &out[0][..4]);
+        first
+    }
+
+    #[test]
+    fn a_lane_that_is_soloed_is_heard_through_the_effect_of_a_lane_that_it_sends_to_and_that_lane_puts_out_only_what_it_is_sent() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        // Nothing is soloed: the lane that has the effect puts out (0.25 + 0.5) doubled, and the sender its own 0.5.
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 2.0));
+        // The sender is soloed: it is heard, and so is the effect that it sends to, which has only what comes in (the lane's own 0.25 is not put into its chain): 0.5 doubled, and the 0.5.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 1.5);
+        // The lane that has the effect is soloed instead: it is heard as it is, and the sender, which is not, sends nothing.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: false }).unwrap();
+        cmd_tx.send(GraphCommand::SetSolo { inst: 0, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5, "0.25 doubled");
+        // Both: each is heard as it is, and the cable carries.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 2.0);
+        // Neither is, any more: it is all as it was.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 0, solo: false }).unwrap();
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: false }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 2.0);
+    }
+
+    #[test]
+    fn what_a_lane_is_sent_is_heard_by_its_own_gate_and_the_lanes_own_sound_is_let_go_of_over_a_buffer_when_something_else_is_soloed() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        blocks_of(&mut graph, 3, &[note_on(60)]);
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        let blocks = blocks_of(&mut graph, 3, &[]);
+        // The lane's own 0.25 goes out of its chain by a ramp, h: (0.25 * h + 0.5) doubled, and the sender's 0.5. The lane itself is heard all the while (the sender's cable carries).
+        for (i, &s) in blocks[0][0].iter().enumerate() {
+            let h = 1.0 - (i + 1) as f32 / FRAMES as f32;
+            assert_eq!(s, 1.5 + 0.5 * h, "sample {i}");
+        }
+        assert!(blocks[1].iter().flatten().chain(blocks[2].iter().flatten()).all(|&s| s == 1.5));
+        // Taken out of the solo, it comes back over a buffer in the same way.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: false }).unwrap();
+        let blocks = blocks_of(&mut graph, 2, &[]);
+        for (i, &s) in blocks[0][0].iter().enumerate() {
+            let h = (i + 1) as f32 / FRAMES as f32;
+            assert_eq!(s, 1.5 + 0.5 * h, "sample {i}");
+        }
+        assert!(blocks[1].iter().flatten().all(|&s| s == 2.0));
+    }
+
+    #[test]
+    fn a_soloed_lane_that_is_muted_sends_nothing_and_neither_does_a_cable_that_is_at_nothing() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        blocks_of(&mut graph, 3, &[note_on(60)]);
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        cmd_tx.send(GraphCommand::SetMute { inst: 1, muted: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.0, "a mute wins over a solo, and what is sent from a lane that is muted is not heard");
+        cmd_tx.send(GraphCommand::SetMute { inst: 1, muted: false }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 1.5);
+        // A cable at nothing sends nothing, so the lane that it ends at has nothing coming in to be heard for.
+        cmd_tx.send(GraphCommand::SetCableGain { id: EdgeId(1), gain: 0.0 }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5, "only the sender");
+    }
+
+    #[test]
+    fn a_lane_that_is_muted_is_not_heard_for_what_is_sent_to_it_either() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        blocks_of(&mut graph, 3, &[note_on(60)]);
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        cmd_tx.send(GraphCommand::SetMute { inst: 0, muted: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5, "the sender alone");
+        // With nothing soloed a mute is what it was.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: false }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5);
+    }
+
+    #[test]
+    fn what_a_lane_is_sent_goes_on_through_the_cables_of_its_effects_to_the_lanes_after_it() {
+        // Lane 0 doubles what it is given, lane 2 triples; lane 1 sends to the first, and the first sends what it makes to the second.
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        another_lane(&mut graph, &cmd_tx, 1.0);
+        let tripler = effect_of(&cmd_tx, 2, 0, Box::new(ScaleEffect(3.0)));
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        draw(&cmd_tx, 2, CableFrom::Effect(fx), CableTo::Effect(tripler), 0.5);
+        // Nothing is soloed: lane 0 makes (0.25 + 0.5) doubled, 1.5; lane 1 its 0.5; lane 2 (1.0 + 0.5 * 1.5) tripled, 5.25.
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 7.25));
+        // The first sender is soloed: the lane after it is heard for what is sent to it, and the lane after that for what that sends on: 0.5 doubled is 1.0, half of it to the third, tripled; the 0.5.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 1.0 + 1.5 + 0.5);
+        // A lane that nothing that is heard sends to is not heard: only lane 2 is soloed, and it sends nothing.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: false }).unwrap();
+        cmd_tx.send(GraphCommand::SetSolo { inst: 2, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 3.0);
+    }
+
+    #[test]
+    fn a_lane_that_is_soloed_is_heard_through_a_bus_effect_of_a_group_that_has_no_lane_soloed_and_the_group_is_heard_for_it() {
+        let (mut graph, cmd_tx, _fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        graph.groups.push(Group::new(group_node(0)));
+        cmd_tx
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(3.0)), mix: 1.0, node: bus_effect_node(0, 0) })
+            .unwrap();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(bus_effect_node(0, 0)), 1.0);
+        // Nothing is soloed: the lane that has the effect makes 0.5, the sender its 0.5, and the bus of the group, which has no lane in it, the cable's 0.5 tripled.
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 2.5));
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5 + 1.5, "the sender, and the bus, which is heard for what is sent to it");
+        // A group that is muted is not heard for it.
+        cmd_tx.send(GraphCommand::SetGroupMute { group: 0, muted: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5);
+    }
+
+    #[test]
+    fn a_group_is_heard_for_a_lane_in_it_that_is_heard_for_what_is_sent_to_it_and_for_nothing_else_of_what_is_in_it() {
+        // Lane 0 is in the group and doubles what it is given; the group triples what it is given; lane 1 sends to lane 0.
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        another_lane(&mut graph, &cmd_tx, 2.0);
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[0].group = Some(0);
+        graph.instruments[2].group = Some(0);
+        cmd_tx
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(3.0)), mix: 1.0, node: bus_effect_node(0, 0) })
+            .unwrap();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        // Nothing is soloed: the bus has lane 0's 1.5 and lane 2's 2.0, tripled, and the sender's 0.5.
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 10.5 + 0.5));
+        // The sender is soloed: what is sent to lane 0 is heard through it and through the group (0.5 doubled, tripled), and what lane 2 plays is not.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 3.0 + 0.5);
+    }
+
+    #[test]
+    fn a_lane_is_heard_for_what_a_group_that_is_soloed_sends_to_it() {
+        // Lane 0 is in the group and plays 0.25; lane 1 plays 0.5 and has an effect that doubles; the group's output goes to lane 1's effect.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        let fx = effect_of(&cmd_tx, 1, 0, Box::new(ScaleEffect(2.0)));
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[0].group = Some(0);
+        draw(&cmd_tx, 1, CableFrom::Group(group_node(0)), CableTo::Effect(fx), 1.0);
+        // Nothing is soloed: the group's 0.25 to the mix, and lane 1's (0.5 + 0.25) doubled.
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 1.75));
+        // The group is soloed: it is heard, and so is the lane that its output is sent to, for that.
+        cmd_tx.send(GraphCommand::SetGroupSolo { group: 0, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.25 + 0.5);
+        // A lane in it is soloed, and not the group: the same.
+        cmd_tx.send(GraphCommand::SetGroupSolo { group: 0, solo: false }).unwrap();
+        cmd_tx.send(GraphCommand::SetSolo { inst: 0, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.25 + 0.5);
+    }
+
+    #[test]
+    fn a_lane_that_goes_nowhere_by_itself_is_heard_through_its_own_cable_for_what_is_sent_to_it() {
+        // Lane 0 has no way out, and a cable from its effect to the mix; lane 1, soloed, sends to the effect: what lane 0 puts out by its cable is that, and not lane 0's own sound.
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        cmd_tx.send(GraphCommand::SetLaneRoute { inst: 0, route: Route::None }).unwrap();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        draw(&cmd_tx, 2, CableFrom::Effect(fx), CableTo::Master, 1.0);
+        // Nothing is soloed: lane 0 is heard by its cable alone, (0.25 + 0.5) doubled, and the sender's 0.5.
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 2.0));
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 1.5, "0.5 doubled, and the 0.5");
+    }
+
+    #[test]
+    fn a_session_with_a_solo_and_cables_asks_the_allocator_for_nothing_once_it_is_running() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        another_lane(&mut graph, &cmd_tx, 1.0);
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[2].group = Some(0);
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 0.5);
+        draw(&cmd_tx, 2, CableFrom::Effect(fx), CableTo::GroupBus(group_node(0)), 0.25);
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        assert_eq!(allocations_while_processing(&mut graph, &[note_on(60)], 16), 0, "the audio thread asked the allocator for memory");
+    }
+
+    // A scaling effect puts out nothing for nothing, so that a lane or a group that has one cannot say whether it is heard: these have effects that add a constant, which is there exactly when
+    // the lane's chain or the group's bus is heard.
+
+    #[test]
+    fn a_bus_that_makes_a_sound_of_its_own_is_heard_exactly_when_its_group_is() {
+        // Lane 0 is in the group and doubles what it is given, lane 1 sends to it, lane 2 is in no group; the bus adds 8 to what it has, whatever the lanes in it put in.
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        another_lane(&mut graph, &cmd_tx, 1.0);
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[0].group = Some(0);
+        cmd_tx
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(OffsetEffect(8.0)), mix: 1.0, node: bus_effect_node(0, 0) })
+            .unwrap();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        // Nothing is soloed: the bus has lane 0's (0.25 + 0.5) doubled and 8, and the lanes that are in no group play 0.5 and 1.0.
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 1.5 + 8.0 + 0.5 + 1.0));
+        // Lane 1 is soloed: lane 0 is heard for what it is sent (0.5 doubled), and so is the group, for that lane: its 8 is in the mix, and the sender's 0.5.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 1.0 + 8.0 + 0.5);
+        // The solo goes to lane 2, which is in no group: nothing that is heard sends to lane 0 any more, and the group is not heard (it was let in by what was sent, and is not any more).
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: false }).unwrap();
+        cmd_tx.send(GraphCommand::SetSolo { inst: 2, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 1.0);
+        // Lane 1 again, with the way out of lane 0 cut: it is heard for what it is sent and puts it nowhere, so that the group has nothing from it and is not heard.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 2, solo: false }).unwrap();
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneRoute { inst: 0, route: Route::None }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5);
+        cmd_tx.send(GraphCommand::SetLaneRoute { inst: 0, route: Route::Out }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 1.0 + 8.0 + 0.5);
+        // A cable at nothing sends nothing, and a group that is muted is not heard.
+        cmd_tx.send(GraphCommand::SetCableGain { id: EdgeId(1), gain: 0.0 }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5);
+        cmd_tx.send(GraphCommand::SetCableGain { id: EdgeId(1), gain: 1.0 }).unwrap();
+        cmd_tx.send(GraphCommand::SetGroupMute { group: 0, muted: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5);
+    }
+
+    #[test]
+    fn a_lane_whose_chain_makes_a_sound_of_its_own_is_heard_for_what_it_is_sent_and_for_nothing_else() {
+        // The lane's chain adds 8, so that it puts out 8 when it is heard, even for a sound of nothing; lane 1, which is soloed, can send to it.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(OffsetEffect(8.0)));
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        blocks_of(&mut graph, 1, &[note_on(60)]);
+        // Nothing is sent to the lane: it is not heard, and neither is its 8.
+        assert_eq!(steady_mix(&mut graph, 3), 0.5);
+        // A cable from the sender: the lane is heard for what it is sent, 0.5 and its 8, and its own 0.25 is not in it.
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        assert_eq!(steady_mix(&mut graph, 3), 8.5 + 0.5);
+        // The cable at nothing sends nothing: the lane is not heard for it.
+        cmd_tx.send(GraphCommand::SetCableGain { id: EdgeId(1), gain: 0.0 }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5);
+        cmd_tx.send(GraphCommand::SetCableGain { id: EdgeId(1), gain: 1.0 }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 8.5 + 0.5);
+        // The cable is taken out, and the lane is let go of with it.
+        cmd_tx.send(GraphCommand::RemoveCable { id: EdgeId(1) }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 0.5);
+    }
+
+    #[test]
+    fn a_lane_that_a_cable_let_in_is_let_go_of_over_the_buffer_that_the_cable_goes_in_with_none_of_its_own_sound_coming_in_with_it() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(OffsetEffect(8.0)));
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        blocks_of(&mut graph, 4, &[note_on(60)]);
+        cmd_tx.send(GraphCommand::RemoveCable { id: EdgeId(1) }).unwrap();
+        let blocks = blocks_of(&mut graph, 3, &[]);
+        // The sender's 0.5, and lane 0's: what it is sent, 0.5 h, and its 8, the lane going down with the cable by the same ramp, h. None of its own 0.25 is in it.
+        for (i, &s) in blocks[0][0].iter().enumerate() {
+            let h = 1.0 - (i + 1) as f32 / FRAMES as f32;
+            assert!((s - (0.5 + (8.0 + 0.5 * h) * h)).abs() < 1e-5, "sample {i}: {s}");
+        }
+        assert!(blocks[1].iter().flatten().chain(blocks[2].iter().flatten()).all(|&s| s == 0.5));
+    }
+
+    #[test]
+    fn none_of_the_sound_of_a_lane_that_the_solo_does_not_let_in_is_heard_over_the_buffer_that_a_cable_into_it_comes_in_over() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(OffsetEffect(8.0)));
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        blocks_of(&mut graph, 4, &[note_on(60)]);
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        let blocks = blocks_of(&mut graph, 3, &[]);
+        // The cable comes in, and lane 0 with it, by the same ramp, t: the lane puts out (8 + 0.5 t) t, and the sender its 0.5. Its own 0.25 is not in it, as a ramp that goes the other way
+        // would let through (0.25 (1 - t) t).
+        for (i, &s) in blocks[0][0].iter().enumerate() {
+            let t = (i + 1) as f32 / FRAMES as f32;
+            assert!((s - (0.5 + (8.0 + 0.5 * t) * t)).abs() < 1e-5, "sample {i}: {s}");
+        }
+        assert!(blocks[1].iter().flatten().chain(blocks[2].iter().flatten()).all(|&s| s == 8.5 + 0.5));
+    }
+
+    #[test]
+    fn what_a_lane_sends_by_the_cable_of_its_instrument_goes_with_its_own_sound_when_the_solo_stops_letting_it_in() {
+        // Lane 0 doubles what it is given and sends its instrument to the mix; lane 1 sends to its effect.
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        draw(&cmd_tx, 2, CableFrom::Instrument(lane_node(0)), CableTo::Master, 1.0);
+        // Nothing is soloed: lane 0's (0.25 + 0.5) doubled, the sender's 0.5, and lane 0's own 0.25 by its cable.
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 1.5 + 0.5 + 0.25));
+        // Lane 1 is soloed: lane 0's own sound goes out of its chain by a ramp, h, and out of its cable by another, so that it is h h there, and what is left is what lane 0 is sent.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        let blocks = blocks_of(&mut graph, 3, &[]);
+        for (i, &s) in blocks[0][0].iter().enumerate() {
+            let h = 1.0 - (i + 1) as f32 / FRAMES as f32;
+            assert!((s - (1.5 + 0.5 * h + 0.25 * h * h)).abs() < 1e-5, "sample {i}: {s}");
+        }
+        assert!(blocks[2].iter().flatten().all(|&s| s == 1.5));
+    }
+
+    #[test]
+    fn a_lane_that_is_heard_only_for_what_it_is_sent_lets_in_nothing_by_the_cable_of_its_instrument() {
+        // Lane 0 doubles what it is given, lane 1 sends to it, and the instrument of lane 0 sends to lane 2, whose chain adds 16 (so that it is heard when it is let in, whatever it is given).
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        another_lane(&mut graph, &cmd_tx, 1.0);
+        let adder = effect_of(&cmd_tx, 2, 0, Box::new(OffsetEffect(16.0)));
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        draw(&cmd_tx, 2, CableFrom::Instrument(lane_node(0)), CableTo::Effect(adder), 1.0);
+        // Nothing is soloed: lane 0 makes (0.25 + 0.5) doubled, 1.5; lane 1 its 0.5; lane 2 its 1.0 and the 0.25 that the cable from lane 0's instrument brings, and 16.
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 1.5 + 0.5 + 17.25));
+        // Lane 1 is soloed: lane 0 is heard for what it is sent, and none of its own sound goes by its instrument's cable: lane 2 is not heard for it, and neither is its 16.
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        assert_eq!(steady_mix(&mut graph, 3), 1.0 + 0.5);
+        // What lane 0's effect sends does go on: a cable from it to lane 2's effect lets lane 2 in, for the 1.0 that lane 0's chain makes of what it is sent, and its 16.
+        draw(&cmd_tx, 3, CableFrom::Effect(fx), CableTo::Effect(adder), 1.0);
+        assert_eq!(steady_mix(&mut graph, 3), 1.0 + 0.5 + 1.0 + 16.0);
+    }
+
+    #[test]
+    fn an_instrument_that_is_put_in_a_lane_that_cables_end_in_has_none_of_its_own_sound_heard_when_the_solo_does_not_let_it_in() {
+        // Lane 0 has no instrument and an effect that adds 8; lane 1, soloed, sends to the effect.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(OffsetEffect(8.0)));
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        cmd_tx.send(GraphCommand::SetSolo { inst: 1, solo: true }).unwrap();
+        blocks_of(&mut graph, 3, &[note_on(60)]);
+        // The lane is given an instrument: its own 0.25 is not heard, from the first buffer, and the lane is heard for what it is sent, 0.5 and its 8.
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        let blocks = blocks_of(&mut graph, 3, &[note_on(60)]);
+        assert!(blocks.iter().flatten().flatten().all(|&s| s == 8.5 + 0.5), "{:?}", blocks[0][0]);
+    }
+
     #[test]
     fn a_cable_that_comes_or_goes_does_so_over_a_buffer_and_makes_no_click() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
@@ -6805,6 +7177,8 @@ mod tests {
         group_muted: Vec<bool>,
         /// Whether the group's way out is cut.
         group_cut: Vec<bool>,
+        lane_solo: Vec<bool>,
+        group_solo: Vec<bool>,
         /// The cables that were drawn and not refused: from, to, level.
         cables: Vec<(Spot, Spot, f32)>,
     }
@@ -6842,12 +7216,102 @@ mod tests {
             spot == source || self.inputs_of(spot).iter().any(|input| self.depends_on(input.from, source))
         }
 
-        /// What a cable from `from` carries: what is at `from`, unless the lane or the group that owns it is muted (the output of a group has been let in or out already).
+        // The law of mute and solo for what cables carry, written as the recursion that it says (the engine works it out by going through the cables until nothing changes). What a lane
+        // or a group is heard for cannot be what it sends to itself (a cable from one of a lane's effects to a later one): `path` is the lanes and groups being worked out, a group by `true`.
+
+        fn any_solo(&self) -> bool {
+            self.lane_solo.iter().chain(&self.group_solo).any(|&solo| solo)
+        }
+
+        /// Let in by the solo: a lane that is soloed or is in a group that is, nothing being soloed.
+        fn lane_solo_heard(&self, lane: usize) -> bool {
+            !self.any_solo() || self.lane_solo[lane] || self.lane_group[lane].is_some_and(|group| self.group_solo[group])
+        }
+
+        /// Let in by the solo: a group that is soloed or has a lane in it that is, nothing being soloed.
+        fn group_solo_heard(&self, group: usize) -> bool {
+            !self.any_solo() || self.group_solo[group] || (0..self.levels.len()).any(|lane| self.lane_solo[lane] && self.lane_group[lane] == Some(group))
+        }
+
+        /// Whether a cable that ends where `to` says, at a level above nothing, is sent from something that is heard.
+        fn sent_to(&self, to: impl Fn(Spot) -> bool, path: &mut Vec<(bool, usize)>) -> bool {
+            self.cables.iter().any(|&(from, end, gain)| to(end) && gain > 0.0 && self.sender_heard(from, path))
+        }
+
+        /// Heard for what is sent to it: not muted, and a cable from something that is heard ends in its chain.
+        fn lane_live(&self, lane: usize, path: &mut Vec<(bool, usize)>) -> bool {
+            !self.lane_muted[lane] && self.sent_to(|end| matches!(end, Spot::LaneFx(l, _) if l == lane), path)
+        }
+
+        /// Heard for what is sent to it: not muted, and a cable from something that is heard ends at its bus or in its effects, or a lane in it that goes to its bus is heard for that.
+        fn group_live(&self, group: usize, path: &mut Vec<(bool, usize)>) -> bool {
+            !self.group_muted[group]
+                && (self.sent_to(|end| matches!(end, Spot::GroupFx(g, _) | Spot::GroupHead(g) if g == group), path)
+                    || (0..self.levels.len()).any(|lane| self.lane_group[lane] == Some(group) && !self.lane_cut[lane] && self.lane_live(lane, path)))
+        }
+
+        /// Heard for what the lane is.
+        fn lane_own(&self, lane: usize) -> bool {
+            !self.lane_muted[lane] && self.lane_solo_heard(lane)
+        }
+
+        /// The lane's chain is heard: for what the lane is, or for what is sent to it.
+        fn lane_out_via(&self, lane: usize, path: &mut Vec<(bool, usize)>) -> bool {
+            if self.lane_muted[lane] {
+                return false;
+            }
+            if self.lane_solo_heard(lane) {
+                return true;
+            }
+            if path.contains(&(false, lane)) {
+                return false;
+            }
+            path.push((false, lane));
+            let live = self.lane_live(lane, path);
+            path.pop();
+            live
+        }
+
+        fn lane_out(&self, lane: usize) -> bool {
+            self.lane_out_via(lane, &mut Vec::new())
+        }
+
+        /// The group's bus is heard: for what the group is, or for what is sent to it.
+        fn group_out_via(&self, group: usize, path: &mut Vec<(bool, usize)>) -> bool {
+            if self.group_muted[group] {
+                return false;
+            }
+            if self.group_solo_heard(group) {
+                return true;
+            }
+            if path.contains(&(true, group)) {
+                return false;
+            }
+            path.push((true, group));
+            let live = self.group_live(group, path);
+            path.pop();
+            live
+        }
+
+        fn group_out(&self, group: usize) -> bool {
+            self.group_out_via(group, &mut Vec::new())
+        }
+
+        /// Whether what a cable starts at is heard: the instrument of a lane for what the lane is, an effect, or the output of a group, for what it is heard either way.
+        fn sender_heard(&self, from: Spot, path: &mut Vec<(bool, usize)>) -> bool {
+            match from {
+                Spot::Head(lane) => self.lane_own(lane),
+                Spot::LaneFx(lane, _) => self.lane_out_via(lane, path),
+                Spot::GroupFx(group, _) | Spot::GroupTail(group) => self.group_out_via(group, path),
+                _ => false,
+            }
+        }
+
+        /// What a cable from `from` carries: what is at `from`, if it is heard (the output of a group has been let in or out already).
         fn sent(&self, from: Spot) -> f32 {
             let heard = match from {
-                Spot::Head(lane) | Spot::LaneFx(lane, _) => !self.lane_muted[lane],
-                Spot::GroupFx(group, _) => !self.group_muted[group],
-                _ => true,
+                Spot::GroupTail(_) => true,
+                other => self.sender_heard(other, &mut Vec::new()),
             };
             if heard {
                 self.value(from)
@@ -6859,12 +7323,20 @@ mod tests {
         fn value(&self, spot: Spot) -> f32 {
             let sum: f32 = self.inputs_of(spot).iter().map(|input| if input.cable { self.sent(input.from) * input.gain } else { self.value(input.from) }).sum();
             match spot {
-                Spot::Head(lane) => self.levels[lane],
+                // A lane that cables end in puts none of its own sound into its chain while it is not let in by the solo.
+                Spot::Head(lane) => {
+                    let receives = self.cables.iter().any(|&(_, to, _)| matches!(to, Spot::LaneFx(l, _) if l == lane));
+                    if receives && !self.lane_solo_heard(lane) {
+                        0.0
+                    } else {
+                        self.levels[lane]
+                    }
+                }
                 Spot::LaneFx(lane, index) => self.lane_effects[lane][index].apply(sum),
-                Spot::Tail(lane) => if self.lane_muted[lane] { 0.0 } else { sum },
+                Spot::Tail(lane) => if self.lane_out(lane) { sum } else { 0.0 },
                 Spot::GroupHead(group) => sum * self.group_volumes[group],
                 Spot::GroupFx(group, index) => self.group_effects[group][index].apply(sum),
-                Spot::GroupTail(group) => if self.group_muted[group] { 0.0 } else { sum },
+                Spot::GroupTail(group) => if self.group_out(group) { sum } else { 0.0 },
                 Spot::Master => sum,
             }
         }
@@ -6894,7 +7366,7 @@ mod tests {
     #[test]
     fn random_wirings_of_cables_make_the_sound_that_an_evaluation_without_a_plan_says_and_refuse_the_cables_that_close_a_loop() {
         // What the wirings drew, so that a generator that stopped drawing a kind of cable would not leave the test passing on nothing.
-        let mut drew = [0usize; 8];
+        let mut drew = [0usize; 10];
         for seed in 1..=400u64 {
             let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
             let mut pick = move |n: usize| -> usize {
@@ -6902,6 +7374,14 @@ mod tests {
                 state ^= state << 25;
                 state ^= state >> 27;
                 (state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize % n
+            };
+            // (The solos are drawn from a stream of their own, so that the wirings that the other draws make are the ones they were.)
+            let mut solo_state = seed.wrapping_mul(0xD6E8_FEB8_6659_FD93) | 1;
+            let mut solo_pick = move |n: usize| -> usize {
+                solo_state ^= solo_state >> 12;
+                solo_state ^= solo_state << 25;
+                solo_state ^= solo_state >> 27;
+                (solo_state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize % n
             };
             let effects = [Fx::Scale(0.5), Fx::Scale(2.0), Fx::Scale(1.0), Fx::Offset(0.125), Fx::Offset(0.25)];
             let (lane_count, group_count) = (1 + pick(4), pick(3));
@@ -6915,6 +7395,8 @@ mod tests {
                 group_effects: (0..group_count).map(|_| (0..pick(2)).map(|_| effects[pick(5)]).collect()).collect(),
                 group_muted: (0..group_count).map(|_| pick(7) == 0).collect(),
                 group_cut: (0..group_count).map(|_| pick(5) == 0).collect(),
+                lane_solo: (0..lane_count).map(|_| solo_pick(4) == 0).collect(),
+                group_solo: (0..group_count).map(|_| solo_pick(5) == 0).collect(),
                 cables: Vec::new(),
             };
 
@@ -6944,6 +7426,12 @@ mod tests {
             }
             for group in (0..group_count).filter(|&group| wiring.group_muted[group]) {
                 cmd_tx.send(GraphCommand::SetGroupMute { group, muted: true }).unwrap();
+            }
+            for lane in (0..lane_count).filter(|&lane| wiring.lane_solo[lane]) {
+                cmd_tx.send(GraphCommand::SetSolo { inst: lane, solo: true }).unwrap();
+            }
+            for group in (0..group_count).filter(|&group| wiring.group_solo[group]) {
+                cmd_tx.send(GraphCommand::SetGroupSolo { group, solo: true }).unwrap();
             }
             // (The ways out are cut before any cable is drawn: a cable that only a cut way out keeps from closing a loop is drawn.)
             for lane in (0..lane_count).filter(|&lane| wiring.lane_cut[lane]) {
@@ -6990,12 +7478,15 @@ mod tests {
             // A lane that has no way out and is heard through a cable, and a group that has none and is.
             drew[6] += usize::from(wiring.cables.iter().any(|&(from, _, _)| matches!(from, Spot::Head(lane) | Spot::LaneFx(lane, _) if wiring.lane_cut[lane])));
             drew[7] += usize::from(wiring.cables.iter().any(|&(from, _, _)| matches!(from, Spot::GroupFx(group, _) | Spot::GroupTail(group) if wiring.group_cut[group])));
+            // A lane that is heard only for what is sent to it (which its head gate is for), and a group that is.
+            drew[8] += usize::from((0..lane_count).any(|lane| !wiring.lane_solo_heard(lane) && wiring.lane_out(lane)));
+            drew[9] += usize::from((0..group_count).any(|group| !wiring.group_solo_heard(group) && wiring.group_out(group)));
             let out = blocks_of(&mut graph, 5, &[note_on(60)]).pop().unwrap();
             assert_eq!(graph.schedule.cable_ids(), accepted, "the cables that were drawn, seed {seed}: {wiring:?}");
             let expected = wiring.value(Spot::Master);
             assert!(out.iter().flatten().all(|&s| s == expected), "seed {seed}: the mix is {} and the evaluation says {expected}: {wiring:?}", out[0][0]);
         }
-        // (Measured over the 400: 269, 199, 74, 196, 156, 86, 94 and 28.)
+        // (Measured over the 400: 269, 199, 74, 196, 156, 86, 94, 28, 44 and 29.)
         for (what, drawn, at_least) in [
             ("two cables or more", drew[0], 180),
             ("a cable that closes a loop, and is refused", drew[1], 130),
@@ -7005,6 +7496,8 @@ mod tests {
             ("a cable from a group", drew[5], 58),
             ("a cable from a lane whose way out is cut", drew[6], 62),
             ("a cable from a group whose way out is cut", drew[7], 18),
+            ("a lane that is heard only for what is sent to it", drew[8], 30),
+            ("a group that is heard only for what is sent to it", drew[9], 19),
         ] {
             assert!(drawn >= at_least, "{drawn} of the 400 wirings have {what}, and {at_least} are asked for");
         }
@@ -14642,6 +15135,87 @@ mod tests {
         assert!(
             committed == fresh,
             "{} is not what the engine makes of a mute and a solo now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
+    /// What the engine makes of every combination of mute and solo of two groups and four lanes that have cables between them, as the web client's `audibleOf` and `ownAudibleOf` have to say
+    /// it (`web/src/client/fixtures/audibleCables.json`): read from a run of the audio graph. The lanes and groups are those of the fixture that has no cables (the first two lanes in the
+    /// first group, the third in the second, the fourth in none). Each lane puts out 1, 2, 4 or 8 and has an effect that adds 16, 32, 64 or 128 to what comes in (its chain: it is there when the
+    /// chain is heard, whatever comes in), and each bus an effect that adds 256 or 512; the cables are at a level so small (1 / 16 384) that what they carry is a fraction of a whole
+    /// number, so that the whole part of the mix says which of the ten are heard: a lane's own sound (bits 0 to 3: the lane is heard for what it is, and its bus is heard), its chain (bits 4
+    /// to 7: for what it is or for what is sent to it, and its bus is heard) and a bus (bits 8 and 9). A case is the state of each node, two bits each (the first muted and the second
+    /// soloed), the groups first and then the lanes, and the sum. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_is_heard_with_cables_is_current() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(1.0));
+        for level in [2.0, 4.0, 8.0] {
+            another_lane(&mut graph, &cmd_tx, level);
+        }
+        for group in 0..2 {
+            graph.groups.push(Group::new(group_node(group)));
+            cmd_tx
+                .send(GraphCommand::InsertGroupEffect { group, index: 0, effect: Box::new(OffsetEffect(256.0 * (1 << group) as f32)), mix: 1.0, node: bus_effect_node(group, 0) })
+                .unwrap();
+        }
+        for (lane, group) in [Some(0), Some(0), Some(1), None].into_iter().enumerate() {
+            graph.instruments[lane].group = group;
+            effect_of(&cmd_tx, lane, 0, Box::new(OffsetEffect(16.0 * (1 << lane) as f32)));
+        }
+        // The cables, as [what it starts at, which, what it ends at, which]: the instrument or the effect of a lane, the effect of a bus, the output of a group; an effect of a lane or a bus,
+        // the bus of a group. A lane sends to a lane (the fourth to the first), a lane's chain to another's (the first to the third) and on to a bus (the third to the first group's), the
+        // output of a group to a lane (the second group to the second lane), and a lane to a bus (the second to the second group's): no two of them make the audio go round.
+        let cables: [(&str, usize, &str, usize); 5] = [("instrument", 3, "effect", 0), ("effect", 0, "effect", 2), ("effect", 2, "bus effect", 0), ("group", 1, "effect", 1), ("instrument", 1, "bus effect", 1)];
+        for (id, (from, from_at, to, to_at)) in cables.into_iter().enumerate() {
+            let from = match from {
+                "instrument" => CableFrom::Instrument(lane_node(from_at)),
+                "effect" => CableFrom::Effect(effect_node(from_at, 0)),
+                "bus effect" => CableFrom::Effect(bus_effect_node(from_at, 0)),
+                _ => CableFrom::Group(group_node(from_at)),
+            };
+            let to = match to {
+                "effect" => CableTo::Effect(effect_node(to_at, 0)),
+                "bus effect" => CableTo::Effect(bus_effect_node(to_at, 0)),
+                _ => CableTo::GroupBus(group_node(to_at)),
+            };
+            draw(&cmd_tx, id as u32 + 1, from, to, 1.0 / 16384.0);
+        }
+        let cases: Vec<serde_json::Value> = (0..4096u32)
+            .map(|case| {
+                for node in 0..6usize {
+                    let (muted, solo) = (case >> (2 * node) & 1 == 1, case >> (2 * node) & 2 == 2);
+                    let commands = if node < 2 {
+                        [GraphCommand::SetGroupMute { group: node, muted }, GraphCommand::SetGroupSolo { group: node, solo }]
+                    } else {
+                        [GraphCommand::SetMute { inst: node - 2, muted }, GraphCommand::SetSolo { inst: node - 2, solo }]
+                    };
+                    commands.into_iter().for_each(|command| cmd_tx.send(command).unwrap());
+                }
+                // (Two buffers: the first lets go of what is let go of, over a ramp.)
+                let mut out = make_output();
+                for _ in 0..2 {
+                    out = make_output();
+                    graph.process(&[note_on(60)], &mut out).unwrap();
+                }
+                let sum = out[0][0];
+                assert!(out.iter().flatten().all(|&s| s == sum), "case {case}: a steady mix, {:?}", &out[0][..4]);
+                assert!(sum.fract() < 0.05, "case {case}: what the cables carry is a fraction of a whole number: {sum}");
+                serde_json::json!([case, sum.floor() as u32])
+            })
+            .collect();
+        let cables: Vec<serde_json::Value> = cables.iter().map(|&(from, from_at, to, to_at)| serde_json::json!([from, from_at, to, to_at])).collect();
+        let fresh = serde_json::to_string(&serde_json::json!({ "groups": 2, "lanes": [0, 0, 1, null], "cables": cables, "cases": cases })).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/audibleCables.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the engine makes of a mute and a solo with cables now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
             path.display()
         );
     }

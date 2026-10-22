@@ -152,7 +152,10 @@ impl InstrumentLane {
             apply_modulators_to_chain(&self.modulators, &mut self.instrument, &mut self.effects, &mut self.drive_scratch, cx.telemetry);
         }
 
-        let Some(instrument) = self.instrument.as_mut() else { return Ok(()) };
+        let Some(instrument) = self.instrument.as_mut() else {
+            self.head_at = self.head_goal;
+            return Ok(());
+        };
         let outputs = self.inst_buf.len();
         if outputs <= num_channels {
             // The instrument is given a buffer for each of its outputs, which are the first of the output's: the others stay zero.
@@ -189,6 +192,16 @@ impl InstrumentLane {
             }
         }
         store_taps(&self.taps, cx.telemetry, TapStage::Output, out);
+        // The head gate: a lane that cables end in puts none of its own sound into its chain while something else is soloed, so that what it puts out is what it was sent (every other
+        // lane has the gain 1, which costs nothing). The cables that start at the instrument have the same gate by what the lane is heard for, and are 0 when this is. The gate is one ramp
+        // over the buffer, as the others are, except where a ramp would let sound through that the solo does not let in: a gate that goes down while the lane's tail comes up (a cable drawn
+        // into a lane that is not heard) or goes up while the tail goes down (a cable taken out of a lane that is let go of) lets through the product of the two, a bump of the lane's own sound.
+        // So a lane that was not heard when the last buffer ended has the gate at its goal at once (nothing was heard to step), and one that is not to be heard when this one ends keeps it
+        // where it was (the buffer after has it at its goal).
+        let from = if self.heard_at == 0.0 { self.head_goal } else { self.head_at };
+        let to = if self.heard_goal == 0.0 { from } else { self.head_goal };
+        fade(out, num_channels, from, to);
+        self.head_at = to;
         Ok(())
     }
 
@@ -273,15 +286,18 @@ pub(super) struct Cable {
     gain: f32,
     /// The level it was at when the last buffer ended: 0 for a cable that has just been drawn, so that it comes in over a buffer.
     at: f32,
-    /// The level it is to be at when this buffer ends: `gain` times what its owner is heard at, and 0 for a cable that has been told to go.
+    /// The level it is to be at when this buffer ends: `gain` times what its start is heard at, and 0 for a cable that has been told to go.
     goal: f32,
     /// Told to go: it goes down to nothing over one buffer, and is then taken out.
     leaving: bool,
+    /// The lane or group that the cable starts at and the one that it ends at (none for the mix), found by the plan's places at the start of each block (`Schedule::set_gates`).
+    from_owner: Option<Owner>,
+    to_owner: Option<Owner>,
 }
 
 impl Cable {
     pub(super) fn new(id: EdgeId, from: CableFrom, to: CableTo, gain: f32) -> Cable {
-        Cable { id, from, to, gain, at: 0.0, goal: 0.0, leaving: false }
+        Cable { id, from, to, gain, at: 0.0, goal: 0.0, leaving: false, from_owner: None, to_owner: None }
     }
 
     /// The cable as a node: what it is given is let through at the level that it is going to, from the level it was at, over the buffer (so that it comes, goes and is turned
@@ -496,21 +512,22 @@ fn end_exists(to: CableTo, lanes: &[LaneWiring], groups: &[GroupWiring]) -> bool
     }
 }
 
-/// What the owner of a cable's start is heard at in this block (1 or 0), found by the place that the plan has for the node, and a node that is not at its place is heard at
-/// nothing, as it makes silence. The output of a group has been let in or out already, so a cable from it is not gated again.
-fn heard_at(from: CableFrom, places: &[(Stage, Place)], lanes: &[InstrumentLane], groups: &[Group]) -> f32 {
-    let find = |stage: Stage| places.binary_search_by_key(&stage, |&(stage, _)| stage).ok().map(|found| places[found].1);
-    match from {
-        CableFrom::Group(_) => 1.0,
-        CableFrom::Instrument(id) => match find(Stage::Head(id)) {
-            Some(Place::Lane(at)) => lanes.get(at).filter(|lane| lane.node == id).map_or(0.0, |lane| lane.heard_goal),
-            _ => 0.0,
-        },
-        CableFrom::Effect(id) => match find(Stage::Fx(id)) {
-            Some(Place::LaneFx(at, index)) => lanes.get(at).filter(|lane| lane.effect_nodes.get(index) == Some(&id)).map_or(0.0, |lane| lane.heard_goal),
-            Some(Place::GroupFx(at, index)) => groups.get(at).filter(|group| group.effect_nodes.get(index) == Some(&id)).map_or(0.0, |group| group.heard_goal),
-            _ => 0.0,
-        },
+/// A lane or a group, by its place: what a cable starts at and ends at is one of them, and the law of mute and solo is worked out for them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Owner {
+    Lane(usize),
+    Group(usize),
+}
+
+/// The lane or the group that the node `stage` of the plan belongs to, found by the place that the plan has for it. None for a node that is not at its place (it makes silence).
+fn owner_of(stage: Stage, places: &[(Stage, Place)], lanes: &[InstrumentLane], groups: &[Group]) -> Option<Owner> {
+    let found = places.binary_search_by_key(&stage, |&(stage, _)| stage).ok().map(|found| places[found].1)?;
+    match (stage, found) {
+        (Stage::Head(id) | Stage::Tail(id), Place::Lane(at)) => lanes.get(at).filter(|lane| lane.node == id).map(|_| Owner::Lane(at)),
+        (Stage::Fx(id), Place::LaneFx(at, index)) => lanes.get(at).filter(|lane| lane.effect_nodes.get(index) == Some(&id)).map(|_| Owner::Lane(at)),
+        (Stage::Head(id) | Stage::Tail(id), Place::Group(at)) => groups.get(at).filter(|group| group.node == id).map(|_| Owner::Group(at)),
+        (Stage::Fx(id), Place::GroupFx(at, index)) => groups.get(at).filter(|group| group.effect_nodes.get(index) == Some(&id)).map(|_| Owner::Group(at)),
+        _ => None,
     }
 }
 
@@ -771,11 +788,95 @@ impl Schedule {
         self.cables.iter().any(|cable| cable.leaving && cable.at == 0.0)
     }
 
-    /// The level that each cable is to be at when this block ends: the level that was set, times what its owner is heard at (so that a cable goes with a mute or a solo), and 0
-    /// for one that was told to go. After `refresh`, which has the places that the owners are found by, and after the lanes and groups know what they are heard at.
-    pub(super) fn set_cable_goals(&mut self, lanes: &[InstrumentLane], groups: &[Group]) {
+    /// What the lanes, the groups and the cables are heard at in this block, from the mutes and solos and from what the cables send: the law of mute and solo for audio that cables
+    /// carry (P3c-2b of `docs/patch-graph.md` §11.6, D78 of `docs/web-ui.md`). After `refresh`, which has the places that the owners of the cables' ends are found by.
+    ///
+    /// A lane or a group is heard *for what it is* (`own`) when it is not muted and nothing is soloed, or it is, or (a lane) its group is, or (a group) a lane in it is. It is heard
+    /// *for what is sent to it* (`live`) when it is not muted and a cable ends in it (at an effect of its chain or its bus, or at the bus of a group) from something that is heard
+    /// (the instrument of a lane that is heard for what it is, an effect of a lane or a group that is heard either way, or the output of a group that is), or, for a group, when a lane in
+    /// it that goes to its bus is heard for what is sent to it. What is heard either way is let through (`heard_goal`); a cable carries what its start puts out, at the level it was
+    /// set (an effect's or a group's by what its owner is heard at, an instrument's by what the lane is heard for), and a lane that cables end in puts none of its own sound into
+    /// its chain while it is not let in by the solo (`head_goal`): what it puts out is what it was sent. Where nothing is soloed, or no cable ends in a lane, this is what the
+    /// mutes and solos always made.
+    pub(super) fn set_gates(&mut self, lanes: &mut [InstrumentLane], groups: &mut [Group]) {
+        let any_solo = lanes.iter().any(|lane| lane.solo) || groups.iter().any(|group| group.solo);
+        // Let in by the solo: a group that is soloed or has a lane in it that is, a lane that is soloed or is in a group that is.
+        for (gi, group) in groups.iter_mut().enumerate() {
+            let member_solo = lanes.iter().any(|lane| lane.solo && lane.group == Some(gi));
+            group.solo_heard = !any_solo || group.solo || member_solo;
+            group.live = false;
+        }
+        for lane in lanes.iter_mut() {
+            let group_solo = lane.group.and_then(|g| groups.get(g)).is_some_and(|g| g.solo);
+            lane.solo_heard = !any_solo || lane.solo || group_solo;
+            lane.live = false;
+            lane.receives = false;
+        }
+        // Whose each cable's ends are, and which lanes cables end in.
         for cable in &mut self.cables {
-            cable.goal = if cable.leaving { 0.0 } else { cable.gain * heard_at(cable.from, &self.places, lanes, groups) };
+            // (The mix is no lane or group, and has no place.)
+            cable.from_owner = owner_of(cable.from.stage(), &self.places, lanes, groups);
+            cable.to_owner = owner_of(cable.to.stage(), &self.places, lanes, groups);
+            if let (false, Some(Owner::Lane(at))) = (cable.leaving, cable.to_owner) {
+                lanes[at].receives = true;
+            }
+        }
+        // What is sent to a lane or a group from something that is heard lets it in. A cable's sender being heard depends on whether the sender was let in by cables, and these are
+        // cables that go one way (a loop is never drawn), so that going through them again until nothing changes is at most as many times as there are cables.
+        for _ in 0..=self.cables.len() {
+            let mut changed = false;
+            for cable in &self.cables {
+                if cable.leaving || cable.gain <= 0.0 {
+                    continue;
+                }
+                let sent = match (cable.from, cable.from_owner) {
+                    (CableFrom::Instrument(_), Some(Owner::Lane(at))) => lanes[at].own(),
+                    (_, Some(Owner::Lane(at))) => lanes[at].out(),
+                    (_, Some(Owner::Group(at))) => groups[at].out(),
+                    (_, None) => false,
+                };
+                match cable.to_owner {
+                    Some(Owner::Lane(at)) if sent && !lanes[at].muted && !lanes[at].live => {
+                        lanes[at].live = true;
+                        changed = true;
+                    }
+                    Some(Owner::Group(at)) if sent && !groups[at].muted && !groups[at].live => {
+                        groups[at].live = true;
+                        changed = true;
+                    }
+                    _ => {}
+                }
+            }
+            // A lane that is heard for what is sent to it puts it into the bus of its group, which is heard for that.
+            for lane in lanes.iter() {
+                if let (true, Route::Out, Some(group)) = (lane.live, lane.route, lane.group.and_then(|g| groups.get_mut(g))) {
+                    if !group.muted && !group.live {
+                        group.live = true;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for lane in lanes.iter_mut() {
+            lane.heard_goal = if lane.out() { 1.0 } else { 0.0 };
+            lane.head_goal = if lane.receives && !lane.solo_heard { 0.0 } else { 1.0 };
+        }
+        for group in groups.iter_mut() {
+            group.heard_goal = if group.out() { 1.0 } else { 0.0 };
+        }
+        for cable in &mut self.cables {
+            // (The output of a group has been let in or out already: a cable from it is not gated again.)
+            let gate = match (cable.from, cable.from_owner) {
+                (CableFrom::Group(_), _) => 1.0,
+                (CableFrom::Instrument(_), Some(Owner::Lane(at))) => f32::from(lanes[at].own()),
+                (_, Some(Owner::Lane(at))) => f32::from(lanes[at].out()),
+                (_, Some(Owner::Group(at))) => f32::from(groups[at].out()),
+                (_, None) => 0.0,
+            };
+            cable.goal = if cable.leaving { 0.0 } else { cable.gain * gate };
         }
     }
 
@@ -1047,7 +1148,7 @@ mod tests {
         assert_eq!(schedule.compiles, made + 1, "a cable that is drawn");
         schedule.refresh(&lanes, &groups, 2, 64);
         schedule.set_cable_gain(EdgeId(7), 0.5);
-        schedule.set_cable_goals(&lanes, &groups);
+        schedule.set_gates(&mut lanes, &mut groups);
         schedule.refresh(&lanes, &groups, 2, 64);
         assert_eq!(schedule.compiles, made + 1, "nothing is made again for a block that has the same wiring, and not for a level");
         // A buffer in which it has a level, and then it is told to go: it is there for the buffer in which it goes down, and gone from the next.
@@ -1057,7 +1158,7 @@ mod tests {
         assert_eq!(schedule.cable_ids(), [EdgeId(7)]);
         assert!(schedule.cable_facts().is_empty(), "it is in the plan, for the buffer it goes down in, and it is not a cable that the engine has");
         assert_eq!(schedule.compiles, made + 1);
-        schedule.set_cable_goals(&lanes, &groups);
+        schedule.set_gates(&mut lanes, &mut groups);
         run(&mut schedule, &mut lanes, &mut groups, 64);
         schedule.refresh(&lanes, &groups, 2, 64);
         assert!(schedule.cable_ids().is_empty());

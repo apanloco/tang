@@ -259,7 +259,25 @@ const ROUTE_EDITS: [(u64, Edit); 11] = [
     (40_000, Edit::RouteGroup { group: 0, route: Route::Out }),
 ];
 
-/// The scenarios that edit the cables and the ways out of a session while it plays.
+/// What is soloed in `CABLED` while it plays, with cables that carry: lane 1, which is in no group, is sent to the reverb on the group's bus, and lane 0, which is in the group, to lane 1's delay.
+/// Lane 1 is soloed (it is heard, and the bus is heard for its send), lane 0 too (all are heard), lane 1 is not any more (it is heard for what lane 0 sends it, and not for itself), it is
+/// muted (nothing is heard for it), the group is soloed, lane 1 is unmuted, lane 0 is taken out while it is soloed, put back by Undo, and the solos are taken off. Each is made.
+const SOLO_EDITS: [(u64, Edit); 12] = [
+    (6_000, Edit::AddCable { from: 2, to: 3, gain: 0.5 }),
+    (8_000, Edit::AddCable { from: 0, to: 1, gain: 0.7 }),
+    (12_000, Edit::Solo { lane: 1, solo: true }),
+    (16_000, Edit::Solo { lane: 0, solo: true }),
+    (20_000, Edit::Solo { lane: 1, solo: false }),
+    (24_000, Edit::Mute { lane: 1, muted: true }),
+    (26_000, Edit::SoloGroup { group: 0, solo: true }),
+    (28_000, Edit::Mute { lane: 1, muted: false }),
+    (30_000, Edit::RemoveLane { lane: 0 }),
+    (34_000, Edit::Undo),
+    (38_000, Edit::Solo { lane: 0, solo: false }),
+    (40_000, Edit::SoloGroup { group: 0, solo: false }),
+];
+
+/// The scenarios that edit the cables, the ways out and the solos of a session while it plays.
 pub fn edited() -> Vec<Scenario> {
     let scenario = |name: &str, edits: &[(u64, Edit)]| Scenario {
         id: format!("edited:{name}@{BLOCK}"),
@@ -270,7 +288,7 @@ pub fn edited() -> Vec<Scenario> {
         script: performance(),
         edits: edits.to_vec(),
     };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -759,7 +777,7 @@ mod tests {
     #[test]
     fn the_scenarios_that_have_cables_are_those_that_the_loop_the_plan_replaced_is_not_held_to() {
         let with: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cables()).map(|scenario| scenario.id.clone()).collect();
-        assert_eq!(with, ["session:patched@256", "session:routed@256", "session:sends@256", "edited:cables@256", "edited:routes@256"]);
+        assert_eq!(with, ["session:patched@256", "session:routed@256", "session:sends@256", "edited:cables@256", "edited:routes@256", "edited:solos@256"]);
     }
 
     #[test]
@@ -781,6 +799,26 @@ mod tests {
         let without = Scenario { session: scenario.session.replace("[[cable]]\nfrom = \"instrument[1]\"\nto = \"master\"\ngain = 0.5\n", ""), ..scenario };
         let alone = render(&without, &engine);
         assert_ne!(with.samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>(), alone.samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>(), "lane 1 is heard through its cable and in no other way");
+    }
+
+    #[test]
+    fn a_lane_that_is_soloed_is_heard_through_the_cables_that_it_sends_in_the_solo_scenario_and_what_is_sent_to_a_lane_is_heard_when_another_is_soloed() {
+        // Lane 1 is soloed from frame 12 000 to 16 000 and sends to the reverb on the group's bus: the bus is heard for it, so that the tail is in the mix, which without the cable is the
+        // lane alone. (The scenario is the same up to the block that has the first solo: the cables are drawn before it.)
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:solos")).expect("a scenario of the corpus");
+        let with = render(&scenario, &engine);
+        let without = render(&Scenario { edits: scenario.edits.iter().filter(|(_, edit)| !matches!(edit, Edit::AddCable { .. })).cloned().collect(), ..scenario.clone() }, &engine);
+        let window = |render: &Render, from: usize, to: usize| -> f32 {
+            let samples = &render.samples[2 * from..2 * to];
+            (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+        };
+        // The solo has been on for a while (12 000 to 16 000: the bus's tail swells in over a few thousand frames).
+        let (heard, alone) = (window(&with, 14_000, 16_000), window(&without, 14_000, 16_000));
+        assert!(heard > 1.05 * alone, "the reverb that lane 1 is sent to is heard for it: {heard} and {alone}");
+        // Lane 1 is not soloed from 20 000 and lane 0 is: lane 1 is heard for what lane 0 sends it, which without the cable is nothing.
+        let (heard, alone) = (window(&with, 21_000, 23_500), window(&without, 21_000, 23_500));
+        assert!(heard > 1.05 * alone, "lane 1 is heard for what lane 0 sends it: {heard} and {alone}");
+        // (Measured: an rms of 0.0700 against 0.0575 in the first window, 1.22 times as much, and 0.0399 against 0.0238 in the second, 1.68 times; the test asks for 1.05.)
     }
 
     #[test]
