@@ -3,7 +3,7 @@ source: src/tui/golden_tests.rs
 ---
 120x32
 ── text ──
-(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
 ┌ Chain ─────────────────────────────────────────┐┌ Oscillator ────────────────────────────────────────────────────────┐
 │♪ Oscillator  [Built-in]                        ││  waveform                 ◂ sine ▸                                ┃│
 │├ fx Filter  [Built-in]                         ││  detune                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.0┃│
@@ -36,7 +36,7 @@ source: src/tui/golden_tests.rs
 └ [o] hide  [O] wave/spectrum ─────────────────────────────────────────────────────────────────────────────────────────┘
  n  new instr  i  replace  R  range  v  vol  M  mute  S  solo  a  add fx  m  modulate  g  group  d  delete  p  presets
 ── styles ('.' = default) ──
-aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 caaaaaaaaaaaaaaaaaaaaaaaa........................cbccccccccccccccccccccccccccccccccccc................................cb
 cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcb

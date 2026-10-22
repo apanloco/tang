@@ -3,7 +3,7 @@ source: src/tui/golden_tests.rs
 ---
 120x32
 ── text ──
-(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
 ┌ Chain ─────────────────────────────────────────┐┌ Macro ─────────────────────────────────────────────────────────────┐
 │♪ Oscillator  [Built-in]                        ││  Value                    ▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░     0.25│
 │├ fx Filter  [Built-in]                         ││  Targets                  ──────                                   │
@@ -36,7 +36,7 @@ source: src/tui/golden_tests.rs
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
  t  add target  d  delete
 ── styles ('.' = default) ──
-aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cbbbbbbbbbbbbbbbbbbbbbbbb........................cbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccb
 cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................b

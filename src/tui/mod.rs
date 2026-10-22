@@ -1,6 +1,7 @@
 mod clip;
 #[cfg(test)]
 mod golden_tests;
+mod patch_view;
 mod piano_view;
 mod scope_view;
 pub mod splash;
@@ -38,7 +39,7 @@ use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, PatternField, Taper};
 use crate::app::model::{
-    BPM_MAX, BPM_MIN, DEPTH_MAX, DEPTH_MIN, FREE, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
+    BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, EdgeId, FREE, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
     ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, SYNC_DIVISIONS, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
@@ -49,12 +50,13 @@ use crate::scale::{ScaleSetting, NOTE_NAMES};
 use crate::session::Route;
 use crate::telemetry;
 
-const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Help"];
+const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Patch", "(5) Help"];
 /// The tabs by their place in `TAB_NAMES`, which is what `State::active_tab` is.
 const TAB_SESSION: usize = 0;
 const TAB_PIANO: usize = 1;
 const TAB_SCOPE: usize = 2;
-const TAB_HELP: usize = 3;
+const TAB_PATCH: usize = 3;
+const TAB_HELP: usize = 4;
 const TAB_SEP: &str = " │ ";
 
 /// What the tab bar says on each tab: the names, and the mark on the Session tab while the session has changes that are not saved. What a click hits is
@@ -229,6 +231,22 @@ fn action_bar_items(addr: Option<&TreeAddress>, focus_params: bool) -> Vec<(&'st
     }
 }
 
+/// What the action bar of the Patch tab says, with the key that a click on each presses: the key as it is written, what it does and the key.
+const PATCH_ACTIONS: &[(&str, &str, KeyCode)] = &[
+    ("Enter", "pin / unpin", KeyCode::Enter),
+    ("+", "louder", KeyCode::Char('+')),
+    ("-", "softer", KeyCode::Char('-')),
+    ("e", "type a level", KeyCode::Char('e')),
+    ("d", "remove", KeyCode::Char('d')),
+    ("w", "way out", KeyCode::Char('w')),
+    ("M", "mute", KeyCode::Char('M')),
+    ("S", "solo", KeyCode::Char('S')),
+];
+
+/// `PATCH_ACTIONS` as the action bar draws them.
+fn patch_action_items() -> Vec<(&'static str, &'static str)> {
+    PATCH_ACTIONS.iter().map(|&(key, what, _)| (key, what)).collect()
+}
 // ---------------------------------------------------------------------------
 // Popup state types
 // ---------------------------------------------------------------------------
@@ -275,6 +293,22 @@ impl GainEditState {
                 param_min,
                 param_max,
             },
+        }
+    }
+}
+
+/// Editing the level of an audio cable (`e` on the Patch tab) via the value popup.
+struct CableEditState {
+    edge: EdgeId,
+    edit: EditState,
+}
+
+impl CableEditState {
+    /// A popup for the level of the cable `edge`, which is at `current` now.
+    fn new(edge: EdgeId, current: f32) -> Self {
+        CableEditState {
+            edge,
+            edit: EditState { input: TextInputState::new(&format!("{current:.2}")), param_name: "level of the cable".to_string(), param_min: 0.0, param_max: CABLE_GAIN_MAX },
         }
     }
 }
@@ -463,6 +497,9 @@ struct State {
     scope: scope_view::Scope,
     /// The scope of the node under the chain cursor, under the Session tab (`o`): its own view, and the node whose signal is asked for.
     strip: scope_view::Strip,
+    // Patch tab state: the matrix of the audio cables with its cursor, and the level of a cable that is being typed.
+    patch: patch_view::Patch,
+    cable_editing: Option<CableEditState>,
 }
 
 impl State {
@@ -513,6 +550,8 @@ impl State {
             scale_selector: None,
             scope: scope_view::Scope::new(),
             strip: scope_view::Strip::new(),
+            patch: patch_view::Patch::new(),
+            cable_editing: None,
         }
     }
 
@@ -1501,16 +1540,20 @@ impl State {
     /// Hand an intent to the controller. A refusal is logged and the view
     /// carries on as it was.
     fn apply(&mut self, intent: Intent) -> Option<Applied> {
-        match self.ctl.apply(intent) {
-            Ok(applied) => {
-                self.react_to(&applied);
-                Some(applied)
-            }
+        match self.try_apply(intent) {
+            Ok(applied) => Some(applied),
             Err(e) => {
                 log::warn!("{e}");
                 None
             }
         }
+    }
+
+    /// Hand an intent to the controller, and the view reacts to what it did; a refusal is the caller's to say (the Patch tab says it in the tab).
+    fn try_apply(&mut self, intent: Intent) -> Result<Applied, intent::IntentError> {
+        let applied = self.ctl.apply(intent)?;
+        self.react_to(&applied);
+        Ok(applied)
     }
 
     /// Bring what the view derives from the model up to date with what `applied` did.
@@ -1546,7 +1589,7 @@ impl State {
                 intent::Event::ModulatorFieldSet { .. } | intent::Event::EdgeDepthSet { .. } => self.rebuild_tree(),
                 // (The pane shows the steps of a step sequencer from the model on every frame: the tree's line has no room for them.)
                 intent::Event::StepsSet { .. } => {}
-                // (The terminal does not draw audio cables yet: the patchbay is P3e.)
+                // (The Patch tab reads the audio cables from the model on every frame.)
                 intent::Event::CableGainSet { .. } => {}
                 intent::Event::ParamSet { .. }
                 | intent::Event::GainSet { .. }
@@ -1906,6 +1949,7 @@ fn popup_is_open(s: &State) -> bool {
         || s.scale_selector.is_some()
         || s.bpm_editing.is_some()
         || s.gain_editing.is_some()
+        || s.cable_editing.is_some()
         || s.save_as.is_some()
         || s.editing.is_some()
         || s.range_edit.is_some()
@@ -1969,6 +2013,8 @@ fn handle_event(s: &mut State, ev: Event) {
                 handle_bpm_edit_key(s, key.code);
             } else if s.gain_editing.is_some() {
                 handle_gain_edit_key(s, key.code);
+            } else if s.cable_editing.is_some() {
+                handle_cable_edit_key(s, key.code);
             } else if s.save_as.is_some() {
                 handle_save_as_key(s, key.code);
             } else if s.editing.is_some() {
@@ -1995,6 +2041,7 @@ fn handle_event(s: &mut State, ev: Event) {
                 || s.rename_group.is_some()
                 || s.bpm_editing.is_some()
                 || s.gain_editing.is_some()
+                || s.cable_editing.is_some()
                 || s.save_as.is_some()
             {
                 if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
@@ -2009,6 +2056,7 @@ fn handle_event(s: &mut State, ev: Event) {
                     s.rename_group = None;
                     s.bpm_editing = None;
                     s.gain_editing = None;
+                    s.cable_editing = None;
                     s.save_as = None;
                 }
                 return;
@@ -2285,6 +2333,30 @@ fn handle_gain_edit_key(s: &mut State, code: KeyCode) {
     }
 }
 
+fn handle_cable_edit_key(s: &mut State, code: KeyCode) {
+    let ce = s.cable_editing.as_mut().unwrap();
+    match code {
+        KeyCode::Esc => s.cable_editing = None,
+        KeyCode::Enter => {
+            let edge = ce.edge;
+            if let Some(gain) = parse_number(&ce.edit.input.value) {
+                if let Err(why) = s.try_apply(Intent::SetCableGain { edge, gain }) {
+                    s.patch.notice = Some(why.to_string());
+                }
+            }
+            s.cable_editing = None;
+        }
+        KeyCode::Backspace => ce.edit.input.backspace(),
+        KeyCode::Delete => ce.edit.input.delete(),
+        KeyCode::Left => ce.edit.input.move_left(),
+        KeyCode::Right => ce.edit.input.move_right(),
+        KeyCode::Home => ce.edit.input.home(),
+        KeyCode::End => ce.edit.input.end(),
+        KeyCode::Char(ch) => ce.edit.input.insert(ch),
+        _ => {}
+    }
+}
+
 fn handle_save_as_key(s: &mut State, code: KeyCode) {
     let sa = s.save_as.as_mut().unwrap();
     match code {
@@ -2412,9 +2484,13 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('1') => s.active_tab = TAB_SESSION,
         KeyCode::Char('2') => s.active_tab = TAB_PIANO,
         KeyCode::Char('3') => s.active_tab = TAB_SCOPE,
-        KeyCode::Char('4') => s.active_tab = TAB_HELP,
+        KeyCode::Char('4') => s.active_tab = TAB_PATCH,
+        KeyCode::Char('5') => s.active_tab = TAB_HELP,
         KeyCode::Tab => s.active_tab = (s.active_tab + 1) % TAB_NAMES.len(),
         KeyCode::BackTab => s.active_tab = (s.active_tab + TAB_NAMES.len() - 1) % TAB_NAMES.len(),
+
+        // ---- Patch tab: every other key is the matrix's ----
+        _ if s.active_tab == TAB_PATCH => handle_patch_key(s, code, modifiers),
 
         // ---- Piano tab ----
         KeyCode::Char('k') if s.active_tab == TAB_PIANO => {
@@ -3009,6 +3085,20 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
     }
 }
 
+/// A key on the Patch tab that is none of the global keys: the matrix says what it asks of the controller, which is carried out here, and a refusal is said in the tab.
+fn handle_patch_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
+    match s.patch.press(&s.ctl.model, code, modifiers) {
+        patch_view::Act::None => {}
+        patch_view::Act::Notice(text) => s.patch.notice = Some(text),
+        patch_view::Act::Apply(intent) => {
+            if let Err(why) = s.try_apply(intent) {
+                s.patch.notice = Some(why.to_string());
+            }
+        }
+        patch_view::Act::TypeLevel { edge, gain } => s.cable_editing = Some(CableEditState::new(edge, gain)),
+    }
+}
+
 fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
     match kind {
         MouseEventKind::Down(MouseButton::Left) => {
@@ -3031,8 +3121,18 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
                     return;
                 }
             }
+            if s.active_tab == TAB_PATCH {
+                if let Some(at) = action_bar_index(x, y, s.areas.action_bar, &patch_action_items()) {
+                    handle_patch_key(s, PATCH_ACTIONS[at].2, KeyModifiers::NONE);
+                    return;
+                }
+            }
 
             match s.active_tab {
+                TAB_PATCH => {
+                    s.patch.notice = None;
+                    s.patch.click(&s.ctl.model, x, y);
+                }
                 TAB_SESSION => {
                     if s.areas.chain_inner.contains((x, y).into()) {
                         if s.chain_state.click_at(y, s.areas.chain_inner) {
@@ -3109,6 +3209,7 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
                 for _ in 0..3 { s.chain_state.up_nowrap(); }
                 s.sync_param_state();
             }
+            TAB_PATCH => s.patch.scroll(&s.ctl.model, -3),
             TAB_HELP => s.help_offset = s.help_offset.saturating_sub(3),
             _ => {}
         },
@@ -3120,6 +3221,7 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
                 for _ in 0..3 { s.chain_state.down_nowrap(); }
                 s.sync_param_state();
             }
+            TAB_PATCH => s.patch.scroll(&s.ctl.model, 3),
             TAB_HELP => s.help_offset += 3,
             _ => {}
         },
@@ -3274,6 +3376,13 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
         TAB_SCOPE => {
             s.scope.take(&s.ctl.telemetry.scope, Instant::now());
             scope_view::render(frame, content_area, &s.scope, s.ctl.sample_rate);
+        }
+        TAB_PATCH => {
+            s.patch.render(frame, content_area, &s.ctl.model);
+            render_actions(frame, action_area, &patch_action_items());
+            if let Some(ce) = &s.cable_editing {
+                render_edit_popup(frame, area, &ce.edit);
+            }
         }
         TAB_HELP => render_help(frame, content_area, &s.help_lines, s.help_offset),
         _ => {}
@@ -3653,21 +3762,24 @@ fn render_action_bar(
     chain_state: &ListState,
     focus_params: bool,
 ) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
     let sel = chain_state.selected;
     let addr = tree_entries.get(sel).map(|e| &e.address);
     // Show the actions for whichever pane has focus (chain vs. parameters).
-    let actions = action_bar_items(addr, focus_params);
+    render_actions(frame, area, &action_bar_items(addr, focus_params));
+}
 
+/// Draw `actions`, a key and what it does each, in the action bar.
+fn render_actions(frame: &mut ratatui::Frame, area: Rect, actions: &[(&str, &str)]) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
     let key_style = Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(Color::White);
 
     let y = area.y;
     let mut x = area.x;
 
-    for &(key, desc) in &actions {
+    for &(key, desc) in actions {
         if x > area.x {
             x += 1;
         }
@@ -4559,23 +4671,29 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn action_bar_hit(x: u16, y: u16, area: Rect, actions: &[(&str, &str)]) -> Option<char> {
+/// Which of the actions of the action bar a click at (`x`, `y`) is on: its place in `actions`.
+fn action_bar_index(x: u16, y: u16, area: Rect, actions: &[(&str, &str)]) -> Option<usize> {
     if y != area.y || x < area.x || x >= area.right() {
         return None;
     }
     let rel_x = (x - area.x) as usize;
     let mut pos = 0;
-    for &(key, desc) in actions {
+    for (at, &(key, desc)) in actions.iter().enumerate() {
         if pos > 0 {
             pos += 1;
         }
         let total = key.len() + 2 + desc.len() + 1;
         if rel_x >= pos && rel_x < pos + total {
-            return key.chars().next();
+            return Some(at);
         }
         pos += total;
     }
     None
+}
+
+/// The key of the action of the action bar that a click is on.
+fn action_bar_hit(x: u16, y: u16, area: Rect, actions: &[(&str, &str)]) -> Option<char> {
+    action_bar_index(x, y, area, actions).and_then(|at| actions[at].0.chars().next())
 }
 
 fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
@@ -4595,7 +4713,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
     }
     lines.extend(vec![
         "Global keybindings:".into(),
-        "  1 2 3 4    Switch to tab by number".into(),
+        "  1 2 3 4 5  Switch to tab by number".into(),
         "  Tab        Next tab".into(),
         "  Shift+Tab  Previous tab".into(),
         "  Ctrl+S     Save session".into(),
@@ -4628,6 +4746,16 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "Modulator (chain focus, lane or group):".into(),
         "  t          Add modulation target".into(),
         "  d          Delete modulator".into(),
+        "".into(),
+        "Patch tab (the audio cables, as a matrix of outputs against inputs):".into(),
+        "  Arrows     Move the cursor (Home / End: first / last input; PageUp / PageDown)".into(),
+        "  Enter      Draw a cable at the crosspoint, or take it out (Space too)".into(),
+        "  +  -       Turn the level of the cable by a twentieth (0 to 2)".into(),
+        "  e          Type the level of the cable".into(),
+        "  d          Take the cable out".into(),
+        "  w          Cut / give back the way out of the lane or group of the row".into(),
+        "  M  S       Mute / solo the lane or group of the row".into(),
+        "  Ctrl+Z     Undo (Ctrl+Y redoes); a cross is where a cable would make the audio go round".into(),
         "".into(),
         "Piano tab:".into(),
         "  k          Open scale picker (root + scale)".into(),

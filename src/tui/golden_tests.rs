@@ -874,7 +874,7 @@ fn o_is_text_in_a_popup_and_in_the_filter_of_the_parameters_and_the_scope_tab_ha
     h.press(KeyCode::Esc).press(KeyCode::Esc).press(KeyCode::Char('3')).press(KeyCode::Char('o')).press(KeyCode::Char('O'));
     assert!(!h.s.strip.on, "and the Scope tab's keys are its own");
     assert_eq!(h.s.strip.scope.kind(), scope_view::Kind::Wave, "the Scope tab's keys are not the strip's");
-    h.press(KeyCode::Char('4')).press(KeyCode::Char('O'));
+    h.press(KeyCode::Char('5')).press(KeyCode::Char('O'));
     assert_eq!(h.s.strip.scope.kind(), scope_view::Kind::Wave, "nor are the Help tab's");
     assert_eq!(h.commands(), Vec::<String>::new());
 }
@@ -4840,7 +4840,7 @@ fn a_click_on_a_tab_is_a_click_on_the_tab_that_is_drawn_there_with_the_mark_on_t
         h.s.ctl.dirty = dirty;
         let bar = tab_bar(&mut h);
         assert_eq!(bar.contains("Session *"), dirty, "{bar}");
-        for (tab, name) in [(TAB_SESSION, "(1) Session"), (TAB_PIANO, "(2) Piano"), (TAB_SCOPE, "(3) Scope"), (TAB_HELP, "(4) Help")] {
+        for (tab, name) in [(TAB_SESSION, "(1) Session"), (TAB_PIANO, "(2) Piano"), (TAB_SCOPE, "(3) Scope"), (TAB_PATCH, "(4) Patch"), (TAB_HELP, "(5) Help")] {
             let first = bar[..bar.find(name).unwrap()].chars().count() as u16;
             // Both ends of the word that is drawn: the first column and the last.
             for column in [first, first + name.chars().count() as u16 - 1] {
@@ -4868,7 +4868,7 @@ fn the_web_label_comes_before_the_clip_light() {
 fn the_web_label_gives_way_before_the_tabs_the_clip_light_and_the_tempo_do() {
     let mut h = Harness::new(scene_split());
     h.s.web = Some(web_status("127.0.0.1:8765", 3));
-    let tabs = "(1) Session │ (2) Piano │ (3) Scope │ (4) Help";
+    let tabs = "(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help";
     for lit in [false, true] {
         h.s.clip = clip::ClipLight::new(0);
         if lit {
@@ -4877,7 +4877,8 @@ fn the_web_label_gives_way_before_the_tabs_the_clip_light_and_the_tempo_do() {
         assert_eq!(h.s.clip.is_lit(), lit);
         let tail = if lit { "CLIP  120 BPM" } else { "120 BPM" };
         let mut shown = Vec::new();
-        for width in 60..=130u16 {
+        // (From the width that the five tabs, two blanks, the clip light and the tempo take.)
+        for width in 76..=130u16 {
             h.terminal = Terminal::new(TestBackend::new(width, HEIGHT)).unwrap();
             let bar = tab_bar(&mut h);
             let context = format!("{width} columns, clip light {}: {bar}", if lit { "on" } else { "off" });
@@ -4912,7 +4913,7 @@ fn the_help_tab_warns_about_an_address_beyond_this_machine_and_only_then() {
     h.s.set_web(web_status("0.0.0.0:8765", 0));
     assert!(h.s.help_lines.iter().any(|l| l.contains("beyond this machine")), "{:?}", h.s.help_lines);
     assert!(h.s.help_lines.iter().any(|l| l.contains("rather than 0.0.0.0")), "{:?}", h.s.help_lines);
-    h.press(KeyCode::Char('4'));
+    h.press(KeyCode::Char('5'));
     let screen = h.dump();
     assert!(screen.contains("beyond this machine"), "{screen}");
 }
@@ -4924,7 +4925,7 @@ fn the_help_tab_says_where_the_web_interface_is_when_there_is_one() {
 
     h.s.set_web(web_status("127.0.0.1:8765", 0));
     assert!(h.s.help_lines.iter().any(|l| l.contains("http://127.0.0.1:8765/#token=abc")), "{:?}", h.s.help_lines);
-    h.press(KeyCode::Char('4'));
+    h.press(KeyCode::Char('5'));
     let screen = h.dump();
     assert!(screen.contains("Web interface"), "{screen}");
     assert!(screen.contains("http://127.0.0.1:8765/#token=abc"), "the address to open, with the token if it has one: {screen}");
@@ -5986,7 +5987,7 @@ mod panic {
     #[test]
     fn the_help_tab_lists_it() {
         let mut h = Harness::new(scene_bus_pair());
-        h.press(KeyCode::Char('4'));
+        h.press(KeyCode::Char('5'));
         let frame = h.dump();
         assert!(frame.contains("Ctrl+P     Panic: let go of every note"), "{frame}");
     }
@@ -6009,7 +6010,7 @@ mod panic {
     #[test]
     fn ctrl_p_is_heard_on_every_tab_the_piano_tab_that_takes_the_letters_too() {
         let mut h = Harness::new(scene_bus_pair());
-        for tab in 0..4 {
+        for tab in 0..TAB_NAMES.len() {
             h.s.active_tab = tab;
             h.press_with(KeyCode::Char('p'), KeyModifiers::CONTROL);
             assert_eq!(h.notes().len(), 16 + 16 + 16, "tab {tab}");
@@ -6057,7 +6058,7 @@ mod undo_and_redo {
     #[test]
     fn the_help_tab_lists_the_keys() {
         let mut h = Harness::new(scene_bus_pair());
-        h.press(KeyCode::Char('4'));
+        h.press(KeyCode::Char('5'));
         let frame = h.dump();
         assert!(frame.contains("Ctrl+Z     Undo the last thing done"), "{frame}");
         assert!(frame.contains("Ctrl+Y     Redo (Ctrl+Shift+Z too)"), "{frame}");
@@ -6933,7 +6934,7 @@ fn w_is_a_step_of_the_history_and_a_way_out_that_would_make_the_audio_go_round_i
 }
 
 #[test]
-fn w_is_for_the_chain_and_a_way_out_that_a_file_cuts_is_in_the_tree() {
+fn w_is_for_the_chain_and_the_patch_tab_and_a_way_out_that_a_file_cuts_is_in_the_tree() {
     let mut h = Harness::new(
         [
             "[[group]]\nname = \"Pad\"\nroute = \"none\"\n",
@@ -6944,11 +6945,11 @@ fn w_is_for_the_chain_and_a_way_out_that_a_file_cuts_is_in_the_tree() {
     );
     assert!(h.tree()[0].starts_with("▦ Pad") && h.tree()[0].ends_with("[no out]"), "{:?}", h.tree());
     assert!(h.tree().iter().filter(|label| label.contains("[no out]")).count() == 2, "{:?}", h.tree());
-    // Not on the other tabs, and not in the parameter pane.
+    // Not on the other tabs (the Patch tab's is its own), and not in the parameter pane.
     h.goto(TreeAddress::Instrument(1)).press(KeyCode::Enter).press(KeyCode::Char('w'));
     assert_eq!(h.commands(), Vec::<String>::new());
     h.press(KeyCode::Esc);
-    for tab in ['2', '3', '4'] {
+    for tab in ['2', '3', '5'] {
         h.press(KeyCode::Char(tab)).press(KeyCode::Char('w'));
         assert_eq!(h.commands(), Vec::<String>::new(), "tab {tab}");
     }
@@ -6966,9 +6967,9 @@ fn m_and_s_are_for_the_chain_and_not_for_the_parameter_pane() {
 }
 
 #[test]
-fn m_and_s_are_the_session_tabs_and_do_nothing_on_the_others() {
+fn m_and_s_are_the_session_tabs_and_the_patch_tabs_and_do_nothing_on_the_others() {
     let mut h = Harness::new(scene_group());
-    for tab in ['2', '3', '4'] {
+    for tab in ['2', '3', '5'] {
         h.press(KeyCode::Char(tab)).press(KeyCode::Char('M')).press(KeyCode::Char('S'));
         assert_eq!(h.commands(), Vec::<String>::new(), "tab {tab}");
     }
@@ -6989,4 +6990,472 @@ fn a_session_with_a_muted_lane_a_soloed_lane_and_a_muted_group_shows_it_in_the_t
     );
     h.goto(TreeAddress::Instrument(2));
     assert_golden("session_muted_and_soloed", &mut h);
+}
+
+mod patch_tab {
+    //! The Patch tab (P3e of `docs/patch-graph.md` §11.6): the audio cables as a matrix of outputs against inputs, drawn and turned with the keys through the intents that the page's cables are.
+
+    use super::*;
+    use crate::app::intent::Intent;
+    use crate::app::testutil::{PATCHED, SENDS, Sends};
+    use crate::plugin::chain::{CableFrom, CableTo};
+    use crossterm::event::{MouseEvent, MouseEventKind};
+
+    // The rows of `SENDS`: 0 the first lane's instrument, 1 its filter, 2 its delay, 3 the second lane's instrument, 4 its drive, 5 the group, 6 the reverb on its bus; and its columns: 0 the
+    // filter, 1 the delay, 2 the drive, 3 the group's bus, 4 the reverb on it, 5 the mix.
+
+    /// The Patch tab with the cursor on row `row` and column `col` of the matrix.
+    fn at(h: &mut Harness, row: usize, col: usize) {
+        h.press(KeyCode::Char('4'));
+        h.press_n(KeyCode::Up, 60).press(KeyCode::Home);
+        h.press_n(KeyCode::Down, row).press_n(KeyCode::Right, col);
+    }
+
+    /// The first line of the frame that has `needle` in it.
+    fn line_of<'a>(frame: &'a str, needle: &str) -> &'a str {
+        frame.lines().find(|line| line.contains(needle)).unwrap_or_else(|| panic!("no line has `{needle}`: {frame}"))
+    }
+
+    fn frame(h: &mut Harness) -> String {
+        h.dump().split("── styles").next().unwrap().to_string()
+    }
+
+    fn click(h: &mut Harness, column: u16, row: u16) {
+        process_event(&mut h.s, Event::Mouse(MouseEvent { kind: MouseEventKind::Down(crossterm::event::MouseButton::Left), column, row, modifiers: KeyModifiers::NONE }));
+    }
+
+    #[test]
+    fn the_patch_tab_is_the_fourth_tab_and_help_the_fifth() {
+        let mut h = Harness::new(SENDS);
+        h.press(KeyCode::Char('4'));
+        assert_eq!(h.s.active_tab, TAB_PATCH);
+        assert!(frame(&mut h).contains("┌ Patch "));
+        h.press(KeyCode::Char('5'));
+        assert_eq!(h.s.active_tab, TAB_HELP);
+        h.press(KeyCode::Char('1'));
+        let mut seen = vec![h.s.active_tab];
+        for _ in 0..TAB_NAMES.len() {
+            h.press(KeyCode::Tab);
+            seen.push(h.s.active_tab);
+        }
+        assert_eq!(seen, [TAB_SESSION, TAB_PIANO, TAB_SCOPE, TAB_PATCH, TAB_HELP, TAB_SESSION]);
+        h.press(KeyCode::BackTab);
+        assert_eq!(h.s.active_tab, TAB_HELP);
+    }
+
+    #[test]
+    fn the_matrix_of_a_session_with_no_cables() {
+        let mut h = Harness::new(SENDS);
+        h.press(KeyCode::Char('4'));
+        assert_golden("patch_tab_sends", &mut h);
+    }
+
+    #[test]
+    fn the_matrix_of_a_session_with_cables_and_the_cursor_on_one_of_them() {
+        let mut h = Harness::new(PATCHED);
+        at(&mut h, 1, 1); // the cable from the first lane's filter to its delay, at 0.75
+        assert_golden("patch_tab_patched", &mut h);
+    }
+
+    #[test]
+    fn a_lane_that_is_muted_soloed_and_cut_says_so_in_the_first_columns_of_its_rows() {
+        let mut h = Harness::new(SENDS);
+        at(&mut h, 4, 0); // the drive of the second lane
+        h.press(KeyCode::Char('w')).press(KeyCode::Char('M')).press(KeyCode::Char('S'));
+        assert_eq!(h.commands(), ["SetLaneRoute inst=1 route=none", "SetMute inst=1 muted=true", "SetSolo inst=1 solo=true"]);
+        assert_golden("patch_tab_muted_soloed_and_cut", &mut h);
+    }
+
+    #[test]
+    fn moving_the_cursor_asks_nothing_of_the_engine() {
+        let mut h = Harness::new(SENDS);
+        at(&mut h, 6, 5);
+        for key in [KeyCode::Up, KeyCode::Left, KeyCode::PageUp, KeyCode::Home, KeyCode::PageDown, KeyCode::End, KeyCode::Down, KeyCode::Right] {
+            h.press(key);
+        }
+        assert_eq!(h.commands(), Vec::<String>::new());
+        assert!(h.s.ctl.model.cables.is_empty() && !h.s.ctl.dirty);
+    }
+
+    #[test]
+    fn enter_draws_a_cable_at_the_crosspoint_and_enter_again_takes_it_out() {
+        let mut h = Harness::new(SENDS);
+        let n = Sends::of(&h.s.ctl.model);
+        at(&mut h, 3, 4); // the second lane's instrument, to the reverb on the group's bus
+        h.press(KeyCode::Enter);
+        let cable = h.s.ctl.model.cables[0];
+        assert_eq!((cable.from, cable.to, cable.gain), (CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.bus), 1.0));
+        assert_eq!(h.commands(), [format!("AddCable id={} from=Instrument({:?}) to=Effect({:?}) gain=1.000", cable.id.0, n.lane[1], n.bus)]);
+        assert!(h.s.ctl.dirty, "the session has a change that is not saved");
+        let drawn = frame(&mut h);
+        assert!(line_of(&drawn, "L2  ♪ Oscillator").contains("1.00"), "{drawn}");
+        assert!(drawn.contains("A cable at level 1.00"), "{drawn}");
+        h.press(KeyCode::Enter);
+        assert_eq!(h.commands(), [format!("RemoveCable id={}", cable.id.0)]);
+        assert!(h.s.ctl.model.cables.is_empty());
+        let taken = frame(&mut h);
+        assert!(!line_of(&taken, "L2  ♪ Oscillator").contains("1.00") && taken.contains("No cable: Enter draws one"), "{taken}");
+        // Space does what Enter does, and d takes a cable out.
+        h.press(KeyCode::Char(' '));
+        assert_eq!(h.s.ctl.model.cables.len(), 1);
+        h.commands();
+        h.press(KeyCode::Char('d'));
+        assert!(h.s.ctl.model.cables.is_empty());
+        assert_eq!(h.commands().len(), 1);
+    }
+
+    #[test]
+    fn two_oscillators_are_sent_to_one_reverb_and_undo_takes_the_last_cable_out_and_redo_draws_it_again() {
+        let mut h = Harness::new(SENDS);
+        let n = Sends::of(&h.s.ctl.model);
+        at(&mut h, 0, 4);
+        h.press(KeyCode::Enter);
+        at(&mut h, 3, 4);
+        h.press(KeyCode::Enter);
+        let ends: Vec<_> = h.s.ctl.model.cables.iter().map(|cable| (cable.from, cable.to)).collect();
+        assert_eq!(ends, [(CableFrom::Instrument(n.lane[0]), CableTo::Effect(n.bus)), (CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.bus))]);
+        let drawn = frame(&mut h);
+        assert!(line_of(&drawn, "L1  ♪ Oscillator").contains("1.00") && line_of(&drawn, "L2  ♪ Oscillator").contains("1.00"), "{drawn}");
+        h.commands();
+        h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(h.s.ctl.model.cables.len(), 1, "the second cable is out");
+        assert_eq!(h.commands().len(), 1);
+        assert!(!line_of(&frame(&mut h), "L2  ♪ Oscillator").contains("1.00"));
+        h.press_with(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert_eq!(h.s.ctl.model.cables.len(), 2, "and drawn again");
+        assert!(h.commands()[0].starts_with("AddCable"));
+    }
+
+    #[test]
+    fn plus_and_minus_turn_the_level_by_a_twentieth_and_the_frame_says_the_level_it_has() {
+        let mut h = Harness::new(PATCHED);
+        at(&mut h, 1, 1); // from the first lane's filter to its delay, at 0.75
+        let id = h.s.ctl.model.cables[1].id;
+        h.press(KeyCode::Char('-'));
+        assert_eq!(h.commands(), [format!("SetCableGain id={} gain=0.700", id.0)]);
+        assert!(line_of(&frame(&mut h), "L1    fx Filter").contains("0.70"));
+        h.press(KeyCode::Char('+')).press(KeyCode::Char('+')).press(KeyCode::Char('+'));
+        assert_eq!(h.commands(), [0.75, 0.8, 0.85].map(|level| format!("SetCableGain id={} gain={level:.3}", id.0)));
+        assert!(frame(&mut h).contains("A cable at level 0.85"));
+        assert!(h.s.ctl.dirty);
+        // Where there is no cable they do nothing.
+        at(&mut h, 0, 0);
+        h.press(KeyCode::Char('+')).press(KeyCode::Char('-'));
+        assert_eq!(h.commands(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn e_opens_a_popup_for_the_level_that_takes_a_number_and_is_the_popups_while_it_is_open() {
+        let mut h = Harness::new(PATCHED);
+        at(&mut h, 1, 1);
+        let id = h.s.ctl.model.cables[1].id;
+        h.press(KeyCode::Char('e'));
+        assert!(h.s.cable_editing.is_some());
+        let popup = frame(&mut h);
+        assert!(popup.contains("level of the cable") && popup.contains("Range: 0.00 — 2.00") && popup.contains("Value: 0.75"), "{popup}");
+        assert_golden("patch_tab_level_popup", &mut h);
+        // The keys are text: the digits are not the tabs, and Ctrl+Z is not an undo.
+        h.press_n(KeyCode::Backspace, 4).type_chars("0.25");
+        assert_eq!(h.s.active_tab, TAB_PATCH);
+        h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert!(h.s.cable_editing.is_some() && h.commands().is_empty());
+        h.press(KeyCode::Enter);
+        assert!(h.s.cable_editing.is_none());
+        assert_eq!(h.commands(), [format!("SetCableGain id={} gain=0.250", id.0)]);
+        // A number over the highest level is held to it by the controller; text that is not a number, and Escape, change nothing.
+        h.press(KeyCode::Char('e')).press_n(KeyCode::Backspace, 4).type_chars("9").press(KeyCode::Enter);
+        assert_eq!(h.commands(), [format!("SetCableGain id={} gain=2.000", id.0)]);
+        h.press(KeyCode::Char('e')).press_n(KeyCode::Backspace, 4).type_chars("abc").press(KeyCode::Enter);
+        h.press(KeyCode::Char('e')).type_chars("5").press(KeyCode::Esc);
+        assert_eq!(h.commands(), Vec::<String>::new());
+        assert!(h.s.cable_editing.is_none());
+        // Not where there is no cable.
+        at(&mut h, 0, 0);
+        h.press(KeyCode::Char('e'));
+        assert!(h.s.cable_editing.is_none());
+    }
+
+    #[test]
+    fn a_level_that_the_controller_refuses_is_said_in_the_tab() {
+        let mut h = Harness::new(PATCHED);
+        at(&mut h, 1, 1);
+        let edge = h.s.ctl.model.cables[1].id;
+        h.press(KeyCode::Char('e'));
+        // A browser takes the cable out while the popup is open.
+        let taken = h.s.ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        h.s.react_to(&taken);
+        h.press_n(KeyCode::Backspace, 4).type_chars("0.5").press(KeyCode::Enter);
+        assert!(h.s.cable_editing.is_none());
+        assert_eq!(h.commands().iter().filter(|command| command.starts_with("SetCableGain")).count(), 0);
+        let said = frame(&mut h);
+        assert!(said.contains(&format!("there is no cable {}", edge.0)), "{said}");
+    }
+
+    #[test]
+    fn a_click_off_the_level_popup_closes_it_and_changes_nothing() {
+        let mut h = Harness::new(PATCHED);
+        at(&mut h, 1, 1);
+        h.press(KeyCode::Char('e'));
+        assert!(h.s.cable_editing.is_some());
+        click(&mut h, 3, 20);
+        assert!(h.s.cable_editing.is_none());
+        assert_eq!(h.commands(), Vec::<String>::new());
+        assert_eq!(h.s.active_tab, TAB_PATCH);
+    }
+
+    #[test]
+    fn the_foot_says_what_the_output_under_the_cursor_is_and_where_the_way_out_of_its_lane_or_group_goes() {
+        let mut h = Harness::new(SENDS);
+        let mut said = Vec::new();
+        at(&mut h, 0, 0);
+        for _ in 0..7 {
+            let shown = frame(&mut h);
+            let lines: Vec<&str> = shown.lines().collect();
+            let foot = lines.iter().position(|line| line.contains("▸")).expect("the foot has what the cursor joins");
+            said.push((lines[foot].trim_matches('│').trim().to_string(), lines[foot + 2].trim_matches('│').trim().to_string()));
+            h.press(KeyCode::Down);
+        }
+        let said: Vec<(&str, &str)> = said.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        assert_eq!(
+            said,
+            [
+                ("L1 Oscillator (the instrument's output, after its volume)  ▸  L1 Filter", "L1's way out goes to G1 (w cuts it)"),
+                ("L1 Filter (the output of the effect)  ▸  L1 Filter", "L1's way out goes to G1 (w cuts it)"),
+                ("L1 Delay (the output of the effect)  ▸  L1 Filter", "L1's way out goes to G1 (w cuts it)"),
+                ("L2 Oscillator (the instrument's output, after its volume)  ▸  L1 Filter", "L2's way out goes to the mix (w cuts it)"),
+                ("L2 Drive (the output of the effect)  ▸  L1 Filter", "L2's way out goes to the mix (w cuts it)"),
+                ("G1 Group 1 (the output of the group)  ▸  L1 Filter", "G1's way out goes to the mix (w cuts it)"),
+                ("G1 Reverb (bus) (the output of the effect)  ▸  L1 Filter", "G1's way out goes to the mix (w cuts it)"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_crosspoint_where_the_audio_would_go_round_is_a_cross_and_enter_there_says_why_and_asks_nothing() {
+        let mut h = Harness::new(SENDS);
+        at(&mut h, 2, 0); // the delay of the first lane, to its filter
+        let shown = frame(&mut h);
+        assert!(line_of(&shown, "L1    fx Delay").contains('×'), "{shown}");
+        assert!(shown.contains("No cable can go here: the audio would go round"), "{shown}");
+        h.press(KeyCode::Enter);
+        assert_eq!(h.commands(), Vec::<String>::new());
+        assert!(h.s.ctl.model.cables.is_empty());
+        let said = frame(&mut h);
+        assert!(said.contains("L1 Delay cannot send to L1 Filter: the audio would go round"), "{said}");
+        h.press(KeyCode::Down);
+        assert!(!frame(&mut h).contains("cannot send to"), "the next key clears it");
+    }
+
+    #[test]
+    fn a_refusal_of_the_controller_is_said_in_the_tab_and_the_next_key_clears_it() {
+        // The group's output feeds the filter of a lane that has no way out: giving it one would make the audio go round.
+        let mut h = Harness::new(
+            "[[group]]\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\nroute = \"none\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[cable]]\nfrom = \"group[0]\"\nto = \"instrument[0].effect[0]\"\n",
+        );
+        h.press(KeyCode::Char('4')).press(KeyCode::Char('w'));
+        assert_eq!(h.commands(), Vec::<String>::new());
+        assert_eq!(h.s.ctl.model.instruments[0].route, Route::None);
+        let said = frame(&mut h);
+        assert!(said.contains("giving that lane its way out would make the audio go round, by the cables there are"), "{said}");
+        h.press(KeyCode::Down);
+        assert!(!frame(&mut h).contains("by the cables there are"));
+    }
+
+    #[test]
+    fn w_m_and_s_are_of_the_lane_or_the_group_of_the_row_and_toggle_what_it_has() {
+        let mut h = Harness::new(SENDS);
+        at(&mut h, 1, 0); // an effect of the first lane
+        h.press(KeyCode::Char('w')).press(KeyCode::Char('M')).press(KeyCode::Char('S'));
+        assert_eq!(h.commands(), ["SetLaneRoute inst=0 route=none", "SetMute inst=0 muted=true", "SetSolo inst=0 solo=true"]);
+        let shown = frame(&mut h);
+        assert!(line_of(&shown, "L1  ♪ Oscillator").starts_with("│▫    MS L1"), "{shown}");
+        assert!(shown.contains("L1's way out is cut: only its cables are heard (w gives it back), muted, soloed"), "{shown}");
+        h.press(KeyCode::Char('w')).press(KeyCode::Char('M')).press(KeyCode::Char('S'));
+        assert_eq!(h.commands(), ["SetLaneRoute inst=0 route=out", "SetMute inst=0 muted=false", "SetSolo inst=0 solo=false"]);
+        assert!(line_of(&frame(&mut h), "L1  ♪ Oscillator").starts_with("│▪G1     L1"));
+        // A group, by its bus effect.
+        at(&mut h, 6, 5);
+        h.press(KeyCode::Char('w')).press(KeyCode::Char('M')).press(KeyCode::Char('S'));
+        assert_eq!(h.commands(), ["SetGroupRoute group=0 route=none", "SetGroupMute group=0 muted=true", "SetGroupSolo group=0 solo=true"]);
+    }
+
+    #[test]
+    fn what_another_front_end_does_is_on_the_tab_with_the_next_frame_and_the_cursor_stays_on_what_it_was_on() {
+        let mut h = Harness::new(SENDS);
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        let n = Sends::of(&h.s.ctl.model);
+        at(&mut h, 6, 3); // the reverb on the group's bus, to the group's bus
+        // A browser draws a cable.
+        let drawn = h.s.ctl.apply(Intent::AddCable { from: Endpoint { node: n.lane[0], port: Port::AudioOut }, to: Endpoint { node: n.bus, port: Port::AudioIn }, gain: Some(0.5) }).unwrap();
+        h.s.react_to(&drawn);
+        assert!(line_of(&frame(&mut h), "L1  ♪ Oscillator").contains("0.50"));
+        // A browser adds a lane, which has a row of its own above the cursor's.
+        let added = h.s.ctl.apply(Intent::AddInstrument { plugin: "builtin:osc".to_string() }).unwrap();
+        h.s.react_to(&added);
+        let shown = frame(&mut h);
+        assert!(shown.contains("L3  ♪ Oscillator"), "{shown}");
+        assert!(shown.contains("G1 Reverb (bus) (the output of the effect)  ▸  G1 Group 1's bus"), "the cursor is on what it was on: {shown}");
+        // It is taken out again: the cursor is still on its crosspoint.
+        let node = h.s.ctl.model.instruments[2].node;
+        let taken = h.s.ctl.apply(Intent::RemoveNode { node }).unwrap();
+        h.s.react_to(&taken);
+        assert!(frame(&mut h).contains("G1 Reverb (bus) (the output of the effect)  ▸  G1 Group 1's bus"));
+    }
+
+    #[test]
+    fn a_click_on_a_crosspoint_puts_the_cursor_there_and_the_wheel_moves_it_by_rows() {
+        let mut h = Harness::new(SENDS);
+        h.press(KeyCode::Char('4'));
+        let shown = frame(&mut h);
+        let lines: Vec<&str> = shown.lines().collect();
+        let (y, names) = (lines.iter().position(|line| line.contains("L2  ♪ Oscillator")).unwrap(), lines.iter().find(|line| line.contains("Filt Dela")).unwrap());
+        let x = names.chars().position(|c| c == 'R').unwrap(); // the first letter of `Reve`
+        click(&mut h, x as u16, y as u16 - 2);
+        assert!(frame(&mut h).contains("L2 Oscillator (the instrument's output, after its volume)  ▸  G1 Reverb (bus)"));
+        // The name of a row: the row, and the column it was on.
+        click(&mut h, 14, (y + 1) as u16 - 2);
+        assert!(frame(&mut h).contains("L2 Drive (the output of the effect)  ▸  G1 Reverb (bus)"));
+        // The wheel: three rows.
+        process_event(&mut h.s, Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollUp, column: 20, row: 10, modifiers: KeyModifiers::NONE }));
+        assert!(frame(&mut h).contains("L1 Filter (the output of the effect)"), "{}", frame(&mut h));
+        process_event(&mut h.s, Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: 20, row: 10, modifiers: KeyModifiers::NONE }));
+        assert!(frame(&mut h).contains("L2 Drive (the output of the effect)"));
+        assert_eq!(h.commands(), Vec::<String>::new(), "the mouse that selects asks nothing");
+    }
+
+    #[test]
+    fn a_click_off_the_crosspoints_and_the_names_moves_nothing_and_a_click_on_one_takes_the_refusal_off_the_foot() {
+        let mut h = Harness::new(SENDS);
+        at(&mut h, 2, 0);
+        h.press(KeyCode::Enter);
+        assert!(frame(&mut h).contains("cannot send to"), "a refusal is said");
+        let shown = frame(&mut h);
+        let lines: Vec<&str> = shown.lines().collect();
+        let first = lines.iter().position(|line| line.contains("L1  ♪ Oscillator")).unwrap();
+        let (last, wide) = (first + 6, 100);
+        // To the right of the last input, and under the last output: no crosspoint, and the foot says what it said.
+        for (column, row) in [(wide, first + 2), (50, last + 3), (50, last + 4)] {
+            click(&mut h, column, row as u16 - 2);
+            let now = frame(&mut h);
+            assert!(now.contains("L1 Delay (the output of the effect)  ▸  L1 Filter"), "a click at {column},{row}: {now}");
+        }
+        // On a crosspoint it goes there, and the refusal that was in the foot is gone.
+        let names = lines.iter().find(|line| line.contains("Filt Dela")).unwrap();
+        let x = names.chars().position(|c| c == 'D').unwrap();
+        click(&mut h, x as u16, (first + 3) as u16 - 2);
+        let now = frame(&mut h);
+        assert!(now.contains("L2 Oscillator (the instrument's output, after its volume)  ▸  L1 Delay") && !now.contains("cannot send to"), "{now}");
+    }
+
+    #[test]
+    fn a_click_on_an_item_of_the_session_tabs_action_bar_presses_its_key() {
+        let mut h = Harness::new(scene_split());
+        let shown = frame(&mut h);
+        let bar = shown.lines().rfind(|line| line.contains("new instr")).expect("the action bar of the Session tab");
+        let x = bar[..bar.find(" M  mute").unwrap()].chars().count() as u16 + 1;
+        click(&mut h, x, HEIGHT - 1);
+        assert_eq!(h.commands(), ["SetMute inst=0 muted=true"], "the mute of the lane the cursor is on");
+        let x = bar[..bar.find(" a  add fx").unwrap()].chars().count() as u16 + 1;
+        click(&mut h, x, HEIGHT - 1);
+        assert!(h.s.selector.is_some(), "add fx opens the selector of effects");
+    }
+
+    #[test]
+    fn the_tab_bar_and_the_action_bar_are_the_mouses_on_the_patch_tab() {
+        let mut h = Harness::new(SENDS);
+        let bar = tab_bar(&mut h);
+        let at_name = |name: &str, bar: &str| bar[..bar.find(name).unwrap()].chars().count() as u16 + 1;
+        click(&mut h, at_name("(4) Patch", &bar), 0);
+        assert_eq!(h.s.active_tab, TAB_PATCH);
+        at(&mut h, 3, 4);
+        // The action bar: each item presses its own key.
+        let shown = frame(&mut h);
+        let bottom = shown.lines().rfind(|line| line.contains("pin / unpin")).unwrap();
+        let on_item = |key: &str| bottom[..bottom.find(&format!(" {key} ")).unwrap()].chars().count() as u16 + 1;
+        let last = HEIGHT - 1;
+        click(&mut h, on_item("Enter"), last);
+        assert_eq!(h.s.ctl.model.cables.len(), 1, "a click on `Enter pin / unpin` draws a cable");
+        click(&mut h, on_item("-"), last);
+        assert_eq!(h.s.ctl.model.cables[0].gain, 0.95, "`-` softer");
+        click(&mut h, on_item("+"), last);
+        click(&mut h, on_item("+"), last);
+        assert_eq!(h.s.ctl.model.cables[0].gain, 1.05, "`+` louder");
+        click(&mut h, on_item("e"), last);
+        assert!(h.s.cable_editing.is_some(), "`e type a level` opens the popup");
+        h.press(KeyCode::Esc);
+        click(&mut h, on_item("M"), last);
+        assert!(h.s.ctl.model.instruments[1].muted, "`M mute` is of the row's lane");
+        click(&mut h, on_item("d"), last);
+        assert!(h.s.ctl.model.cables.is_empty(), "and a click on `d remove` takes it out");
+        // (The session has a change that is not saved now: the first tab is wider.)
+        let bar = tab_bar(&mut h);
+        click(&mut h, at_name("(5) Help", &bar), 0);
+        assert_eq!(h.s.active_tab, TAB_HELP);
+    }
+
+    #[test]
+    fn a_session_that_does_not_fit_is_scrolled_by_the_cursor_and_the_title_says_what_is_in_view() {
+        let mut h = Harness::new(PATCHED);
+        h.terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+        h.press(KeyCode::Char('4'));
+        let first = frame(&mut h);
+        assert!(first.contains("┌ Patch  ·  outputs 1–6 of 10  ·  inputs 1–5 of 8 "), "{first}");
+        h.press_n(KeyCode::Down, 9).press(KeyCode::End);
+        let last = frame(&mut h);
+        assert!(last.contains("┌ Patch  ·  outputs 5–10 of 10  ·  inputs 4–8 of 8 "), "{last}");
+        assert!(line_of(&last, "G1    fx Delay (bus)").ends_with("│") && last.contains("G1 Delay (bus) (the output of the effect)  ▸  the mix"), "{last}");
+        assert!(last.contains(" Mix"), "the last column is in view: {last}");
+        assert!(!last.contains("L1  ♪ Oscillator"), "and the first row is not");
+        // Back up: the view goes with the cursor.
+        h.press_n(KeyCode::Up, 9).press(KeyCode::Home);
+        let back = frame(&mut h);
+        assert!(back.contains("┌ Patch  ·  outputs 1–6 of 10  ·  inputs 1–5 of 8 ") && back.contains("L1  ♪ Oscillator"), "{back}");
+        // And with more room the view is not left where it was, with a blank at its end: all of it is shown.
+        h.press_n(KeyCode::Down, 9).press(KeyCode::End);
+        assert!(frame(&mut h).contains("outputs 5–10 of 10  ·  inputs 4–8 of 8"), "scrolled again");
+        h.terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        let roomy = frame(&mut h);
+        assert!(roomy.contains("┌ Patch ─") && roomy.contains("L1  ♪ Oscillator") && roomy.contains("L1    fx Filter") && roomy.contains("G1    fx Delay (bus)"), "{roomy}");
+        assert!(line_of(&roomy, "outputs ↓").contains("L1") && line_of(&roomy, "outputs ↓").contains("Mix"), "every input is in view: {roomy}");
+    }
+
+    #[test]
+    fn what_the_patch_tab_does_to_a_lane_is_in_the_tree_of_the_session_tab() {
+        let mut h = Harness::new(SENDS);
+        at(&mut h, 3, 0); // the second lane's instrument
+        h.press(KeyCode::Char('w')).press(KeyCode::Char('M')).press(KeyCode::Char('S'));
+        h.press(KeyCode::Char('1'));
+        assert!(h.tree().iter().any(|line| line.starts_with("♪ Oscillator") && line.ends_with("[mute] [solo] [no out]")), "{:#?}", h.tree());
+        assert!(tab_bar(&mut h).contains("(1) Session *"));
+    }
+
+    #[test]
+    fn the_tab_is_drawn_at_every_size_down_to_nothing_with_the_cursor_anywhere() {
+        let mut h = Harness::new(PATCHED);
+        h.press(KeyCode::Char('4')).press(KeyCode::Down).press(KeyCode::End);
+        for height in 1..=34u16 {
+            for width in (1..=40u16).chain([80, 140]) {
+                h.terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                h.dump();
+            }
+        }
+        // A click where the last frame drew nothing is on nothing.
+        h.terminal = Terminal::new(TestBackend::new(30, 3)).unwrap();
+        h.dump();
+        click(&mut h, 15, 1);
+        click(&mut h, 3, 1);
+        assert_eq!(h.commands(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_help_tab_lists_the_keys_of_the_patch_tab() {
+        let mut h = Harness::new(SENDS);
+        h.press(KeyCode::Char('5'));
+        assert!(h.s.help_lines.iter().any(|line| line.trim() == "1 2 3 4 5  Switch to tab by number"), "{:?}", h.s.help_lines);
+        h.s.help_offset = h.s.help_lines.iter().position(|line| line.starts_with("Patch tab")).expect("the Patch tab has a section of the help");
+        let shown = frame(&mut h);
+        for line in ["Patch tab (the audio cables, as a matrix of outputs against inputs):", "Enter      Draw a cable at the crosspoint, or take it out", "w          Cut / give back the way out"] {
+            assert!(shown.contains(line), "{line}: {shown}");
+        }
+    }
 }

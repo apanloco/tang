@@ -3,7 +3,7 @@ source: src/tui/golden_tests.rs
 ---
 120x32
 ── text ──
-(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
 ┌ Chain ─────────────────────────────────────────┐┌ LFO 1/8 triplet sine ──────────────────────────────────────────────┐
 │♪ Oscillator  [Built-in]                        ││  Type                     ◂ LFO ▸                                  │
 │├ fx Filter  [Built-in]                         ││▸ Waveform                 ◂ sine ▸                                 │
@@ -36,7 +36,7 @@ source: src/tui/golden_tests.rs
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
  Enter  edit  m  modulate  l  learn
 ── styles ('.' = default) ──
-aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 bbbbbbbbbbbbbbbbbbbbbbbbb........................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................c
 bbbbbbbbbbbbbbbbbbbbbbbb.........................bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.................................c

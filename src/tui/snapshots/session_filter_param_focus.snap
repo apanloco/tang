@@ -3,7 +3,7 @@ source: src/tui/golden_tests.rs
 ---
 120x32
 ── text ──
-(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
 ┌ Chain ─────────────────────────────────────────┐┌ Filter ────────────────────────────────────────────────────────────┐
 │▦ Pad  vol 0.80                                 ││▸ cutoff                   ▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░     0.35│
 │  ♪ Oscillator  [Built-in]                      ││  resonance                ▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.71│
@@ -36,7 +36,7 @@ source: src/tui/golden_tests.rs
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
  Enter  edit  m  modulate  l  learn  /  filter
 ── styles ('.' = default) ──
-aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 bddddddddddddddd.................................bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac
 bbbbbbbbbbbbbbbbbbbbbbbbbbb......................bc..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc

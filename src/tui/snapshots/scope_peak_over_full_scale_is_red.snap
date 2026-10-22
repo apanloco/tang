@@ -3,7 +3,7 @@ source: src/tui/golden_tests.rs
 ---
 120x32
 ── text ──
-(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
  Scope: wave   Time: 21 ms   Peak: +3.5 dB
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ ⢸⠉⠉⢹        ⡏⠉⠉⢣       ⢀⠏⠉⠉⡇       ⢸⠉⠉⠹⡀       ⡜⠉⠉⢹        ⡏⠉⠉⢱        ⡏⠉⠉⡇       ⢸⠉⠉⠙⡄       ⢸⠉⠉⢹        ⡏⠉⠉⢹       │
@@ -36,7 +36,7 @@ source: src/tui/golden_tests.rs
  [v] wave/spectrum  [←/→] time base
 
 ── styles ('.' = default) ──
-aaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbaaaaaaaaaaa..................................................................aaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaa......................................................aaaaaaaa
 aaaaaaaabbbbaaaaaaaaabbbbbaaaaaaaaaccccccc
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 a.dddd........dddd.......ddddd.......ddddd.......dddd........dddd........dddd.......ddddd.......dddd........dddd.......a

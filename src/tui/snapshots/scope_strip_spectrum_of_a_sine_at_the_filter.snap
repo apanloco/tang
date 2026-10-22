@@ -3,7 +3,7 @@ source: src/tui/golden_tests.rs
 ---
 120x32
 ── text ──
-(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
 ┌ Chain ─────────────────────────────────────────┐┌ Filter ────────────────────────────────────────────────────────────┐
 │♪ Oscillator  [Built-in]                        ││  cutoff                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     1.00│
 │├ fx Filter  [Built-in]                         ││  resonance                ▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.71│
@@ -36,7 +36,7 @@ source: src/tui/golden_tests.rs
 └ [o] hide  [O] wave/spectrum ─────────────────────────────────────────────────────────────────────────────────────────┘
  n  new instr  a  add fx  m  modulate  x  mix  d  delete  p  presets
 ── styles ('.' = default) ──
-aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cbbbbbbbbbbbbbbbbbbbbbbbb........................cbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccb
 caaaaaaaaaaaaaaaaaaaaaaa.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

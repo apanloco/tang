@@ -3,7 +3,7 @@ source: src/tui/golden_tests.rs
 ---
 120x32
 ── text ──
-(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
 ┌ Chain ─────────────────────────────────────────┐┌ Pad ───────────────────────────────────────────────────────────────┐
 │▦ Pad  vol 0.80                                 ││  volume                   ▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░     0.80│
 │  ♪ Oscillator  [Built-in]                      ││  pan                      ▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░    -0.30│
@@ -36,7 +36,7 @@ source: src/tui/golden_tests.rs
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
  a  add fx  m  modulate  v  vol  M  mute  S  solo  R  rename  d  delete group
 ── styles ('.' = default) ──
-aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................................................bbbbbbbb
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 cddddddddddddddd.................................cbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccb
 cbbbbbbbbbbbbbbbbbbbbbbbbbb......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

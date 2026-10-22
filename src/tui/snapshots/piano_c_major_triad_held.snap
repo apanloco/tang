@@ -3,7 +3,7 @@ source: src/tui/golden_tests.rs
 ---
 120x32
 ── text ──
-(1) Session │ (2) Piano │ (3) Scope │ (4) Help                                                                  120 BPM
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
  Scale: C Major   Mode: Highlight   Octave view: C4
  Held: C4(1) E4(3) G4(5)   Chord: C (I)
 
@@ -36,7 +36,7 @@ source: src/tui/golden_tests.rs
  [k] scale  [l] mode  [[/]] octave  [Esc] back
 
 ── styles ('.' = default) ──
-aaaaaaaaaaaaaabbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaa..................................................................aaaaaaaa
+aaaaaaaaaaaaaabbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa......................................................aaaaaaaa
 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 aaaaaaacccccccccccccccccaaaaaaaaaaddddd
 
