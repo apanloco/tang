@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use kernel::{Io, NodeSpec, Nodes, Patch, Pool, Port, PortSpec, compile};
+use kernel::{ChanBuf, DelayLine, Io, NodeSpec, Nodes, Patch, Pool, Port, PortSpec, compile};
 
 const ST: PortSpec = PortSpec::audio(2);
 
@@ -98,6 +98,32 @@ fn what_the_graph_costs_over_nodes_that_do_nothing() {
             let budget_ns = frames.max(1) as f64 / 48_000.0 * 1e9;
             let budget = if frames == 0 { "-".to_string() } else { format!("{:.2}%", 100.0 * ns / budget_ns) };
             eprintln!("{name:<36} {nodes:>6} {buffers:>8} {frames:>6} {:>12.1} {:>10.0} {budget:>10}", ns / 1e3, ns / nodes as f64);
+        }
+    }
+}
+
+#[test]
+#[ignore = "a benchmark: cargo test --release -p kernel --test benchmark -- --ignored --nocapture --test-threads=1"]
+fn what_a_delay_line_costs() {
+    eprintln!("{:<14} {:>6} {:>12} {:>10} {:>10}", "line", "frames", "µs a block", "ns a frame", "of budget");
+    for line_frames in [23usize, 480, 4_800, 131_072] {
+        for frames in [64usize, 256, 1024] {
+            let mut line = DelayLine::new(line_frames, 2);
+            let mut block: ChanBuf = vec![vec![0.5; frames]; 2];
+            for _ in 0..200 {
+                line.run(std::hint::black_box(&mut block));
+            }
+            let mut took: Vec<f64> = (0..2000)
+                .map(|_| {
+                    let start = Instant::now();
+                    line.run(std::hint::black_box(&mut block));
+                    start.elapsed().as_nanos() as f64
+                })
+                .collect();
+            took.sort_by(|a, b| a.total_cmp(b));
+            let ns = took[took.len() / 2];
+            let budget_ns = frames as f64 / 48_000.0 * 1e9;
+            eprintln!("{:<14} {frames:>6} {:>12.2} {:>10.2} {:>9.3}%", format!("{line_frames} frames"), ns / 1e3, ns / frames as f64, 100.0 * ns / budget_ns);
         }
     }
 }

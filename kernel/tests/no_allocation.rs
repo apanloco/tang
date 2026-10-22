@@ -6,7 +6,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use anyhow::Result;
-use kernel::{Io, Kernel, Node, NodeSpec, Nodes, Patch, Plan, Pool, Port, PortSpec, compile};
+use kernel::{DelayLine, Io, Kernel, Node, NodeSpec, Nodes, Patch, Plan, Pool, Port, PortSpec, align, compile, with_delays};
 
 thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
@@ -208,4 +208,65 @@ fn a_kernel_over_an_arena_asks_for_nothing_in_a_block() {
         }
     });
     assert_eq!(count, 0);
+}
+
+/// The nodes of a plan that has delays in it: the delays are lines that the block goes through in place, and the others do some arithmetic.
+struct WithLines(std::collections::HashMap<usize, DelayLine>);
+
+impl Nodes<usize, usize> for WithLines {
+    fn process(&mut self, id: usize, io: &mut Io, block: &mut usize) -> Result<()> {
+        match self.0.get_mut(&id) {
+            Some(line) => {
+                io.forward(0, 0);
+                line.run(&mut io.outputs_mut()[0]);
+            }
+            None => work(io, *block),
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_plan_with_delays_in_it_asks_the_allocator_for_nothing_in_a_block() {
+    // Lane 0's first effect has 23 frames of latency and lane 1's second has 5: the other lanes of their groups, and the lanes that go to the master, are late by what they lack.
+    let patch = session(8);
+    let latency = |id: usize| match id {
+        1_000 => 23,
+        2_001 => 5,
+        _ => 0,
+    };
+    let alignment = align(&patch, latency).unwrap();
+    assert!(alignment.is_needed());
+    let mut lines = std::collections::HashMap::new();
+    let made = with_delays(&patch, &alignment, |number, _, frames| {
+        lines.insert(50_000 + number, DelayLine::new(frames as usize, 2));
+        50_000 + number
+    });
+    assert!(lines.len() >= 6, "{} delays", lines.len());
+    let plan = compile(&made).unwrap();
+    let mut pool = Pool::new();
+    pool.reserve(512);
+    pool.fit(&plan);
+    let mut nodes = WithLines(lines);
+    let mut block = 0;
+    for n in 0..4 {
+        block = n;
+        plan.run(&mut pool, FRAMES[n % FRAMES.len()], &mut nodes, &mut block).unwrap();
+    }
+    let (_, count) = allocations_in(|| {
+        for n in 0..70 {
+            block = n;
+            plan.run(&mut pool, FRAMES[n % FRAMES.len()], &mut nodes, &mut block).unwrap();
+        }
+    });
+    assert_eq!(count, 0, "the plan has {} ops", plan.ops().len());
+}
+
+#[test]
+fn a_line_that_is_made_the_length_it_is_asks_the_allocator_for_nothing_and_a_longer_one_does() {
+    let mut line = DelayLine::new(480, 2);
+    let (_, count) = allocations_in(|| line.resize(480));
+    assert_eq!(count, 0, "the plan is made again with the same delays, and a line of them is made the length it is each time");
+    let (_, count) = allocations_in(|| line.resize(960));
+    assert!(count > 0, "a longer line is made on a thread that may allocate: the test sees that it asks");
 }

@@ -103,11 +103,23 @@ struct Value {
     channels: u16,
 }
 
-pub fn compile<I: Id>(patch: &Patch<I>) -> Result<Plan<I>, CompileError<I>> {
+/// What `compile` and `align` both ask of a patch: where each cable starts and ends (by the place of the node in the patch), the cables that leave each node, and the order the
+/// nodes run in.
+pub(crate) struct Layout {
+    pub from_at: Vec<usize>,
+    pub to_at: Vec<usize>,
+    /// The cables (by place) that leave each node (by place), in the order they were drawn.
+    pub leaving: Vec<Vec<usize>>,
+    /// The places of the nodes, in the order they run.
+    pub order: Vec<usize>,
+}
+
+/// Check the patch and find the order of its nodes: what is wrong with it, in the order of the nodes and then of the cables, or the order that is the least `(rank, insertion)` of the
+/// nodes that are ready at every step.
+pub(crate) fn layout<I: Id>(patch: &Patch<I>) -> Result<Layout, CompileError<I>> {
     let nodes = patch.nodes();
     let cables = patch.cables();
 
-    // What is wrong with the patch, in the order of the nodes and then of the cables.
     let mut at_of: HashMap<I, usize> = HashMap::with_capacity(nodes.len());
     for (at, (id, _)) in nodes.iter().enumerate() {
         if at_of.insert(*id, at).is_some() {
@@ -154,6 +166,13 @@ pub fn compile<I: Id>(patch: &Patch<I>) -> Result<Plan<I>, CompileError<I>> {
         }
         return Err(CompileError::Cycle(nodes.iter().enumerate().filter(|(at, _)| !placed[*at]).map(|(_, (id, _))| *id).collect()));
     }
+    Ok(Layout { from_at, to_at, leaving, order })
+}
+
+pub fn compile<I: Id>(patch: &Patch<I>) -> Result<Plan<I>, CompileError<I>> {
+    let nodes = patch.nodes();
+    let cables = patch.cables();
+    let Layout { from_at, to_at, leaving, order } = layout(patch)?;
     let mut place = vec![0usize; nodes.len()];
     for (op_at, &at) in order.iter().enumerate() {
         place[at] = op_at;
