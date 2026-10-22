@@ -780,6 +780,51 @@ describe("whether a node can be heard at the master", () => {
     expect(audibleAt(cut, 1)).toBe(true);
   });
 
+  describe("with cables that carry audio", () => {
+    // The audio cables fixture: the group Pad (0) with the lane 4 in it, that has the effects 5 and 6, the lane 8 (effect 9) that is in none, and the lane 10, which is empty. Cable 1 goes from the
+    // instrument of lane 8 to the effect 5 of lane 4.
+    const soloed = (lane: number): ClientState => {
+      const copy = structuredClone(audioCablesFixture.snapshot);
+      const node = copy.graph.nodes.find((n) => n.id === lane);
+      if (node?.kind !== "instrument") throw new Error("no lane");
+      node.solo = true;
+      return stateOf(copy);
+    };
+
+    test("says nothing of an effect that is in no lane or group's chain", () => {
+      const copy = structuredClone(audioCablesFixture.snapshot);
+      const effect = copy.graph.nodes.find((n) => n.kind === "effect");
+      if (effect?.kind !== "effect") throw new Error("no effect");
+      copy.graph.nodes.push({ ...effect, id: 777, parent: null });
+      expect(audibleAt(stateOf(copy), 777)).toBeUndefined();
+    });
+
+    test("is yes for every lane, group and effect when nothing is soloed", () => {
+      const quiet = stateOf(audioCablesFixture.snapshot);
+      for (const node of [0, 1, 2, 3, 4, 5, 6, 8, 9, 10]) expect(audibleAt(quiet, node), `node ${String(node)}`).toBe(true);
+    });
+
+    test("is yes for the effects of a lane that a lane that is soloed sends to, and for its group, and no for the instrument of that lane, which is not heard for what it is", () => {
+      const state = soloed(8);
+      expect(audibleAt(state, 8)).toBe(true);
+      expect(audibleAt(state, 9)).toBe(true);
+      expect(audibleAt(state, 5)).toBe(true);
+      expect(audibleAt(state, 6)).toBe(true);
+      expect(audibleAt(state, 0)).toBe(true);
+      expect(audibleAt(state, 4)).toBe(false);
+      // (Nothing is sent to the empty lane.)
+      expect(audibleAt(state, 10)).toBe(false);
+    });
+
+    test("is yes for the effect that the output of a group that is heard goes to and no for the instrument of the lane that has it: with the lane of the group soloed, cable 3 carries the group into lane 8", () => {
+      const state = soloed(4);
+      expect(audibleAt(state, 4)).toBe(true);
+      expect(audibleAt(state, 9)).toBe(true);
+      expect(audibleAt(state, 8)).toBe(false);
+      expect(audibleAt(state, 10)).toBe(false);
+    });
+  });
+
   test("says nothing of what is no lane, no group and no effect: a modulator, the master, a node that is not there, and a session that is not there", () => {
     for (const node of [lfo.id, MASTER, 424242]) expect(audibleAt(state, node), `node ${String(node)}`).toBeUndefined();
     expect(audibleAt(stateOf(null), oscillator.id)).toBeUndefined();

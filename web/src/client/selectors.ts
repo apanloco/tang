@@ -4,7 +4,7 @@ import { WAVEFORMS } from "../protocol";
 import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, PatternInfo, Preset } from "../protocol";
 import type { ClientState } from "./connection";
 import type { Stages } from "./envelope";
-import { audibleOf } from "./audible";
+import { audibleOf, ownAudibleOf } from "./audible";
 import { displayNames } from "./names";
 import { shownParams } from "./pinning";
 
@@ -156,8 +156,9 @@ export function sameWayOut(a: WayOut | undefined, b: WayOut | undefined): boolea
 }
 
 /**
- * Whether what a node puts out can be heard at the master, by the mute and solo of the session (`audibleOf`): a lane's or a group's own, and an effect's by the lane
- * or group whose chain it is in, which is what carries it. Undefined for the nodes that put out no sound, a modulator and the master among them.
+ * Whether what a node puts out can be heard at the master, by the mute and solo of the session and by what cables carry (`audibleOf`, `ownAudibleOf`): a lane's instrument by what the lane
+ * is heard for by itself (a lane that is heard only for what is sent to it by a cable has none of its own sound in its chain), a group's bus, and an effect's by the lane or group whose chain
+ * it is in, which is what carries it. Undefined for the nodes that put out no sound, a modulator and the master among them.
  */
 export function audibleAt(state: ClientState, id: NodeId): boolean | undefined {
   const graph = state.snapshot?.graph;
@@ -166,7 +167,7 @@ export function audibleAt(state: ClientState, id: NodeId): boolean | undefined {
   switch (node.kind) {
     case "instrument":
     case "group":
-      return audibleOf(graph).get(node.id);
+      return ownAudibleOf(graph).get(node.id);
     case "effect":
       return node.parent === null ? undefined : audibleOf(graph).get(node.parent);
     default:

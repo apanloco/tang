@@ -2270,6 +2270,40 @@ describe("the meters and the scope of the mock for a lane or a group that is mut
     near(peaks(server), { [LANE_3]: SILENT, [GROUP_B]: SILENT, [MASTER]: SILENT, [LANE_1]: SILENT });
   });
 
+  // What the cables carry (docs/web-ui.md D78): the lane 4 of the fixture is the one that is soloed, the first lane of the first group is the one it sends to, and the effect that it sends to is the filter of that lane.
+  const send = (from: number, to: number): Intent => ({ type: "addCable", from: { node: from, port: { type: "audioOut" } }, to: { node: to, port: { type: "audioIn" } }, gain: null });
+  const FILTER_OF_LANE_1 = 5;
+
+  test("a group that a lane that is soloed sends to is heard for it and reads, with no lane of its own heard, and the lanes of it read nothing", async () => {
+    const { server, client } = await playing();
+    await flag(client, { type: "setSolo", node: LANE_4, solo: true });
+    await flag(client, send(LANE_4, GROUP_A));
+    near(peaks(server), { [LANE_4]: LEVEL, [GROUP_A]: LEVEL, [MASTER]: LEVEL, [LANE_1]: SILENT, [LANE_2]: SILENT, [GROUP_B]: SILENT, [LANE_3]: SILENT });
+  });
+
+  test("a lane that a lane that is soloed sends to reads for what it is sent, and so does the group that it goes to, and the lanes that nothing is sent to read nothing", async () => {
+    const { server, client } = await playing();
+    await flag(client, { type: "setSolo", node: LANE_4, solo: true });
+    await flag(client, send(LANE_4, FILTER_OF_LANE_1));
+    near(peaks(server), { [LANE_4]: LEVEL, [LANE_1]: LEVEL, [GROUP_A]: LEVEL, [MASTER]: LEVEL, [LANE_2]: SILENT, [GROUP_B]: SILENT, [LANE_3]: SILENT });
+  });
+
+  test("what a lane that is muted sends is heard by nobody, however it is soloed", async () => {
+    const { server, client } = await playing();
+    await flag(client, { type: "setSolo", node: LANE_4, solo: true });
+    await flag(client, send(LANE_4, GROUP_A));
+    await flag(client, { type: "setMute", node: LANE_4, muted: true });
+    near(peaks(server), { [LANE_4]: SILENT, [GROUP_A]: SILENT, [LANE_1]: SILENT, [MASTER]: SILENT });
+  });
+
+  test("a group does not read for a lane that is heard when the way out of the lane is cut, and the lane reads as it did", async () => {
+    const { server, client } = await playing();
+    await flag(client, { type: "setRoute", node: LANE_1, route: "none" });
+    near(peaks(server), { [GROUP_A]: LEVEL, [LANE_1]: LEVEL, [LANE_2]: LEVEL });
+    await flag(client, { type: "setRoute", node: LANE_2, route: "none" });
+    near(peaks(server), { [GROUP_A]: SILENT, [LANE_1]: LEVEL, [LANE_2]: LEVEL, [GROUP_B]: LEVEL, [LANE_3]: LEVEL, [LANE_4]: LEVEL });
+  });
+
   test("the scope of the output is silent while nothing is heard, and has the notes while something is", async () => {
     const { server, client } = await playing();
     const loud = (seconds = 1) => (decodeFrame(server.frame("scope", seconds, new Map(), 0))?.values ?? new Float32Array(0)).some((sample) => sample !== 0);

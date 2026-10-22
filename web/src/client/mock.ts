@@ -37,7 +37,7 @@ import type {
 import type { Transport, TransportEvents, TransportFactory } from "./connection";
 import { MASTER, builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
 import { sessionFileName } from "./filenames";
-import { audibleOf, heardOf } from "./audible";
+import { audibleOf, fedOf, heardOf } from "./audible";
 import { cablesThatGo, isAudioCable, isLink, isModulation } from "./cables";
 import { Counters } from "./counters";
 import { History, planOf, removedStep, stepOf, takesOut } from "./history";
@@ -1648,6 +1648,7 @@ export class MockServer {
     // an ear for. The mock has no ear for anything else: a note that is held is a level in every meter and a sound in every scope, where it can be heard.
     const audible = audibleOf(this.#snapshot.graph);
     const heard = heardOf(this.#snapshot.graph);
+    const fed = fedOf(this.#snapshot.graph);
     const sounding = nodes.some((n) => n.kind === "instrument" && n.plugin !== null && audible.get(n.id) === true);
     // (The scope follows none either: the frames of the left side and then of the right, as many of each as the real server's.)
     if (channel === "scope") return frameBytes(channel, 0, scopeValues(sounding ? this.heldNotes : new Set<number>(), seconds, this.#snapshot.meta.sampleRate));
@@ -1657,12 +1658,15 @@ export class MockServer {
     };
     const fall = 10 ** ((-PEAK_FALL_DB_PER_SECOND * elapsed) / 20);
     const playing = this.heldNotes.size > 0 ? 0.35 : 0;
-    // What a meter has an ear for, as the engine's are: a lane's after its own mute and solo, a group's after the bus is let go of and with a lane to carry, and the master's
-    // after everything.
+    // What a meter has an ear for, as the engine's are: a lane's after its own mute and solo (and what a cable sends it), a group's after the bus is let go of and with something to carry (a lane of
+    // it that is heard and whose way out is not cut, or a cable that is heard from where it starts), and the master's after everything.
     const levelOf = (id: NodeId): number => {
       const node = nodes.find((n) => n.id === id);
       if (node?.kind === "instrument") return heard.get(id) === true ? playing : 0;
-      if (node?.kind === "group") return heard.get(id) === true && nodes.some((n) => n.kind === "instrument" && n.parent === id && heard.get(n.id) === true) ? playing : 0;
+      if (node?.kind === "group") {
+        const carried = fed.has(id) || nodes.some((n) => n.kind === "instrument" && n.parent === id && n.route === "out" && heard.get(n.id) === true);
+        return heard.get(id) === true && carried ? playing : 0;
+      }
       return sounding ? playing : 0;
     };
     const value = (entry: LayoutEntry): number => {

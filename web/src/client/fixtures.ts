@@ -14,6 +14,7 @@ import filenames from "./fixtures/filenames.json";
 import groups from "./fixtures/groups.json";
 import history from "./fixtures/history.json";
 import audible from "./fixtures/audible.json";
+import audibleCables from "./fixtures/audibleCables.json";
 import audioCables from "./fixtures/audioCables.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
 import moves from "./fixtures/moves.json";
@@ -34,6 +35,9 @@ export const tracerSnapshot = tracer as unknown as Snapshot;
  * which buses are heard (16 and 32).
  */
 export const audibleFixture = audible as unknown as { groups: number; lanes: (number | null)[]; cases: [number, number][] };
+
+/** What the engine makes of every combination of mute and solo of two groups and four lanes that have cables between them (`the_web_clients_fixture_of_what_is_heard_with_cables_is_current`): the cables, each as [what it starts at, which, what it ends at, which]. */
+export const audibleCablesFixture = audibleCables as unknown as { groups: number; lanes: (number | null)[]; cables: [string, number, string, number][]; cases: [number, number][] };
 
 /**
  * A session with two groups, lanes in them and out of them, an empty lane and a modulator in a few of each,
