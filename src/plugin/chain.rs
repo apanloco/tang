@@ -2381,7 +2381,6 @@ pub enum GraphCommand {
     },
     /// A source is gone, a MIDI device that was unplugged: what it was holding would be held for ever, and every lane lets go of what it has sounding from it. A lane goes on hearing the
     /// source, if it is in its set, so that the device is heard again when it is plugged in.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller says that a device has gone when it has a watcher that sees devices go: the next step of P4"))]
     ReleaseSource {
         source: Source,
     },

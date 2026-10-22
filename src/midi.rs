@@ -1,7 +1,6 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
-use midir::{MidiInput, MidiInputConnection};
+use midir::{MidiInput, MidiInputConnection, MidiInputPort};
 
 use crate::midi_monitor::MidiMonitor;
 use crate::note_input::{Delivery, NoteInput};
@@ -29,55 +28,112 @@ impl SourceTable {
     }
 }
 
+/// CoreMIDI (macOS) gives a program the list of the MIDI ports as the server last told it, and the server tells a thread on its run loop: a program that never runs one sees the ports that were
+/// there when it started, a port that goes is a stale one that has no name, and a device that is plugged in later is never listed. One turn of the loop, with no waiting, lets it see.
+#[cfg(target_os = "macos")]
+fn let_the_system_see_the_devices() {
+    use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+    // SAFETY: a constant of CoreFoundation's.
+    CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, std::time::Duration::ZERO, false);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn let_the_system_see_the_devices() {}
+
+/// What a look at the MIDI ports found (P4b of `docs/patch-graph.md` §11.6): the devices that were plugged in and opened, and the devices that have gone, each by its source.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DeviceChanges {
+    pub came: Vec<Source>,
+    pub gone: Vec<Source>,
+}
+
+/// What to do about the ports that are listed now, given the devices that are open.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Plan {
+    /// The places, among the listed ports, of those to open.
+    to_open: Vec<usize>,
+    /// The places, among the open devices, of those that have gone.
+    gone: Vec<usize>,
+}
+
+/// A MIDI input port as the system lists it: its id, which is its own for as long as it is there (a name is not: two ports may be called the same), and its name, which a port that is
+/// not there any more, or never was (a stale endpoint), cannot give.
+type Listed<'a> = (&'a str, Option<&'a str>);
+
+/// A device that is open is still there when its port is listed, with the name it was opened by if the port can say one. It has gone when it is not (the program looks at the ports once a
+/// second: a device that is unplugged and plugged in again between two looks is not seen to go).
+/// A port is opened when it has a name, passes the filter (its name has the filter in it) and no device of that name stays open, as a name that is listed twice is opened once.
+fn plan(open: &[(&str, &str)], listed: &[Listed], filter: Option<&str>) -> Plan {
+    let there = |(id, name): &(&str, &str)| listed.iter().any(|port| port.0 == *id && port.1.is_none_or(|listed| listed == *name));
+    let gone: Vec<usize> = (0..open.len()).filter(|&at| !there(&open[at])).collect();
+    let stays = |name: &str| open.iter().enumerate().any(|(at, device)| device.1 == name && !gone.contains(&at));
+    let to_open = (0..listed.len())
+        .filter(|&at| {
+            let Some(name) = listed[at].1 else { return false };
+            filter.is_none_or(|filter| name.contains(filter)) && !stays(name) && !listed[..at].iter().any(|earlier| earlier.1 == Some(name))
+        })
+        .collect();
+    Plan { to_open, gone }
+}
+
+/// A device that is open: its port's id and name, its source and the connection, which is closed when the device is dropped.
+struct Open<C> {
+    id: String,
+    name: String,
+    source: Source,
+    _connection: C,
+}
+
+/// Take the devices at the places `gone` (ascending) out of `open`, which closes them: the sources they had, in the order they were open.
+fn take_out<C>(open: &mut Vec<Open<C>>, gone: &[usize]) -> Vec<Source> {
+    // The last first, so that the places of the others stay where they are.
+    let mut sources: Vec<Source> = gone
+        .iter()
+        .rev()
+        .map(|&at| {
+            let device = open.remove(at);
+            log::info!("MIDI input gone: {} ({})", device.name, device.source);
+            device.source
+        })
+        .collect();
+    sources.reverse();
+    sources
+}
+
 pub struct MidiManager {
     notes: NoteInput,
     device_filter: Option<String>,
-    connections: Vec<MidiInputConnection<()>>,
-    connected_names: HashSet<String>,
+    /// The devices that are open, in the order they were opened.
+    open: Vec<Open<MidiInputConnection<()>>>,
     monitor: Arc<MidiMonitor>,
-    /// The source of each device that has been opened.
+    /// The source of each device that has been opened, kept for the run: a device that has gone is the source it was when it comes back.
     sources: SourceTable,
 }
 
 impl MidiManager {
     pub fn new(notes: NoteInput, device_filter: Option<String>, monitor: Arc<MidiMonitor>) -> Self {
-        MidiManager {
-            notes,
-            device_filter,
-            connections: Vec::new(),
-            connected_names: HashSet::new(),
-            monitor,
-            sources: SourceTable::default(),
-        }
+        MidiManager { notes, device_filter, open: Vec::new(), monitor, sources: SourceTable::default() }
     }
 
-    /// Open all available MIDI input ports (or those matching the filter).
-    /// Returns the number of newly opened connections.
-    pub fn open_ports(&mut self) -> anyhow::Result<usize> {
+    /// Look at the MIDI input ports: open those that are new (all of them, or those that match the filter) and close the devices that are not listed any more. The devices that came
+    /// and went, by their sources.
+    pub fn open_ports(&mut self) -> anyhow::Result<DeviceChanges> {
+        let_the_system_see_the_devices();
         let midi_in = MidiInput::new("tang")?;
-        let ports = midi_in.ports();
-        let mut opened = 0;
+        // Every port, with its name if it has one: a stale endpoint is listed and has none, and is there for as long as it is, so that it must not hide a device that has gone.
+        let listed: Vec<(String, Option<String>, MidiInputPort)> = midi_in.ports().into_iter().map(|port| (port.id(), midi_in.port_name(&port).ok(), port)).collect();
+        let ports: Vec<Listed> = listed.iter().map(|(id, name, _)| (id.as_str(), name.as_deref())).collect();
+        let devices: Vec<(&str, &str)> = self.open.iter().map(|device| (device.id.as_str(), device.name.as_str())).collect();
+        let Plan { to_open, gone } = plan(&devices, &ports, self.device_filter.as_deref());
 
-        for port in &ports {
-            let name = match midi_in.port_name(port) {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
+        let mut changes = DeviceChanges { gone: take_out(&mut self.open, &gone), ..DeviceChanges::default() };
 
-            // Skip already connected
-            if self.connected_names.contains(&name) {
-                continue;
-            }
-
-            // Apply device filter
-            if let Some(ref filter) = self.device_filter {
-                if !name.contains(filter.as_str()) {
-                    continue;
-                }
-            }
-
+        for at in to_open {
+            let (id, name, port) = &listed[at];
+            // (`plan` has only ports that have a name.)
+            let Some(name) = name else { continue };
             // Each device is a source of its own: what it plays is tagged with it, so that a lane can hear it or not.
-            let source = self.sources.source_of(&name);
+            let source = self.sources.source_of(name);
             let notes = self.notes.for_source(source);
             let monitor = self.monitor.clone();
             let log_name = name.clone();
@@ -118,11 +174,10 @@ impl MidiManager {
                 },
                 (),
             ) {
-                Ok(conn) => {
+                Ok(connection) => {
                     log::info!("Opened MIDI input: {name} ({source})");
-                    self.connected_names.insert(name);
-                    self.connections.push(conn);
-                    opened += 1;
+                    self.open.push(Open { id: id.clone(), name: name.clone(), source, _connection: connection });
+                    changes.came.push(source);
                 }
                 Err(e) => {
                     log::warn!("Failed to open MIDI input {name}: {e}");
@@ -130,20 +185,27 @@ impl MidiManager {
             }
         }
 
-        Ok(opened)
+        Ok(changes)
     }
 
-    /// Poll for newly connected MIDI devices. Call periodically from main loop.
-    pub fn poll_new_devices(&mut self) {
+    /// Poll for MIDI devices that have been connected or have gone. Call periodically from main loop.
+    pub fn poll_new_devices(&mut self) -> DeviceChanges {
         match self.open_ports() {
-            Ok(0) => {}
-            Ok(n) => log::info!("Opened {n} new MIDI device(s)"),
-            Err(e) => log::warn!("MIDI poll error: {e}"),
+            Ok(changes) => {
+                if !changes.came.is_empty() {
+                    log::info!("Opened {} new MIDI device(s)", changes.came.len());
+                }
+                changes
+            }
+            Err(e) => {
+                log::warn!("MIDI poll error: {e}");
+                DeviceChanges::default()
+            }
         }
     }
 
     pub fn connection_count(&self) -> usize {
-        self.connections.len()
+        self.open.len()
     }
 }
 
@@ -171,5 +233,103 @@ mod tests {
         assert!(sources[..62].windows(2).all(|pair| pair[0] != pair[1]), "62 devices have a source each");
         assert!(sources[62..].iter().all(|&source| source == Source::LAST), "the rest share the last: {sources:?}");
         assert_eq!(table.source_of("device 3"), Source::device(3), "and the ones before it are what they were");
+    }
+
+    /// What `plan` says about devices that are open (by their id and name) and ports that are listed (by their id and name, if they have one): the places of those to open and of those
+    /// that have gone.
+    fn plan_for(open: &[(&str, &str)], listed: &[Listed], filter: Option<&str>) -> (Vec<usize>, Vec<usize>) {
+        let Plan { to_open, gone } = plan(open, listed, filter);
+        (to_open, gone)
+    }
+
+    /// Ports whose id is their name, as most of the tests have them.
+    fn named<'a>(names: &[&'a str]) -> Vec<Listed<'a>> {
+        names.iter().map(|&name| (name, Some(name))).collect()
+    }
+
+    /// Devices that are open, with an id that is their name.
+    fn opened<'a>(names: &[&'a str]) -> Vec<(&'a str, &'a str)> {
+        names.iter().map(|&name| (name, name)).collect()
+    }
+
+    #[test]
+    fn a_port_that_is_listed_and_not_open_is_opened_and_one_that_is_open_and_listed_is_left_alone() {
+        assert_eq!(plan_for(&[], &named(&["Launchkey", "Seaboard"]), None), (vec![0, 1], vec![]));
+        assert_eq!(plan_for(&opened(&["Seaboard"]), &named(&["Launchkey", "Seaboard"]), None), (vec![0], vec![]));
+        assert_eq!(plan_for(&opened(&["Launchkey", "Seaboard"]), &named(&["Launchkey", "Seaboard"]), None), (vec![], vec![]), "nothing has changed");
+    }
+
+    #[test]
+    fn a_device_that_is_open_and_not_listed_has_gone_and_is_named_by_its_place_among_the_open_ones() {
+        assert_eq!(plan_for(&opened(&["Launchkey", "Seaboard", "IAC"]), &named(&["Launchkey", "IAC"]), None), (vec![], vec![1]));
+        assert_eq!(plan_for(&opened(&["Launchkey", "Seaboard"]), &[], None), (vec![], vec![0, 1]), "with no port listed, every device has gone");
+    }
+
+    #[test]
+    fn a_device_that_went_and_one_that_came_are_told_apart_in_one_look() {
+        assert_eq!(plan_for(&opened(&["Launchkey", "Seaboard"]), &named(&["Seaboard", "IAC"]), None), (vec![1], vec![0]));
+    }
+
+    #[test]
+    fn a_stale_port_that_has_no_name_is_not_opened_and_does_not_hide_a_device_that_has_gone() {
+        // (The ports of this machine's MIDI system, as `tang` found them: the endpoint that is no more is listed, and cannot say its name.)
+        let listed: Vec<Listed> = vec![("stale", None), ("launchkey", Some("Launchkey"))];
+        assert_eq!(plan_for(&[], &listed, None), (vec![1], vec![]), "it is not opened");
+        assert_eq!(plan_for(&[("seaboard", "Seaboard")], &listed, None), (vec![1], vec![0]), "and the device that is not listed has gone all the same");
+    }
+
+    #[test]
+    fn a_device_whose_port_is_listed_but_cannot_give_its_name_is_still_there() {
+        // The name is read as the port is looked at, and may fail for a moment: the port is what the device is open on.
+        assert_eq!(plan_for(&[("launchkey", "Launchkey")], &[("launchkey", None)], None), (vec![], vec![]));
+    }
+
+    #[test]
+    fn a_device_is_the_port_it_was_opened_on_and_not_the_name_that_a_port_has() {
+        // The port that the device is open on is listed under another name: the device is not there, and the name is a new one to open.
+        let listed: Vec<Listed> = vec![("port 1", Some("Seaboard"))];
+        assert_eq!(plan_for(&[("port 1", "Launchkey")], &listed, None), (vec![0], vec![0]));
+        // A port of another id with the name of a device that has gone (a virtual port that was made again) is the device, come back.
+        assert_eq!(plan_for(&[("port 1", "IAC")], &[("port 2", Some("IAC"))], None), (vec![0], vec![0]));
+        // But not while the device of that name is there: one device is open for a name.
+        assert_eq!(plan_for(&[("port 1", "IAC")], &[("port 1", Some("IAC")), ("port 2", Some("IAC"))], None), (vec![], vec![]));
+    }
+
+    #[test]
+    fn a_name_that_is_listed_twice_is_opened_once() {
+        assert_eq!(plan_for(&[], &[("a", Some("IAC")), ("b", Some("Launchkey")), ("c", Some("IAC"))], None), (vec![0, 1], vec![]));
+    }
+
+    #[test]
+    fn the_filter_decides_which_ports_are_opened_by_the_text_in_their_name() {
+        let listed = named(&["Launchkey 25 MIDI 1", "Seaboard RISE", "Launchkey 25 MIDI 2"]);
+        assert_eq!(plan_for(&[], &listed, Some("Launchkey")), (vec![0, 2], vec![]));
+        assert_eq!(plan_for(&[], &listed, Some("Seaboard RISE")), (vec![1], vec![]));
+        assert_eq!(plan_for(&[], &listed, Some("nothing like it")), (vec![], vec![]));
+        assert_eq!(plan_for(&[], &listed, Some("")), (vec![0, 1, 2], vec![]), "an empty filter has every name in it");
+    }
+
+    #[test]
+    fn the_filter_does_not_say_that_an_open_device_has_gone_or_has_not() {
+        // A device that is open passed the filter when it was opened: it is gone when it is not listed, and not before.
+        assert_eq!(plan_for(&opened(&["Launchkey 25"]), &named(&["Launchkey 25", "Seaboard"]), Some("Launchkey")), (vec![], vec![]));
+        assert_eq!(plan_for(&opened(&["Launchkey 25"]), &named(&["Seaboard"]), Some("Launchkey")), (vec![], vec![0]));
+    }
+
+    fn device(name: &str, nth: usize) -> Open<()> {
+        Open { id: format!("port of {name}"), name: name.to_string(), source: Source::device(nth), _connection: () }
+    }
+
+    #[test]
+    fn the_devices_that_have_gone_are_taken_out_by_their_places_and_the_others_stay_open_in_their_order() {
+        let mut open = vec![device("Launchkey", 0), device("Seaboard", 1), device("IAC", 2), device("Keystation", 3)];
+        let gone = take_out(&mut open, &[0, 2]);
+        assert_eq!(gone, [Source::device(0), Source::device(2)], "the sources of the devices that went, in the order they were open");
+        let left: Vec<&str> = open.iter().map(|device| device.name.as_str()).collect();
+        assert_eq!(left, ["Seaboard", "Keystation"], "the places of the others do not matter to which went");
+
+        assert_eq!(take_out(&mut open, &[]), [], "none gone, none taken out");
+        assert_eq!(take_out(&mut open, &[0, 1]), [Source::device(1), Source::device(3)]);
+        assert!(open.is_empty());
     }
 }

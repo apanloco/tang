@@ -2575,6 +2575,7 @@ dependencies = [
  "clack-finder",
  "clack-host",
  "clap",
+ "core-foundation",
  "cpal",
  "crossbeam-channel",
  "crossterm 0.28.1",

@@ -4080,7 +4080,9 @@ plugin = "builtin:reverb"
             _says: Says,
         }
         impl DeviceWatcher for Watcher {
-            fn poll_new_devices(&mut self) {}
+            fn poll_new_devices(&mut self) -> crate::midi::DeviceChanges {
+                crate::midi::DeviceChanges::default()
+            }
         }
         struct Sink {
             _says: Says,

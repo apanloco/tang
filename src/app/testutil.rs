@@ -176,6 +176,8 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::AddCable { id, from, to, gain } => format!("AddCable id={} from={from:?} to={to:?} gain={gain:.3}", id.0),
         C::RemoveCable { id } => format!("RemoveCable id={}", id.0),
         C::SetCableGain { id, gain } => format!("SetCableGain id={} gain={gain:.3}", id.0),
+        C::SetLaneSources { inst, sources } => format!("SetLaneSources inst={inst} sources={:?}", sources.iter().map(|source| source.number()).collect::<Vec<_>>()),
+        C::ReleaseSource { source } => format!("ReleaseSource source={}", source.number()),
         C::SetProbe { target, ring } => format!("SetProbe ring={ring} {target:?}"),
         C::ClearProbes => "ClearProbes".to_string(),
         _ => "<other>".to_string(),

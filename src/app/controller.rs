@@ -48,6 +48,7 @@ use crate::app::save::to_save;
 use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
 use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
+use crate::midi::DeviceChanges;
 use crate::midi_monitor::MidiMonitor;
 use crate::note_input::NoteInput;
 use crate::piano_filter::{PianoFilter, PianoMode};
@@ -70,14 +71,14 @@ pub struct Polled {
     pub catalog_changed: bool,
 }
 
-/// Something that notices devices being plugged in: the MIDI manager.
+/// Something that notices devices being plugged in and unplugged: the MIDI manager.
 pub trait DeviceWatcher {
-    /// Open whatever has been connected since the last call.
-    fn poll_new_devices(&mut self);
+    /// Open whatever has been connected since the last call, and close what has gone: the devices that came and the devices that went, by their sources.
+    fn poll_new_devices(&mut self) -> DeviceChanges;
 }
 
 impl DeviceWatcher for crate::midi::MidiManager {
-    fn poll_new_devices(&mut self) {
+    fn poll_new_devices(&mut self) -> DeviceChanges {
         crate::midi::MidiManager::poll_new_devices(self)
     }
 }
@@ -1102,8 +1103,8 @@ impl Controller {
         self.reap();
         if now.duration_since(self.last_device_poll) >= DEVICE_POLL_INTERVAL {
             self.last_device_poll = now;
-            if let Some(devices) = &mut self.devices {
-                devices.poll_new_devices();
+            if let Some(changes) = self.devices.as_mut().map(|devices| devices.poll_new_devices()) {
+                self.devices_changed(changes);
             }
         }
         let catalog_changed = self.catalog.poll();
@@ -1116,6 +1117,14 @@ impl Controller {
         // (And so is what the terminal does to the lanes without one: where the nodes that are watched are is looked at again.)
         self.reconcile_probes();
         Polled { catalog_changed, model_changed }
+    }
+
+    /// Devices came and went. What a device that has gone was holding would be held for ever, so every lane is told to let go of what it has sounding from it (a lane that does not hear
+    /// the device has nothing of it to let go of).
+    fn devices_changed(&mut self, changes: DeviceChanges) {
+        for source in changes.gone {
+            let _ = self.cmd_tx.send(GraphCommand::ReleaseSource { source });
+        }
     }
 
     /// Fold what the audio thread has reported into the model. True if the
@@ -1250,8 +1259,9 @@ mod tests {
     fn devices_are_polled_once_a_second() {
         struct Watcher(Rc<Cell<usize>>);
         impl DeviceWatcher for Watcher {
-            fn poll_new_devices(&mut self) {
+            fn poll_new_devices(&mut self) -> DeviceChanges {
                 self.0.set(self.0.get() + 1);
+                DeviceChanges::default()
             }
         }
         let t0 = Instant::now();
@@ -1267,6 +1277,38 @@ mod tests {
         }
     }
 
+    /// A watcher that says what it is told, one look at a time, and nothing after that.
+    struct Scripted(std::collections::VecDeque<DeviceChanges>);
+
+    impl DeviceWatcher for Scripted {
+        fn poll_new_devices(&mut self) -> DeviceChanges {
+            self.0.pop_front().unwrap_or_default()
+        }
+    }
+
+    #[test]
+    fn a_device_that_has_gone_is_let_go_of_by_every_lane_and_a_look_that_found_a_device_come_or_nothing_sends_nothing() {
+        use crate::source::Source;
+        let t0 = Instant::now();
+        let (handles, engine) = testutil::stub_engine();
+        let mut ctl = Controller::starting_at(SessionModel::default(), handles, None, t0);
+        ctl.watch_devices(Box::new(Scripted(
+            [
+                DeviceChanges { came: vec![Source::device(0)], gone: vec![] },
+                DeviceChanges::default(),
+                DeviceChanges { came: vec![], gone: vec![Source::device(1), Source::device(0)] },
+            ]
+            .into(),
+        )));
+
+        let at = |seconds: u64| t0 + Duration::from_secs(seconds);
+        ctl.poll_at(at(1));
+        ctl.poll_at(at(2));
+        assert_eq!(engine.drain().0, Vec::<String>::new(), "a device that came changes no lane, and a look that found nothing neither");
+        ctl.poll_at(at(3));
+        assert_eq!(engine.drain().0, ["ReleaseSource source=2", "ReleaseSource source=1"], "each device that has gone, in the order it is told");
+    }
+
     #[test]
     fn polling_without_a_device_watcher_is_fine() {
         let (_engine, mut ctl) = controller();
@@ -1277,7 +1319,9 @@ mod tests {
     fn shutdown_closes_the_devices_before_it_drops_what_was_handed_back() {
         struct Watcher(Arc<Mutex<Vec<&'static str>>>);
         impl DeviceWatcher for Watcher {
-            fn poll_new_devices(&mut self) {}
+            fn poll_new_devices(&mut self) -> DeviceChanges {
+                DeviceChanges::default()
+            }
         }
         impl Drop for Watcher {
             fn drop(&mut self) {

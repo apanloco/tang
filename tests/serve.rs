@@ -1643,6 +1643,73 @@ fn virtual_controller(name: &str) -> midir::MidiOutputConnection {
     midir::MidiOutput::new("tang test").expect("a MIDI system").create_virtual(name).unwrap_or_else(|e| panic!("a virtual MIDI port called {name:?}: {e}"))
 }
 
+/// How many times `needle` is in the program's log so far.
+#[cfg(unix)]
+fn times_in_the_log(tang: &Tang, needle: &str) -> usize {
+    tang.log().matches(needle).count()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "needs a MIDI system that can make virtual ports (CoreMIDI on a Mac, ALSA's sequencer on Linux): cargo test --features web -- --ignored"]
+async fn a_controller_that_is_unplugged_is_noticed_and_one_that_is_plugged_in_again_is_opened_again_and_heard() {
+    let name = format!("tang replug test {}", std::process::id());
+    let mut controller = virtual_controller(&name);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_listening_to(&file, &name);
+    let opened = format!("Opened MIDI input: {name}");
+    let gone = format!("MIDI input gone: {name}");
+    // The program opens the inputs that it finds as it starts, and this one is there.
+    let wait_for = |what: &'static str, done: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}\n{}", tang.log());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    wait_for("the program did not open the controller", &|| times_in_the_log(&tang, &opened) == 1);
+    controller.send(&[0x90, 60, 100]).unwrap();
+    wait_for("the program did not hear the controller", &|| times_in_the_log(&tang, "NoteOn ") == 1);
+
+    // Unplugged with a key down: the program looks once a second, and says that the device has gone.
+    drop(controller);
+    wait_for("the program did not notice that the controller was gone", &|| times_in_the_log(&tang, &gone) == 1);
+
+    // Plugged in again: it is opened again, and what it plays is heard.
+    let mut controller = virtual_controller(&name);
+    wait_for("the program did not open the controller again", &|| times_in_the_log(&tang, &opened) == 2);
+    controller.send(&[0x90, 62, 100]).unwrap();
+    wait_for("the program did not hear the controller that was plugged in again", &|| times_in_the_log(&tang, "NoteOn ") == 2);
+    assert_eq!(times_in_the_log(&tang, &gone), 1, "it has not gone twice\n{}", tang.log());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "needs a MIDI system that can make virtual ports (CoreMIDI on a Mac, ALSA's sequencer on Linux): cargo test --features web -- --ignored"]
+async fn a_controller_that_is_plugged_in_after_the_program_has_started_is_opened_and_heard() {
+    let name = format!("tang late test {}", std::process::id());
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("jam.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_listening_to(&file, &name);
+    // (CoreMIDI tells a program that has no run loop of the ports that were there when it started, and no others: the program turns the loop once each time it looks.)
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(times_in_the_log(&tang, "Opened MIDI input"), 0, "it is not there yet\n{}", tang.log());
+    let mut controller = virtual_controller(&name);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while times_in_the_log(&tang, &format!("Opened MIDI input: {name}")) == 0 {
+        assert!(Instant::now() < deadline, "the program did not open the controller that was plugged in after it started\n{}", tang.log());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    controller.send(&[0x90, 60, 100]).unwrap();
+    while times_in_the_log(&tang, "NoteOn ") == 0 {
+        assert!(Instant::now() < deadline, "the program did not hear it\n{}", tang.log());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// The modulator of a snapshot message that is a MIDI control: its node and what it is bound to (`null` while it learns), and whether it learns.
 #[cfg(unix)]
 fn midi_control_of(snapshot: &Value) -> Option<(u64, Value, bool)> {

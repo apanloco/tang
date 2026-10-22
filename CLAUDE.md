@@ -997,10 +997,10 @@ ui = { x = 376, y = 0 }
   (`SetLaneSources` without it) or is told that the source is gone (`GraphCommand::ReleaseSource`: a device that was unplugged, whose keys would be held for ever) it lets go of what it holds: the
   note-offs of its notes, then the pedal going up and the wheel going back to its centre, first among the events that the remap, the pattern, the transpose and the modulators see (so that a pattern that
   a held key plays stops, and a control that learned a key lets go), at most 32 a block (`RELEASES_PER_BLOCK`; what is left goes in the next, and nothing allocates); a source that is heard again before
-  it is let go of keeps what it holds, and a lane goes on hearing a source that is gone, so that the device is heard when it is plugged in again. Nothing sends either command yet: the model has no MIDI
-  cables (P4b), so that every lane hears every source and the program is as it was, bit for bit (the oracle's corpus renders the same).
-TODO: the MIDI manager does not notice that a device has gone: it keeps its connection and its name (`MidiManager::connected_names`), so that a device that is unplugged and plugged in again is not opened
-again, and `ReleaseSource` is not sent for it, which would be where its held keys are let go of (midir has no event for a port that goes: the manager would have to compare the names that `ports()` lists).
+  it is let go of keeps what it holds, and a lane goes on hearing a source that is gone, so that the device is heard when it is plugged in again. `ReleaseSource` is sent by the controller for a device that the MIDI manager says has gone (see the paragraph on hot-pluggable MIDI
+  devices under "Architecture"); nothing sends `SetLaneSources` yet: the model has no MIDI cables (P4b), so that every lane hears every source and the sound is what it was, bit for bit (the oracle's corpus renders the same).
+TODO: the held-notes lights (`HeldNotes`, the Piano tab's) are one set of bits for every source: the notes that a device that has gone was holding are let go of by the lanes and stay lit until the panic (a bit
+cannot say which source set it).
 
 ### Tempo
 
@@ -2134,8 +2134,26 @@ instrument, the master) and keeps the audio thread's taps where the nodes are as
 probes are in every build; `keep_probes_of`, which the owner of the web interface calls for the connections that have closed, is with the `web` feature or in tests only.
 
 MIDI devices are hot-pluggable — `Controller::poll` (called from the TUI loop, the
-`play` loop and the headless loop of `serve`) looks for new devices about once a
-second (not in `serve` when there was no MIDI subsystem at startup).
+`play` loop and the headless loop of `serve`) looks at the MIDI input ports about once a
+second (not in `serve` when there was no MIDI subsystem at startup): a port that is new is
+opened (all of them, or the ones that match `--midi-device`), and a device that is open and whose
+port is not listed any more has gone: its connection is closed, `MidiManager::poll_new_devices` says
+so (`DeviceChanges { came, gone }`, each device by its source) and the controller sends
+`GraphCommand::ReleaseSource` for it, so that what it was holding is let go of (a key that was down
+when the cable was pulled does not hang). A device is the port it was opened on, by the port's id
+(`MidiInputPort::id`) and its name, and not by its name alone: a stale endpoint (one that is gone and
+is still listed, with no name) is not opened and does not hide a device that has gone (`midi::plan`,
+a pure function with tests of its own). A device that is plugged in again has the source it had
+(`SourceTable`, by the port's name); one that is unplugged and plugged in again between two looks is
+not seen to go. **On macOS** CoreMIDI gives a program the list of the ports as the server last told
+it, and the server tells a thread on its run loop: a program that never runs one saw the ports that
+were there when it started and no others (a device plugged in after the start was never opened, and
+a port that went stayed listed with no name), so `MidiManager::open_ports` turns the run loop of the
+thread once, with no waiting, before it lists the ports (`midi::let_the_system_see_the_devices`,
+`core-foundation`, macOS only). Two tests of `tests/serve.rs` make a virtual controller and hold this
+to the real MIDI system (`#[ignore]`d: they need CoreMIDI or ALSA's sequencer to make ports):
+a device plugged in after the start is opened and heard; one that is unplugged is noticed, and
+one that is plugged in again is opened again and heard.
 
 ## Audio host selection
 
