@@ -649,16 +649,26 @@ the new one grows under today's structure until it equals it, and is then taken 
     held key plays stops and a controller that learned a key lets go. A group's modulators hear the union of its members' (the events of a source that no member hears are not theirs).
     The tests are the engine's own: the oracle's corpus is held to the bits it had (the sessions have no source but the keys), and the scenarios that put masks in are P4b's, which has the
     intents to edit them with.
-  - **P4b, MIDI cables in the model, the file, the intents and the history.** A source is a node of the graph (`NodeKind::Source`: the keys, which are always there, and each device that has been
-    seen or that a file names; a device node stays for the run, dim while the device is not there, so that undo that puts a cable back to it has a node to put it to) with a port of events out;
-    an event cable goes from a source to a lane (the lane's node: an input of events, which only a source's cable ends at, as an input of audio is no lane's). *The default is the template's, as
-    a lane that is in no group goes to the mix:* **a lane that no event cable ends at hears every source**, and one that has some hears the sources they come from and no others (a source that
-    is not there, an unplugged device, is not heard, and does not leave the lane to the others). In the file, the devices a session names are `[[device]]` tables (`name`, `ui`), and the cables
-    are `[[cable]]` tables, whose kind is told by their places as the audio cables' are (`from = "keys"` or `from = "device[0]"`, `to = "instrument[1]"`: an audio cable never ends at a lane and
-    an event cable never ends anywhere else); a device is found among the MIDI inputs by its name (the whole name first, and then the text in it, as `--midi-device` does). The intents are
-    `AddCable` and `RemoveEdge` with ports of events (no level: an event cable has none), a step of the history each, the cables of a lane that goes written down and put back with it (and a
-    device's node, which does not go), the controller works the masks out from the cables and the sources that are there, sends `SetLaneSources` when either changes (a device that comes or goes,
-    a cable) and `ReleaseSource` for a device that went, and `resync` tells the browsers when a device came. The oracle gets the scenario `edited:sources`.
+    *Built* (2026-10-22, step 81 of `docs/web-ui.md`, in 4 commits with the plan). `source::{Source, SourceSet, MidiEvent, Events}`: the channel to the audio thread carries `MidiEvent { source, frame, bytes }`, `NoteInput::new` is the path of the keys (source 0: the computer's keys,
+    the page's piano and keys, every browser) and `NoteInput::for_source` that of a device, `midi::SourceTable` gives each MIDI device a number for the run by its port's name (in the order they are first seen, the 63rd and after sharing the last), the panic is sent as no
+    source's (`Source::BROADCAST`, heard by every lane), and `audio::Renderer` (which has room for as many events as the channel holds, 1,024, where it had room for 64) gives the engine `Events`. `AudioGraph::process` is still the list of notes, as events from the keys,
+    and `process_events` is the engine's. A lane has `sources` (every source until `GraphCommand::SetLaneSources` says another), `Sounding` for each source (the notes held by channel, the pedals down, the wheels off their centre, written down as events are passed on) and
+    `release_sounding` (`GraphCommand::ReleaseSource` is the same for a source that is gone): the note-offs, then the pedal up and the wheel centred, first among the events that the remap, the pattern, the transpose and the modulators see, 32 a block at most. A group's modulators hear
+    what some member hears. 45 new tests (the lane's and the graph's among them: 100 notes let go of 32 a block, the room shared by the sources, the pedal and the wheel after the notes where the notes use the room exactly), no block that lets go of a source asks the allocator for memory,
+    and the whole corpus of the oracle is the same renders (the sessions have no source but the keys, and every lane hears every source). 87 mutants of the new code: 78 caught by the first tests, seven after tests that were missing, one that is no fault and one that went with the redundant check
+    that hid it. Rust 2236 tests (2420 with `web`), the kernel's and the page's unchanged. *What is not built:* nothing sends the commands (P4b), and the MIDI manager does not notice a device that has gone (it is P4b's: a source that is gone is what `ReleaseSource` is for).
+  - **P4b, MIDI cables in the model, the file, the intents and the history.** A source is a node of the graph that a person adds (`NodeKind::Source`: the keys, or a device by its name; the
+    intent `AddSource`, taken out by `RemoveNode`, both steps of the history), with a port of events out. **None is there until one is added**, so that a session that has none is the file it was,
+    every lane hears every source, and the canvas and the tests of the pages that have no use for MIDI routing are as they were. An event cable goes from a source node to a lane (the lane's node: an
+    input of events, which only a source's cable ends at, as an input of audio is no lane's). *The default is the template's, as a lane that is in no group goes to the mix:* **a lane that no event cable
+    ends at hears every source** (and the graph says so, with a link from each source node that there is to such a lane, as it has links for the audio path that nothing edits), and one that has some
+    hears the sources they come from and no others (a device that is not there, unplugged, is not heard, and does not leave the lane to the others). In the file, the devices a session names are
+    `[[device]]` tables (`name`, `ui`; the keys are `[ui] keys = { x, y }` and the cables that start at them) and the cables are `[[cable]]` tables, whose kind is told by their places as the audio
+    cables' are (`from = "keys"` or `from = "device[0]"`, `to = "instrument[1]"`: an audio cable never ends at a lane and an event cable never ends anywhere else, and has no level); a device is
+    found among the MIDI inputs by its name (the whole name first, and then the text in it, as `--midi-device` does). The intents are `AddCable` and `RemoveEdge` with ports of events, a step of the
+    history each, the cables of a lane that goes written down and put back with it, the controller works the masks out from the cables and the numbers that the MIDI manager has given the devices
+    (`DeviceWatcher::source_of`), sends `SetLaneSources` when either changes and `ReleaseSource` for a device that went, and `resync` tells the browsers when a device came. The oracle gets the
+    scenario `edited:sources`.
   - **P4c, the page draws them.** The source nodes at the left, an output of events on each, a cable dragged to a lane's input of events, a menu for the keyboard (`From`), the lane that hears
     every source drawn as that, a light on a source that has sent something lately (a count of events for each source in the telemetry), the mock engine doing as the controller does.
   - **P4d, the terminal's patchbay has them:** a matrix of the sources down the side and the lanes across the top, in the Patch tab.
