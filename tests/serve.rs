@@ -1022,6 +1022,95 @@ async fn a_browser_draws_a_send_and_hears_it_in_the_meter_and_the_saved_file_has
     peak_until(&mut browser, &again, at, SOON, "the note with the send that the file has", |peak| (peak - 1.5 * dry).abs() < 0.1 * dry).await;
 }
 
+/// The edges of a snapshot message that carry notes: the cables of notes that were drawn, and what a lane that has none hears (`hears`).
+fn notes_edges_of(snapshot: &Value) -> Vec<Value> {
+    snapshot["snapshot"]["graph"]["edges"].as_array().unwrap().iter().filter(|e| e["kind"] == "events" || e["kind"] == "hears").cloned().collect()
+}
+
+/// The sources of a snapshot message, as (node, what it is): the nodes that are of kind `source`.
+fn sources_of(snapshot: &Value) -> Vec<(u64, Value)> {
+    let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();
+    nodes.iter().filter(|n| n["kind"] == "source").map(|n| (n["id"].as_u64().unwrap(), n["source"].clone())).collect()
+}
+
+#[tokio::test]
+async fn a_browser_wires_a_lane_to_a_device_that_is_not_there_and_the_lane_goes_quiet_and_undo_gives_it_every_source_and_the_saved_file_has_the_cable_and_a_program_started_on_it_has_it() {
+    // One sine, at a level of 0.2: a steady tone. The program listens to no MIDI input (`Tang::start_on`), so that a device that a cable starts at is not there.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("sources.toml");
+    std::fs::write(&file, "[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 0.2\n").unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, snapshot) = listening(&tang).await;
+    assert!(sources_of(&snapshot).is_empty() && notes_edges_of(&snapshot).is_empty(), "a session that has no source has none, and nothing that carries notes");
+    let lane = id_of(&snapshot, "Oscillator");
+
+    tell(&mut client, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
+    let dry = peak_until(&mut client, &tang, at, SOON, "the note", |peak| peak > 0.02).await;
+    let dry = peak_until(&mut client, &tang, at, SOON, "the note, steady", |peak| (peak - dry).abs() < 0.01 * dry).await;
+
+    // The keys and a device are put in as sources: told as a snapshot, with a link from each to the lane, which hears every source (it has no cable). Nothing that is heard changes.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addSource", "source": {"type": "keys"}}})).await;
+    assert_eq!(answer(&mut client, 1).await["type"], "ack");
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "addSource", "source": {"type": "device", "name": " Nothing at all "}}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 2).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("a source is told as a snapshot");
+    let sources = sources_of(told);
+    assert_eq!(sources.iter().map(|(_, source)| source.clone()).collect::<Vec<_>>(), [json!({"type": "keys"}), json!({"type": "device", "name": "Nothing at all"})], "the name without the spaces round it");
+    let (keys, device) = (sources[0].0, sources[1].0);
+    let hears = notes_edges_of(told);
+    assert_eq!(hears.iter().map(|e| (e["kind"].clone(), e["from"]["node"].clone(), e["to"]["node"].clone())).collect::<Vec<_>>(), [(json!("hears"), json!(keys), json!(lane)), (json!("hears"), json!(device), json!(lane))]);
+    peak_until(&mut client, &tang, at, SOON, "the note as it was", |peak| (peak - dry).abs() < 0.1 * dry).await;
+
+    // A source is not put in twice, nor a cable of notes given a level: refused, in the controller's words.
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "addSource", "source": {"type": "keys"}}})).await;
+    assert_eq!(answer(&mut client, 3).await["error"]["message"], "the keys are a source already");
+    let (out, into) = (|node: u64| json!({"node": node, "port": {"type": "eventsOut"}}), |node: u64| json!({"node": node, "port": {"type": "eventsIn"}}));
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "addCable", "from": out(device), "to": into(lane), "gain": 0.5}})).await;
+    assert_eq!(answer(&mut client, 4).await["error"]["message"], "a cable of notes has no level: it carries notes, which are heard or not");
+
+    // The lane is wired to the device, which is not there: it hears nothing from now on, and lets go of the key that it holds, which is held still.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "addCable", "from": out(device), "to": into(lane), "gain": null}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 5).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("a cable of notes is told as a snapshot");
+    let edges = notes_edges_of(told);
+    assert_eq!(edges.iter().map(|e| (e["kind"].clone(), e["from"]["node"].clone(), e["to"]["node"].clone())).collect::<Vec<_>>(), [(json!("events"), json!(device), json!(lane))], "the lane has a cable, and hears the sources it starts at and no others");
+    peak_until(&mut client, &tang, at, SOON, "the lane has let go of the key", |peak| peak < 0.001).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 69})).await;
+    tell(&mut client, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
+    let quiet = peak_after(&mut client, at, Duration::from_millis(600)).await;
+    assert!(quiet < 0.001, "the keys are not heard by a lane that is wired to a device that is not there: {quiet}");
+
+    // Undone, the cable is gone and the lane hears every source again: a key that is hit now is heard.
+    tell(&mut client, json!({"type": "request", "reqId": 6, "intent": {"type": "undo"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 6).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("an undo that takes a cable out is told as a snapshot");
+    assert!(notes_edges_of(told).iter().all(|e| e["kind"] == "hears"), "no cable is left");
+    tell(&mut client, json!({"type": "noteOff", "note": 69})).await;
+    tell(&mut client, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "the key that is hit once the cable is undone", |peak| peak > 0.02).await;
+
+    // Done again, and saved: the file has the sources and the cable, and a program that is started on it has them and the lane is quiet.
+    tell(&mut client, json!({"type": "request", "reqId": 7, "intent": {"type": "redo"}})).await;
+    assert_eq!(answer(&mut client, 7).await["type"], "ack");
+    tell(&mut client, json!({"type": "request", "reqId": 8, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 8).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.starts_with("[keys]\n\n[[device]]\nname = \"Nothing at all\"\n\n[[instrument]]\n"), "{saved}");
+    assert!(saved.contains("[[cable]]\nfrom = \"device[0]\"\nto = \"instrument[0]\"\n"), "{saved}");
+    drop(client);
+    drop(tang);
+    let again = Tang::start_on(&file);
+    let (mut browser, at, snapshot) = listening(&again).await;
+    assert_eq!(sources_of(&snapshot).iter().map(|(_, source)| source.clone()).collect::<Vec<_>>(), [json!({"type": "keys"}), json!({"type": "device", "name": "Nothing at all"})]);
+    assert_eq!(notes_edges_of(&snapshot).iter().map(|e| e["kind"].clone()).collect::<Vec<_>>(), [json!("events")], "the cable that the file has, and no link of a lane that hears every source");
+    tell(&mut browser, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
+    let quiet = peak_after(&mut browser, at, Duration::from_millis(600)).await;
+    assert!(quiet < 0.001, "the lane is wired to a device that is not there: {quiet}");
+}
+
 /// The names of the nodes of a snapshot message, in the order of its graph.
 fn node_names(snapshot: &Value) -> Vec<&str> {
     snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect()

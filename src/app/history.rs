@@ -16,7 +16,7 @@
 use std::time::{Duration, Instant};
 
 use crate::app::controller::Controller;
-use crate::app::graph::{NoteRange, Port};
+use crate::app::graph::{NoteRange, Port, SourceInfo};
 use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, ModulatorKind};
 use crate::app::journal::{Journal, lane_words};
 use crate::app::model::{EdgeId, Made, NodeId, NodePath, PluginSlot};
@@ -451,7 +451,15 @@ impl Controller {
             Intent::AddInstrument { plugin } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name} as an instrument"))),
             Intent::AddModulator { kind, .. } => added(format!("add {}", kind.label())),
             Intent::AddModEdge { .. } => added("draw a cable".to_string()),
-            Intent::AddCable { .. } => added("draw an audio cable".to_string()),
+            Intent::AddCable { from, to, .. } => {
+                let of_notes = from.port == Port::EventsOut || to.port == Port::EventsIn;
+                added(if of_notes { "draw a cable of notes" } else { "draw an audio cable" }.to_string())
+            }
+            // (A device whose name is not one is refused, and the plan is not looked at: no step is kept for it. The name is called as the controller calls it, without the spaces round it.)
+            Intent::AddSource { source } => match source {
+                SourceInfo::Keys => added("add Keys".to_string()),
+                SourceInfo::Device { name } => added(format!("add {}", name.trim())),
+            },
             // A modulator and its cable: the words of the TUI's `m` and `l` (a target that cannot be named is refused with the rest, and no step is kept for it).
             Intent::Modulate { to, kind, .. } => {
                 let name = match to.port {
@@ -489,7 +497,13 @@ impl Controller {
             }
             // (A cable that is not there is refused, and the plan is not looked at.)
             Intent::RemoveEdge { edge } => {
-                let label = if self.model.audio_cable(*edge).is_some() { "remove an audio cable" } else { "remove a cable" };
+                let label = if self.model.audio_cable(*edge).is_some() {
+                    "remove an audio cable"
+                } else if self.model.event_cable(*edge).is_some() {
+                    "remove a cable of notes"
+                } else {
+                    "remove a cable"
+                };
                 Plan::Removed { label: label.to_string(), intent: intent.clone(), at: now }
             }
             Intent::RemoveNode { node } => match self.model.locate(*node) {
@@ -513,8 +527,12 @@ impl Controller {
                 Some(NodePath::Group(group)) => {
                     Plan::Removed { label: format!("remove {}", self.model.groups[group].display_name(group)), intent: intent.clone(), at: now }
                 }
-                // (A node that is not there is refused, and the plan is not looked at; so is a source of notes, which cannot be taken out yet.)
-                Some(NodePath::Source(_)) | None => Plan::Nothing,
+                // A source of notes goes with the cables of notes that start at it, and comes back with them, at its place among the sources (a step of the words of the button that adds one).
+                Some(NodePath::Source(index)) => {
+                    Plan::Removed { label: format!("remove {}", self.model.sources[index].kind.display_name()), intent: intent.clone(), at: now }
+                }
+                // (A node that is not there is refused, and the plan is not looked at.)
+                None => Plan::Nothing,
             },
             // The instrument of a lane goes with the cables that drove it, and comes back with them: the very plugin if the audio thread handed it back, and the lane's note remap (a
             // step of the words of the button that puts one in, by the name the catalog has for the new one; an empty lane is filled, and emptied again).
@@ -574,7 +592,7 @@ impl Controller {
         match (added, made.nodes.as_slice(), made.edges.as_slice()) {
             (Intent::AddModEdge { .. }, [], [edge]) if self.model.locate_edge(*edge).is_some() => Some(Intent::RemoveEdge { edge: *edge }),
             (Intent::AddModEdge { .. }, ..) => None,
-            (Intent::AddCable { .. }, [], [edge]) if self.model.audio_cable(*edge).is_some() => Some(Intent::RemoveEdge { edge: *edge }),
+            (Intent::AddCable { .. }, [], [edge]) if self.model.audio_cable(*edge).is_some() || self.model.event_cable(*edge).is_some() => Some(Intent::RemoveEdge { edge: *edge }),
             (Intent::AddCable { .. }, ..) => None,
             // (The modulator is taken out with its cable, which is the one thing that was made besides it.)
             (Intent::Modulate { .. }, [node], [_]) if self.model.locate(*node).is_some() => Some(Intent::RemoveNode { node: *node }),
@@ -646,7 +664,7 @@ mod tests {
     use crate::app::controller::Controller;
     use crate::app::graph::{Endpoint, NoteRange, Port};
     use crate::app::intent::{Applied, Event, IntentError, ModulatorKind, PatternField};
-    use crate::app::model::{Made, ModSourceSlot, NodePath, SessionModel};
+    use crate::app::model::{Made, ModSourceSlot, NodePath, SessionModel, SourceKind, SourceNode};
     use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load, wire};
     use crate::session::Route;
     use crate::plugin::chain::{CableFrom, CableTo};
@@ -4358,7 +4376,7 @@ depth = 0.6
         let lane = node(&ctl, NodePath::Instrument(1));
         ctl.apply(Intent::RemoveNode { node: lane }).unwrap();
         engine.drain();
-        // The first device, which the lane had a cable from, is taken out while the lane is out (nothing takes a source out by an intent yet, so the model is changed by hand).
+        // The first device, which the lane had a cable from, is taken out while the lane is out (the history undoes what was done after it first, so only a change that is made behind its back can: the model is changed by hand).
         let gone = ctl.model.sources[1].node;
         ctl.model.sources.retain(|source| source.node != gone);
         ctl.undo().unwrap();
@@ -4379,12 +4397,190 @@ depth = 0.6
         let lane = node(&ctl, NodePath::Instrument(1));
         ctl.apply(Intent::RemoveNode { node: lane }).unwrap();
         engine.drain();
-        // (Another front-end has drawn a cable under the id of one that went: there is no intent for it yet, so the model is changed by hand.)
+        // (Another front-end has drawn a cable under the id of one that went: ids are not handed out twice, so only a change made behind the controller's back can, and the model is changed by hand.)
         let (keys, other) = (ctl.model.sources[0].node, ctl.model.instruments[1].node);
         ctl.model.insert_event_cable(crate::app::model::EventCable { id: EdgeId(1), from: keys, to: other });
         let error = ctl.undo().unwrap_err();
         assert!(matches!(&error, IntentError::Invalid(why) if why.contains("is there already")), "{error:?}");
         assert_eq!(ctl.model.instruments.len(), 2, "the lane is not put back");
+    }
+
+    // -- sources of notes and the cables from them, in the history (P4b of docs/patch-graph.md §11.6) --
+
+    fn notes(keys: NodeId, lane: NodeId) -> Intent {
+        Intent::AddCable { from: Endpoint { node: keys, port: Port::EventsOut }, to: Endpoint { node: lane, port: Port::EventsIn }, gain: None }
+    }
+
+    fn cable_ids(ctl: &Controller) -> Vec<u32> {
+        ctl.model.event_cables.iter().map(|cable| cable.id.0).collect()
+    }
+
+    #[test]
+    fn a_source_that_was_added_is_taken_out_by_undo_and_made_again_by_redo_under_its_node() {
+        let (engine, mut ctl, _clock) = controller_over(load(LANES).model);
+        let (before, saved) = (picture(&ctl), written(&ctl));
+        ctl.apply(Intent::AddSource { source: SourceInfo::Keys }).unwrap();
+        ctl.apply(Intent::AddSource { source: SourceInfo::Device { name: " Seaboard ".to_string() } }).unwrap();
+        let (keys, seaboard) = (ctl.model.sources[0].node, ctl.model.sources[1].node);
+        let (after, saved_after) = (picture(&ctl), written(&ctl));
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("add Seaboard"), None), "in the words of the name, without the spaces round it");
+        sent(&engine);
+
+        ctl.undo().unwrap();
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("add Keys"), Some("add Seaboard")));
+        ctl.undo().unwrap();
+        assert_eq!((picture(&ctl), written(&ctl)), (before, saved), "both are out, and the session is what it was");
+        assert_eq!((undo_label(&ctl), redo_label(&ctl).as_deref()), (None, Some("add Keys")));
+
+        ctl.redo().unwrap();
+        ctl.redo().unwrap();
+        assert_eq!((picture(&ctl), written(&ctl)), (after, saved_after));
+        assert_eq!((ctl.model.sources[0].node, ctl.model.sources[1].node), (keys, seaboard), "under the nodes they had");
+        assert_eq!(sent(&engine), Vec::<String>::new(), "the audio thread has nothing of them");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_of_notes_that_was_drawn_is_taken_out_by_undo_and_drawn_again_by_redo_under_its_id_and_the_lane_is_told_what_it_hears() {
+        let (engine, mut ctl, _clock) = controller_over(load(LANES).model);
+        ctl.apply(Intent::AddSource { source: SourceInfo::Keys }).unwrap();
+        let (before, saved) = (picture(&ctl), written(&ctl));
+        let keys = ctl.model.sources[0].node;
+        sent(&engine);
+        ctl.apply(notes(keys, lane(&ctl))).unwrap();
+        let id = ctl.model.event_cables[0].id;
+        let (after, saved_after) = (picture(&ctl), written(&ctl));
+        assert_eq!(undo_label(&ctl).as_deref(), Some("draw a cable of notes"));
+        assert_eq!(sent(&engine), ["SetLaneSources inst=0 sources=[0]"]);
+
+        ctl.undo().unwrap();
+        assert_eq!((picture(&ctl), written(&ctl)), (before, saved));
+        assert_eq!(sent(&engine), ["SetLaneSources inst=0 sources=all"], "the lane hears every source again");
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("add Keys"), Some("draw a cable of notes")));
+
+        ctl.redo().unwrap();
+        assert_eq!((picture(&ctl), written(&ctl)), (after, saved_after));
+        assert_eq!(ctl.model.event_cables[0].id, id, "under the id it had");
+        assert_eq!(sent(&engine), ["SetLaneSources inst=0 sources=[0]"]);
+    }
+
+    #[test]
+    fn a_cable_of_notes_that_was_taken_out_is_put_back_by_undo_where_it_was_and_taken_out_again_by_redo() {
+        let (engine, mut ctl, _clock) = controller_over(load(testutil::SOURCES).model);
+        let (before, saved) = (picture(&ctl), written(&ctl));
+        sent(&engine);
+        ctl.apply(Intent::RemoveEdge { edge: EdgeId(0) }).unwrap();
+        let (after, saved_after) = (picture(&ctl), written(&ctl));
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("remove a cable of notes"), None));
+        assert_eq!(sent(&engine), ["SetLaneSources inst=0 sources=all"], "the lane that had only that cable hears every source");
+
+        ctl.undo().unwrap();
+        assert_eq!((picture(&ctl), written(&ctl)), (before, saved));
+        assert_eq!(cable_ids(&ctl), [0, 1, 2]);
+        assert_eq!(sent(&engine), ["SetLaneSources inst=0 sources=[0]"]);
+
+        ctl.redo().unwrap();
+        assert_eq!((picture(&ctl), written(&ctl)), (after, saved_after));
+        assert_eq!(sent(&engine), ["SetLaneSources inst=0 sources=all"]);
+    }
+
+    #[test]
+    fn a_source_that_has_cables_is_taken_out_with_them_and_undo_puts_it_back_at_its_place_and_the_cables_under_their_ids() {
+        let (engine, mut ctl, _clock) = controller_over(load(testutil::SOURCES).model);
+        let (before, saved) = (picture(&ctl), written(&ctl));
+        let launchkey = node(&ctl, NodePath::Source(1));
+        sent(&engine);
+        ctl.apply(Intent::RemoveNode { node: launchkey }).unwrap();
+        let (after, saved_after) = (picture(&ctl), written(&ctl));
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("remove Launchkey Mini MK4 37"), None));
+        assert_eq!(cable_ids(&ctl), [0, 2], "its cable went with it");
+
+        ctl.undo().unwrap();
+        assert_eq!((picture(&ctl), written(&ctl)), (before, saved), "between the keys and the other device, with its cable back");
+        assert_eq!(ctl.model.locate(launchkey), Some(NodePath::Source(1)));
+        assert_eq!(cable_ids(&ctl), [0, 1, 2]);
+
+        ctl.redo().unwrap();
+        assert_eq!((picture(&ctl), written(&ctl)), (after, saved_after));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_lane_that_heard_only_a_source_hears_every_source_while_it_is_out_and_the_source_again_when_it_is_back() {
+        let (engine, mut ctl, _clock) = controller_over(load(testutil::SOURCES).model);
+        let keys = node(&ctl, NodePath::Source(0));
+        sent(&engine);
+        ctl.apply(Intent::RemoveNode { node: keys }).unwrap();
+        assert_eq!(sent(&engine), ["SetLaneSources inst=0 sources=all"]);
+        ctl.undo().unwrap();
+        assert_eq!(sent(&engine), ["SetLaneSources inst=0 sources=[0]"]);
+        ctl.redo().unwrap();
+        assert_eq!(sent(&engine), ["SetLaneSources inst=0 sources=all"]);
+    }
+
+    #[test]
+    fn a_source_that_the_session_has_already_refuses_the_undo_that_would_put_it_back_and_nothing_changes_and_the_step_is_dropped() {
+        // (The history undoes what was done after a step first, so only a change that is made behind its back can leave a source of the kind there: the model is changed by hand.)
+        for (place, there, why) in [
+            (0, SourceKind::Keys, "the keys are a source already"),
+            (2, SourceKind::Device("Seaboard".to_string()), "Seaboard is a source already"),
+        ] {
+            let (engine, mut ctl, _clock) = controller_over(load(testutil::SOURCES).model);
+            let gone = node(&ctl, NodePath::Source(place));
+            ctl.apply(Intent::RemoveNode { node: gone }).unwrap();
+            engine.drain();
+            let other = ctl.model.alloc_node();
+            ctl.model.sources.push(SourceNode { node: other, kind: there });
+            let (before, cables) = (picture(&ctl), cable_ids(&ctl));
+            assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(why.to_string()));
+            assert_eq!((picture(&ctl), cable_ids(&ctl)), (before, cables), "nothing is put back: not the source, nor the cables that went with it");
+            assert_eq!((undo_label(&ctl), redo_label(&ctl)), (None, None), "the step is gone");
+        }
+    }
+
+    #[test]
+    fn a_source_whose_node_is_there_already_refuses_the_undo_with_the_reason() {
+        let (engine, mut ctl, _clock) = controller_over(load(testutil::SOURCES).model);
+        let keys = node(&ctl, NodePath::Source(0));
+        ctl.apply(Intent::RemoveNode { node: keys }).unwrap();
+        engine.drain();
+        // (Something has put a source under that node without the history: of another kind, so that it is the node that is found there.)
+        ctl.model.sources.push(SourceNode { node: keys, kind: SourceKind::Device("Roland".to_string()) });
+        assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(format!("node {} is there already", keys.0)));
+        assert_eq!(cable_ids(&ctl), [1, 2], "the keys' cable is not put back");
+    }
+
+    #[test]
+    fn a_cable_of_notes_or_a_source_that_was_taken_out_by_the_controller_and_not_by_an_intent_leaves_nothing_to_put_back_and_forgets_the_history() {
+        let (_engine, mut ctl, _clock) = controller_over(load(testutil::SOURCES).model);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        assert!(undo_label(&ctl).is_some(), "there is something to forget");
+        assert!(ctl.remove_edge(EdgeId(0)));
+        assert!(ctl.journal.is_none(), "nothing is written down unless an intent is being carried out");
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "a cable of notes");
+        ctl.apply(Intent::SetLocked { locked: false }).unwrap();
+        assert!(undo_label(&ctl).is_some(), "there is something to forget");
+        assert!(ctl.remove_source(1));
+        assert!(ctl.journal.is_none());
+        assert_eq!(ctl.history_state(), HistoryState { undo: None, redo: None }, "a source");
+        assert_eq!(cable_ids(&ctl), [2], "with the cable that started at it");
+        // One that is not there changes nothing, the history included.
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        assert!(!ctl.remove_source(9));
+        assert!(!ctl.remove_edge(EdgeId(1)), "the cable went with its source");
+        assert_eq!(undo_label(&ctl).as_deref(), Some("lock the piano to its scale"));
+    }
+
+    #[test]
+    fn a_cable_of_notes_whose_lane_is_gone_when_it_is_put_back_is_left_out_and_the_rest_of_the_undo_is_done() {
+        let (engine, mut ctl, _clock) = controller_over(load(testutil::SOURCES).model);
+        ctl.apply(Intent::RemoveEdge { edge: EdgeId(0) }).unwrap();
+        engine.drain();
+        // (The lane that it ended at is taken out behind the controller's back: the model is changed by hand.)
+        ctl.model.remove_lane(0).unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(cable_ids(&ctl), [1, 2], "the cable is left out, and the cables of the lanes that are there are as they were");
+        assert_eq!(redo_label(&ctl).as_deref(), Some("remove a cable of notes"), "the undo is done all the same");
     }
 
     #[test]

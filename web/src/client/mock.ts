@@ -991,6 +991,9 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "removeNode") return removeNodeOutcome(snapshot, intent.node);
   if (intent.type === "moveEffect") return moveEffectOutcome(snapshot, intent.node, intent.index);
   if (intent.type === "addModEdge") return addModEdgeOutcome(snapshot, intent.modulator, intent.to, counters);
+  // (This engine has no sources of notes yet, nor cables from them: it says so, as it does for what else it cannot do. They come with the page's source nodes.)
+  if (intent.type === "addSource") return invalid("this engine has no sources of notes yet");
+  if (intent.type === "addCable" && (intent.from.port.type === "eventsOut" || intent.to.port.type === "eventsIn")) return invalid("this engine has no cables of notes yet");
   if (intent.type === "addCable") return addCableOutcome(snapshot, intent.from, intent.to, intent.gain, counters);
   if (intent.type === "setCableGain") return cableGainOutcome(snapshot, intent.edge, intent.gain);
   // (The master is a node of the graph and not of the model: the controller does not find it.)

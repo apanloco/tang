@@ -154,6 +154,27 @@ pub struct DeviceConfig {
     pub ui: Option<NodeUi>,
 }
 
+/// The most characters a device's name can have. The ports that ALSA names are "client:port client:port" and run long (`Arturia KeyLab mkII 61:Arturia KeyLab mkII 61 Arturia KeyLab mkII 61 MIDI 1 28:0`
+/// is 78), so that the 64 of a group's name would turn a real device away.
+pub const MAX_DEVICE_NAME: usize = 256;
+
+/// The name that a device is called by, from the text that was given (`[[device]]` in a file, `AddSource` as an intent: one rule, so that a name the intent takes is a name that the file it is saved in
+/// loads): the text without the spaces round it, which has to be something, at most `MAX_DEVICE_NAME` characters and with no control character in it. The case is the name's: two names that differ
+/// by it are two devices. What is wrong is said as the end of a sentence about the name (`is blank: …`).
+pub fn device_name(text: &str) -> Result<String, String> {
+    let name = text.trim();
+    if name.is_empty() {
+        return Err("is blank: a device is called by its name, or as much of it as tells it".to_string());
+    }
+    if name.chars().count() > MAX_DEVICE_NAME {
+        return Err(format!("is longer than {MAX_DEVICE_NAME} characters"));
+    }
+    if name.chars().any(char::is_control) {
+        return Err("has a control character in it".to_string());
+    }
+    Ok(name.to_string())
+}
+
 /// A submix group: members are the instruments whose `group` index points here.
 pub struct GroupConfig {
     pub name: Option<String>,
@@ -791,10 +812,7 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
     let master_ui = raw.ui.and_then(|mut table| table.remove("master")).and_then(node_ui_of);
     let mut devices: Vec<DeviceConfig> = Vec::new();
     for (at, device) in raw.devices.into_iter().enumerate() {
-        let name = device.name.trim().to_string();
-        if name.is_empty() {
-            anyhow::bail!("device[{at}].name is blank: a device is called by its name, or as much of it as tells it");
-        }
+        let name = device_name(&device.name).map_err(|why| anyhow::anyhow!("device[{at}].name {why}"))?;
         if let Some(first) = devices.iter().position(|other| other.name == name) {
             anyhow::bail!("device[{at}].name is \"{name}\", as device[{first}]'s is: a device has one node");
         }
@@ -3669,6 +3687,32 @@ to = "instrument[1]"
         // A device with no name is not a table that fits, and the case of a name is a name's: two devices that differ by it are two nodes.
         assert!(parse(&format!("[[device]]\nui = {{ x = 1, y = 2 }}\n{OSC}")).is_err());
         assert_eq!(parse(&format!("[[device]]\nname = \"a\"\n[[device]]\nname = \"A\"\n{OSC}")).unwrap().devices.len(), 2);
+    }
+
+    #[test]
+    fn a_device_name_is_the_text_without_the_spaces_round_it_and_is_refused_blank_too_long_or_with_a_control_character() {
+        assert_eq!(device_name("  Launchkey Mini \t"), Ok("Launchkey Mini".to_string()));
+        for blank in ["", "   ", "\t \n"] {
+            assert!(device_name(blank).unwrap_err().starts_with("is blank"), "{blank:?}");
+        }
+        // The longest is a name, counted in characters and not bytes; one more is not.
+        let longest = "é".repeat(MAX_DEVICE_NAME);
+        assert_eq!(device_name(&longest), Ok(longest.clone()));
+        assert_eq!(device_name(&format!("{longest}x")), Err(format!("is longer than {MAX_DEVICE_NAME} characters")));
+        // (A control character at the edge that is a space goes with the spaces; one that is not, and one inside the name, does not.)
+        assert_eq!(device_name("\nA"), Ok("A".to_string()));
+        for name in ["A\nB", "\u{7}A", "A\u{0}"] {
+            assert_eq!(device_name(name), Err("has a control character in it".to_string()), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_session_whose_device_name_is_too_long_or_has_a_control_character_is_refused_with_the_place() {
+        let long = "x".repeat(MAX_DEVICE_NAME + 1);
+        for (name, why) in [(long.as_str(), "device[1].name is longer than 256 characters"), ("A\\nB", "device[1].name has a control character in it")] {
+            let error = parse(&format!("[[device]]\nname = \"fine\"\n[[device]]\nname = \"{name}\"\n{OSC}")).err().unwrap_or_else(|| panic!("accepted {name:?}")).to_string();
+            assert!(error.contains(why), "{error}");
+        }
     }
 
     #[test]

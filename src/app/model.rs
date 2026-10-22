@@ -351,6 +351,48 @@ impl SessionModel {
         self.sources.iter().find(|source| source.node == node)
     }
 
+    /// Put a source of notes among the sources at `index` (at the end for one past it): the place it went to.
+    pub fn insert_source_at(&mut self, index: usize, source: SourceNode) -> usize {
+        let index = index.min(self.sources.len());
+        self.sources.insert(index, source);
+        index
+    }
+
+    /// The event cable `id`, if there is one.
+    pub fn event_cable(&self, id: EdgeId) -> Option<&EventCable> {
+        self.event_cables.binary_search_by_key(&id, |cable| cable.id).ok().map(|at| &self.event_cables[at])
+    }
+
+    /// The ends that a cable from the port `from` to the port `to` of the graph has, if it is a cable of notes: the node of the source that it starts at (`EventsOut`) and the node of the
+    /// lane that it ends at (`EventsIn`; a lane's instrument is the lane's own node). The reason, if they are not that: a node that is not there is not found, and a port or a node of
+    /// another kind is invalid.
+    pub fn event_cable_ends(&self, from: crate::app::graph::Endpoint, to: crate::app::graph::Endpoint) -> Result<(NodeId, NodeId), IntentError> {
+        use crate::app::graph::Port;
+        let invalid = |why: &str| IntentError::Invalid(why.to_string());
+        if from.port != Port::EventsOut {
+            return Err(invalid("a cable of notes starts at an output of events"));
+        }
+        if to.port != Port::EventsIn {
+            return Err(invalid("a cable of notes ends at an input of events"));
+        }
+        if from.node == NodeId::MASTER {
+            return Err(invalid("the mix has no output of events"));
+        }
+        if self.source(from.node).is_none() {
+            return Err(match self.locate(from.node) {
+                Some(_) => invalid("only a source of notes has an output of events"),
+                None => IntentError::NotFound(from.node),
+            });
+        }
+        if to.node == NodeId::MASTER {
+            return Err(invalid("the mix has no input of events"));
+        }
+        match self.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
+            NodePath::Instrument(_) => Ok((from.node, to.node)),
+            _ => Err(invalid("a cable of notes ends at a lane: it is the lanes that have an input of events")),
+        }
+    }
+
     /// The sources that lane `inst` hears (P4b of `docs/patch-graph.md` §11.6): every source if no event cable ends at it, and otherwise the sources of the nodes that the cables that end at it start at,
     /// as `resolve` says them (the keys are one source, a device is the sources of the open ports that its name stands for, and none while it is not plugged in: a lane that has a cable from it
     /// and no other does not hear the others in the meantime). A lane that is not there hears every source, as it will when it is.
@@ -3037,6 +3079,76 @@ type = "envelope"
         let refused = |from, to| model.cable_ends(from, to).unwrap_err();
         assert!(matches!(refused(audio(n.keys, Port::AudioOut), audio(NodeId::MASTER, Port::AudioIn)), IntentError::Invalid(why) if why.contains("no output of audio")));
         assert!(matches!(refused(audio(n.lane[0], Port::AudioOut), audio(n.devices[0], Port::AudioIn)), IntentError::Invalid(why) if why.contains("no input of audio")));
+    }
+
+    /// The keys, and one of every other kind of node that a cable of notes could be drawn from or to by mistake: a lane with an effect and an LFO, in a group that has a bus effect.
+    const NODES_A_CABLE_OF_NOTES_COULD_BE_DRAWN_TO: &str = r#"
+[keys]
+
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+type = "lfo"
+"#;
+
+    #[test]
+    fn a_cable_of_notes_goes_from_the_output_of_events_of_a_source_to_the_input_of_events_of_a_lane_and_nothing_else_is_one() {
+        use crate::app::graph::{Endpoint, Port};
+        let model = load(NODES_A_CABLE_OF_NOTES_COULD_BE_DRAWN_TO).model;
+        let (keys, lane, effect) = (model.sources[0].node, model.instruments[0].node, model.instruments[0].effects[0].node);
+        let (group, bus_effect, modulator) = (model.groups[0].node, model.groups[0].effects[0].node, model.instruments[0].modulators[0].node);
+        let (from, to) = (|node| Endpoint { node, port: Port::EventsOut }, |node| Endpoint { node, port: Port::EventsIn });
+        assert_eq!(model.event_cable_ends(from(keys), to(lane)), Ok((keys, lane)));
+
+        let invalid = |why: &str| Err(IntentError::Invalid(why.to_string()));
+        let (no_output, no_input) = ("a cable of notes starts at an output of events", "a cable of notes ends at an input of events");
+        let (only_sources, only_lanes) = ("only a source of notes has an output of events", "a cable of notes ends at a lane: it is the lanes that have an input of events");
+        // The ports are looked at first, whatever the nodes are, and then the start before the end.
+        let audio_out = Endpoint { node: keys, port: Port::AudioOut };
+        let audio_in = Endpoint { node: lane, port: Port::AudioIn };
+        assert_eq!(model.event_cable_ends(audio_out, to(lane)), invalid(no_output));
+        assert_eq!(model.event_cable_ends(to(keys), to(lane)), invalid(no_output), "an input of events is not an output");
+        assert_eq!(model.event_cable_ends(from(keys), audio_in), invalid(no_input));
+        assert_eq!(model.event_cable_ends(from(keys), from(lane)), invalid(no_input), "an output of events is not an input");
+        assert_eq!(model.event_cable_ends(audio_out, audio_in), invalid(no_output), "the start first");
+        assert_eq!(model.event_cable_ends(from(NodeId(900)), audio_in), invalid(no_input), "the ports before the nodes");
+        // The start: the mix has none, a node that is not there is not found, and only a source has one.
+        assert_eq!(model.event_cable_ends(from(NodeId::MASTER), to(lane)), invalid("the mix has no output of events"));
+        assert_eq!(model.event_cable_ends(from(NodeId(900)), to(lane)), Err(IntentError::NotFound(NodeId(900))));
+        for start in [lane, effect, group, bus_effect, modulator] {
+            assert_eq!(model.event_cable_ends(from(start), to(lane)), invalid(only_sources), "from {start:?}");
+        }
+        // The end: the mix has none, a node that is not there is not found, and only a lane has one.
+        assert_eq!(model.event_cable_ends(from(keys), to(NodeId::MASTER)), invalid("the mix has no input of events"));
+        assert_eq!(model.event_cable_ends(from(keys), to(NodeId(900))), Err(IntentError::NotFound(NodeId(900))));
+        for end in [keys, effect, group, bus_effect, modulator] {
+            assert_eq!(model.event_cable_ends(from(keys), to(end)), invalid(only_lanes), "to {end:?}");
+        }
+        assert_eq!(model.event_cable_ends(from(effect), to(effect)), invalid(only_sources), "the start is looked at before the end");
+    }
+
+    #[test]
+    fn a_source_goes_in_among_the_sources_at_its_place_and_at_the_end_for_a_place_past_it() {
+        let (mut model, n) = the_sources();
+        let device = |node: u32| SourceNode { node: NodeId(node), kind: SourceKind::Device(format!("D{node}")) };
+        assert_eq!(model.insert_source_at(1, device(100)), 1);
+        assert_eq!(model.insert_source_at(99, device(101)), 4, "a place past the end is the end");
+        assert_eq!(model.sources.iter().map(|source| source.node).collect::<Vec<_>>(), [n.keys, NodeId(100), n.devices[0], n.devices[1], NodeId(101)]);
+    }
+
+    #[test]
+    fn an_event_cable_is_found_by_its_id_among_the_event_cables_and_an_audio_cables_id_is_not_one_of_them() {
+        let (model, n) = the_sources();
+        assert_eq!(model.event_cable(EdgeId(1)), Some(&EventCable { id: EdgeId(1), from: n.devices[0], to: n.lane[1] }));
+        assert_eq!(model.event_cable(EdgeId(3)), None, "the audio cable's");
+        assert_eq!(model.event_cable(EdgeId(9)), None, "none at all");
     }
 
     // -- audio cables (P3c of docs/patch-graph.md §11.6) --

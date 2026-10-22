@@ -31,7 +31,7 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::app::apply::{Done, PluginAt};
 use crate::app::controller::{has_audio_output, outputs_fit_the_chain, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
-use crate::app::model::{mod_source_slot_to_graph, modulator_slot_commands, AudioCable, EventCable, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
+use crate::app::model::{mod_source_slot_to_graph, modulator_slot_commands, AudioCable, EventCable, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable, SourceKind, SourceNode};
 use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, NoteRemapper};
 use crate::plugin::{self, Plugin};
 use crate::session::RemapTarget;
@@ -66,6 +66,8 @@ pub(super) enum Inverse {
     /// A cable of notes, which goes back among them under the id it had, from the source and to the lane that it was between. (It is taken out before the lane that it ends at, or the source that it
     /// starts at, and so is put back after it.)
     EventCable(EventCable),
+    /// A source of notes, which goes back among the sources at `index`, under the node it had. (The cables of notes that started at it were taken out before it, each written down, and come back after it.)
+    Source { index: usize, source: SourceNode },
     /// Something went that cannot be put back one thing at a time (cables that drive each other's depths, `RemovedCable::still_driven`): what
     /// the operation did is not a step of the history, which is forgotten as it is for what cannot be undone.
     NoWayBack,
@@ -343,6 +345,18 @@ impl Controller {
                         return Err(IntentError::Invalid(format!("cable {} is there already", cable.id.0)));
                     }
                 }
+                Inverse::Source { source, .. } => {
+                    if self.model.locate(source.node).is_some() {
+                        return Err(IntentError::Invalid(format!("node {} is there already", source.node.0)));
+                    }
+                    // (The keys are one source, and a device has one node: a session that has another of the kind now is not given a second.)
+                    if self.model.sources.iter().any(|there| there.kind == source.kind) {
+                        return Err(IntentError::Invalid(match &source.kind {
+                            SourceKind::Keys => "the keys are a source already".to_string(),
+                            SourceKind::Device(name) => format!("{name} is a source already"),
+                        }));
+                    }
+                }
                 Inverse::Effect { slot, .. } => {
                     if self.model.locate(slot.node).is_some() {
                         return Err(IntentError::Invalid(format!("node {} is there already", slot.node.0)));
@@ -483,6 +497,9 @@ impl Controller {
                     return;
                 }
                 self.model.insert_event_cable(cable);
+            }
+            Inverse::Source { index, source } => {
+                self.model.insert_source_at(index, source);
             }
             Inverse::Modulator { at, index, modulator, bases } => {
                 debug_assert_eq!(modulator.targets.len(), bases.len(), "a base for each cable");

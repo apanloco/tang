@@ -268,6 +268,9 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
     case "undo":
     case "redo":
       return "nothing";
+    // (The page's own engine has no sources of notes yet: `outcomeOf` refuses the intent, and a refusal leaves no step.)
+    case "addSource":
+      return "nothing";
     // An audio cable that is drawn is an add (a refusal leaves no step: the step is made once it is carried out), and its level a step that a drag makes one of, put back to the level it found.
     case "addCable":
       return added("draw an audio cable");

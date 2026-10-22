@@ -89,6 +89,15 @@ pub enum SourceInfo {
     Device { name: String },
 }
 
+impl From<SourceInfo> for SourceKind {
+    fn from(info: SourceInfo) -> Self {
+        match info {
+            SourceInfo::Keys => SourceKind::Keys,
+            SourceInfo::Device { name } => SourceKind::Device(name),
+        }
+    }
+}
+
 impl From<&SourceKind> for SourceInfo {
     fn from(kind: &SourceKind) -> Self {
         match kind {

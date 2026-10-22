@@ -6,7 +6,7 @@
 //! nothing, and does not count as a revision.
 
 use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, key_command, macro_command, rate_command, steps_command, sync_command};
-use crate::app::graph::{Endpoint, NoteRange, Port};
+use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
 use crate::app::model::{
@@ -95,6 +95,7 @@ impl Controller {
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
             Intent::Modulate { to, kind, depth } => self.modulate_intent(to, kind, depth)?,
             Intent::AddCable { from, to, gain } => self.add_cable_intent(from, to, gain)?,
+            Intent::AddSource { source } => self.add_source_intent(source)?,
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
             Intent::MoveEffect { node, index } => self.move_effect_intent(node, index)?,
             Intent::AddEffect { parent, plugin } => self.add_effect_intent(parent, &plugin)?,
@@ -648,8 +649,23 @@ impl Controller {
     /// An audio cable from the output `from` to the input `to` of the graph (`Intent::AddCable`): the ports say what the ends are (`SessionModel::cable_ends`), and
     /// everything that can be refused is looked at before anything is made.
     fn add_cable_intent(&mut self, from: Endpoint, to: Endpoint, gain: Option<f32>) -> Result<Done, IntentError> {
+        // A cable that has a port of events at either end is a cable of notes, and is judged as one: from a source to a lane, and with no level.
+        if from.port == Port::EventsOut || to.port == Port::EventsIn {
+            let (source, lane) = self.model.event_cable_ends(from, to)?;
+            if gain.is_some() {
+                return Err(invalid("a cable of notes has no level: it carries notes, which are heard or not"));
+            }
+            self.add_event_cable(source, lane)?;
+            return Ok(Done::Restructured);
+        }
         let (start, end) = self.model.cable_ends(from, to)?;
         self.add_audio_cable(start, end, gain.unwrap_or(NEW_CABLE_GAIN))?;
+        Ok(Done::Restructured)
+    }
+
+    /// The keys or a device put in the session as a source of notes (`Intent::AddSource`).
+    fn add_source_intent(&mut self, source: SourceInfo) -> Result<Done, IntentError> {
+        self.add_source(source.into())?;
         Ok(Done::Restructured)
     }
 
@@ -833,7 +849,10 @@ impl Controller {
             NodePath::Group(group) => {
                 self.remove_group(group);
             }
-            NodePath::Source(_) => return Err(invalid("a source of notes cannot be taken out yet")),
+            // (A source goes with the cables of notes that start at it, which the controller does: the lanes that heard it hear what their other cables bring, or every source.)
+            NodePath::Source(index) => {
+                self.remove_source(index);
+            }
         }
         Ok(Done::Restructured)
     }

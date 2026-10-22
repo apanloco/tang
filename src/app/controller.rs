@@ -855,6 +855,11 @@ impl Controller {
             self.forget_the_history_unless_an_intent_asks();
             return self.take_out_audio_cable(edge);
         }
+        // Nor does a cable of notes: it goes, and the lane that it ended at hears what its other cables bring, or every source (`sync_lane_sources`).
+        if self.model.event_cable(edge).is_some() {
+            self.forget_the_history_unless_an_intent_asks();
+            return self.take_out_event_cable(edge);
+        }
         let Some(driven) = self.take_out(edge) else { return false };
         self.forget_the_history_unless_an_intent_asks();
         self.give_back(driven);
@@ -932,7 +937,7 @@ impl Controller {
     }
 
     /// Take out the cables of notes that start or end at any of `nodes`: what goes with the lane that they end at, or the source that they start at, before it goes.
-    fn take_out_event_cables_at(&mut self, nodes: &[NodeId]) {
+    pub(super) fn take_out_event_cables_at(&mut self, nodes: &[NodeId]) {
         for id in self.model.event_cables_at(nodes) {
             self.take_out_event_cable(id);
         }

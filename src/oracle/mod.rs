@@ -310,7 +310,42 @@ const LATENCY_EDITS: [(u64, Edit); 11] = [
     (44_000, Edit::Mix { lane: 0, effect: 1, value: 1.0 }),
 ];
 
-/// The scenarios that edit the cables, the ways out, the solos and the latency of a session while it plays.
+/// What is done to the sources of notes of `CABLED` while it plays (P4b), with `performance_with_a_late_key`: the keys are put in as a source, and a device that is never plugged in;
+/// the keys are wired to lane 0 (which heard them), the device to lane 1, which then hears nothing and lets go of the chord that it holds and of the wheel; that cable is taken out
+/// (lane 1 hears every source again, and the pedal that goes down at 20 000 is its); the device is wired to lane 0 too and the keys' cable of lane 0 is taken out, while the pedal
+/// holds the chord (lane 0 hears the device only, and lets go of what the pedal holds); the keys and then the device are wired to lane 1 (it hears the keys, as it did, and a key is hit
+/// at 30 000); the device is taken out with its cables, both lanes', and put back by Undo; lane 0 is taken out with its cable of notes and put back by Undo, and is told what it hears;
+/// its cable is taken out, so that it hears every source and plays the key that is hit at 40 500; and the keys are taken out at 41 000, while that key and the one hit at 30 000 are
+/// held, with the cable of lane 1 that starts at them (lane 1 is left with the device and lets go of both). Each is made (`Counts` says so: none is skipped or refused). (Lane 0 is on a
+/// bus whose reverb is all wet, so that it is heard through the reverb's tail, and a change of what it plays is heard after the reverb's first echoes.)
+const SOURCE_EDITS: [(u64, Edit); 15] = [
+    (6_000, Edit::AddSource { device: None }),
+    (8_000, Edit::AddSource { device: Some("Seaboard") }),
+    (12_000, Edit::NotesCable { source: 0, lane: 0 }),
+    (16_000, Edit::NotesCable { source: 1, lane: 1 }),
+    (18_000, Edit::RemoveNotesCable { cable: 1 }),
+    (26_000, Edit::NotesCable { source: 1, lane: 0 }),
+    (27_000, Edit::RemoveNotesCable { cable: 0 }),
+    (30_000, Edit::NotesCable { source: 0, lane: 1 }),
+    (31_000, Edit::NotesCable { source: 1, lane: 1 }),
+    (32_000, Edit::RemoveSource { source: 1 }),
+    (34_000, Edit::Undo),
+    (36_000, Edit::RemoveLane { lane: 0 }),
+    (38_000, Edit::Undo),
+    (40_000, Edit::RemoveNotesCable { cable: 0 }),
+    (41_000, Edit::RemoveSource { source: 0 }),
+];
+
+/// What the keys play into `edited:sources`: `performance`, and a key (E4) that is hit and let go of after the pedal is up, which a lane that has been given the keys again plays.
+fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
+    let mut events = performance();
+    events.push((40_500, [0x90, 64, 80]));
+    events.push((41_500, [0x80, 64, 0]));
+    events.sort_by_key(|(frame, _)| *frame);
+    events
+}
+
+/// The scenarios that edit the cables, the ways out, the solos, the latency and the sources of notes of a session while it plays.
 pub fn edited() -> Vec<Scenario> {
     let scenario = |name: &str, edits: &[(u64, Edit)]| Scenario {
         id: format!("edited:{name}@{BLOCK}"),
@@ -321,7 +356,8 @@ pub fn edited() -> Vec<Scenario> {
         script: performance(),
         edits: edits.to_vec(),
     };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS)]
+    let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -1023,6 +1059,38 @@ mod tests {
         assert!(differences.is_empty(), "{} of the {} renders that have nothing late differ:\n{}", differences.len(), scenarios.len(), differences.join("\n"));
     }
 
+    #[test]
+    fn the_sources_scenario_is_heard_as_the_session_is_until_a_lane_is_wired_to_a_device_that_is_not_there_and_is_quieter_after_it_has_let_go_of_its_chord() {
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:sources")).expect("a scenario of the corpus");
+        let with = render(&scenario, &engine);
+        let plain = render(&Scenario { edits: Vec::new(), ..scenario }, &engine);
+        // The sources, and the cable of the keys to the lane that heard them, change nothing that is heard. The cable of lane 1 to the device (frame 16 000, made before the block that has it)
+        // does, from the first frame of that block: the lane lets go of the chord that it holds.
+        let first = with.samples.iter().zip(&plain.samples).position(|(x, y)| x.to_bits() != y.to_bits()).expect("the cable is heard");
+        assert_eq!(first / 2, 16_000 - 16_000 % BLOCK, "the first frame that differs");
+        let window = |render: &Render, from: usize, to: usize| -> f32 {
+            let samples = &render.samples[2 * from..2 * to];
+            (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+        };
+        // (The lane that hears nothing is the one with the transposed saw and the delay: what is left is lane 0.)
+        let (heard, alone) = (window(&plain, 16_500, 21_500), window(&with, 16_500, 21_500));
+        assert!(alone < 0.75 * heard, "lane 1 hears nothing from 16 000 to 22 000: {alone} against {heard}");
+    }
+
+    #[test]
+    fn a_lane_that_is_left_with_a_device_that_is_not_there_lets_go_of_what_it_holds_when_a_cable_of_notes_is_taken_out_and_when_a_source_is() {
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:sources")).expect("a scenario of the corpus");
+        let with = render(&scenario, &engine);
+        let without = |frame: u64| render(&Scenario { edits: scenario.edits.iter().filter(|(at, _)| *at != frame).cloned().collect(), ..scenario.clone() }, &engine);
+        let first_difference = |other: &Render| with.samples.iter().zip(&other.samples).position(|(x, y)| x.to_bits() != y.to_bits()).map(|at| at / 2);
+        // At 27 000 the keys' cable of lane 0 is taken out, and it is left with the device, while the pedal holds its chord. Lane 0 is on a bus whose reverb is all wet, so that it is heard
+        // through the reverb's tail, which has no sound for the first few thousand frames.
+        let let_go = first_difference(&without(27_000)).expect("what lane 0 held is let go of");
+        assert!((27_000..32_000).contains(&let_go), "the first frame that differs is {let_go}");
+        // At 41 000 the keys are taken out, with the cable of lane 1 from them, and it is left with the device while two keys are held: it lets go of both, in the block that has the edit.
+        assert_eq!(first_difference(&without(41_000)), Some(41_000 - 41_000 % BLOCK), "the first frame that differs");
+    }
+
     // -- who hears whom (P4b: cables of notes in a session, through the real engine) --
 
     /// Two oscillators, one hard to the left and one hard to the right, so that the channel that sounds says which lane does; the keys go to the first, and a device (that is plugged in when
@@ -1109,6 +1177,30 @@ mod tests {
         let mut rig = settled(&two_lanes(false));
         let (left, right) = play(&mut rig, &[MidiEvent::keys(0, [0x90, 60, 100])], 8);
         assert!(left > 1.0 && right > 1.0, "both lanes hear the keys: {left} {right}");
+    }
+
+    #[test]
+    fn a_lane_that_is_wired_to_a_device_while_a_key_is_held_lets_go_of_the_key_and_hears_the_next_key_when_the_cable_is_taken_out() {
+        use crate::app::graph::{Endpoint, Port};
+        use crate::app::intent::Intent;
+        let mut rig = settled(&two_lanes(false));
+        let key = |note: u8| MidiEvent::keys(0, [0x90, note, 100]);
+        let (left, right) = play(&mut rig, &[key(60)], 8);
+        assert!(left > 1.0 && right > 1.0, "both lanes play the key: {left} {right}");
+        // The second lane is wired to the device, which is not plugged in: it hears nothing from now on, and lets go of the key that it was playing, which is still held.
+        let (device, second) = (rig.ctl.model.sources[0].node, rig.ctl.model.instruments[1].node);
+        rig.ctl.apply(Intent::AddCable { from: Endpoint { node: device, port: Port::EventsOut }, to: Endpoint { node: second, port: Port::EventsIn }, gain: None }).unwrap();
+        play(&mut rig, &[], 8);
+        let (left, right) = play(&mut rig, &[], 4);
+        assert!(left > 1.0, "the first lane plays the key still: {left}");
+        assert!(right < SILENT, "and the second has let go of it: {right}");
+        // The cable is taken out: the second lane hears every source again. The key that it let go of is not played again, and the next one is.
+        let cable = rig.ctl.model.event_cables[0].id;
+        rig.ctl.apply(Intent::RemoveEdge { edge: cable }).unwrap();
+        let (_, right) = play(&mut rig, &[], 4);
+        assert!(right < SILENT, "the key that it let go of is not played again: {right}");
+        let (_, right) = play(&mut rig, &[key(64)], 8);
+        assert!(right > 1.0, "a key that is hit now is played: {right}");
     }
 
     #[test]

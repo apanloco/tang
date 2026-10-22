@@ -8,7 +8,7 @@
 //! in the history and `Undo` and `Redo` are among them.
 
 use crate::app::controller::Controller;
-use crate::app::graph::{Endpoint, NoteRange, Port};
+use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
 use crate::app::intent::{Gain, Intent, ModulatorKind};
 use crate::app::model::{NodeId, ParamKind, PluginSlot};
 use crate::session::Route;
@@ -57,6 +57,14 @@ pub enum Edit {
     Route { lane: usize, route: Route },
     /// The way out of a group (a place among the groups) cut or given back.
     RouteGroup { group: usize, route: Route },
+    /// The keys (none) or a device, by its name, put in the session as a source of notes.
+    AddSource { device: Option<&'static str> },
+    /// A cable of notes from a place among the sources to a place among the lanes, both wrapped round the ones there are.
+    NotesCable { source: usize, lane: usize },
+    /// A cable of notes, by its place among the cables of notes that there are, taken out.
+    RemoveNotesCable { cable: usize },
+    /// A source, by its place among the sources that there are, taken out with the cables of notes that start at it.
+    RemoveSource { source: usize },
     Undo,
     Redo,
 }
@@ -228,6 +236,32 @@ impl Edit {
             }
             Edit::Route { lane: l, route } => Intent::SetRoute { node: lane(*l)?.node, route: *route },
             Edit::RouteGroup { group: g, route } => Intent::SetRoute { node: group(*g)?.node, route: *route },
+            Edit::AddSource { device } => Intent::AddSource { source: device.map_or(SourceInfo::Keys, |name| SourceInfo::Device { name: name.to_string() }) },
+            Edit::NotesCable { source, lane: l } => {
+                let sources = &model.sources;
+                if sources.is_empty() {
+                    return None;
+                }
+                Intent::AddCable {
+                    from: Endpoint { node: sources[source % sources.len()].node, port: Port::EventsOut },
+                    to: Endpoint { node: lane(*l)?.node, port: Port::EventsIn },
+                    gain: None,
+                }
+            }
+            Edit::RemoveNotesCable { cable } => {
+                let cables = &model.event_cables;
+                if cables.is_empty() {
+                    return None;
+                }
+                Intent::RemoveEdge { edge: cables[cable % cables.len()].id }
+            }
+            Edit::RemoveSource { source } => {
+                let sources = &model.sources;
+                if sources.is_empty() {
+                    return None;
+                }
+                Intent::RemoveNode { node: sources[source % sources.len()].node }
+            }
             Edit::Undo => Intent::Undo,
             Edit::Redo => Intent::Redo,
         })
@@ -399,6 +433,42 @@ plugin = "builtin:osc"
         assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 1.0 }.make(&mut ctl), Outcome::Applied);
         assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 1.0 }.make(&mut ctl), Outcome::Refused);
         assert_eq!(ctl.model.cables.len(), 1);
+    }
+
+    #[test]
+    fn a_source_is_the_keys_or_a_device_and_a_cable_of_notes_goes_from_a_place_among_the_sources_to_a_place_among_the_lanes_both_wrapped_round() {
+        let mut ctl = controller(TWO_LANES);
+        let (lane0, lane1) = (ctl.model.instruments[0].node, ctl.model.instruments[1].node);
+        assert_eq!(Edit::AddSource { device: None }.resolve(&ctl), Some(Intent::AddSource { source: SourceInfo::Keys }));
+        assert_eq!(Edit::AddSource { device: Some("Seaboard") }.resolve(&ctl), Some(Intent::AddSource { source: SourceInfo::Device { name: "Seaboard".to_string() } }));
+        // There is nothing to aim at while there is no source or no cable of notes.
+        for edit in [Edit::NotesCable { source: 0, lane: 0 }, Edit::RemoveNotesCable { cable: 0 }, Edit::RemoveSource { source: 0 }] {
+            assert_eq!(edit.make(&mut ctl), Outcome::Skipped, "{edit:?}");
+        }
+        assert_eq!(Edit::AddSource { device: None }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddSource { device: Some("Seaboard") }.make(&mut ctl), Outcome::Applied);
+        let (keys, seaboard) = (ctl.model.sources[0].node, ctl.model.sources[1].node);
+        let out = |node| Endpoint { node, port: Port::EventsOut };
+        let into = |node| Endpoint { node, port: Port::EventsIn };
+        let draw = |source: usize, lane: usize| Edit::NotesCable { source, lane }.resolve(&ctl);
+        assert_eq!(draw(0, 0), Some(Intent::AddCable { from: out(keys), to: into(lane0), gain: None }));
+        assert_eq!(draw(1, 1), Some(Intent::AddCable { from: out(seaboard), to: into(lane1), gain: None }));
+        assert_eq!(draw(3, 4), Some(Intent::AddCable { from: out(seaboard), to: into(lane0), gain: None }), "3 is 1 of 2 sources, and 4 is 0 of 2 lanes");
+        assert_eq!(draw(2, 0), Some(Intent::AddCable { from: out(keys), to: into(lane0), gain: None }), "2 is 0 of 2 sources: a place wraps round, and is not held to the last");
+        // The same cable twice is refused, as a front-end's request would be.
+        assert_eq!(Edit::NotesCable { source: 0, lane: 0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::NotesCable { source: 0, lane: 0 }.make(&mut ctl), Outcome::Refused);
+        assert_eq!(Edit::NotesCable { source: 1, lane: 1 }.make(&mut ctl), Outcome::Applied);
+        let (first, second) = (ctl.model.event_cables[0].id, ctl.model.event_cables[1].id);
+        assert_eq!(Edit::RemoveNotesCable { cable: 1 }.resolve(&ctl), Some(Intent::RemoveEdge { edge: second }));
+        assert_eq!(Edit::RemoveNotesCable { cable: 2 }.resolve(&ctl), Some(Intent::RemoveEdge { edge: first }), "2 is 0 of 2");
+        assert_eq!(Edit::RemoveSource { source: 3 }.resolve(&ctl), Some(Intent::RemoveNode { node: seaboard }), "3 is 1 of 2");
+        assert_eq!(Edit::RemoveSource { source: 2 }.resolve(&ctl), Some(Intent::RemoveNode { node: keys }), "2 is 0 of 2: a place wraps round, and is not held to the last");
+        // A source is taken out with its cable.
+        assert_eq!(Edit::RemoveSource { source: 1 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.event_cables.iter().map(|cable| cable.id).collect::<Vec<_>>(), [first]);
+        assert_eq!(Edit::RemoveNotesCable { cable: 0 }.make(&mut ctl), Outcome::Applied);
+        assert!(ctl.model.event_cables.is_empty());
     }
 
     #[test]

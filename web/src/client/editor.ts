@@ -44,6 +44,7 @@ const DOING: Record<Intent["type"], string> = {
   addModEdge: "draw a cable",
   modulate: "modulate a parameter",
   addCable: "draw an audio cable",
+  addSource: "add a source of notes",
   setCableGain: "change the level of an audio cable",
   addEffect: "add an effect",
   addInstrument: "add an instrument",

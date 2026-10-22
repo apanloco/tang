@@ -16,7 +16,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::graph::{Endpoint, NoteRange, PatternInfo};
+use crate::app::graph::{Endpoint, NoteRange, PatternInfo, SourceInfo};
 use crate::app::model::{EdgeId, MAX_FADE, ModSourceSlot, NodeId, SYNC_DIVISIONS};
 use crate::plugin::chain::{MAX_STEPS, MidiBindSource};
 use crate::session::{NodeUi, Route};
@@ -49,7 +49,8 @@ pub enum Intent {
     /// Take a cable out. A modulation cable: the modulator stays, no longer driving what the cable led
     /// to; the cables that drive the depth of this one go with it (and theirs, in turn), since
     /// what they drove is gone. An audio cable: the nodes stay, and the audio no longer goes from one to the other
-    /// by it (it goes down to nothing over one buffer).
+    /// by it (it goes down to nothing over one buffer). A cable of notes: the lane no longer hears the source by it, and hears
+    /// every source if it was the last cable of notes that ended at the lane.
     RemoveEdge { edge: EdgeId },
     /// Add a modulator to a lane or to a group, after the ones it has: `parent` is the node of the
     /// lane (its instrument's, which an empty lane has too) or of the group; any other node is
@@ -84,7 +85,18 @@ pub enum Intent {
     /// and comes in over one buffer. The cable has an id from the series that the modulation cables have. Refused, with nothing changed (nothing is made, and no id is used), for a port
     /// that is not an output of audio (`from`) or an input of audio (`to`), a node that is not there or has no such port (a modulator, the master as a start, a lane as an end), a
     /// cable between the two ports that is there already, a cable that would make the audio go round, and a level that is not a number.
+    ///
+    /// **A cable of notes** (P4b): `from` is the `eventsOut` port of a source of notes (the keys, or a device: `AddSource`) and `to` the `eventsIn` port of a lane (its instrument's
+    /// node, which an empty lane has too). A lane that no cable of notes ends at hears every source; one that has some hears the sources they start at and no others. The cable has
+    /// an id from the same series, and no level: a `gain` is refused. Refused, with nothing changed (nothing is made, and no id is used), for a start that is no source of
+    /// notes, an end that is no lane, one of the two ports that is not the one it should be, a node that is not there, a `gain`, and a cable between the two that is there already.
     AddCable { from: Endpoint, to: Endpoint, gain: Option<f32> },
+    /// Put the keys, or a MIDI device, in the session as a source of notes: a node with an output of events that cables of notes start at (P4b; `AddCable`). `source` says which:
+    /// the keys (the computer's keys, the page's piano, and every browser's) or a device, by its name or as much of it as tells it (`Launchkey` is every port of a Launchkey Mini; it is
+    /// held to the text without the spaces round it). The node goes at the end of the sources, with an id of its own. Refused, with nothing changed (nothing is made, and no id is
+    /// used), for the keys when they are a source already, for a device whose name is blank, is longer than `MAX_NAME` characters or has a control character in it, and for a device of
+    /// a name that is a source already.
+    AddSource { source: SourceInfo },
     /// Set the level of an audio cable, 0 to 2 (`CABLE_GAIN_MAX`): the controller clamps it. The cable goes to the new level over one buffer. Refused, with nothing changed, for a
     /// level that is not a number, a cable that is not there and one that is a modulation cable (which has a depth: `SetEdgeDepth`).
     SetCableGain { edge: EdgeId, gain: f32 },
@@ -193,13 +205,14 @@ pub enum Intent {
     /// The engine has no use for it, but it is saved with the session and told to every client. Refused, with nothing changed, for a
     /// node that is not a group and a name that is not one.
     RenameGroup { node: NodeId, name: String },
-    /// Take a node out of the session, for good: there is no undo. A modulator can be, with its own cables and the
+    /// Take a node out of the session (a step of the history, which undo puts back whole). A modulator can be, with its own cables and the
     /// cables of the others that drove its settings (and what drove the depth of any of those), and so can an
     /// effect or a bus effect, with the cables that drive its parameters (and what drove their depths): what they
     /// were driving goes with it, and the audio path closes up. A lane goes with its instrument, its effects and its
-    /// modulators, and the cables of its group to it; the last lane of a session is refused (a session keeps one).
+    /// modulators, the cables of its group to it and the cables of notes that end at it; the last lane of a session is refused (a session keeps one).
     /// A group goes with its bus effects, its modulators and every cable of it: its members stay, in no group, and
-    /// what its cables were driving in them has the value that was set. Any other node (the master) is refused.
+    /// what its cables were driving in them has the value that was set. A source of notes goes with the cables of notes that start at it: the lanes that heard it
+    /// hear what their other cables bring, and every source if it was their last. Any other node (the master) is refused.
     RemoveNode { node: NodeId },
     /// Move an effect to another place in its chain: `node` is the node of an effect in a lane's chain or on a group's bus, and `index`
     /// the place it is to have among the effects of that chain, from 0 (the first, the nearest the instrument or the group) to one less
@@ -744,6 +757,11 @@ mod tests {
                 json!({"type": "addModulator", "parent": 2, "kind": "midiLearn"}),
             ),
             (Intent::RemoveNode { node: NodeId(8) }, json!({"type": "removeNode", "node": 8})),
+            (Intent::AddSource { source: SourceInfo::Keys }, json!({"type": "addSource", "source": {"type": "keys"}})),
+            (
+                Intent::AddSource { source: SourceInfo::Device { name: "Seaboard".to_string() } },
+                json!({"type": "addSource", "source": {"type": "device", "name": "Seaboard"}}),
+            ),
             (Intent::MoveEffect { node: NodeId(7), index: 0 }, json!({"type": "moveEffect", "node": 7, "index": 0})),
             (
                 Intent::AddEffect { parent: NodeId(2), plugin: "builtin:filter".to_string() },

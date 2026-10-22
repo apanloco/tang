@@ -5,11 +5,54 @@
 //! of the open MIDI ports that its name stands for (`DeviceWatcher::sources_of`), so that a device that is not plugged in is not heard, and does not leave the lane to the others.
 
 use crate::app::controller::Controller;
-use crate::app::model::{NodeId, SourceKind};
+use crate::app::intent::IntentError;
+use crate::app::journal::Inverse;
+use crate::app::model::{EdgeId, EventCable, NodeId, SourceKind, SourceNode};
 use crate::plugin::chain::GraphCommand;
+use crate::session;
 use crate::source::{Source, SourceSet};
 
 impl Controller {
+    /// Put a source of notes at the end of the session's sources, under a node of its own (`Intent::AddSource`). It changes nothing that is heard: a lane that no cable of notes ends at hears every source.
+    /// Refused, with nothing changed and no id used, for the keys when they are a source already, for a device whose name is not one (`session::device_name`) and for a device of a name that is a source already.
+    pub(super) fn add_source(&mut self, kind: SourceKind) -> Result<NodeId, IntentError> {
+        let kind = match kind {
+            SourceKind::Keys => SourceKind::Keys,
+            SourceKind::Device(name) => SourceKind::Device(session::device_name(&name).map_err(|why| IntentError::Invalid(format!("a device's name {why}")))?),
+        };
+        if self.model.sources.iter().any(|source| source.kind == kind) {
+            return Err(IntentError::Invalid(match kind {
+                SourceKind::Keys => "the keys are a source already".to_string(),
+                SourceKind::Device(name) => format!("{name} is a source already"),
+            }));
+        }
+        let node = self.model.alloc_node();
+        self.model.sources.push(SourceNode { node, kind });
+        Ok(node)
+    }
+
+    /// Draw a cable of notes from the source `from` to the lane `to` (both by node), under an id of the series that the other cables have (`Intent::AddCable`): the lane then hears the sources that
+    /// its cables start at and no others. Refused, with nothing changed and no id used, for a cable between the two that is there already. (The ends are `SessionModel::event_cable_ends`'s to say.)
+    pub(super) fn add_event_cable(&mut self, from: NodeId, to: NodeId) -> Result<EdgeId, IntentError> {
+        if self.model.event_cables.iter().any(|cable| (cable.from, cable.to) == (from, to)) {
+            return Err(IntentError::Invalid("there is a cable between those two already".to_string()));
+        }
+        let id = self.model.alloc_edge();
+        self.model.insert_event_cable(EventCable { id, from, to });
+        Ok(id)
+    }
+
+    /// Take the source of notes at `index` out of the session, after the cables of notes that start at it (each written down, as a lane's are): the lanes that heard it hear what their other cables bring,
+    /// or every source if they have none (`sync_lane_sources`, which `conclude` calls). False, changing nothing, if there is no such source.
+    pub(super) fn remove_source(&mut self, index: usize) -> bool {
+        let Some(node) = self.model.sources.get(index).map(|source| source.node) else { return false };
+        self.forget_the_history_unless_an_intent_asks();
+        self.take_out_event_cables_at(&[node]);
+        let source = self.model.sources.remove(index);
+        self.took_out(Inverse::Source { index, source });
+        true
+    }
+
     /// What lane `inst` hears, as the model's cables and the devices that are open say (every source if no cable of notes ends at the lane).
     pub(super) fn lane_sources(&self, inst: usize) -> SourceSet {
         self.model.lane_sources(inst, |kind| match kind {
@@ -44,7 +87,10 @@ mod tests {
 
     use super::*;
     use crate::app::controller::DeviceWatcher;
-    use crate::app::intent::Intent;
+    use crate::app::graph::{Edge, EdgeKind, Endpoint, Port, SourceInfo};
+    use crate::app::intent::{Applied, Event, Intent};
+    use crate::app::model::NodePath;
+    use crate::session::NodeUi;
     use crate::app::testutil::{self, GROUPS, SENDS, SOURCES, StubEngine, load};
     use crate::midi::DeviceChanges;
 
@@ -175,5 +221,224 @@ mod tests {
         lane_sources_told(&engine);
         ctl.apply(Intent::AddInstrument { plugin: "builtin:osc".to_string() }).unwrap();
         assert_eq!(lane_sources_told(&engine), ["SetLaneSources inst=3 sources=all"], "(it hears every source, as the audio thread has it: a lane that came back by undo would not)");
+    }
+
+    // -- the intents that put sources and cables of notes in the session --
+
+    const TWO_LANES: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n\n[[instrument]]\nplugin = \"builtin:osc\"\n";
+
+    fn device(name: &str) -> SourceInfo {
+        SourceInfo::Device { name: name.to_string() }
+    }
+
+    fn out(node: NodeId) -> Endpoint {
+        Endpoint { node, port: Port::EventsOut }
+    }
+
+    fn into(node: NodeId) -> Endpoint {
+        Endpoint { node, port: Port::EventsIn }
+    }
+
+    /// Draw a cable of notes from the source `from` to the lane `to`, as a client asks.
+    fn draw(ctl: &mut Controller, from: NodeId, to: NodeId) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::AddCable { from: out(from), to: into(to), gain: None })
+    }
+
+    #[test]
+    fn the_keys_are_added_as_a_node_at_the_end_of_the_sources_and_the_audio_thread_is_told_nothing() {
+        let (engine, mut ctl) = controller(TWO_LANES);
+        let applied = ctl.apply(Intent::AddSource { source: SourceInfo::Keys }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        let keys = ctl.model.sources[0].node;
+        assert_eq!(ctl.model.sources, [SourceNode { node: keys, kind: SourceKind::Keys }]);
+        assert_eq!(ctl.model.locate(keys), Some(NodePath::Source(0)));
+        assert!(ctl.dirty, "the node is in the file when the session is saved");
+        assert_eq!(lane_sources_told(&engine), Vec::<String>::new(), "no lane has a cable of notes, so every lane hears every source, as before");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_device_is_added_after_the_sources_there_are_by_its_name_without_the_spaces_round_it_and_the_case_is_the_names() {
+        let (_engine, mut ctl) = controller(SOURCES);
+        ctl.apply(Intent::AddSource { source: device("  Roland A-49 \t") }).unwrap();
+        ctl.apply(Intent::AddSource { source: device("seaboard") }).unwrap();
+        let kinds: Vec<SourceKind> = ctl.model.sources.iter().map(|source| source.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            [
+                SourceKind::Keys,
+                SourceKind::Device("Launchkey Mini MK4 37".to_string()),
+                SourceKind::Device("Seaboard".to_string()),
+                SourceKind::Device("Roland A-49".to_string()),
+                SourceKind::Device("seaboard".to_string()),
+            ]
+        );
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_source_that_is_there_already_or_has_no_name_is_refused_with_the_reason_and_changes_nothing_and_uses_no_id() {
+        let (engine, mut ctl) = controller(&format!("[keys]\n\n[[device]]\nname = \"Seaboard\"\n\n{TWO_LANES}"));
+        let long = "x".repeat(session::MAX_DEVICE_NAME + 1);
+        let blank = "a device's name is blank: a device is called by its name, or as much of it as tells it";
+        for (source, why) in [
+            (SourceInfo::Keys, "the keys are a source already"),
+            (device("Seaboard"), "Seaboard is a source already"),
+            (device(" Seaboard\t"), "Seaboard is a source already"),
+            (device(""), blank),
+            (device(" \t "), blank),
+            (device(&long), "a device's name is longer than 256 characters"),
+            (device("A\nB"), "a device's name has a control character in it"),
+        ] {
+            assert_eq!(ctl.apply(Intent::AddSource { source: source.clone() }), Err(IntentError::Invalid(why.to_string())), "{source:?}");
+        }
+        assert_eq!((ctl.rev, ctl.dirty, ctl.model.sources.len()), (0, false, 2));
+        assert_eq!(lane_sources_told(&engine), Vec::<String>::new());
+        // No id was used up by any of them: the next source has the next id after the ones there are.
+        let top = ctl.model.nodes().map(|(node, _)| node.0).max().unwrap();
+        ctl.apply(Intent::AddSource { source: device("Roland") }).unwrap();
+        assert_eq!(ctl.model.sources[2].node, NodeId(top + 1));
+    }
+
+    #[test]
+    fn a_cable_of_notes_makes_the_lane_hear_the_source_it_starts_at_and_no_other_and_the_other_lanes_go_on_hearing_every_source() {
+        let (engine, mut ctl) = controller(TWO_LANES);
+        ctl.apply(Intent::AddSource { source: SourceInfo::Keys }).unwrap();
+        let (keys, first) = (ctl.model.sources[0].node, ctl.model.instruments[0].node);
+        assert_eq!(lane_sources_told(&engine), Vec::<String>::new());
+        let applied = draw(&mut ctl, keys, first).unwrap();
+        assert_eq!(applied, Applied::restructured(2));
+        assert_eq!(ctl.model.event_cables, [EventCable { id: EdgeId(0), from: keys, to: first }]);
+        assert_eq!(lane_sources_told(&engine), ["SetLaneSources inst=0 sources=[0]"], "the first lane only: the second has no cable");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_second_cable_of_notes_adds_the_open_ports_of_the_device_it_starts_at_to_what_the_lane_hears() {
+        let (engine, mut ctl) = controller(TWO_LANES);
+        ctl.apply(Intent::AddSource { source: SourceInfo::Keys }).unwrap();
+        ctl.apply(Intent::AddSource { source: device("Launchkey") }).unwrap();
+        let ports = Ports::default();
+        ports.plug_in("Launchkey Mini MK4 37 MIDI Out", Source::device(0));
+        ports.plug_in("Launchkey Mini MK4 37 DAW Out", Source::device(1));
+        ports.looks.borrow_mut().clear();
+        ctl.watch_devices(Box::new(ports.clone()));
+        let (keys, launchkey, lane) = (ctl.model.sources[0].node, ctl.model.sources[1].node, ctl.model.instruments[0].node);
+        lane_sources_told(&engine);
+        draw(&mut ctl, keys, lane).unwrap();
+        assert_eq!(lane_sources_told(&engine), ["SetLaneSources inst=0 sources=[0]"]);
+        draw(&mut ctl, launchkey, lane).unwrap();
+        assert_eq!(lane_sources_told(&engine), ["SetLaneSources inst=0 sources=[0, 1, 2]"], "the keys, and both ports that the name stands for");
+    }
+
+    #[test]
+    fn a_cable_of_notes_that_cannot_be_drawn_is_refused_with_the_reason_and_changes_nothing_and_uses_no_id() {
+        let (engine, mut ctl) = controller(&format!("[keys]\n\n{TWO_LANES}"));
+        let (keys, lane) = (ctl.model.sources[0].node, ctl.model.instruments[0].node);
+        let audio_in = Endpoint { node: lane, port: Port::AudioIn };
+        let audio_out = Endpoint { node: keys, port: Port::AudioOut };
+        for (from, to, gain, why) in [
+            (out(keys), into(lane), Some(1.0), "a cable of notes has no level"),
+            (out(keys), into(lane), Some(f32::NAN), "a cable of notes has no level"),
+            (out(keys), audio_in, None, "ends at an input of events"),
+            (audio_out, into(lane), None, "starts at an output of events"),
+            (out(lane), into(lane), None, "only a source of notes has an output of events"),
+            (out(lane), into(lane), Some(1.0), "only a source of notes has an output of events"),
+            (out(keys), into(keys), None, "ends at a lane"),
+            (out(NodeId::MASTER), into(lane), None, "the mix has no output of events"),
+        ] {
+            let error = ctl.apply(Intent::AddCable { from, to, gain }).unwrap_err();
+            assert!(error.to_string().contains(why), "{from:?} to {to:?}: {error}");
+        }
+        assert_eq!(ctl.apply(Intent::AddCable { from: out(NodeId(900)), to: into(lane), gain: None }), Err(IntentError::NotFound(NodeId(900))));
+        assert_eq!(ctl.apply(Intent::AddCable { from: out(keys), to: into(NodeId(901)), gain: None }), Err(IntentError::NotFound(NodeId(901))));
+        assert_eq!(lane_sources_told(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty, ctl.model.event_cables.len()), (0, false, 0));
+        // No id was used up by any of them: the first cable that is drawn has the first id.
+        draw(&mut ctl, keys, lane).unwrap();
+        assert_eq!(ctl.model.event_cables[0].id, EdgeId(0));
+    }
+
+    #[test]
+    fn a_cable_of_notes_is_not_drawn_again_between_the_same_two_nodes_and_another_start_or_end_is_another_cable() {
+        let (engine, mut ctl) = controller(&format!("[keys]\n\n[[device]]\nname = \"Seaboard\"\n\n{TWO_LANES}"));
+        let (keys, seaboard) = (ctl.model.sources[0].node, ctl.model.sources[1].node);
+        let (first, second) = (ctl.model.instruments[0].node, ctl.model.instruments[1].node);
+        draw(&mut ctl, keys, first).unwrap();
+        lane_sources_told(&engine);
+        assert_eq!(draw(&mut ctl, keys, first), Err(IntentError::Invalid("there is a cable between those two already".to_string())));
+        assert_eq!(lane_sources_told(&engine), Vec::<String>::new());
+        assert_eq!(ctl.model.event_cables.len(), 1);
+        draw(&mut ctl, keys, second).unwrap();
+        draw(&mut ctl, seaboard, first).unwrap();
+        assert_eq!(ctl.model.event_cables.iter().map(|cable| cable.id.0).collect::<Vec<_>>(), [0, 1, 2], "the refusal used no id up");
+    }
+
+    #[test]
+    fn taking_a_cable_of_notes_out_leaves_the_lane_the_sources_of_its_other_cables_and_every_source_when_it_was_the_last() {
+        let (engine, mut ctl) = controller(SOURCES);
+        lane_sources_told(&engine);
+        // Lane 0 has one cable, from the keys. Lane 1 has two, from the two devices, neither of them plugged in.
+        let applied = ctl.apply(Intent::RemoveEdge { edge: EdgeId(0) }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert_eq!(lane_sources_told(&engine), ["SetLaneSources inst=0 sources=all"]);
+        ctl.apply(Intent::RemoveEdge { edge: EdgeId(1) }).unwrap();
+        assert_eq!(lane_sources_told(&engine), Vec::<String>::new(), "it has the other device's cable, which is not plugged in either: it hears nothing, as it did");
+        ctl.apply(Intent::RemoveEdge { edge: EdgeId(2) }).unwrap();
+        assert_eq!(lane_sources_told(&engine), ["SetLaneSources inst=1 sources=all"]);
+        assert!(ctl.model.event_cables.is_empty());
+        assert_eq!((ctl.model.sources.len(), ctl.model.instruments.len()), (3, 3), "the nodes it was between are as they were");
+        assert_eq!(ctl.apply(Intent::RemoveEdge { edge: EdgeId(2) }), Err(IntentError::EdgeNotFound(EdgeId(2))), "it is gone");
+    }
+
+    #[test]
+    fn a_source_that_is_taken_out_takes_the_cables_that_start_at_it_and_a_lane_that_heard_only_it_hears_every_source() {
+        let (engine, mut ctl) = controller(SOURCES);
+        lane_sources_told(&engine);
+        let (keys, seaboard) = (ctl.model.sources[0].node, ctl.model.sources[2].node);
+        let applied = ctl.apply(Intent::RemoveNode { node: keys }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert_eq!(ctl.model.locate(keys), None);
+        assert_eq!(ctl.model.event_cables.iter().map(|cable| cable.id.0).collect::<Vec<_>>(), [1, 2], "the keys' cable went with it");
+        assert_eq!(lane_sources_told(&engine), ["SetLaneSources inst=0 sources=all"]);
+        // The second device: lane 1 has the first device's cable still, which is not plugged in, so it hears nothing, as it did.
+        ctl.apply(Intent::RemoveNode { node: seaboard }).unwrap();
+        assert_eq!(ctl.model.event_cables.iter().map(|cable| cable.id.0).collect::<Vec<_>>(), [1]);
+        assert_eq!(lane_sources_told(&engine), Vec::<String>::new());
+        let launchkey = ctl.model.sources[0].node;
+        ctl.apply(Intent::RemoveNode { node: launchkey }).unwrap();
+        assert!(ctl.model.sources.is_empty() && ctl.model.event_cables.is_empty());
+        assert_eq!(lane_sources_told(&engine), ["SetLaneSources inst=1 sources=all"]);
+        assert_eq!(ctl.model.instruments.len(), 3, "a source is no lane");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_source_is_placed_by_the_intent_that_places_nodes_and_the_place_is_in_the_file_and_stays_through_a_removal_that_undo_puts_back() {
+        let (_engine, mut ctl) = controller(&format!("[keys]\n\n{TWO_LANES}"));
+        let keys = ctl.model.sources[0].node;
+        let place = NodeUi { x: 12.5, y: -40.0 };
+        let applied = ctl.apply(Intent::SetNodeUi { node: keys, ui: Some(place) }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::NodeUiSet { node: keys, ui: Some(place) }]));
+        assert_eq!(ctl.model.ui.get(&keys), Some(&place));
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(&ctl.model);
+        let text = session::to_toml(&instruments, &groups, &cables, &sources, None, None, None).unwrap();
+        assert!(text.starts_with("[keys]\nui = { x = 12.5, y = -40 }\n"), "{text}");
+        ctl.apply(Intent::RemoveNode { node: keys }).unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.ui.get(&keys), Some(&place), "where it was");
+    }
+
+    #[test]
+    fn the_graph_a_client_gets_has_the_cables_of_notes_that_were_drawn_and_what_the_lanes_that_have_none_hear() {
+        let (_engine, mut ctl) = controller(TWO_LANES);
+        ctl.apply(Intent::AddSource { source: SourceInfo::Keys }).unwrap();
+        let (keys, first, second) = (ctl.model.sources[0].node, ctl.model.instruments[0].node, ctl.model.instruments[1].node);
+        let edges = |ctl: &Controller| -> Vec<Edge> { ctl.snapshot().graph.edges.into_iter().filter(|edge| matches!(edge.kind, EdgeKind::Events { .. } | EdgeKind::Hears)).collect() };
+        let hears = |lane| Edge { from: out(keys), to: into(lane), kind: EdgeKind::Hears };
+        assert_eq!(edges(&ctl), [hears(first), hears(second)], "no cable: both lanes hear the keys");
+        draw(&mut ctl, keys, first).unwrap();
+        let drawn = Edge { from: out(keys), to: into(first), kind: EdgeKind::Events { id: EdgeId(0) } };
+        assert_eq!(edges(&ctl), [hears(second), drawn], "the first lane hears the keys by its cable, and the second by having none");
     }
 }
