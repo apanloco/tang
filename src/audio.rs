@@ -1111,7 +1111,7 @@ mod tests {
     // -- The example sessions --
 
     /// The example sessions of this repository that show what the built-in plugins do (the others name a plugin that has to be installed, or are somebody's saved sound).
-    const SOUND_EXAMPLES: [&str; 12] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml", "fold.toml", "wobble.toml", "gate.toml", "melody.toml"];
+    const SOUND_EXAMPLES: [&str; 13] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml", "fold.toml", "wobble.toml", "gate.toml", "melody.toml", "shared-reverb.toml"];
 
     fn example(name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(name);
@@ -1319,6 +1319,31 @@ mod tests {
         // An attack of two and a half seconds: the first moments are far quieter than the held sound, and the release (four seconds) is far from over a moment after the key goes up.
         assert!(rms(window(0.1)) < 0.2 * rms(window(4.5)), "{} and {}", rms(window(0.1)), rms(window(4.5)));
         assert!(rms(window(5.2)) > 0.5 * rms(window(4.5)), "{} and {}", rms(window(5.2)), rms(window(4.5)));
+    }
+
+    #[test]
+    fn the_shared_reverb_example_rings_on_in_a_room_that_both_oscillators_are_sent_to_by_their_cables_and_not_otherwise() {
+        // The keys go up after a second, and the oscillators are done a quarter of a second after that (their release): what is heard from 1.6 s on is the reverb's tail, which only
+        // the cables bring into the bus of the group (it has no lane in it), so that the same session with its cables taken out has none, and with one of them has the room of one oscillator.
+        let session = example("shared-reverb.toml");
+        // (The tables, at the start of a line: the header of the file says `[[cable]]` too.)
+        let first = session.find("\n[[cable]]\n").expect("the example has its cables") + 1;
+        let second = first + 1 + session[first + 1..].find("\n[[cable]]\n").expect("and two of them") + 1;
+        let tail = |session: &str| {
+            let out = play(session, &[48, 52, 55], 0.0, 1.0, 3.0);
+            out[(1.6 * 48_000.0) as usize..(2.6 * 48_000.0) as usize].to_vec()
+        };
+        let both = tail(&session);
+        let neither = tail(&session[..first]);
+        let saw_only = tail(&session[..second]);
+        let square_only = tail(&format!("{}{}", &session[..first], &session[second..]));
+        assert!(rms(&both) > 0.002, "the room rings on after the keys: {}", rms(&both));
+        assert!(rms(&neither) < 1e-6, "and does not without the cables: {}", rms(&neither));
+        assert!(rms(&saw_only) > 0.001 && rms(&square_only) > 0.001, "each cable brings its oscillator into the room: {} and {}", rms(&saw_only), rms(&square_only));
+        // One room that both are in: the reverb is linear at this level, so what the two cables bring is what each brings, added (the two do not add up in size: the saw's partials and the square's
+        // that are the same pitch are in step or against each other, and the tail with both is a little smaller than the saw's alone).
+        let worst = both.iter().zip(saw_only.iter().zip(&square_only)).map(|(b, (s, q))| (b - s - q).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 1e-4 * rms(&both), "the room of both is the room of each, added: the largest difference is {worst}, against an rms of {}", rms(&both));
     }
 
     #[test]

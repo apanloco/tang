@@ -1,0 +1,47 @@
+# Example: two oscillators into one reverb, by audio cables (`[[cable]]`). A saw, and a square an octave above it,
+# each go to the mix as they are, and each sends part of itself to the reverb on the bus of a group that has no
+# lane in it. The reverb is all wet, so it puts out its tail only: what is heard is the two oscillators and, under
+# them, one room that both of them are in, which rings on when the keys are let go. On the page, draw a cable
+# yourself, from the dot on the right of an oscillator to the dot on the left of the reverb (or choose the reverb
+# from the `⇢` menu under the oscillator's name), and turn the level on the cable: 0 is out of the room, 1 is as
+# far into it as the oscillator goes, 2 is twice that.
+
+[[group]]
+name = "Room"
+
+[[group.effect]]
+plugin = "builtin:reverb"
+mix = 1.0 # all wet: the tail only
+
+[group.effect.params]
+size = 0.85
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.2
+
+[instrument.params]
+waveform = 3.0 # saw
+attack = 0.03
+release = 0.25
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.12
+transpose = 12
+
+[instrument.params]
+waveform = 2.0 # square
+pulse = 0.4
+attack = 0.03
+release = 0.25
+
+[[cable]]
+from = "instrument[0]"
+to = "group[0].effect[0]"
+gain = 1.0
+
+[[cable]]
+from = "instrument[1]"
+to = "group[0].effect[0]"
+gain = 0.6
