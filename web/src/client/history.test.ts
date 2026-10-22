@@ -1269,6 +1269,10 @@ function run(snapshot: Snapshot, rows: readonly HistoryRow[]): string[] {
         if (JSON.stringify(shape.sends ?? []) !== JSON.stringify(row.shape.sends ?? [])) wrong.push(`${what}: the audio cables are ${JSON.stringify(shape.sends ?? [])}, not ${JSON.stringify(row.shape.sends ?? [])}`);
         // (The lanes and groups whose way out is cut: likewise a list only for a session that has some.)
         if (JSON.stringify(shape.routes ?? []) !== JSON.stringify(row.shape.routes ?? [])) wrong.push(`${what}: the ways out that are cut are ${JSON.stringify(shape.routes ?? [])}, not ${JSON.stringify(row.shape.routes ?? [])}`);
+        // (The sources of notes, the cables of notes and the links of the lanes that hear every source: likewise.)
+        for (const list of ["sources", "notes", "hears", "order"] as const) {
+          if (JSON.stringify(shape[list] ?? []) !== JSON.stringify(row.shape[list] ?? [])) wrong.push(`${what}: ${list} are ${JSON.stringify(shape[list] ?? [])}, not ${JSON.stringify(row.shape[list] ?? [])}`);
+        }
       }
     }
     if (canonical(server.history) !== canonical(row.history)) wrong.push(`${what}: history ${canonical(server.history)}, not ${canonical(row.history)}`);
@@ -1304,6 +1308,7 @@ describe("the mock engine's history", () => {
       "addModEdge",
       "addCable",
       "setCableGain",
+      "addSource",
       "modulate",
       "addGroup",
       "setLaneGroup",

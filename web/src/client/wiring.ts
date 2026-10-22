@@ -44,12 +44,14 @@ export function cableEnds(graph: Graph, from: Endpoint, to: Endpoint): Ends | { 
   const start = graph.nodes.find((n) => n.id === from.node && n.kind !== "master");
   if (!start) return { error: { code: "notFound", message: `there is no node ${String(from.node)}` } };
   if (start.kind === "modulator") return invalid("a modulator has no output of audio");
+  if (start.kind === "source") return invalid("a source of notes has no output of audio: it has an output of events");
   const first: CableStart = { kind: start.kind === "instrument" ? "instrument" : start.kind === "group" ? "group" : "effect", node: start.id };
   if (to.node === MASTER_ID) return { from: first, to: { kind: "master", node: MASTER_ID } };
   const end = graph.nodes.find((n) => n.id === to.node && n.kind !== "master");
   if (!end) return { error: { code: "notFound", message: `there is no node ${String(to.node)}` } };
   if (end.kind === "instrument") return invalid("a lane has no input of audio: a cable ends at an effect, a group or the mix");
   if (end.kind === "modulator") return invalid("a modulator has no input of audio");
+  if (end.kind === "source") return invalid("a source of notes has no input of audio");
   return { from: first, to: { kind: end.kind === "group" ? "groupBus" : "effect", node: end.id } };
 }
 

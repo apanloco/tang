@@ -31,6 +31,7 @@ export type { Preset } from "./generated/Preset";
 export type { Route } from "./generated/Route";
 export type { ServerMessage } from "./generated/ServerMessage";
 export type { SlotKind } from "./generated/SlotKind";
+export type { SourceInfo } from "./generated/SourceInfo";
 export type { Snapshot } from "./generated/Snapshot";
 export type { StampedEvent } from "./generated/StampedEvent";
 export type { TelemetryChannel } from "./generated/TelemetryChannel";
@@ -41,6 +42,7 @@ export {
   BPM_RANGE,
   CABLE_GAIN_RANGE,
   DEPTH_RANGE,
+  DEVICE_NAME_LIMIT,
   FRAME_HEADER_LEN,
   GAIN_RANGES,
   HISTORY_MAX_STEPS,

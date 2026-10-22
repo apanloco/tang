@@ -3,7 +3,7 @@
 // `fixtures/inputs.json`, which Rust writes.
 
 /** A name without the spaces round it: what Rust's `trim` takes, which is the Unicode white space (and not what the page's own `trim` takes, which has a byte order mark and has not the next line). */
-const trimmed = (name: string): string => name.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+export const trimmed = (name: string): string => name.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
 
 /**
  * The inputs among `inputs` that the device called `name` in a session stands for: those that are called exactly that, or, if there is none, those that have it in their names, whatever the case

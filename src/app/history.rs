@@ -662,7 +662,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::app::controller::Controller;
-    use crate::app::graph::{Endpoint, NoteRange, Port};
+    use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
     use crate::app::intent::{Applied, Event, IntentError, ModulatorKind, PatternField};
     use crate::app::model::{Made, ModSourceSlot, NodePath, SessionModel, SourceKind, SourceNode};
     use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load, wire};
@@ -6350,6 +6350,17 @@ size = 0.5
         let lock = || Op::Do(Intent::SetLocked { locked: true });
         let mix = NodeId::MASTER;
         let (c0, c1) = (EdgeId(0), EdgeId(1));
+        // And two for sources of notes: `NOTES`, which has the keys, a device and a cable of notes to its second lane, and `SENDS`, which has none (the ids go on from the last node there is, and the cables start at 0).
+        let (_engine, noted, _clock) = controller_over(load(testutil::NOTES).model);
+        let (n_keys, n_device) = (noted.model.sources[0].node, noted.model.sources[1].node);
+        let n_lane = [node(&noted, NodePath::Instrument(0)), node(&noted, NodePath::Instrument(1)), node(&noted, NodePath::Instrument(2))];
+        let (n_cable, n_audio) = (noted.model.event_cables[0].id, noted.model.cables[0].id);
+        let first_source = sends.model.nodes().map(|(id, _)| id.0).max().unwrap() + 1;
+        let (keys, seaboard) = (NodeId(first_source), NodeId(first_source + 1));
+        let add_source = |source: SourceInfo| Op::Do(Intent::AddSource { source });
+        let device = |name: &str| SourceInfo::Device { name: name.to_string() };
+        let notes = |from: NodeId, to: NodeId| Op::Do(Intent::AddCable { from: Endpoint { node: from, port: Port::EventsOut }, to: Endpoint { node: to, port: Port::EventsIn }, gain: None });
+        let place = |node: NodeId, x: f32, y: f32| Op::Do(Intent::SetNodeUi { node, ui: Some(NodeUi { x, y }) });
         let own_sessions: Vec<(&str, &str, Vec<Op>)> = vec![
             (
                 "an audio cable that is drawn is taken out by undo and drawn again by redo under its id and at its level, and what was done before it is still to be undone",
@@ -6524,6 +6535,118 @@ size = 0.5
                     redo(),
                     redo(),
                     redo(),
+                ],
+            ),
+            (
+                "the keys and a device are sources that undo takes out and redo puts back under the ids they had, a cable of notes is a step of its own words that goes the same way, and what is refused is no step",
+                SENDS,
+                vec![
+                    lock(),
+                    add_source(SourceInfo::Keys),
+                    add_source(device(" Seaboard ")),
+                    notes(keys, s.lane[0]),
+                    notes(seaboard, s.lane[0]),
+                    notes(keys, s.lane[1]),
+                    add_source(SourceInfo::Keys),
+                    add_source(device("Seaboard")),
+                    add_source(device("")),
+                    notes(keys, s.lane[0]),
+                    notes(s.lane[0], s.lane[1]),
+                    notes(keys, s.fx[0]),
+                    notes(NodeId(9_999), s.lane[1]),
+                    notes(keys, NodeId(9_999)),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    undo(),
+                ],
+            ),
+            (
+                "a cable of notes that is taken out is put back by undo as it was, at its place among the others, and a source that is taken out comes back with its cables, at its place among the sources",
+                SENDS,
+                vec![
+                    lock(),
+                    add_source(SourceInfo::Keys),
+                    add_source(device("Seaboard")),
+                    notes(keys, s.lane[0]),
+                    notes(seaboard, s.lane[1]),
+                    notes(seaboard, s.lane[0]),
+                    notes(keys, s.lane[1]),
+                    Op::Do(Intent::RemoveEdge { edge: EdgeId(1) }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: keys }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: seaboard }),
+                    undo(),
+                    Op::Do(Intent::RemoveEdge { edge: EdgeId(9_999) }),
+                    Op::Do(Intent::RemoveNode { node: NodeId(9_999) }),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                ],
+            ),
+            (
+                "a lane that has cables of notes comes back with them, and a source that is placed is put back with its place",
+                SENDS,
+                vec![
+                    lock(),
+                    add_source(SourceInfo::Keys),
+                    notes(keys, s.lane[0]),
+                    notes(keys, s.lane[1]),
+                    place(keys, 10.0, 20.0),
+                    place(keys, 30.0, 40.0),
+                    Op::Do(Intent::RemoveNode { node: s.lane[0] }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                ],
+            ),
+            (
+                "the session's own sources and cables of notes are put back by undo: a cable, the keys with the cable that starts at it, a device that has none, and a lane that has a cable of notes and an audio cable",
+                testutil::NOTES,
+                vec![
+                    Op::Do(Intent::RemoveEdge { edge: n_cable }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: n_keys }),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: n_device }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: n_lane[1] }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    Op::Do(Intent::RemoveEdge { edge: n_audio }),
+                    undo(),
+                    notes(n_device, n_lane[0]),
+                    notes(n_keys, n_lane[0]),
+                    notes(n_device, n_lane[2]),
+                    undo(),
+                    undo(),
+                    undo(),
                 ],
             ),
             (

@@ -28,6 +28,7 @@ import type {
   Route,
   ServerMessage,
   Snapshot,
+  SourceInfo,
   StampedEvent,
   TelemetryChannel,
   TelemetryLayout,
@@ -38,12 +39,13 @@ import type { Transport, TransportEvents, TransportFactory } from "./connection"
 import { MASTER, builtinCatalog, builtinEffects, builtinInstruments, builtinPresets, tracerSnapshot } from "./fixtures";
 import { sessionFileName } from "./filenames";
 import { audibleOf, fedOf, heardOf } from "./audible";
-import { cablesThatGo, isAudioCable, isLink, isModulation } from "./cables";
+import { cablesThatGo, isAudioCable, isLink, isModulation, isNotesCable } from "./cables";
 import { Counters } from "./counters";
 import { History, planOf, removedStep, stepOf, takesOut } from "./history";
 import type { HistoryState, Made, Plan } from "./history";
 import { cablesIntoLaneFromItsGroup } from "./membership";
 import { noise } from "./noise";
+import { deviceName, eventCableEnds, withHears } from "./noteWiring";
 import { noteName } from "./notes";
 import { fieldsOf, modulatorsInReach, reachFrom, samePort } from "./reach";
 import { applyEvent } from "./reducers";
@@ -166,11 +168,11 @@ function cableGainOutcome(snapshot: Snapshot, edge: EdgeId, gain: number): Outco
 
 /**
  * `edges` with the audio cable `added` among them, where the graph lists the cables that have been drawn between two places: after the links of the audio path (which the nodes have by
- * themselves) and before the cables of modulation, in the order of their ids.
+ * themselves) and the links of the lanes that hear every source, and before the cables of notes and of modulation, in the order of their ids.
  */
 function withAudioCable(edges: readonly Edge[], added: Edge & { kind: "cable" }): Edge[] {
-  const modulation = edges.findIndex(isModulation);
-  const end = modulation < 0 ? edges.length : modulation;
+  const after = edges.findIndex((e) => isNotesCable(e) || isModulation(e));
+  const end = after < 0 ? edges.length : after;
   let at = edges.findIndex(isAudioCable);
   if (at < 0) at = end;
   while (at < end && (edges[at] as Edge & { kind: "cable" }).id < added.id) at += 1;
@@ -197,6 +199,58 @@ function addCableOutcome(snapshot: Snapshot, from: Endpoint, to: Endpoint, gain:
     gain: clamp(level, CABLE_GAIN_RANGE[0], CABLE_GAIN_RANGE[1]),
   };
   return { restructured: { ...snapshot, graph: { ...snapshot.graph, edges: withAudioCable(snapshot.graph.edges, added) } } };
+}
+
+/**
+ * `edges` with the cable of notes `added` among them, where the graph lists the cables of notes: after the audio cables that have been drawn and before the cables of modulation, in the order of
+ * their ids (the cables of notes and the audio cables have ids of one series, and are listed each in its own place). A cable that is drawn has the highest id there is, so it comes last of its kind,
+ * and so does one that redo draws again: whatever was drawn after it has been undone first.
+ */
+function withNotesCable(edges: readonly Edge[], added: Edge & { kind: "events" }): Edge[] {
+  const modulation = edges.findIndex(isModulation);
+  const at = modulation < 0 ? edges.length : modulation;
+  return [...edges.slice(0, at), added, ...edges.slice(at)];
+}
+
+/**
+ * A cable of notes drawn from the output of events of a source to the input of events of a lane, as the controller does it (`add_cable_intent`, `Controller::add_event_cable`): what the ends are is
+ * read from the ports (`eventCableEnds`), and then a level (a cable of notes has none: it carries notes, which are heard or not) and a cable between the two already are refused, in that order, before
+ * an id is used. The lane then hears the sources that its cables start at and no others, which the links of the graph say (`withHears`).
+ */
+function addNotesCableOutcome(snapshot: Snapshot, from: Endpoint, to: Endpoint, gain: number | null, counters: Counters): Outcome {
+  const ends = eventCableEnds(snapshot.graph, from, to);
+  if ("error" in ends) return ends;
+  if (gain !== null) return invalid("a cable of notes has no level: it carries notes, which are heard or not");
+  if (snapshot.graph.edges.some((e) => isNotesCable(e) && e.from.node === ends.source && e.to.node === ends.lane)) return invalid("there is a cable between those two already");
+  const added: Edge & { kind: "events" } = {
+    from: { node: ends.source, port: { type: "eventsOut" } },
+    to: { node: ends.lane, port: { type: "eventsIn" } },
+    kind: "events",
+    id: counters.edge(),
+  };
+  return { restructured: { ...snapshot, graph: { ...snapshot.graph, edges: withNotesCable(snapshot.graph.edges, added) } } };
+}
+
+/**
+ * The keys, or a device by its name, put in the session as a source of notes, after the sources there are (the graph lists them first), as the controller does it (`add_source`): a device's name is
+ * the text without the spaces round it (`deviceName`), and is refused when it is blank, too long or has a control character in it; the keys, and a device of that name, are refused when they are a
+ * source already; and no id is used for a refusal. It changes nothing that is heard: a lane that no cable of notes ends at hears every source, the new one too (`withHears`).
+ */
+function addSourceOutcome(snapshot: Snapshot, source: SourceInfo, counters: Counters): Outcome {
+  let name = "Keys";
+  let info: SourceInfo = { type: "keys" };
+  if (source.type === "device") {
+    const called = deviceName(source.name);
+    if ("why" in called) return invalid(`a device's name ${called.why}`);
+    name = called.name;
+    info = { type: "device", name };
+  }
+  const { nodes } = snapshot.graph;
+  const there = nodes.some((n) => n.kind === "source" && (info.type === "keys" ? n.source.type === "keys" : n.source.type === "device" && n.source.name === name));
+  if (there) return invalid(info.type === "keys" ? "the keys are a source already" : `${name} is a source already`);
+  const added: Node = { id: counters.node(), parent: null, name, kind: "source", source: info };
+  const at = nodes.findLastIndex((n) => n.kind === "source") + 1;
+  return { restructured: { ...snapshot, graph: { ...snapshot.graph, nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)] } } };
 }
 
 /** A place on a node, as one key: a parameter, a setting of a modulator, the depth of one of its cables (the layout names a value once for each). */
@@ -362,8 +416,8 @@ function addFieldCable(snapshot: Snapshot, from: Node, to: Edge["to"], counters:
  */
 function without(snapshot: Snapshot, going: ReadonlySet<EdgeId>, nodesGone: ReadonlySet<NodeId>): Snapshot {
   const cables = snapshot.graph.edges;
-  // (The audio cables at a node that goes go with it, as the controller takes them out first: `take_out_audio_cables_at`.)
-  const edges = cables.filter((e) => !(isModulation(e) && going.has(e.id)) && !(isAudioCable(e) && (nodesGone.has(e.from.node) || nodesGone.has(e.to.node))));
+  // (The audio cables and the cables of notes at a node that goes go with it, as the controller takes them out first: `take_out_audio_cables_at`, `take_out_event_cables_at`.)
+  const edges = cables.filter((e) => !(isModulation(e) && going.has(e.id)) && !((isAudioCable(e) || isNotesCable(e)) && (nodesGone.has(e.from.node) || nodesGone.has(e.to.node))));
   const aimedBefore = new Set(cables.map((e) => aimKey(e.to.node, e.to.port)));
   const aimedAfter = new Set(edges.map((e) => aimKey(e.to.node, e.to.port)));
   const leaves = (entry: LayoutEntry): boolean => {
@@ -383,9 +437,9 @@ function without(snapshot: Snapshot, going: ReadonlySet<EdgeId>, nodesGone: Read
 
 /** A cable taken out of the session, and with it the cables that drive the depth of one that goes (and theirs in turn). */
 function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
-  // (An audio cable goes alone: no cable drives its level, and it has no slot of the telemetry.)
-  if (snapshot.graph.edges.some((e) => isAudioCable(e) && e.id === edge)) {
-    return { restructured: { ...snapshot, graph: { ...snapshot.graph, edges: snapshot.graph.edges.filter((e) => !(isAudioCable(e) && e.id === edge)) } } };
+  // (An audio cable goes alone: no cable drives its level, and it has no slot of the telemetry. Nor does a cable of notes, which has no level.)
+  if (snapshot.graph.edges.some((e) => (isAudioCable(e) || isNotesCable(e)) && e.id === edge)) {
+    return { restructured: { ...snapshot, graph: { ...snapshot.graph, edges: snapshot.graph.edges.filter((e) => !((isAudioCable(e) || isNotesCable(e)) && e.id === edge)) } } };
   }
   if (!snapshot.graph.edges.some((e) => isModulation(e) && e.id === edge)) return { error: { code: "notFound", message: `there is no cable ${edge}` } };
   return { restructured: without(snapshot, cablesThatGo(snapshot.graph.edges, [edge]), new Set()) };
@@ -526,6 +580,8 @@ function removeNodeOutcome(snapshot: Snapshot, node: NodeId): Outcome {
   if (found.kind === "effect") return removeEffectOutcome(snapshot, found);
   if (found.kind === "instrument") return removeLaneOutcome(snapshot, found);
   if (found.kind === "group") return removeGroupOutcome(snapshot, found);
+  // A source of notes goes with the cables of notes that start at it, and the lanes that heard it hear what their other cables bring, or every source if they have none (`withHears`).
+  if (found.kind === "source") return { restructured: without(snapshot, new Set(), new Set([found.id])) };
   // (What is left is a modulator: the master is no node of the model, as far as the controller goes.)
   if (found.kind !== "modulator") return noNode(node);
   const touching = snapshot.graph.edges.filter((e) => isModulation(e) && (e.from.node === node || e.to.node === node)).map((e) => (e as { id: EdgeId }).id);
@@ -589,7 +645,7 @@ function modulateOutcome(snapshot: Snapshot, to: Edge["to"], kind: ModulatorKind
   if (depth !== null && !holds(depth)) return invalid(`${shown(depth)} is not a value for the depth of a cable`);
   const target = snapshot.graph.nodes.find((n) => n.id === to.node && n.kind !== "master");
   if (!target) return noNode(to.node);
-  if (target.kind === "group") return invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither");
+  if (target.kind === "group" || target.kind === "source") return invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither");
   // The rack that reaches it: a lane's, for its instrument and the effects of its chain (which sit in it), a group's for a bus effect, and a modulator's own.
   const parent = target.kind === "instrument" ? target.id : target.parent;
   if (parent === null) return invalid("that node is in no lane or group");
@@ -654,10 +710,16 @@ function instrumentFor(plugin: string, catalog: readonly CatalogEntry[]): { made
   return { made };
 }
 
+/** Where the links of the audio path end among the edges: the graph lists them first, then the links of the lanes that hear every source, the audio cables, the cables of notes and those of modulation. */
+const endOfLinks = (edges: readonly Edge[]): number => {
+  const at = edges.findIndex((e) => !isLink(e));
+  return at < 0 ? edges.length : at;
+};
+
 /**
  * A lane added at the end with an instrument in it, as the controller does it (`Controller::add_instrument_lane`): full range, in no
  * group. The graph lists the groups, then the lanes, then the master, so the lane goes before the master; its link to the master
- * comes after the links the others have (the modulation cables come after all of them); and the layout of the telemetry gets its
+ * comes after the links the others have (the rest of the edges come after all of them); and the layout of the telemetry gets its
  * two meters, a peak and a clip count, after those of the lanes there are.
  */
 function addInstrumentOutcome(snapshot: Snapshot, plugin: string, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
@@ -671,8 +733,7 @@ function addInstrumentOutcome(snapshot: Snapshot, plugin: string, counters: Coun
   const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume, muted: false, solo: false, route: "out", pattern: null };
   const atNode = nodes.indexOf(master);
   const link: Edge = { from: { node: added.id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };
-  const firstCable = edges.findIndex(isModulation);
-  const atEdge = firstCable >= 0 ? firstCable : edges.length;
+  const atEdge = endOfLinks(edges);
   const meters: LayoutEntry[] = [
     { slot: counters.slot(), node: added.id, port: { type: "audioOut" }, kind: "peak" },
     { slot: counters.slot(), node: added.id, port: { type: "audioOut" }, kind: "clips" },
@@ -880,8 +941,7 @@ function addGroupOutcome(snapshot: Snapshot, members: readonly NodeId[], counter
   const firstLane = nodes.findIndex((n) => n.kind === "instrument");
   const atNode = firstLane >= 0 ? firstLane : nodes.indexOf(master);
   const firstLink = edges.findIndex((e) => isLink(e) && inLane(e.from.node));
-  const firstCable = edges.findIndex(isModulation);
-  const atEdge = firstLink >= 0 ? firstLink : firstCable >= 0 ? firstCable : edges.length;
+  const atEdge = firstLink >= 0 ? firstLink : endOfLinks(edges);
   const link: Edge = { from: { node: id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };
   const meters: LayoutEntry[] = [
     { slot: counters.slot(), node: id, port: { type: "audioOut" }, kind: "peak" },
@@ -967,8 +1027,17 @@ function saveAsOutcome(snapshot: Snapshot, name: string, files: ReadonlySet<stri
   return { event: { type: "saved", file: made.file } };
 }
 
-/** Do what the controller does with an intent, to a snapshot, with the plugins its catalog names and the files its directory has. */
+/**
+ * Do what the controller does with an intent, to a snapshot, with the plugins its catalog names and the files its directory has. A change of structure leaves the links that the graph derives
+ * from each source to each lane that has no cable of notes as the cables say (`withHears`): a lane that is added, or whose last cable goes, hears every source.
+ */
 function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catalog: readonly CatalogEntry[], files: ReadonlySet<string>): Outcome {
+  const outcome = intentOutcome(snapshot, intent, counters, catalog, files);
+  return "restructured" in outcome ? { restructured: { ...outcome.restructured, graph: withHears(outcome.restructured.graph) } } : outcome;
+}
+
+/** What the controller makes of an intent: see `outcomeOf`. */
+function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, catalog: readonly CatalogEntry[], files: ReadonlySet<string>): Outcome {
   if (intent.type === "save") return saveOutcome(snapshot);
   if (intent.type === "saveAs") return saveAsOutcome(snapshot, intent.name, files);
   // (Undo and Redo are not the outcome of an intent on a snapshot: the history is the server's, `MockServer#carry`.)
@@ -993,9 +1062,9 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
   if (intent.type === "removeNode") return removeNodeOutcome(snapshot, intent.node);
   if (intent.type === "moveEffect") return moveEffectOutcome(snapshot, intent.node, intent.index);
   if (intent.type === "addModEdge") return addModEdgeOutcome(snapshot, intent.modulator, intent.to, counters);
-  // (This engine has no sources of notes yet, nor cables from them: it says so, as it does for what else it cannot do. They come with the page's source nodes.)
-  if (intent.type === "addSource") return invalid("this engine has no sources of notes yet");
-  if (intent.type === "addCable" && (intent.from.port.type === "eventsOut" || intent.to.port.type === "eventsIn")) return invalid("this engine has no cables of notes yet");
+  if (intent.type === "addSource") return addSourceOutcome(snapshot, intent.source, counters);
+  // (A cable that has a port of events at either end is a cable of notes, and is judged as one: from a source to a lane, with no level.)
+  if (intent.type === "addCable" && (intent.from.port.type === "eventsOut" || intent.to.port.type === "eventsIn")) return addNotesCableOutcome(snapshot, intent.from, intent.to, intent.gain, counters);
   if (intent.type === "addCable") return addCableOutcome(snapshot, intent.from, intent.to, intent.gain, counters);
   if (intent.type === "setCableGain") return cableGainOutcome(snapshot, intent.edge, intent.gain);
   // (The master is a node of the graph and not of the model: the controller does not find it.)

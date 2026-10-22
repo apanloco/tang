@@ -162,6 +162,9 @@ export const PINNED_LIMIT = 64;
 /** How many characters a group's name can have: what the controller refuses more than (`MAX_NAME`). */
 export const NAME_LIMIT = 64;
 
+/** How many characters the name of a MIDI device, as a source of notes is called by it, can have: what the controller refuses more than (`MAX_DEVICE_NAME`). */
+export const DEVICE_NAME_LIMIT = 256;
+
 /** How many frames of each side a frame of the scope channel has (`SCOPE_FRAME_LENGTH`): the left side and then the right, the latest frame of each last. */
 export const SCOPE_FRAME_LENGTH = 2048;
 

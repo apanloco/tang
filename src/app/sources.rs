@@ -460,4 +460,171 @@ mod tests {
         let drawn = Edge { from: out(keys), to: into(first), kind: EdgeKind::Events { id: EdgeId(0) } };
         assert_eq!(edges(&ctl), [hears(second), drawn], "the first lane hears the keys by its cable, and the second by having none");
     }
+    /// The sessions of the fixture of what sources and cables of notes come to, each with the intents that are tried on it (one on each fresh controller): the session of `testutil::NOTES`, with
+    /// every start tried with every end, the ports that are not events', levels, the names of devices, the cables and the nodes taken out, and every intent that names a node tried with the keys and with
+    /// the device as the node; and a session that has no source, for them to be added to.
+    fn sources_fixture_cases() -> Vec<(&'static str, &'static str, Vec<Intent>)> {
+        use crate::app::intent::{Gain, ModulatorField, ModulatorKind, PatternField};
+        let (_engine, ctl) = controller(testutil::NOTES);
+        let m = &ctl.model;
+        let (keys, launchkey) = (m.sources[0].node, m.sources[1].node);
+        let lanes = [m.instruments[0].node, m.instruments[1].node, m.instruments[2].node];
+        let fx = m.instruments[0].effects[0].node;
+        let (group, bus) = (m.groups[0].node, m.groups[0].effects[0].node);
+        let lfo = m.instruments[0].modulators[0].node;
+        let modulation = m.instruments[0].modulators[0].targets[0].edge;
+        let (notes_cable, audio_cable) = (m.event_cables[0].id, m.cables[0].id);
+        let ghost = NodeId(9_999);
+        let everything = [keys, launchkey, lanes[0], lanes[1], lanes[2], fx, group, bus, lfo, NodeId::MASTER, ghost];
+
+        let mut wired: Vec<Intent> = Vec::new();
+        // The names of devices that are sources, and those that are not: the spaces round a name, the case, nothing, a name that is long (counted in characters) and one with a control character.
+        let long = "x".repeat(session::MAX_DEVICE_NAME);
+        let wide = "é".repeat(session::MAX_DEVICE_NAME);
+        wired.push(Intent::AddSource { source: SourceInfo::Keys });
+        for name in [
+            "Seaboard", " Seaboard\t", "\u{a0}Seaboard\u{2003}", "Launchkey Mini MK4 37", "  Launchkey Mini MK4 37 ", "launchkey mini mk4 37", "Launchkey", "Roland A-49 (2)", "", " ", " \t\n ", &long,
+            &format!("{long}x"), &wide, &format!("{wide}é"), "A\nB", "A\u{7f}B", "A\u{85}B", "A\u{0}B", "A\tB", "A B", "\u{85}A\u{85}", "Ünïcode Keys",
+        ] {
+            wired.push(Intent::AddSource { source: device(name) });
+        }
+        // Every start with every end.
+        for from in everything {
+            for to in everything {
+                wired.push(Intent::AddCable { from: out(from), to: into(to), gain: None });
+            }
+        }
+        // A start that is not an output of events and an end that is not an input of events, and the other way round.
+        for port in [Port::AudioOut, Port::AudioIn, Port::ModOut, Port::Param { index: 0 }, Port::Rate, Port::EventsIn] {
+            wired.push(Intent::AddCable { from: Endpoint { node: keys, port }, to: into(lanes[0]), gain: None });
+        }
+        for port in [Port::EventsOut, Port::AudioIn, Port::AudioOut, Port::ModOut, Port::Param { index: 0 }, Port::Depth { edge: modulation }] {
+            wired.push(Intent::AddCable { from: out(keys), to: Endpoint { node: lanes[0], port }, gain: None });
+        }
+        // The audio ports of a source (it has none), and an audio cable between what has them.
+        for (from, to) in [(keys, fx), (fx, keys), (launchkey, NodeId::MASTER), (lanes[1], launchkey), (lanes[1], bus), (keys, keys)] {
+            wired.push(Intent::AddCable { from: Endpoint { node: from, port: Port::AudioOut }, to: Endpoint { node: to, port: Port::AudioIn }, gain: None });
+        }
+        // A cable of notes has no level, whatever it is; what else is wrong with it is said first.
+        // (A level that is not a number is no row: JSON has none, and the intent a client sends would not be it.)
+        for gain in [0.0, 1.0, 2.5, -1.0] {
+            wired.push(Intent::AddCable { from: out(keys), to: into(lanes[0]), gain: Some(gain) });
+        }
+        wired.push(Intent::AddCable { from: out(keys), to: into(keys), gain: Some(1.0) });
+        wired.push(Intent::AddCable { from: out(lanes[0]), to: into(lanes[0]), gain: Some(1.0) });
+        wired.push(Intent::AddCable { from: out(keys), to: into(lanes[1]), gain: Some(1.0) });
+        // The level and the depth of each kind of cable, and a cable that is not there.
+        for edge in [notes_cable, audio_cable, modulation, EdgeId(9_999)] {
+            wired.push(Intent::SetCableGain { edge, gain: 0.5 });
+            wired.push(Intent::SetEdgeDepth { edge, depth: 0.5 });
+        }
+        // Each cable taken out, and each node.
+        for edge in [notes_cable, audio_cable, modulation, EdgeId(9_999)] {
+            wired.push(Intent::RemoveEdge { edge });
+        }
+        for node in everything {
+            wired.push(Intent::RemoveNode { node });
+        }
+        // Lanes that come, and go into groups, in a session that has sources.
+        wired.push(Intent::AddInstrument { plugin: "builtin:osc".to_string() });
+        wired.push(Intent::AddGroup { members: vec![lanes[1], lanes[2]] });
+        wired.push(Intent::AddGroup { members: vec![keys] });
+        wired.push(Intent::AddGroup { members: vec![] });
+        for lane in lanes {
+            wired.push(Intent::SetLaneGroup { node: lane, group: None });
+            wired.push(Intent::SetLaneGroup { node: lane, group: Some(group) });
+        }
+        // Every intent that names a node, with a source as the node.
+        for node in [keys, launchkey] {
+            let place = NodeUi { x: 12.5, y: -40.0 };
+            let ends = |port| Endpoint { node, port };
+            wired.extend([
+                Intent::SetParam { node, param: 0, value: 0.5 },
+                Intent::SetGain { node, gain: Gain::Volume, value: 0.5 },
+                Intent::SetGain { node, gain: Gain::Mix, value: 0.5 },
+                Intent::SetGain { node, gain: Gain::GroupVolume, value: 0.5 },
+                Intent::SetGain { node, gain: Gain::GroupPan, value: 0.5 },
+                Intent::LoadPreset { node, preset: "a preset".to_string() },
+                Intent::SetModulatorField { node, field: ModulatorField::Rate, value: 1.0 },
+                Intent::SetSteps { node, values: vec![0.0; 16] },
+                Intent::SetRange { node, range: None },
+                Intent::SetMute { node, muted: true },
+                Intent::SetSolo { node, solo: true },
+                Intent::SetRoute { node, route: session::Route::None },
+                Intent::SetRecording { node, recording: true },
+                Intent::ClearPattern { node },
+                Intent::SetPatternField { node, field: PatternField::Length, value: 4.0 },
+                Intent::SetNodeUi { node, ui: Some(place) },
+                Intent::SetNodeUi { node, ui: None },
+                Intent::SetPinned { node, params: vec![] },
+                Intent::SetPinned { node, params: vec![0] },
+                Intent::RenameGroup { node, name: "A name".to_string() },
+                Intent::AddEffect { parent: node, plugin: "builtin:reverb".to_string() },
+                Intent::AddModulator { parent: node, kind: ModulatorKind::Lfo },
+                Intent::AddModEdge { modulator: node, to: Endpoint { node: lanes[0], port: Port::Param { index: 0 } } },
+                Intent::AddModEdge { modulator: lfo, to: ends(Port::Param { index: 0 }) },
+                Intent::AddModEdge { modulator: lfo, to: ends(Port::Rate) },
+                Intent::Modulate { to: ends(Port::Param { index: 0 }), kind: ModulatorKind::Lfo, depth: None },
+                Intent::Modulate { to: ends(Port::Rate), kind: ModulatorKind::Lfo, depth: None },
+                Intent::ReplaceInstrument { node, plugin: "builtin:osc".to_string() },
+                Intent::MoveEffect { node, index: 0 },
+                Intent::AddGroup { members: vec![node] },
+            ]);
+        }
+
+        let bare = vec![
+            Intent::AddSource { source: SourceInfo::Keys },
+            Intent::AddSource { source: device("Seaboard") },
+            Intent::AddSource { source: device("  Seaboard  ") },
+            Intent::AddSource { source: device("") },
+            Intent::AddCable { from: out(NodeId(0)), to: into(NodeId(1)), gain: None },
+            Intent::AddCable { from: out(NodeId(9_999)), to: into(NodeId(1)), gain: None },
+            Intent::AddInstrument { plugin: "builtin:osc".to_string() },
+            Intent::AddGroup { members: vec![NodeId(0)] },
+            Intent::RemoveNode { node: NodeId(0) },
+            Intent::SetNodeUi { node: NodeId(0), ui: Some(NodeUi { x: 1.0, y: 2.0 }) },
+        ];
+        vec![("wired", testutil::NOTES, wired), ("bare", TWO_LANES, bare)]
+    }
+
+    /// The sessions of `sources_fixture_cases` and what the controller makes of each intent tried on them, as the web client's tests read it (`web/src/client/fixtures/sources.json`): they pin the mock
+    /// engine's to the controller's, intent by intent. A refusal is the controller's words; the rest is the events the intent made (stamped), whether it changed the structure and what the session
+    /// comes to after it (`testutil::shape_of`: the sources, the cables of notes and what each lane that has none hears are in it). `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_sources_and_cables_of_notes_come_to_is_current() {
+        let mut cases = Vec::new();
+        for (name, session, intents) in sources_fixture_cases() {
+            let (_engine, base) = controller(session);
+            let mut snapshot = testutil::wire(&base.snapshot());
+            // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+            snapshot["telemetry"]["rev"] = serde_json::json!(1);
+            let mut rows = Vec::new();
+            for intent in intents {
+                let (_engine, mut fresh) = controller(session);
+                let what = testutil::wire(&intent);
+                rows.push(match fresh.apply(intent.clone()) {
+                    Err(error) => serde_json::json!({ "intent": what, "error": error.to_string() }),
+                    Ok(applied) => serde_json::json!({
+                        "intent": what,
+                        "events": testutil::wire(&applied.stamped()),
+                        "restructured": applied.restructured,
+                        "after": testutil::shape_of(&fresh.snapshot()),
+                    }),
+                });
+            }
+            cases.push(serde_json::json!({ "name": name, "snapshot": snapshot, "rows": rows }));
+        }
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "cases": cases })).unwrap() + "\n";
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/sources.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what sources and cables of notes come to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
 }

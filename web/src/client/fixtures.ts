@@ -23,6 +23,7 @@ import noise from "./fixtures/noise.json";
 import patterns from "./fixtures/patterns.json";
 import pins from "./fixtures/pins.json";
 import reach from "./fixtures/reach.json";
+import sources from "./fixtures/sources.json";
 import steps from "./fixtures/steps.json";
 import sync from "./fixtures/sync.json";
 import tracer from "./fixtures/tracer.snapshot.json";
@@ -120,6 +121,17 @@ export const audioCablesFixture = audioCables as unknown as {
 };
 
 /**
+ * Two sessions, one with the keys, a device, a group, three lanes and a cable of notes and an audio cable among its cables ("wired", `testutil::NOTES`) and one with two lanes and no source ("bare"),
+ * and what the controller makes of intents about sources and cables of notes tried on each, one on each fresh session: every start of a cable of notes with every end (the master, a node that is not
+ * there, an effect, a group and a modulator among them), the ports that are not events', levels, the names of devices, cables and nodes taken out, and every intent that names a node, with a
+ * source as the node. For one that is refused its words; else the events it made (stamped), whether it changed the structure and what the session comes to after it (`shapeOf`). Written by the
+ * controller (`the_web_clients_fixture_of_what_sources_and_cables_of_notes_come_to_is_current`).
+ */
+export const sourcesFixture = sources as unknown as {
+  cases: { name: string; snapshot: Snapshot; rows: ({ intent: Intent } & ({ error: string } | { events: StampedEvent[]; restructured: boolean; after: Shape }))[] }[];
+};
+
+/**
  * One op of a script of the history fixture: time going by (in milliseconds), or an intent and what the controller made of it: its words if it
  * was refused, else the events it made, whether it changed the structure and, if it did, what the session comes to then (`shapeOf`).
  */
@@ -179,6 +191,14 @@ export interface Shape {
   sends?: string[];
   /** The lanes and groups whose way out is cut, a line each (`id none`); none at all when none is, as the controller's fixtures write it. */
   routes?: string[];
+  /** The sources of notes, a line each (`id keys` or `id device Name`); none at all for a session that has none, as the controller's fixtures write it. */
+  sources?: string[];
+  /** The cables of notes that have been drawn from a source to a lane, a line each (`#id from>to`); none at all for a session that has none. */
+  notes?: string[];
+  /** The links from each source to each lane that hears every source, a line each (`from>to`); none at all for a session that has none. */
+  hears?: string[];
+  /** The order that the kinds of edge come in, each run of one kind an entry (`hears×4`), for a session that has a source: none at all for a session that has none. */
+  order?: string[];
   meters: string[];
   modulation: string[];
 }
@@ -196,12 +216,27 @@ export function shapeOf(snapshot: Snapshot): Shape {
   const { nodes, edges } = snapshot.graph;
   const sends = edges.flatMap((e) => (e.kind === "cable" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} @${String(e.gain)}`] : []));
   const routes = nodes.flatMap((n) => ((n.kind === "instrument" || n.kind === "group") && n.route === "none" ? [`${String(n.id)} none`] : []));
+  const sources = nodes.flatMap((n) => (n.kind === "source" ? [n.source.type === "keys" ? `${String(n.id)} keys` : `${String(n.id)} device ${n.source.name}`] : []));
+  const notes = edges.flatMap((e) => (e.kind === "events" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)}`] : []));
+  const hears = edges.flatMap((e) => (e.kind === "hears" ? [`${String(e.from.node)}>${String(e.to.node)}`] : []));
+  // The kinds of edge in the order they come in, a run of one kind as one entry.
+  const runs: { kind: string; count: number }[] = [];
+  for (const e of edges) {
+    const last = runs.at(-1);
+    if (last?.kind === e.kind) last.count += 1;
+    else runs.push({ kind: e.kind, count: 1 });
+  }
+  const order = runs.map(({ kind, count }) => `${kind}×${String(count)}`);
   return {
     nodes: nodes.map((n) => `${String(n.id)} ${n.parent === null ? "-" : String(n.parent)} ${n.name}`),
     audio: edges.flatMap((e) => (isLink(e) ? [`${String(e.from.node)}>${String(e.to.node)} ${e.kind}`] : [])),
     cables: edges.flatMap((e) => (e.kind === "modulation" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} ${portKey(e.to.port)} @${String(e.amount)}`] : [])),
     ...(sends.length > 0 ? { sends } : {}),
     ...(routes.length > 0 ? { routes } : {}),
+    ...(sources.length > 0 ? { sources } : {}),
+    ...(notes.length > 0 ? { notes } : {}),
+    ...(hears.length > 0 ? { hears } : {}),
+    ...(sources.length > 0 || notes.length > 0 || hears.length > 0 ? { order } : {}),
     meters: snapshot.telemetry.meters.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
     modulation: snapshot.telemetry.modulation.map((m) => `${String(m.slot)} ${String(m.node)} ${portKey(m.port)} ${m.kind}`),
   };

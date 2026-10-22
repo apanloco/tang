@@ -627,6 +627,8 @@ mod typescript {
                  export const PINNED_LIMIT = {};\n\n\
                  /** How many characters a group's name can have: what the controller refuses more than (`MAX_NAME`). */\n\
                  export const NAME_LIMIT = {};\n\n\
+                 /** How many characters the name of a MIDI device, as a source of notes is called by it, can have: what the controller refuses more than (`MAX_DEVICE_NAME`). */\n\
+                 export const DEVICE_NAME_LIMIT = {};\n\n\
                  /** How many frames of each side a frame of the scope channel has (`SCOPE_FRAME_LENGTH`): the left side and then the right, the latest frame of each last. */\n\
                  export const SCOPE_FRAME_LENGTH = {};\n\n\
                  /** How long after one change of a thing, in seconds, the next change of it is still one step of the history (`history::SAME_STEP`). */\n\
@@ -652,6 +654,7 @@ mod typescript {
                 crate::session::NodeUi::PARTS,
                 crate::app::model::MAX_PINNED,
                 crate::app::model::MAX_NAME,
+                crate::session::MAX_DEVICE_NAME,
                 super::SCOPE_FRAME_LENGTH,
                 crate::app::history::SAME_STEP.as_secs_f64(),
                 crate::app::history::MAX_STEPS,

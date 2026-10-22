@@ -8,7 +8,8 @@
 // What is added is taken out by undo and put back by redo under the ids it had (`Made`): every step that names the node or the cable goes on naming it.
 import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP, WAVEFORMS } from "../protocol";
 import type { CatalogEntry, EdgeId, Endpoint, Gain, Graph, Intent, ModulatorField, Node, NodeId, Snapshot, TelemetryLayout } from "../protocol";
-import { cablesThatGo, drivesRoundToItself, isAudioCable, isModulation } from "./cables";
+import { cablesThatGo, drivesRoundToItself, isAudioCable, isModulation, isNotesCable } from "./cables";
+import { trimmed } from "./inputs";
 import { cablesIntoLaneFromItsGroup } from "./membership";
 import { MODULATOR_LABELS, kindOf } from "./modulatorKinds";
 
@@ -162,11 +163,11 @@ export type Plan = { step: Step } | { added: Added } | { removed: Removed } | "b
  * made something that cannot be named, or what it made is not there. As `takes_out` of the controller.
  */
 export function takesOut(snapshot: Snapshot, added: Intent, made: Made): Intent | null {
-  // An audio cable is one cable and no node.
+  // An audio cable and a cable of notes are one cable and no node.
   if (added.type === "addCable") {
     const [edge, ...more] = made.edges;
     if (edge === undefined || more.length > 0 || made.nodes.length > 0) return null;
-    return snapshot.graph.edges.some((e) => isAudioCable(e) && e.id === edge) ? { type: "removeEdge", edge } : null;
+    return snapshot.graph.edges.some((e) => (isAudioCable(e) || isNotesCable(e)) && e.id === edge) ? { type: "removeEdge", edge } : null;
   }
   if (added.type === "addModEdge") {
     const [edge, ...more] = made.edges;
@@ -268,12 +269,13 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
     case "undo":
     case "redo":
       return "nothing";
-    // (The page's own engine has no sources of notes yet: `outcomeOf` refuses the intent, and a refusal leaves no step.)
+    // A source of notes that is added is an add (a refusal leaves no step: the step is made once it is carried out), in the words of the button that adds it: the keys, or the device by its name without
+    // the spaces round it.
     case "addSource":
-      return "nothing";
-    // An audio cable that is drawn is an add (a refusal leaves no step: the step is made once it is carried out), and its level a step that a drag makes one of, put back to the level it found.
+      return added(intent.source.type === "keys" ? "add Keys" : `add ${trimmed(intent.source.name)}`);
+    // A cable that is drawn is an add too, and its level (an audio cable's: a cable of notes has none) a step that a drag makes one of, put back to the level it found. The ports tell which cable it is.
     case "addCable":
-      return added("draw an audio cable");
+      return added(intent.from.port.type === "eventsOut" || intent.to.port.type === "eventsIn" ? "draw a cable of notes" : "draw an audio cable");
     case "setCableGain": {
       const cable = snapshot.graph.edges.find((e) => isAudioCable(e) && e.id === intent.edge);
       if (cable?.kind !== "cable") return "nothing";
@@ -400,8 +402,9 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       return step(intent.group === null ? "take a lane out of its group" : "put a lane in a group", { type: "setLaneGroup", node: intent.node, group: lane.parent }, null);
     }
     case "removeEdge": {
-      // An audio cable goes alone, and comes back as it was.
+      // An audio cable and a cable of notes go alone, and come back as they were.
       if (snapshot.graph.edges.some((e) => isAudioCable(e) && e.id === intent.edge)) return { removed: { label: "remove an audio cable", intent, at: now } };
+      if (snapshot.graph.edges.some((e) => isNotesCable(e) && e.id === intent.edge)) return { removed: { label: "remove a cable of notes", intent, at: now } };
       if (!snapshot.graph.edges.some((e) => isModulation(e) && e.id === intent.edge)) return "nothing";
       // Cables that drive each other's depths are not put back (`RemovedCable::still_driven` of the controller).
       if (drivesRoundToItself(snapshot.graph.edges, cablesThatGo(snapshot.graph.edges, [intent.edge]))) return "barrier";
@@ -417,6 +420,9 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       // depths: a cable drives one thing, and those of its group drive a place in the lane, so the ones that drive their depths are a tree of drivers. (A lane with no instrument
       // is "an empty lane".)
       if (node?.kind === "instrument") return { removed: { label: `remove ${laneOrGroupWords(node)}`, intent, at: now } };
+      // A source of notes goes with the cables of notes that start at it, and comes back with them, at its place among the sources (the controller's `Inverse::Source`), in the words of the button that
+      // adds one: the keys, or the device by its name (what the node is called).
+      if (node?.kind === "source") return { removed: { label: `remove ${node.name}`, intent, at: now } };
       // A group goes with its bus effects, its modulators and their cables, and its members are in none; it comes back with them, at its place among the groups and with its members put in
       // it again (the controller's `Inverse::Group`). The cables of its modulators, and those that drive the depth of any of them, are checked for cables that drive each other's depths,
       // which are not put back (`RemovedCable::still_driven`), as for a modulator.

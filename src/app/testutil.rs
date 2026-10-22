@@ -923,6 +923,48 @@ from = "instrument[2]"
 to = "master"
 "#;
 
+/// A session with sources of notes among everything that a cable of notes could be drawn to or from by mistake (P4c: the fixture of what sources and cables of notes come to,
+/// `web/src/client/fixtures/sources.json`): the keys (placed) and a device, a group ("Pad") with a reverb on its bus, lane 0 in it with a filter and an LFO that drives the filter, a plain lane (1)
+/// and an empty one (2), a cable of notes from the keys to lane 1 and an audio cable from lane 1 to the filter of lane 0 (the two kinds of cable have ids of one series, in the order of the file).
+pub const NOTES: &str = r#"
+[keys]
+ui = { x = 0, y = 40 }
+
+[[device]]
+name = "Launchkey Mini MK4 37"
+
+[[group]]
+name = "Pad"
+[[group.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument]]
+
+[[cable]]
+from = "keys"
+to = "instrument[1]"
+
+[[cable]]
+from = "instrument[1]"
+to = "instrument[0].effect[0]"
+gain = 0.5
+"#;
+
 /// The nodes of `SOURCES`: the keys, the two devices and the three lanes.
 #[derive(Clone, Copy, Debug)]
 pub struct Routed {
@@ -1369,7 +1411,8 @@ impl plugin::Plugin for DropProbe {
 
 /// What a session comes to, for the fixtures of what the intents of groups and the history do: the nodes (their id, their parent and their name), the
 /// audio path, the modulation cables, the audio cables that have been drawn between two places (`sends`, a list only when there are some), the lanes and groups whose way out is cut
-/// (`routes`, likewise), and the two lists of the layout of
+/// (`routes`, likewise), the sources of notes (`sources`: what each is, the keys or a device by its name), the cables of notes (`notes`) and the links from each source to each lane that hears
+/// every source (`hears`), each a list only when there is something in it, and the order of the kinds of edge (`order`, for a session that has a source), and the two lists of the layout of
 /// the telemetry (without its fingerprint), each entry as a line of text the web client's tests make of its own copy by the same rules (`shapeOf` in
 /// `web/src/client/fixtures.ts`).
 pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value {
@@ -1427,6 +1470,38 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
         .collect();
     if !routes.is_empty() {
         shape["routes"] = serde_json::json!(routes);
+    }
+    // The sources of notes, the cables of notes that have been drawn and the links of the lanes that have none: a line each, and no list at all for a session that has none, so that the fixtures of the
+    // sessions that have no source are as they were.
+    let sources: Vec<String> = list(&wire["graph"]["nodes"])
+        .iter()
+        .filter(|n| text(&n["kind"]) == "source")
+        .map(|n| match text(&n["source"]["type"]).as_str() {
+            "keys" => format!("{} keys", n["id"]),
+            _ => format!("{} device {}", n["id"], text(&n["source"]["name"])),
+        })
+        .collect();
+    let notes: Vec<String> = edges.iter().filter(|e| text(&e["kind"]) == "events").map(|e| format!("#{} {}>{}", e["id"], e["from"]["node"], e["to"]["node"])).collect();
+    let hears: Vec<String> = edges.iter().filter(|e| text(&e["kind"]) == "hears").map(|e| format!("{}>{}", e["from"]["node"], e["to"]["node"])).collect();
+    // The order that the kinds of edge come in (a run of edges of one kind is one entry, `hears×4`), for a session that has a source: the graph lists the links of the audio path, those of the lanes that
+    // hear every source, the audio cables, the cables of notes and then those of modulation.
+    let order = if sources.is_empty() && notes.is_empty() && hears.is_empty() {
+        Vec::new()
+    } else {
+        let mut runs: Vec<(String, usize)> = Vec::new();
+        for edge in &edges {
+            let kind = text(&edge["kind"]);
+            match runs.last_mut() {
+                Some((last, count)) if *last == kind => *count += 1,
+                _ => runs.push((kind, 1)),
+            }
+        }
+        runs.into_iter().map(|(kind, count)| format!("{kind}×{count}")).collect()
+    };
+    for (name, lines) in [("sources", sources), ("notes", notes), ("hears", hears), ("order", order)] {
+        if !lines.is_empty() {
+            shape[name] = serde_json::json!(lines);
+        }
     }
     shape
 }
