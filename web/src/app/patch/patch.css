@@ -319,6 +319,38 @@
   background: var(--tang-warn);
 }
 
+/* The way out of a lane or a group, under its mute and solo: where its audio goes, quiet (a name that is too long for the cell is cut, and the tooltip has all of it); pressed, in the colour of audio that goes by cables, it says that there is none. */
+.tang-way-out {
+  min-width: 0;
+  margin-top: 2px;
+  padding: 1px 3px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--tang-text-muted);
+  font: 10px / 1.4 var(--tang-font);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tang-way-out:hover {
+  border-color: var(--tang-border);
+}
+
+.tang-way-out:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-way-out[aria-pressed="true"] {
+  border-color: var(--tang-send);
+  color: var(--tang-send);
+  font-weight: 600;
+}
+
 /* A node that cannot be heard at the master (muted, not soloed while something is, or in the chain of one): dimmed, and as ready as it was. (It stays dimmed under the pointer: a press of its mute is seen at once.) */
 .tang-node--unheard {
   opacity: 0.55;

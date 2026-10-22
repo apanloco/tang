@@ -1347,6 +1347,24 @@ mod tests {
     }
 
     #[test]
+    fn the_shared_reverb_example_with_the_way_out_of_both_oscillators_cut_is_the_room_alone() {
+        // With their way out cut the oscillators are heard through the room and not beside it. The reverb is linear at this level, so that the room is what the whole session is less the
+        // oscillators as they are heard without it (the session with its cables taken out), and the session with their way out cut is that, from the first moment of a chord that is held.
+        let session = example("shared-reverb.toml");
+        let first = session.find("\n[[cable]]\n").expect("the example has its cables") + 1;
+        let heard = |session: &str| play(session, &[48, 52, 55], 0.0, 1.0, 3.0);
+        let whole = heard(&session);
+        let oscillators = heard(&session[..first]);
+        let cut = heard(&session.replace("[[instrument]]\n", "[[instrument]]\nroute = \"none\"\n"));
+        let room: Vec<f32> = whole.iter().zip(&oscillators).map(|(w, o)| w - o).collect();
+        assert!(rms(&room) > 0.002, "the room is heard: {}", rms(&room));
+        let worst = cut.iter().zip(&room).map(|(c, r)| (c - r).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 1e-5 * rms(&room), "the session with their way out cut is the room alone: the largest difference is {worst}, against an rms of {}", rms(&room));
+        // (The oscillators beside the room are a good deal more than the room: the whole is not the cut session.)
+        assert!(rms(&whole) > 2.0 * rms(&cut), "{} and {}", rms(&whole), rms(&cut));
+    }
+
+    #[test]
     fn the_examples_have_the_delay_presets_that_they_name() {
         // (A preset that the plugin does not have is only logged by the loader, so a misspelled name would load and sound like no preset at all.)
         for (name, effect, preset, time) in [("pwm.toml", 1, "Slapback", 0.09), ("epiano.toml", 0, "Chorus", 0.02)] {

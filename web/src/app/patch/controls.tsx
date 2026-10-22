@@ -11,7 +11,7 @@ import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { rateAt } from "../../client/tempo";
-import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
+import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices, sameWayOut, stepsOf, wayOutOf } from "../../client/selectors";
 import { CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, SYNC_DIVISIONS, SYNC_FREE, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
@@ -395,8 +395,33 @@ export const GroupCell = memo(function GroupCell({ node, name }: { node: NodeId;
 });
 
 /**
- * The mute and the solo of a lane or a group, two buttons in a cell of its node (the controller's `SetMute` and `SetSolo`): a muted node is never heard, and while anything is
- * soloed only what is soloed is (`audibleOf` says what that makes of every node). A press asks for the other way and the buttons show what the session has: they are
+ * The way out of a lane or a group, a button under its mute and solo (the controller's `SetRoute`): it says where the audio goes (`→ Master`, or `→ Pad` for a lane in a group) and, when the way
+ * out is cut, that there is none (`no out`: the node is then heard only through the cables that start at it). Pressed, it is cut. A press asks for the other way and the button shows what the
+ * session has: it is not changed before the answer is in, and a refusal (a way out that would make the audio go round, by the cables there are) is said among the notices.
+ */
+function WayOutButton({ node, name }: { node: NodeId; name: string }) {
+  const editor = useEditor();
+  const way = useClientSelection((state) => wayOutOf(state, node), sameWayOut);
+  if (way === undefined) return null;
+  return (
+    <button
+      type="button"
+      className="tang-way-out"
+      aria-label={`Cut the way out of ${name}`}
+      aria-pressed={way.cut}
+      title={way.cut ? `${name} has no way out and is heard only through its cables: give it its way out, to ${way.to}` : `${name} goes to ${way.to}: cut its way out, to hear it only through its cables`}
+      onClick={() => {
+        void editor.setRoute(node, way.cut ? "out" : "none");
+      }}
+    >
+      {way.cut ? "no out" : `→ ${way.to}`}
+    </button>
+  );
+}
+
+/**
+ * The mute and the solo of a lane or a group, two buttons in a cell of its node (the controller's `SetMute` and `SetSolo`), and under them its way out: a muted node is never heard, and while
+ * anything is soloed only what is soloed is (`audibleOf` says what that makes of every node). A press asks for the other way and the buttons show what the session has: they are
  * not changed before the answer is in, and a refusal is said among the notices. A node that is neither a lane nor a group has none, and nothing is drawn for it.
  */
 export const MuteSoloCell = memo(function MuteSoloCell({ node, name }: { node: NodeId; name: string }) {
@@ -433,6 +458,7 @@ export const MuteSoloCell = memo(function MuteSoloCell({ node, name }: { node: N
             S
           </button>
         </span>
+        <WayOutButton node={node} name={name} />
       </div>
     </div>
   );

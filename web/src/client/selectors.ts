@@ -130,6 +130,31 @@ export function sameFlags(a: Flags | undefined, b: Flags | undefined): boolean {
   return a.muted === b.muted && a.solo === b.solo;
 }
 
+/** Where a lane's or a group's audio goes, and whether that way out is cut. */
+export interface WayOut {
+  /** The way out is cut (`route = "none"`): the node is heard only through the cables that start at it. */
+  cut: boolean;
+  /** Where its audio goes when it has its way out: the group that a lane is a member of, or the master, by the name the canvas gives it. */
+  to: string;
+}
+
+/** The way out of a lane (an empty lane has one) or of a group; undefined if the node is neither. */
+export function wayOutOf(state: ClientState, id: NodeId): WayOut | undefined {
+  const graph = state.snapshot?.graph;
+  const found = graph?.nodes.find((node) => node.id === id);
+  if (graph === undefined || (found?.kind !== "instrument" && found?.kind !== "group")) return undefined;
+  const parent = found.kind === "instrument" ? found.parent : null;
+  const sink = (parent === null ? undefined : graph.nodes.find((node) => node.id === parent)) ?? graph.nodes.find((node) => node.kind === "master");
+  return { cut: found.route === "none", to: sink === undefined ? "Master" : (displayNames(graph).get(sink.id) ?? sink.name) };
+}
+
+/** Whether two answers of `wayOutOf` say the same. */
+export function sameWayOut(a: WayOut | undefined, b: WayOut | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.cut === b.cut && a.to === b.to;
+}
+
 /**
  * Whether what a node puts out can be heard at the master, by the mute and solo of the session (`audibleOf`): a lane's or a group's own, and an effect's by the lane
  * or group whose chain it is in, which is what carries it. Undefined for the nodes that put out no sound, a modulator and the master among them.

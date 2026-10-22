@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, audioCablesFixture, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { audibleAt, cableDepthOf, cableGainOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, stepsOf } from "./selectors";
+import { audibleAt, cableDepthOf, cableGainOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, sameWayOut, stepsOf, wayOutOf } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -678,6 +678,70 @@ describe("the mute and the solo of a lane or a group", () => {
     expect(sameFlags(undefined, undefined)).toBe(true);
     expect(sameFlags(a, undefined)).toBe(false);
     expect(sameFlags(undefined, a)).toBe(false);
+  });
+});
+
+describe("the way out of a lane or a group", () => {
+  const groups = stateOf(groupsFixture.snapshot);
+  const sends = stateOf(audioCablesFixture.snapshot);
+  /** `snapshot` with the way out of the node `id` cut. */
+  const cut = (snapshot: Snapshot, id: number): ClientState => {
+    const copy = structuredClone(snapshot);
+    const node = copy.graph.nodes.find((n) => n.id === id);
+    if (node?.kind !== "instrument" && node?.kind !== "group") throw new Error("no lane or group");
+    node.route = "none";
+    return stateOf(copy);
+  };
+
+  test("goes to the master for a group and for a lane that is in no group, and to its group for a lane that is in one, by the name that the canvas gives the group", () => {
+    expect(wayOutOf(state, oscillator.id)).toEqual({ cut: false, to: "Master" });
+    expect(wayOutOf(groups, 0)).toEqual({ cut: false, to: "Master" }); // a group
+    expect(wayOutOf(groups, 5)).toEqual({ cut: false, to: "Master" }); // a lane that is in no group
+    expect(wayOutOf(groups, 3)).toEqual({ cut: false, to: "Group 1" });
+    expect(wayOutOf(groups, 10)).toEqual({ cut: false, to: "Group 1" });
+    expect(wayOutOf(groups, 9)).toEqual({ cut: false, to: "Group 2" });
+    expect(wayOutOf(sends, 4)).toEqual({ cut: false, to: "Pad" });
+    expect(wayOutOf(sends, 10)).toEqual({ cut: false, to: "Master" }); // a lane that has no instrument
+    // (The master is called by its own name, the one that the canvas draws on it.)
+    const renamed = structuredClone(tracerSnapshot);
+    for (const node of renamed.graph.nodes) if (node.kind === "master") node.name = "Output";
+    expect(wayOutOf(stateOf(renamed), oscillator.id)).toEqual({ cut: false, to: "Output" });
+  });
+
+  test("is cut for the lane or the group whose route is none, and for that one only", () => {
+    expect(wayOutOf(cut(tracerSnapshot, oscillator.id), oscillator.id)).toEqual({ cut: true, to: "Master" });
+    expect(wayOutOf(cut(groupsFixture.snapshot, 0), 0)).toEqual({ cut: true, to: "Master" });
+    expect(wayOutOf(cut(groupsFixture.snapshot, 0), 1)?.cut).toBe(false);
+    // (A lane that is cut is cut where it goes: its group, and the lanes of the group are not cut by it.)
+    expect(wayOutOf(cut(groupsFixture.snapshot, 3), 3)).toEqual({ cut: true, to: "Group 1" });
+    expect(wayOutOf(cut(groupsFixture.snapshot, 3), 10)).toEqual({ cut: false, to: "Group 1" });
+    expect(wayOutOf(cut(groupsFixture.snapshot, 0), 3)).toEqual({ cut: false, to: "Group 1" });
+    expect(wayOutOf(cut(audioCablesFixture.snapshot, 10), 10)).toEqual({ cut: true, to: "Master" }); // a lane that has no instrument
+  });
+
+  test("is none for what is neither a lane nor a group: an effect, a modulator, the master, a node that is not there, and before there is a session", () => {
+    for (const node of [filter.id, lfo.id, MASTER, 424242]) expect(wayOutOf(state, node), `node ${String(node)}`).toBeUndefined();
+    expect(wayOutOf(stateOf(null), oscillator.id)).toBeUndefined();
+  });
+
+  test("is the group's name as the canvas numbers it, when two groups have one", () => {
+    const copy = structuredClone(groupsFixture.snapshot);
+    for (const node of copy.graph.nodes) if (node.kind === "group") node.name = "Pad";
+    const twins = stateOf(copy);
+    expect(wayOutOf(twins, 3)?.to).toBe("Pad 1");
+    expect(wayOutOf(twins, 9)?.to).toBe("Pad 2");
+  });
+
+  test("is the same way out when both say the same, and not otherwise", () => {
+    const a = wayOutOf(state, oscillator.id);
+    const b = wayOutOf(state, oscillator.id);
+    expect(a).not.toBe(b);
+    expect(sameWayOut(a, b)).toBe(true);
+    expect(sameWayOut(a, wayOutOf(cut(tracerSnapshot, oscillator.id), oscillator.id))).toBe(false);
+    expect(sameWayOut(wayOutOf(groups, 3), wayOutOf(groups, 5))).toBe(false); // the same flag, and another place
+    expect(sameWayOut(undefined, undefined)).toBe(true);
+    expect(sameWayOut(a, undefined)).toBe(false);
+    expect(sameWayOut(undefined, a)).toBe(false);
   });
 });
 

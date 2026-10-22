@@ -5,6 +5,10 @@
 # yourself, from the dot on the right of an oscillator to the dot on the left of the reverb (or choose the reverb
 # from the `⇢` menu under the oscillator's name), and turn the level on the cable: 0 is out of the room, 1 is as
 # far into it as the oscillator goes, 2 is twice that.
+#
+# To hear the room alone, cut the way out of each oscillator: put `route = "none"` in its table (on the page, the
+# button under its mute and solo says `→ Master`, and says `no out` when it is cut), and the oscillators are heard
+# through their cables and in no other way.
 
 [[group]]
 name = "Room"
