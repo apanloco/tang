@@ -197,6 +197,8 @@ function drivenName(snapshot: Snapshot, to: Endpoint): string | undefined {
     case "depth":
       return port.type;
     case "modOut":
+    case "eventsIn":
+    case "eventsOut":
     case "audioIn":
     case "audioOut":
       return undefined;

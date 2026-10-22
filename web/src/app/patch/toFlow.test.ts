@@ -195,6 +195,23 @@ describe("the nodes on the canvas", () => {
     }
   });
 
+  test("are not made for the sources of notes, and the cables and links of notes are not drawn: the canvas does not have them yet", () => {
+    const lane = tracerSnapshot.graph.nodes.find((node) => node.kind === "instrument");
+    if (lane === undefined) throw new Error("the tracer has a lane");
+    const keys: Node = { id: 40, parent: null, name: "Keys", kind: "source", source: { type: "keys" } };
+    const device: Node = { id: 41, parent: null, name: "Seaboard", ui: { x: 12, y: 34 }, kind: "source", source: { type: "device", name: "Seaboard" } };
+    const notes: Edge[] = [
+      { from: { node: 40, port: { type: "eventsOut" } }, to: { node: lane.id, port: { type: "eventsIn" } }, kind: "events", id: 90 },
+      { from: { node: 41, port: { type: "eventsOut" } }, to: { node: lane.id, port: { type: "eventsIn" } }, kind: "hears" },
+    ];
+    const withNotes: Graph = { nodes: [keys, device, ...tracerSnapshot.graph.nodes], edges: [...tracerSnapshot.graph.edges, ...notes] };
+    expect(toFlow(withNotes)).toEqual(toFlow(tracerSnapshot.graph));
+  });
+
+  test("have a handle for the ports of events, named by the port", () => {
+    expect([handleOf({ type: "eventsIn" }), handleOf({ type: "eventsOut" })]).toEqual(["eventsIn", "eventsOut"]);
+  });
+
   test("are told their names, and the format of their plugins when they have one", () => {
     const flow = toFlow(tracerSnapshot.graph);
     expect(flow.nodes.map((node) => [node.data.name, node.data.format])).toEqual([

@@ -3307,7 +3307,7 @@ fn a_tempo_set_with_b_leaves_the_tempo_that_a_recorded_pattern_was_recorded_at()
     h.type_chars("b").press_n(KeyCode::Backspace, 3).type_chars("60").press(KeyCode::Enter);
     assert_eq!(h.s.ctl.model.bpm, 60.0);
     assert_eq!(h.s.ctl.model.instruments[1].pattern.as_ref().unwrap().bpm, 120.0, "it was recorded at 120");
-    let (lanes, _, _) = crate::app::save::to_save(&h.s.ctl.model);
+    let (lanes, _, _, _) = crate::app::save::to_save(&h.s.ctl.model);
     assert_eq!(lanes[1].pattern.as_ref().unwrap().bpm, 120.0, "and it is saved at it");
 }
 
@@ -4384,8 +4384,8 @@ fn the_popup_of_a_modulators_own_setting_can_make_a_key_to_drive_it() {
 #[test]
 fn a_velocity_and_a_key_are_saved_as_the_controls_that_they_are() {
     let h = Harness::new(scene_notes());
-    let (instruments, groups, cables) = crate::app::save::to_save(&h.s.ctl.model);
-    let file = crate::session::to_toml(&instruments, &groups, &cables, None, h.s.ctl.model.master_ui(), h.s.ctl.model.bpm_to_save()).unwrap();
+    let (instruments, groups, cables, sources) = crate::app::save::to_save(&h.s.ctl.model);
+    let file = crate::session::to_toml(&instruments, &groups, &cables, &sources, None, h.s.ctl.model.master_ui(), h.s.ctl.model.bpm_to_save()).unwrap();
     assert!(file.contains("midi_velocity = true") && file.contains("midi_key = true"), "{file}");
 }
 
@@ -4640,7 +4640,7 @@ fn a_loaded_preset_is_saved_by_name_with_no_parameter_overrides() {
     let mut h = Harness::new(PRESET_SCENE);
     h.goto(TreeAddress::Effect { inst: 0, index: 0 });
     h.press(KeyCode::Char('p')).type_chars("ambient").press(KeyCode::Enter);
-    let (lanes, _, _) = crate::app::save::to_save(&h.s.ctl.model);
+    let (lanes, _, _, _) = crate::app::save::to_save(&h.s.ctl.model);
     let reverb = &lanes[0].effects[0];
     assert_eq!(reverb.preset.as_deref(), Some("Ambient Wash"));
     assert!(reverb.params.is_empty(), "the preset's values are the baseline, not edits: {:?}", reverb.params);
@@ -4648,7 +4648,7 @@ fn a_loaded_preset_is_saved_by_name_with_no_parameter_overrides() {
     // A tweak afterwards is an edit on top of the preset, and the only one.
     h.press(KeyCode::Enter).press(KeyCode::Right);
     h.commands();
-    let (lanes, _, _) = crate::app::save::to_save(&h.s.ctl.model);
+    let (lanes, _, _, _) = crate::app::save::to_save(&h.s.ctl.model);
     assert_eq!(lanes[0].effects[0].params.len(), 1);
 }
 

@@ -132,9 +132,26 @@ pub struct SessionConfig {
     /// The tempo the session is at, in beats a minute (the top-level `bpm`); none for a file that has not one, which
     /// the loader gives the tempo of its first recorded pattern.
     pub bpm: Option<f32>,
-    /// The audio cables (`[[cable]]`), in the order of the file: sends from one place of the audio to another, besides the way that a lane and a group are wired by
-    /// themselves.
+    /// The cables (`[[cable]]`), in the order of the file: audio cables, which are sends from one place of the audio to another besides the way that a lane and a group are wired by
+    /// themselves, and event cables, which carry the notes of a source to a lane.
     pub cables: Vec<CableConfig>,
+    /// The computer's keys as a source of notes that the session has a node for (`[keys]`; a cable that starts at `keys` makes it if the file has no such table).
+    pub keys: Option<KeysConfig>,
+    /// The MIDI devices that the session has a node for (`[[device]]`), in the order of the file, which is how a cable names them (`device[0]`).
+    pub devices: Vec<DeviceConfig>,
+}
+
+/// The keys as a source of notes: the computer's keys, the page's piano and keys and every browser's (`[keys]`).
+pub struct KeysConfig {
+    /// Where the node is drawn.
+    pub ui: Option<NodeUi>,
+}
+
+/// A MIDI device as a source of notes (`[[device]]`): the name of its port as the system gives it, or as much of it as tells it ("Launchkey" is every port of a Launchkey).
+pub struct DeviceConfig {
+    pub name: String,
+    /// Where the node is drawn.
+    pub ui: Option<NodeUi>,
 }
 
 /// A submix group: members are the instruments whose `group` index points here.
@@ -157,8 +174,9 @@ pub struct GroupConfig {
     pub ui: Option<NodeUi>,
 }
 
-/// A place in a session that an audio cable starts or ends at, as the file names it (P3c of `docs/patch-graph.md` §11.6): a lane by its place among the `[[instrument]]`
-/// tables, an effect of a lane or of a group's bus by its place in the chain, a group by its place among the `[[group]]` tables, or the mix.
+/// A place in a session that a cable starts or ends at, as the file names it (P3c and P4b of `docs/patch-graph.md` §11.6): a lane by its place among the `[[instrument]]`
+/// tables, an effect of a lane or of a group's bus by its place in the chain, a group by its place among the `[[group]]` tables, the mix, or, for a cable of notes, the keys or a device
+/// by its place among the `[[device]]` tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CablePlace {
     /// `instrument[0]`: a lane. A cable starts at what its instrument puts out (after the lane's volume, before its chain).
@@ -171,10 +189,19 @@ pub enum CablePlace {
     BusEffect { group: usize, effect: usize },
     /// `master`: the output mix, where a cable ends.
     Master,
+    /// `keys`: the computer's keys as a source of notes, where a cable of notes starts.
+    Keys,
+    /// `device[0]`: a MIDI device, the first of the `[[device]]` tables: where a cable of notes starts.
+    Device(usize),
 }
 
 impl CablePlace {
-    /// The place that `text` names, if it names one: `master`, `instrument[0]`, `instrument[0].effect[1]`, `group[0]` or `group[0].effect[1]`, the numbers whole and from 0.
+    /// Whether it is a source of notes, which only a cable of notes starts at.
+    pub fn is_source(self) -> bool {
+        matches!(self, CablePlace::Keys | CablePlace::Device(_))
+    }
+
+    /// The place that `text` names, if it names one: `master`, `keys`, `device[0]`, `instrument[0]`, `instrument[0].effect[1]`, `group[0]` or `group[0].effect[1]`, the numbers whole and from 0.
     pub fn parse(text: &str) -> Option<CablePlace> {
         fn indexed(text: &str) -> Option<(&str, usize)> {
             let (word, rest) = text.split_once('[')?;
@@ -188,6 +215,9 @@ impl CablePlace {
         if text == "master" {
             return Some(CablePlace::Master);
         }
+        if text == "keys" {
+            return Some(CablePlace::Keys);
+        }
         let (head, effect) = match text.split_once('.') {
             Some((head, rest)) => match indexed(rest)? {
                 ("effect", index) => (head, Some(index)),
@@ -200,6 +230,7 @@ impl CablePlace {
             (("instrument", instrument), Some(effect)) => Some(CablePlace::Effect { instrument, effect }),
             (("group", group), None) => Some(CablePlace::Group(group)),
             (("group", group), Some(effect)) => Some(CablePlace::BusEffect { group, effect }),
+            (("device", device), None) => Some(CablePlace::Device(device)),
             _ => None,
         }
     }
@@ -213,16 +244,19 @@ impl std::fmt::Display for CablePlace {
             CablePlace::Group(group) => write!(f, "group[{group}]"),
             CablePlace::BusEffect { group, effect } => write!(f, "group[{group}].effect[{effect}]"),
             CablePlace::Master => f.write_str("master"),
+            CablePlace::Keys => f.write_str("keys"),
+            CablePlace::Device(device) => write!(f, "device[{device}]"),
         }
     }
 }
 
-/// An audio cable of a session file (`[[cable]]`): where it starts, where it ends and its level (1 if the file says none). Whether the places are in the
+/// A cable of a session file (`[[cable]]`): where it starts, where it ends and its level, if the file says one. It is a cable of notes when it starts at a source (`keys`, `device[0]`), which has
+/// no level (a file that gives it one is refused), and an audio cable otherwise, whose level is 1 if the file says none. Whether the places are in the
 /// session, are what a cable can start or end at, and leave the audio going one way is for the loader to say: the file has only names.
 pub struct CableConfig {
     pub from: CablePlace,
     pub to: CablePlace,
-    pub gain: f32,
+    pub gain: Option<f32>,
 }
 
 /// Optional `[piano]` section of the session TOML.
@@ -439,6 +473,10 @@ struct SessionRaw {
     #[serde(default, rename = "cable")]
     cables: Vec<CableRaw>,
     #[serde(default)]
+    keys: Option<KeysRaw>,
+    #[serde(default, rename = "device")]
+    devices: Vec<DeviceRaw>,
+    #[serde(default)]
     piano: Option<PianoConfig>,
     #[serde(default, deserialize_with = "lenient_table")]
     ui: Option<toml::Table>,
@@ -451,8 +489,23 @@ struct SessionRaw {
 struct CableRaw {
     from: String,
     to: String,
-    #[serde(default = "default_volume")]
-    gain: f64,
+    #[serde(default)]
+    gain: Option<f64>,
+}
+
+/// A `[keys]` table as the file has it.
+#[derive(Deserialize)]
+struct KeysRaw {
+    #[serde(default, deserialize_with = "lenient_ui")]
+    ui: Option<NodeUi>,
+}
+
+/// A `[[device]]` table as the file has it.
+#[derive(Deserialize)]
+struct DeviceRaw {
+    name: String,
+    #[serde(default, deserialize_with = "lenient_ui")]
+    ui: Option<NodeUi>,
 }
 
 #[derive(Deserialize)]
@@ -736,6 +789,17 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
         });
     }
     let master_ui = raw.ui.and_then(|mut table| table.remove("master")).and_then(node_ui_of);
+    let mut devices: Vec<DeviceConfig> = Vec::new();
+    for (at, device) in raw.devices.into_iter().enumerate() {
+        let name = device.name.trim().to_string();
+        if name.is_empty() {
+            anyhow::bail!("device[{at}].name is blank: a device is called by its name, or as much of it as tells it");
+        }
+        if let Some(first) = devices.iter().position(|other| other.name == name) {
+            anyhow::bail!("device[{at}].name is \"{name}\", as device[{first}]'s is: a device has one node");
+        }
+        devices.push(DeviceConfig { name, ui: device.ui });
+    }
     let cables = raw
         .cables
         .into_iter()
@@ -743,13 +807,18 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
         .map(|(i, cable)| {
             let place = |end: &str, text: &str| {
                 CablePlace::parse(text).ok_or_else(|| {
-                    anyhow::anyhow!("cable[{i}].{end}: \"{text}\" is not a place of the session (instrument[0], instrument[0].effect[1], group[0], group[0].effect[1] or master)")
+                    anyhow::anyhow!("cable[{i}].{end}: \"{text}\" is not a place of the session (instrument[0], instrument[0].effect[1], group[0], group[0].effect[1], master, keys or device[0])")
                 })
             };
-            Ok(CableConfig { from: place("from", &cable.from)?, to: place("to", &cable.to)?, gain: cable.gain as f32 })
+            let (from, to) = (place("from", &cable.from)?, place("to", &cable.to)?);
+            if from.is_source() && cable.gain.is_some() {
+                anyhow::bail!("cable[{i}].gain: a cable of notes has no level: it carries the notes of {from} as they are");
+            }
+            Ok(CableConfig { from, to, gain: cable.gain.map(|gain| gain as f32) })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), cables })
+    let keys = raw.keys.map(|keys| KeysConfig { ui: keys.ui });
+    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), cables, keys, devices })
 }
 
 /// Parse a note range like "C0-B3" into (low, high) MIDI note numbers
@@ -983,11 +1052,31 @@ pub struct SaveGroup {
     pub ui: Option<NodeUi>,
 }
 
-/// Data needed to serialize an audio cable for saving: its two places in the file's terms, and its level.
+/// Data needed to serialize a cable for saving: its two places in the file's terms, and its level (a cable of notes, which starts at a source, has none: its level is not written).
 pub struct SaveCable {
     pub from: CablePlace,
     pub to: CablePlace,
     pub gain: f32,
+}
+
+/// The sources of notes that a session has a node for, as a save writes them: the keys, if it has them, and its devices in the order that a cable names them in.
+#[derive(Default)]
+pub struct SaveSources {
+    pub keys: Option<SaveKeys>,
+    pub devices: Vec<SaveDevice>,
+}
+
+/// The keys as a source (`[keys]`).
+pub struct SaveKeys {
+    /// Where the node is drawn.
+    pub ui: Option<NodeUi>,
+}
+
+/// A device as a source (`[[device]]`).
+pub struct SaveDevice {
+    pub name: String,
+    /// Where the node is drawn.
+    pub ui: Option<NodeUi>,
 }
 
 /// Data needed to serialize a pattern for saving.
@@ -1063,6 +1152,11 @@ pub struct SaveEffect {
 struct SessionOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     bpm: Option<f64>,
+    /// The sources of notes come first: they are what the lanes below them hear.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keys: Option<KeysOut>,
+    #[serde(skip_serializing_if = "Vec::is_empty", rename = "device")]
+    devices: Vec<DeviceOut>,
     #[serde(rename = "instrument")]
     instruments: Vec<InstrumentSlotOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "group")]
@@ -1073,6 +1167,21 @@ struct SessionOut {
     piano: Option<PianoOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ui: Option<UiOut>,
+}
+
+/// The `[keys]` table in the output.
+#[derive(Serialize)]
+struct KeysOut {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ui: Option<NodeUiOut>,
+}
+
+/// One `[[device]]` table in the output.
+#[derive(Serialize)]
+struct DeviceOut {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ui: Option<NodeUiOut>,
 }
 
 /// One `[[cable]]` table in the output: where it starts and ends, as text, and its level when it is not 1.
@@ -1519,12 +1628,15 @@ pub fn to_toml(
     instruments: &[SaveInstrumentSlot],
     groups: &[SaveGroup],
     cables: &[SaveCable],
+    sources: &SaveSources,
     piano: Option<&PianoConfig>,
     master_ui: Option<NodeUi>,
     bpm: Option<f32>,
 ) -> anyhow::Result<String> {
     let session = SessionOut {
         bpm: bpm.map(clean_f64),
+        keys: sources.keys.as_ref().map(|keys| KeysOut { ui: keys.ui.map(NodeUiOut::from) }),
+        devices: sources.devices.iter().map(|device| DeviceOut { name: device.name.clone(), ui: device.ui.map(NodeUiOut::from) }).collect(),
         cables: cables.iter().map(|cable| CableOut { from: cable.from.to_string(), to: cable.to.to_string(), gain: cable.gain }).collect(),
         piano: piano.map(|p| PianoOut { scale: p.scale.clone(), locked: p.locked }),
         ui: master_ui.map(|ui| UiOut { master: ui.into() }),
@@ -1662,6 +1774,8 @@ fn inline_ui_tables(table: &mut toml_edit::Table, root: bool) {
                     key.fmt();
                 }
             }
+            // (The keys have a table of their own, and a place in it.)
+            Item::Table(child) if key == "keys" && root => inline_ui_tables(child, false),
             // (Every node is an element of an array of tables, the instruments and what is under them.)
             Item::ArrayOfTables(array) => {
                 for child in array.iter_mut() {
@@ -1719,31 +1833,35 @@ pub fn plain_file_name(given: &str) -> Result<String, String> {
 
 /// Write the session to `path`, creating its directory first (a new session's
 /// default home is `~/.config/tang/sessions/`). A file that is there is written over.
+#[allow(clippy::too_many_arguments)]
 pub fn save(
     path: &Path,
     instruments: &[SaveInstrumentSlot],
     groups: &[SaveGroup],
     cables: &[SaveCable],
+    sources: &SaveSources,
     piano: Option<&PianoConfig>,
     master_ui: Option<NodeUi>,
     bpm: Option<f32>,
 ) -> anyhow::Result<()> {
-    write_session(path, instruments, groups, cables, piano, master_ui, bpm, false)
+    write_session(path, instruments, groups, cables, sources, piano, master_ui, bpm, false)
 }
 
 /// As `save`, for a file that is not there yet: the write itself fails, with an `io::Error` of kind `AlreadyExists` in the error, if the path is taken
 /// (by a file, a folder or a link, one that leads nowhere included, which it does not follow). Nothing looked at before the write can be out of date by the
 /// time of it (finding f128).
+#[allow(clippy::too_many_arguments)]
 pub fn save_new(
     path: &Path,
     instruments: &[SaveInstrumentSlot],
     groups: &[SaveGroup],
     cables: &[SaveCable],
+    sources: &SaveSources,
     piano: Option<&PianoConfig>,
     master_ui: Option<NodeUi>,
     bpm: Option<f32>,
 ) -> anyhow::Result<()> {
-    write_session(path, instruments, groups, cables, piano, master_ui, bpm, true)
+    write_session(path, instruments, groups, cables, sources, piano, master_ui, bpm, true)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1752,12 +1870,13 @@ fn write_session(
     instruments: &[SaveInstrumentSlot],
     groups: &[SaveGroup],
     cables: &[SaveCable],
+    sources: &SaveSources,
     piano: Option<&PianoConfig>,
     master_ui: Option<NodeUi>,
     bpm: Option<f32>,
     create_new: bool,
 ) -> anyhow::Result<()> {
-    let content = to_toml(instruments, groups, cables, piano, master_ui, bpm)?;
+    let content = to_toml(instruments, groups, cables, sources, piano, master_ui, bpm)?;
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)
@@ -2074,7 +2193,7 @@ mod tests {
     fn an_lfo_that_is_keyed_is_written_with_its_key_and_read_back_the_same_and_one_that_is_free_has_neither_key() {
         let lane = |rack: Vec<SaveModulator>| SaveInstrumentSlot { modulators: rack, ..placed_lane(None) };
         let keyed = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: true, fade: 0.3, sync: None }, targets: vec![], ui: None };
-        let text = to_toml(&[lane(vec![keyed])], &[], &[], None, None, None).unwrap();
+        let text = to_toml(&[lane(vec![keyed])], &[], &[], &Default::default(), None, None, None).unwrap();
         for line in ["retrigger = true", "fade = 0.3"] {
             assert!(text.contains(line), "{line} (as typed, and not what its 32 bits are): {text}");
         }
@@ -2084,7 +2203,7 @@ mod tests {
         // One that retriggers and does not fade has the one key, and the other way about.
         let only = |retrigger: bool, fade: f32| {
             let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger, fade, sync: None }, targets: vec![], ui: None };
-            to_toml(&[lane(vec![lfo])], &[], &[], None, None, None).unwrap()
+            to_toml(&[lane(vec![lfo])], &[], &[], &Default::default(), None, None, None).unwrap()
         };
         let (a, b) = (only(true, 0.0), only(false, 2.0));
         assert!(a.contains("retrigger = true") && !a.contains("fade"), "{a}");
@@ -2120,7 +2239,7 @@ mod tests {
             targets: vec![],
             ui: None,
         };
-        let text = to_toml(&[lane(vec![lfo(Some("1/8 triplet")), steps(Some("1/16")), lfo(None), steps(None)])], &[], &[], None, None, None).unwrap();
+        let text = to_toml(&[lane(vec![lfo(Some("1/8 triplet")), steps(Some("1/16")), lfo(None), steps(None)])], &[], &[], &Default::default(), None, None, None).unwrap();
         assert_eq!(text.matches("sync = ").count(), 2, "only the two that follow the tempo: {text}");
         for line in ["sync = \"1/8 triplet\"", "sync = \"1/16\""] {
             assert!(text.contains(line), "{line}: {text}");
@@ -2154,7 +2273,7 @@ mod tests {
         let mut values: Vec<f32> = (0..16).map(|i| i as f32 / 8.0 - 1.0).collect();
         values[3] = 0.3;
         let steps = SaveModulator { source: SaveModSource::Steps { values: values.clone(), length: 5, rate: 6.5, glide: 0.25, retrigger: false, sync: None }, targets: vec![], ui: None };
-        let text = to_toml(&[sequencer(vec![steps])], &[], &[], None, None, None).unwrap();
+        let text = to_toml(&[sequencer(vec![steps])], &[], &[], &Default::default(), None, None, None).unwrap();
         assert!(text.contains("type = \"steps\""), "{text}");
         assert!(text.contains("steps = [-1.0, -0.875, -0.75, 0.3, -0.5, -0.375, -0.25, -0.125, 0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]"), "every value, as typed: {text}");
         for line in ["length = 5", "rate = 6.5", "glide = 0.25", "retrigger = false"] {
@@ -2171,7 +2290,7 @@ mod tests {
         let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: None };
         let envelope = SaveModulator { source: SaveModSource::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }, targets: vec![], ui: None };
         let knob = SaveModulator { source: SaveModSource::Macro { value: 0.5 }, targets: vec![], ui: None };
-        let text = to_toml(&[sequencer(vec![lfo, envelope, knob])], &[], &[], None, None, None).unwrap();
+        let text = to_toml(&[sequencer(vec![lfo, envelope, knob])], &[], &[], &Default::default(), None, None, None).unwrap();
         for key in ["steps", "length", "glide", "retrigger"] {
             assert!(!text.contains(key), "{key}: {text}");
         }
@@ -2194,7 +2313,7 @@ mod tests {
     fn mute_and_solo_are_written_by_to_toml_only_when_on() {
         let lane = |muted: bool, solo: bool| SaveInstrumentSlot { muted, solo, ..placed_lane(None) };
         let group = |muted: bool, solo: bool| SaveGroup { name: None, volume: 1.0, pan: 0.0, muted, solo, effects: vec![], modulators: vec![], ui: None, route: Route::Out };
-        let text = to_toml(&[lane(true, false), lane(false, true), lane(true, true), lane(false, false)], &[group(true, false), group(false, true), group(false, false)], &[], None, None, None).unwrap();
+        let text = to_toml(&[lane(true, false), lane(false, true), lane(true, true), lane(false, false)], &[group(true, false), group(false, true), group(false, false)], &[], &Default::default(), None, None, None).unwrap();
         let config = parse(&text).unwrap();
         assert_eq!(config.instruments.iter().map(|l| (l.muted, l.solo)).collect::<Vec<_>>(), [(true, false), (false, true), (true, true), (false, false)]);
         assert_eq!(config.groups.iter().map(|g| (g.muted, g.solo)).collect::<Vec<_>>(), [(true, false), (false, true), (false, false)]);
@@ -2235,7 +2354,7 @@ mod tests {
     fn a_route_is_written_by_to_toml_only_when_it_is_none() {
         let lane = |route: Route| SaveInstrumentSlot { route, ..placed_lane(None) };
         let group = |route: Route| SaveGroup { name: None, volume: 1.0, pan: 0.0, muted: false, solo: false, route, effects: vec![], modulators: vec![], ui: None };
-        let text = to_toml(&[lane(Route::None), lane(Route::Out)], &[group(Route::Out), group(Route::None)], &[], None, None, None).unwrap();
+        let text = to_toml(&[lane(Route::None), lane(Route::Out)], &[group(Route::Out), group(Route::None)], &[], &Default::default(), None, None, None).unwrap();
         let config = parse(&text).unwrap();
         assert_eq!(config.instruments.iter().map(|l| l.route).collect::<Vec<_>>(), [Route::None, Route::Out]);
         assert_eq!(config.groups.iter().map(|g| g.route).collect::<Vec<_>>(), [Route::Out, Route::None]);
@@ -2399,7 +2518,7 @@ range = "C4-C8"
             },
         ];
 
-        save(&path, &instruments, &[], &[], None, None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
 
         // Reload and verify
         let config = load(path.to_str().unwrap()).unwrap();
@@ -2447,7 +2566,7 @@ range = "C4-C8"
             route: Route::Out,
         }];
 
-        save(&path, &instruments, &[], &[], None, None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
@@ -2500,7 +2619,7 @@ range = "C4-C8"
             route: Route::Out,
         }];
 
-        save(&path, &instruments, &[], &[], None, None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
 
         let config = load(path.to_str().unwrap()).unwrap();
         assert_eq!(config.instruments.len(), 1);
@@ -2554,7 +2673,7 @@ range = "C4-C8"
             route: Route::Out,
         }];
 
-        save(&path, &instruments, &[], &[], None, None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("type = \"midi\""), "expected midi modulator:\n{raw}");
         assert!(raw.contains("midi_cc = 74"), "expected bound CC:\n{raw}");
@@ -2608,7 +2727,7 @@ range = "C4-C8"
             route: Route::Out,
         }];
 
-        save(&path, &instruments, &[], &[], None, None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("midi_aftertouch = true"), "expected aftertouch binding:\n{raw}");
 
@@ -2652,7 +2771,7 @@ range = "C4-C8"
             route: Route::Out,
         }];
 
-        save(&path, &instruments, &[], &[], None, None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert_eq!(raw.matches("midi_velocity = true").count(), 1, "{raw}");
         assert_eq!(raw.matches("midi_key = true").count(), 1, "{raw}");
@@ -2708,7 +2827,7 @@ range = "C4-C8"
             ui: None,
             route: Route::Out,
         }];
-        save(&path, &instruments, &[], &[], None, None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("slot = 1"), "saved target should record its slot:\n{raw}");
@@ -2767,7 +2886,7 @@ range = "C4-C8"
             ui: None,
             route: Route::Out,
         }];
-        save(&path, &instruments, &groups, &[], None, None, None).unwrap();
+        save(&path, &instruments, &groups, &[], &Default::default(), None, None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[[group]]"), "expected a [[group]] section:\n{raw}");
@@ -2860,7 +2979,7 @@ range = "C4-C8"
             ui: None,
             route: Route::Out,
         }];
-        save(&path, &[member], &groups, &[], None, None, None).unwrap();
+        save(&path, &[member], &groups, &[], &Default::default(), None, None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[[group.modulator]]"), "expected group modulator:\n{raw}");
@@ -2924,7 +3043,7 @@ range = "C4-C8"
             route: Route::Out,
         }];
 
-        save(&path, &instruments, &[], &[], None, None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
 
         // Output should use inline tables and stable alphabetical ordering.
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -3049,7 +3168,7 @@ plugin = "builtin:osc"
             ui: at(800.0, 40.0),
             route: Route::Out,
         };
-        let text = to_toml(&[placed_lane(at(80.0, 120.0))], &[group], &[], None, at(1200.0, 300.0), None).unwrap();
+        let text = to_toml(&[placed_lane(at(80.0, 120.0))], &[group], &[], &Default::default(), None, at(1200.0, 300.0), None).unwrap();
         // Whole numbers are written without a point, and it is one line for a node, in the table of the node.
         assert!(text.contains("ui = { x = 80, y = 120 }"), "{text}");
         assert_eq!(text.matches("ui = { x = 80, y = 120 }").count(), 3, "the lane, its effect and its modulator: {text}");
@@ -3118,7 +3237,7 @@ plugin = "builtin:osc"
             ui: None,
             route: Route::Out,
         };
-        let text = to_toml(&[lane], &[group], &[], None, None, None).unwrap();
+        let text = to_toml(&[lane], &[group], &[], &Default::default(), None, None, None).unwrap();
         for line in [r#"pinned = ["sustain", "detune"]"#, r#"pinned = ["cutoff"]"#, r#"pinned = ["mix", "width"]"#] {
             assert_eq!(text.lines().filter(|l| *l == line).count(), 1, "{line} in\n{text}");
         }
@@ -3129,7 +3248,7 @@ plugin = "builtin:osc"
         assert_eq!(config.instruments[0].effects[0].pinned, ["cutoff"]);
         assert_eq!(config.groups[0].effects[0].pinned, ["mix", "width"]);
         // With none pinned there is no line: a file is as it always was.
-        let plain = to_toml(&[placed_lane(None)], &[], &[], None, None, None).unwrap();
+        let plain = to_toml(&[placed_lane(None)], &[], &[], &Default::default(), None, None, None).unwrap();
         assert!(!plain.contains("pinned"), "{plain}");
     }
 
@@ -3153,10 +3272,10 @@ plugin = "builtin:osc"
 
     #[test]
     fn a_node_without_a_position_is_written_as_it_always_was() {
-        let text = to_toml(&[placed_lane(None)], &[], &[], None, None, None).unwrap();
+        let text = to_toml(&[placed_lane(None)], &[], &[], &Default::default(), None, None, None).unwrap();
         assert!(!text.lines().any(|line| line.starts_with("ui ") || line == "[ui]"), "{text}");
         // (The same session with positions has the same lines besides the positions.)
-        let placed = to_toml(&[placed_lane(Some(NodeUi { x: 1.0, y: 2.0 }))], &[], &[], None, None, None).unwrap();
+        let placed = to_toml(&[placed_lane(Some(NodeUi { x: 1.0, y: 2.0 }))], &[], &[], &Default::default(), None, None, None).unwrap();
         let without: Vec<&str> = placed.lines().filter(|line| !line.starts_with("ui = ")).collect();
         assert_eq!(without.join("\n") + "\n", text);
     }
@@ -3164,7 +3283,7 @@ plugin = "builtin:osc"
     #[test]
     fn a_position_with_decimals_is_written_the_way_it_was_typed() {
         // (Not `0.10000000149011612`: an f32 is written as the shortest number that is it.)
-        let text = to_toml(&[placed_lane(Some(NodeUi { x: 12.3, y: -0.1 }))], &[], &[], None, None, None).unwrap();
+        let text = to_toml(&[placed_lane(Some(NodeUi { x: 12.3, y: -0.1 }))], &[], &[], &Default::default(), None, None, None).unwrap();
         assert!(text.contains("ui = { x = 12.3, y = -0.1 }"), "{text}");
     }
 
@@ -3195,7 +3314,7 @@ plugin = "builtin:osc"
             route: Route::Out,
         }];
         let piano = PianoConfig { scale: Some("F# dorian".into()), locked: false };
-        save(&path, &instruments, &[], &[], Some(&piano), None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), Some(&piano), None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("[piano]"));
@@ -3224,7 +3343,7 @@ plugin = "builtin:osc"
             ui: None,
             route: Route::Out,
         };
-        save(&path, &[lane], &[], &[], None, None, None).unwrap();
+        save(&path, &[lane], &[], &[], &Default::default(), None, None, None).unwrap();
         assert_eq!(load(path.to_str().unwrap()).unwrap().instruments.len(), 1);
     }
 
@@ -3261,12 +3380,12 @@ plugin = "builtin:osc"
     #[test]
     fn a_session_saved_as_a_new_file_is_what_a_save_writes_and_is_made_where_the_directory_is_not_yet() {
         let dir = tempfile::tempdir().unwrap();
-        save_new(&dir.path().join("new.toml"), &one_lane(), &[], &[], None, None, None).unwrap();
-        save(&dir.path().join("same.toml"), &one_lane(), &[], &[], None, None, None).unwrap();
+        save_new(&dir.path().join("new.toml"), &one_lane(), &[], &[], &Default::default(), None, None, None).unwrap();
+        save(&dir.path().join("same.toml"), &one_lane(), &[], &[], &Default::default(), None, None, None).unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("new.toml")).unwrap(), std::fs::read_to_string(dir.path().join("same.toml")).unwrap());
         // (A new session's home is a directory that may not be there yet.)
         let nested = dir.path().join("sessions").join("new.toml");
-        save_new(&nested, &one_lane(), &[], &[], None, None, None).unwrap();
+        save_new(&nested, &one_lane(), &[], &[], &Default::default(), None, None, None).unwrap();
         assert_eq!(load(nested.to_str().unwrap()).unwrap().instruments.len(), 1);
     }
 
@@ -3276,16 +3395,16 @@ plugin = "builtin:osc"
         let dir = tempfile::tempdir().unwrap();
         let taken = dir.path().join("taken.toml");
         std::fs::write(&taken, "another session").unwrap();
-        let error = save_new(&taken, &one_lane(), &[], &[], None, None, None).expect_err("the file is there");
+        let error = save_new(&taken, &one_lane(), &[], &[], &Default::default(), None, None, None).expect_err("the file is there");
         assert!(path_is_taken(&error), "{error:#}");
         assert_eq!(std::fs::read_to_string(&taken).unwrap(), "another session", "what was there is as it was");
 
         // A folder is a path that is taken.
         std::fs::create_dir(dir.path().join("folder.toml")).unwrap();
-        assert!(path_is_taken(&save_new(&dir.path().join("folder.toml"), &one_lane(), &[], &[], None, None, None).expect_err("a folder is there")));
+        assert!(path_is_taken(&save_new(&dir.path().join("folder.toml"), &one_lane(), &[], &[], &Default::default(), None, None, None).expect_err("a folder is there")));
 
         // A save, which is for the session's own file, writes over it.
-        save(&taken, &one_lane(), &[], &[], None, None, None).unwrap();
+        save(&taken, &one_lane(), &[], &[], &Default::default(), None, None, None).unwrap();
         assert!(std::fs::read_to_string(&taken).unwrap().contains("builtin:sine"));
     }
 
@@ -3298,7 +3417,7 @@ plugin = "builtin:osc"
         std::fs::write(dir.path().join("precious.toml"), "keep me").unwrap();
         std::os::unix::fs::symlink(dir.path().join("precious.toml"), dir.path().join("link.toml")).unwrap();
         for link in ["dangling.toml", "link.toml"] {
-            let error = save_new(&dir.path().join(link), &one_lane(), &[], &[], None, None, None).expect_err("a link is a path that is taken");
+            let error = save_new(&dir.path().join(link), &one_lane(), &[], &[], &Default::default(), None, None, None).expect_err("a link is a path that is taken");
             assert!(path_is_taken(&error), "{link}: {error:#}");
         }
         assert!(!dir.path().join("nowhere").exists(), "what the link leads to was not made");
@@ -3336,13 +3455,13 @@ plugin = "builtin:osc"
         };
 
         let locked = PianoConfig { scale: Some("C major".into()), locked: true };
-        save(&path, &instruments(), &[], &[], Some(&locked), None, None).unwrap();
+        save(&path, &instruments(), &[], &[], &Default::default(), Some(&locked), None, None).unwrap();
         let config = load(path.to_str().unwrap()).unwrap();
         assert!(config.piano.expect("piano section").locked);
 
         // Highlight mode is the default and stays out of the file.
         let open = PianoConfig { scale: Some("C major".into()), locked: false };
-        save(&path, &instruments(), &[], &[], Some(&open), None, None).unwrap();
+        save(&path, &instruments(), &[], &[], &Default::default(), Some(&open), None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("locked"), "{raw}");
         assert!(!load(path.to_str().unwrap()).unwrap().piano.expect("piano section").locked);
@@ -3352,13 +3471,13 @@ plugin = "builtin:osc"
     fn the_tempo_is_a_top_level_key_that_a_save_writes_and_a_load_reads() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tempo.toml");
-        save(&path, &one_lane(), &[], &[], None, None, Some(96.5)).unwrap();
+        save(&path, &one_lane(), &[], &[], &Default::default(), None, None, Some(96.5)).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.starts_with("bpm = 96.5\n"), "it comes before every table: {raw}");
         assert_eq!(load(path.to_str().unwrap()).unwrap().bpm, Some(96.5));
 
         // A session that has no tempo has no key, and reads as having none.
-        save(&path, &one_lane(), &[], &[], None, None, None).unwrap();
+        save(&path, &one_lane(), &[], &[], &Default::default(), None, None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("bpm"), "{raw}");
         assert_eq!(load(path.to_str().unwrap()).unwrap().bpm, None);
@@ -3367,7 +3486,7 @@ plugin = "builtin:osc"
     #[test]
     fn a_tempo_is_written_as_it_was_typed() {
         // (100.1 as the 32-bit number it is would be 100.0999984741211.)
-        let text = to_toml(&one_lane(), &[], &[], None, None, Some(100.1)).unwrap();
+        let text = to_toml(&one_lane(), &[], &[], &Default::default(), None, None, Some(100.1)).unwrap();
         assert!(text.starts_with("bpm = 100.1\n"), "{text}");
     }
 
@@ -3385,6 +3504,10 @@ plugin = "builtin:osc"
             ("group[0].effect[2]", CablePlace::BusEffect { group: 0, effect: 2 }),
             ("master", CablePlace::Master),
             ("  master ", CablePlace::Master),
+            ("keys", CablePlace::Keys),
+            (" keys ", CablePlace::Keys),
+            ("device[0]", CablePlace::Device(0)),
+            ("device[12]", CablePlace::Device(12)),
         ] {
             assert_eq!(CablePlace::parse(text), Some(place), "{text:?}");
             assert_eq!(CablePlace::parse(&place.to_string()), Some(place), "{text:?} is written and read back the same");
@@ -3394,6 +3517,23 @@ plugin = "builtin:osc"
         assert_eq!(CablePlace::Group(1).to_string(), "group[1]");
         assert_eq!(CablePlace::BusEffect { group: 1, effect: 0 }.to_string(), "group[1].effect[0]");
         assert_eq!(CablePlace::Master.to_string(), "master");
+        assert_eq!(CablePlace::Keys.to_string(), "keys");
+        assert_eq!(CablePlace::Device(3).to_string(), "device[3]");
+    }
+
+    #[test]
+    fn only_the_keys_and_the_devices_are_sources_of_notes() {
+        for (place, source) in [
+            (CablePlace::Keys, true),
+            (CablePlace::Device(0), true),
+            (CablePlace::Instrument(0), false),
+            (CablePlace::Effect { instrument: 0, effect: 0 }, false),
+            (CablePlace::Group(0), false),
+            (CablePlace::BusEffect { group: 0, effect: 0 }, false),
+            (CablePlace::Master, false),
+        ] {
+            assert_eq!(place.is_source(), source, "{place}");
+        }
     }
 
     #[test]
@@ -3401,21 +3541,22 @@ plugin = "builtin:osc"
         for text in [
             "", "instrument", "instrument[]", "instrument[-1]", "instrument[1.5]", "instrument[a]", "instrument[ 1 ]", "instrument[0", "instrument 0", "Instrument[0]", "Master", "mix", "group", "group[0].effect",
             "group[0].effect[]", "group[0].effects[1]", "instrument[0].effect[0].effect[0]", "instrument[0].group[0]", "master[0]", "instrument[0]x", "[0]", "effect[0]", "instrument[99999999999999999999]",
-            "instrument[0].", ".effect[0]", "instrument[+1]", "group[0].effect[+0]",
+            "instrument[0].", ".effect[0]", "instrument[+1]", "group[0].effect[+0]", "keys[0]", "Keys", "key", "device", "device[]", "device[x]", "device[-1]", "Device[0]", "device[0].effect[0]",
+            "keys.effect[0]", "devices[0]",
         ] {
             assert_eq!(CablePlace::parse(text), None, "{text:?}");
         }
     }
 
     #[test]
-    fn a_cable_is_read_with_its_two_places_and_a_level_that_is_one_when_the_file_says_none() {
+    fn a_cable_is_read_with_its_two_places_and_a_level_only_when_the_file_says_one() {
         let config = parse(&format!(
             "{OSC}[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[group]]\n[[cable]]\nfrom = \"instrument[0]\"\nto = \"instrument[0].effect[0]\"\n[[cable]]\nfrom = \"group[0]\"\nto = \"master\"\ngain = 0.5\n"
         ))
         .unwrap();
         assert_eq!(config.cables.len(), 2);
-        assert_eq!((config.cables[0].from, config.cables[0].to, config.cables[0].gain), (CablePlace::Instrument(0), CablePlace::Effect { instrument: 0, effect: 0 }, 1.0));
-        assert_eq!((config.cables[1].from, config.cables[1].to, config.cables[1].gain), (CablePlace::Group(0), CablePlace::Master, 0.5));
+        assert_eq!((config.cables[0].from, config.cables[0].to, config.cables[0].gain), (CablePlace::Instrument(0), CablePlace::Effect { instrument: 0, effect: 0 }, None));
+        assert_eq!((config.cables[1].from, config.cables[1].to, config.cables[1].gain), (CablePlace::Group(0), CablePlace::Master, Some(0.5)));
         assert!(parse(OSC).unwrap().cables.is_empty());
     }
 
@@ -3446,17 +3587,127 @@ plugin = "builtin:osc"
             cable(CablePlace::Group(0), CablePlace::Group(1), 2.0),
         ];
         let bus = SaveGroup { name: None, volume: 1.0, pan: 0.0, muted: false, solo: false, effects: vec![], modulators: vec![], ui: None, route: Route::Out };
-        let text = to_toml(&one_lane(), &[bus], &cables, None, None, None).unwrap();
+        let text = to_toml(&one_lane(), &[bus], &cables, &Default::default(), None, None, None).unwrap();
         assert!(text.contains("[[cable]]\nfrom = \"instrument[0]\"\nto = \"instrument[0].effect[1]\"\n\n"), "no level of one: {text}");
         assert!(text.contains("[[cable]]\nfrom = \"group[0].effect[0]\"\nto = \"master\"\ngain = 0.3\n"), "a level as it was typed: {text}");
         assert!(text.find("[[group]]").unwrap() < text.find("[[cable]]").unwrap(), "after the groups: {text}");
         assert_eq!(text.matches("[[cable]]").count(), 3);
         let read = parse(&text).unwrap();
-        let again: Vec<_> = read.cables.iter().map(|c| (c.from, c.to, c.gain)).collect();
+        let again: Vec<_> = read.cables.iter().map(|c| (c.from, c.to, c.gain.unwrap_or(1.0))).collect();
         assert_eq!(again, cables.iter().map(|c| (c.from, c.to, c.gain)).collect::<Vec<_>>());
         // A session with none writes none (its file is what it was).
-        let plain = to_toml(&one_lane(), &[], &[], None, None, None).unwrap();
+        let plain = to_toml(&one_lane(), &[], &[], &Default::default(), None, None, None).unwrap();
         assert!(!plain.contains("cable"), "{plain}");
+    }
+
+    /// Two lanes, the keys with a place, and two devices, one with a place, with a cable from each source.
+    const ROUTED: &str = r#"
+[keys]
+ui = { x = 0, y = 40 }
+
+[[device]]
+name = "Launchkey Mini MK4 37"
+ui = { x = 0, y = 300.5 }
+
+[[device]]
+name = "Seaboard"
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[cable]]
+from = "keys"
+to = "instrument[0]"
+
+[[cable]]
+from = "device[0]"
+to = "instrument[1]"
+
+[[cable]]
+from = "device[1]"
+to = "instrument[1]"
+"#;
+
+    #[test]
+    fn the_keys_and_the_devices_a_session_has_a_node_for_are_read_with_their_places_and_the_cables_of_notes_have_no_level() {
+        let config = parse(ROUTED).unwrap();
+        assert_eq!(config.keys.as_ref().map(|keys| keys.ui), Some(Some(NodeUi { x: 0.0, y: 40.0 })));
+        assert_eq!(config.devices.iter().map(|device| (device.name.as_str(), device.ui)).collect::<Vec<_>>(), [("Launchkey Mini MK4 37", Some(NodeUi { x: 0.0, y: 300.5 })), ("Seaboard", None)]);
+        assert_eq!(
+            config.cables.iter().map(|cable| (cable.from, cable.to, cable.gain)).collect::<Vec<_>>(),
+            [
+                (CablePlace::Keys, CablePlace::Instrument(0), None),
+                (CablePlace::Device(0), CablePlace::Instrument(1), None),
+                (CablePlace::Device(1), CablePlace::Instrument(1), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_session_that_has_no_source_has_none_and_the_keys_are_there_for_a_table_even_an_empty_one() {
+        let plain = parse(OSC).unwrap();
+        assert!(plain.keys.is_none() && plain.devices.is_empty());
+        let empty = parse(&format!("[keys]\n{OSC}")).unwrap();
+        assert_eq!(empty.keys.map(|keys| keys.ui), Some(None), "a table with nothing in it is the keys, with no place");
+    }
+
+    #[test]
+    fn a_device_is_called_by_a_name_that_is_not_blank_and_a_name_has_one_node() {
+        let config = parse(&format!("[[device]]\nname = \"  Launchkey  \"\n{OSC}")).unwrap();
+        assert_eq!(config.devices[0].name, "Launchkey", "the spaces round a name go");
+        for (text, why) in [
+            ("[[device]]\nname = \"\"\n", "device[0].name is blank"),
+            ("[[device]]\nname = \"   \"\n", "device[0].name is blank"),
+            ("[[device]]\nname = \"A\"\n[[device]]\nname = \"B\"\n[[device]]\nname = \" A \"\n", "device[2].name is \"A\", as device[0]'s is"),
+        ] {
+            let error = parse(&format!("{text}{OSC}")).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
+            assert!(error.contains(why), "{error}\nfor:\n{text}");
+        }
+        // A device with no name is not a table that fits, and the case of a name is a name's: two devices that differ by it are two nodes.
+        assert!(parse(&format!("[[device]]\nui = {{ x = 1, y = 2 }}\n{OSC}")).is_err());
+        assert_eq!(parse(&format!("[[device]]\nname = \"a\"\n[[device]]\nname = \"A\"\n{OSC}")).unwrap().devices.len(), 2);
+    }
+
+    #[test]
+    fn a_cable_of_notes_that_has_a_level_refuses_the_session_with_its_place() {
+        for from in ["keys", "device[0]"] {
+            let error = parse(&format!("[[device]]\nname = \"A\"\n{OSC}[[cable]]\nfrom = \"{from}\"\nto = \"instrument[0]\"\ngain = 0.5\n")).err().unwrap_or_else(|| panic!("accepted a level on {from}")).to_string();
+            assert!(error.contains("cable[0].gain: a cable of notes has no level"), "{error}");
+        }
+        // (The audio cable that is drawn after it has one, as it always had, and the place that a cable names is told in the words of the file.)
+        parse(&format!("{OSC}[[cable]]\nfrom = \"instrument[0]\"\nto = \"master\"\ngain = 0.5\n")).unwrap();
+        let error = parse(&format!("{OSC}[[cable]]\nfrom = \"mic\"\nto = \"instrument[0]\"\n")).err().unwrap().to_string();
+        assert!(error.contains("cable[0].from: \"mic\" is not a place of the session") && error.contains("keys or device[0]"), "{error}");
+    }
+
+    fn sources(keys: Option<Option<NodeUi>>, devices: &[(&str, Option<NodeUi>)]) -> SaveSources {
+        SaveSources { keys: keys.map(|ui| SaveKeys { ui }), devices: devices.iter().map(|(name, ui)| SaveDevice { name: name.to_string(), ui: *ui }).collect() }
+    }
+
+    #[test]
+    fn the_sources_are_written_before_the_lanes_and_their_cables_have_no_level_and_all_of_it_is_read_back_the_same() {
+        let cables = [cable(CablePlace::Keys, CablePlace::Instrument(0), 1.0), cable(CablePlace::Device(1), CablePlace::Instrument(0), 1.0)];
+        let saved = sources(Some(Some(NodeUi { x: 0.0, y: 40.0 })), &[("Launchkey", Some(NodeUi { x: -20.0, y: 300.5 })), ("Seaboard", None)]);
+        let text = to_toml(&one_lane(), &[], &cables, &saved, None, None, None).unwrap();
+        assert!(text.starts_with("[keys]\nui = { x = 0, y = 40 }\n\n[[device]]\nname = \"Launchkey\"\nui = { x = -20, y = 300.5 }\n\n[[device]]\nname = \"Seaboard\"\n\n[[instrument]]"), "{text}");
+        assert!(text.contains("[[cable]]\nfrom = \"keys\"\nto = \"instrument[0]\"\n\n[[cable]]\nfrom = \"device[1]\"\nto = \"instrument[0]\"\n"), "{text}");
+        assert!(!text.contains("gain"), "a cable of notes has no level: {text}");
+        let read = parse(&text).unwrap();
+        assert_eq!(read.keys.map(|keys| keys.ui), Some(Some(NodeUi { x: 0.0, y: 40.0 })));
+        assert_eq!(read.devices.iter().map(|device| (device.name.as_str(), device.ui)).collect::<Vec<_>>(), [("Launchkey", Some(NodeUi { x: -20.0, y: 300.5 })), ("Seaboard", None)]);
+        assert_eq!(read.cables.iter().map(|cable| (cable.from, cable.to)).collect::<Vec<_>>(), [(CablePlace::Keys, CablePlace::Instrument(0)), (CablePlace::Device(1), CablePlace::Instrument(0))]);
+    }
+
+    #[test]
+    fn the_keys_are_written_as_a_table_with_no_place_and_a_session_with_no_source_writes_none() {
+        let text = to_toml(&one_lane(), &[], &[], &sources(Some(None), &[]), None, None, None).unwrap();
+        assert!(text.starts_with("[keys]\n\n[[instrument]]"), "{text}");
+        assert_eq!(parse(&text).unwrap().keys.map(|keys| keys.ui), Some(None));
+        let plain = to_toml(&one_lane(), &[], &[], &Default::default(), None, None, None).unwrap();
+        assert!(!plain.contains("keys") && !plain.contains("device"), "a session with none is the file it was: {plain}");
     }
 
     #[test]
@@ -3500,7 +3751,7 @@ plugin = "builtin:osc"
             ui: None,
             route: Route::Out,
         }];
-        save(&path, &instruments, &[], &[], None, None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
 
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("transpose = \"in_key\""));
@@ -3512,7 +3763,7 @@ plugin = "builtin:osc"
         // Chromatic (default) round-trips without writing the field.
         let mut instruments = instruments;
         instruments[0].pattern.as_mut().unwrap().in_key = false;
-        save(&path, &instruments, &[], &[], None, None, None).unwrap();
+        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("transpose"));
         let config = load(path.to_str().unwrap()).unwrap();

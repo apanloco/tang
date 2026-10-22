@@ -5,4 +5,4 @@ import type { Endpoint } from "./Endpoint";
 /**
  * A connection from a port of one node to a port of another.
  */
-export type Edge = { from: Endpoint, to: Endpoint, } & ({ "kind": "audio" } | { "kind": "member" } | { "kind": "modulation", id: EdgeId, amount: number, } | { "kind": "cable", id: EdgeId, gain: number, });
+export type Edge = { from: Endpoint, to: Endpoint, } & ({ "kind": "audio" } | { "kind": "member" } | { "kind": "modulation", id: EdgeId, amount: number, } | { "kind": "cable", id: EdgeId, gain: number, } | { "kind": "events", id: EdgeId, } | { "kind": "hears" });

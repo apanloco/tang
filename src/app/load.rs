@@ -13,9 +13,9 @@ use crossbeam_channel::Sender;
 
 use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
-    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, FREE, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodeIds, ParamKind,
-    ParamSlot, PatternState, PluginSlot, SYNC_DIVISIONS, SessionModel, format_from_id, mod_source_slot_to_graph, modulator_slot_commands, sync_from_name,
-    sync_name, tempo_of_patterns,
+    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, EventCable, FREE, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NEW_CABLE_GAIN, NodeId, NodeIds,
+    ParamKind, ParamSlot, PatternState, PluginSlot, SYNC_DIVISIONS, SessionModel, SourceKind, SourceNode, format_from_id, mod_source_slot_to_graph, modulator_slot_commands,
+    sync_from_name, sync_name, tempo_of_patterns,
 };
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo, GraphCommand, ModulatorLocation};
 use crate::session::{NodeUi, Route};
@@ -638,10 +638,27 @@ pub fn load_session(
     if config.bpm.is_some() || instruments.iter().any(|lane| lane.pattern.is_some()) {
         let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGlobalBpm { bpm });
     }
-    let mut model = SessionModel { instruments, groups, ids, slots, ui, bpm, cables: Vec::new() };
-    // The audio cables come last: every lane, group and effect that one of them is at is there by now.
+    let mut model = SessionModel { instruments, groups, ids, slots, ui, bpm, cables: Vec::new(), sources: Vec::new(), event_cables: Vec::new() };
+    // The sources of notes, and then the cables: every lane, group, effect and source that one of them is at is there by now.
+    load_sources(config, &mut model);
     load_cables(&config.cables, &mut model, cmd_tx)?;
     Ok(model)
+}
+
+/// Put the session's sources of notes in the model, as nodes: the keys first (if the file has a `[keys]` table, or a cable that starts at `keys`, which then makes the node), and then the devices
+/// in the order of the file, which is how a cable names them (`device[0]`). The audio thread is told nothing: what a lane hears is the controller's to send (`app::sources`).
+fn load_sources(config: &session::SessionConfig, model: &mut SessionModel) {
+    let cable_from_the_keys = config.cables.iter().any(|cable| cable.from == session::CablePlace::Keys);
+    if config.keys.is_some() || cable_from_the_keys {
+        let node = model.alloc_node();
+        place(&mut model.ui, node, config.keys.as_ref().and_then(|keys| keys.ui));
+        model.sources.push(SourceNode { node, kind: SourceKind::Keys });
+    }
+    for device in &config.devices {
+        let node = model.alloc_node();
+        place(&mut model.ui, node, device.ui);
+        model.sources.push(SourceNode { node, kind: SourceKind::Device(device.name.clone()) });
+    }
 }
 
 /// Draw the session's audio cables, in the order of the file: each end is a place of the file (`instrument[0].effect[1]`, `group[0]`, `master`), found among the nodes of the model, and the
@@ -650,6 +667,10 @@ pub fn load_session(
 /// cable that is left out would change the sound without a word. A level is held to what an intent holds it to.
 fn load_cables(config: &[session::CableConfig], model: &mut SessionModel, cmd_tx: &Sender<GraphCommand>) -> anyhow::Result<()> {
     for (i, cable) in config.iter().enumerate() {
+        if cable.from.is_source() {
+            load_event_cable(i, cable, model)?;
+            continue;
+        }
         let from = cable_start(cable.from, model).map_err(|why| anyhow::anyhow!("cable[{i}].from: {why}"))?;
         let to = cable_end(cable.to, model).map_err(|why| anyhow::anyhow!("cable[{i}].to: {why}"))?;
         if model.cables.iter().any(|drawn| (drawn.from, drawn.to) == (from, to)) {
@@ -662,11 +683,34 @@ fn load_cables(config: &[session::CableConfig], model: &mut SessionModel, cmd_tx
             };
             anyhow::bail!("cable[{i}]: {words}");
         }
-        let gain = cable.gain.clamp(0.0, CABLE_GAIN_MAX);
+        let gain = cable.gain.unwrap_or(NEW_CABLE_GAIN).clamp(0.0, CABLE_GAIN_MAX);
         let id = model.alloc_edge();
         model.insert_audio_cable(AudioCable { id, from, to, gain });
         send(cmd_tx, GraphCommand::AddCable { id, from, to, gain })?;
     }
+    Ok(())
+}
+
+/// Draw a cable of notes: from a source (`keys`, `device[0]`) to a lane (`instrument[1]`), under the next id of the series that the other cables have. A source that is not in the
+/// session, an end that is not a lane and a cable between two nodes that another is between already refuse the session, with the cable's place in the file, as the audio cables do.
+fn load_event_cable(i: usize, cable: &session::CableConfig, model: &mut SessionModel) -> anyhow::Result<()> {
+    use session::CablePlace as Place;
+    let from = match cable.from {
+        Place::Keys => model.sources.iter().find(|source| source.kind == SourceKind::Keys),
+        Place::Device(device) => model.sources.iter().filter(|source| matches!(source.kind, SourceKind::Device(_))).nth(device),
+        _ => None,
+    }
+    .map(|source| source.node)
+    .ok_or_else(|| anyhow::anyhow!("cable[{i}].from: {} is not in the session", cable.from))?;
+    let to = match cable.to {
+        Place::Instrument(lane) => model.instruments.get(lane).map(|lane| lane.node).ok_or_else(|| anyhow::anyhow!("cable[{i}].to: {} is not in the session", cable.to))?,
+        other => anyhow::bail!("cable[{i}].to: {other} has no input of notes: a cable of notes ends at a lane (instrument[0])"),
+    };
+    if model.event_cables.iter().any(|drawn| (drawn.from, drawn.to) == (from, to)) {
+        anyhow::bail!("cable[{i}]: there is a cable from {} to {} already", cable.from, cable.to);
+    }
+    let id = model.alloc_edge();
+    model.insert_event_cable(EventCable { id, from, to });
     Ok(())
 }
 
@@ -680,6 +724,7 @@ fn cable_start(place: session::CablePlace, model: &SessionModel) -> Result<Cable
         Place::Group(group) => Ok(CableFrom::Group(model.groups.get(group).ok_or_else(missing)?.node)),
         Place::BusEffect { group, effect } => Ok(CableFrom::Effect(model.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?.node)),
         Place::Master => Err("master has no output of audio".to_string()),
+        Place::Keys | Place::Device(_) => Err(format!("{place} is a source of notes, which has no output of audio")),
     }
 }
 
@@ -696,6 +741,7 @@ fn cable_end(place: session::CablePlace, model: &SessionModel) -> Result<CableTo
         Place::Group(group) => Ok(CableTo::GroupBus(model.groups.get(group).ok_or_else(missing)?.node)),
         Place::BusEffect { group, effect } => Ok(CableTo::Effect(model.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?.node)),
         Place::Master => Ok(CableTo::Master),
+        Place::Keys | Place::Device(_) => Err(format!("{place} is a source of notes, which has no input of audio")),
     }
 }
 
@@ -2587,14 +2633,115 @@ to = "master"
             "[[cable]]\nfrom = \"instrument[1]\"\nto = \"instrument[0].effect[0]\"\n[[cable]]\nfrom = \"instrument[0].effect[1]\"\nto = \"group[0]\"\ngain = 0.5\n[[cable]]\nfrom = \"group[0].effect[0]\"\nto = \"master\"\ngain = 1.5\n[[cable]]\nfrom = \"group[0]\"\nto = \"instrument[1].effect[0]\"\ngain = 0.75\n",
         );
         let model = load(&text).model;
-        let (instruments, groups, cables) = crate::app::save::to_save(&model);
-        let saved = session::to_toml(&instruments, &groups, &cables, None, model.master_ui(), model.bpm_to_save()).unwrap();
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(&model);
+        let saved = session::to_toml(&instruments, &groups, &cables, &sources, None, model.master_ui(), model.bpm_to_save()).unwrap();
         assert_eq!(saved.matches("[[cable]]").count(), 4, "{saved}");
         assert!(saved.contains("from = \"group[0]\""), "a cable that starts at a group says which: {saved}");
         let again = load(&saved).model;
         assert_eq!(again.cables, model.cables, "the cables are the same, under the same ids");
-        let (instruments, groups, cables) = crate::app::save::to_save(&again);
-        assert_eq!(session::to_toml(&instruments, &groups, &cables, None, again.master_ui(), again.bpm_to_save()).unwrap(), saved, "and the file is the same");
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(&again);
+        assert_eq!(session::to_toml(&instruments, &groups, &cables, &sources, None, again.master_ui(), again.bpm_to_save()).unwrap(), saved, "and the file is the same");
+    }
+
+    // -- cables of notes (P4b of docs/patch-graph.md §11.6) --
+
+    use crate::app::model::NodePath;
+    use crate::app::testutil::{Routed, SOURCES};
+
+    #[test]
+    fn the_sources_of_a_file_are_nodes_of_the_model_the_keys_first_and_then_the_devices_in_the_order_of_the_file() {
+        let run = load(SOURCES);
+        let n = Routed::of(&run.model);
+        assert_eq!(
+            run.model.sources.iter().map(|source| (source.node, source.kind.clone())).collect::<Vec<_>>(),
+            [
+                (n.keys, SourceKind::Keys),
+                (n.devices[0], SourceKind::Device("Launchkey Mini MK4 37".to_string())),
+                (n.devices[1], SourceKind::Device("Seaboard".to_string())),
+            ]
+        );
+        // They are nodes of the model, found by their ids, with the places the file gave them, and the ids come after every lane's.
+        assert_eq!(run.model.locate(n.keys), Some(NodePath::Source(0)));
+        assert_eq!(run.model.locate(n.devices[1]), Some(NodePath::Source(2)));
+        assert!(n.keys.0 > n.lane[2].0, "after the nodes of the lanes: {n:?}");
+        assert_eq!((run.model.ui.get(&n.keys), run.model.ui.get(&n.devices[0]), run.model.ui.get(&n.devices[1])), (Some(&NodeUi { x: 0.0, y: 40.0 }), Some(&NodeUi { x: 0.0, y: 300.5 }), None));
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_cables_of_notes_are_drawn_in_the_order_of_the_file_under_the_ids_that_the_audio_cables_have_too_and_the_audio_thread_is_told_nothing_of_them() {
+        let run = load(SOURCES);
+        let n = Routed::of(&run.model);
+        assert_eq!(
+            run.model.event_cables.iter().map(|cable| (cable.id.0, cable.from, cable.to)).collect::<Vec<_>>(),
+            [(0, n.keys, n.lane[0]), (1, n.devices[0], n.lane[1]), (2, n.devices[1], n.lane[1])]
+        );
+        assert_eq!(run.model.cables.iter().map(|cable| cable.id.0).collect::<Vec<_>>(), [3], "the audio cable that follows is the next of the one series");
+        assert_eq!(cable_commands(&run).len(), 1, "only the audio cable is sent: {:#?}", run.commands);
+        assert!(run.commands.iter().all(|command| !command.contains("Source")), "{:#?}", run.commands);
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_from_the_keys_makes_the_node_of_the_keys_when_the_file_has_no_table_for_them_and_a_session_without_either_has_none() {
+        let run = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[cable]]\nfrom = \"keys\"\nto = \"instrument[0]\"\n");
+        assert_eq!(run.model.sources.iter().map(|source| source.kind.clone()).collect::<Vec<_>>(), [SourceKind::Keys]);
+        assert_eq!(run.model.event_cables.len(), 1);
+        let none = load(crate::app::testutil::SENDS);
+        assert!(none.model.sources.is_empty() && none.model.event_cables.is_empty(), "no node of a source until there is one in the file");
+        // A table with nothing in it is the keys too, with no cable.
+        let table = load("[keys]\n[[instrument]]\nplugin = \"builtin:osc\"\n");
+        assert_eq!(table.model.sources.len(), 1);
+        assert!(table.model.event_cables.is_empty());
+    }
+
+    #[test]
+    fn a_session_with_no_source_has_the_ids_it_had() {
+        let mut run = load(crate::app::testutil::SENDS);
+        let max = run.model.nodes().map(|(node, _)| node.0).max().unwrap();
+        assert_eq!(run.model.alloc_node().0, max + 1, "the next id is the one after the last node's: no id was spent on a source that is not there");
+        assert_eq!(run.model.alloc_edge().0, 0, "and no edge id either (this session has no cable of any kind)");
+    }
+
+    #[test]
+    fn a_cable_of_notes_that_the_session_cannot_have_refuses_the_session_with_the_place_of_the_cable() {
+        let with = |cable: &str| format!("[[device]]\nname = \"A\"\n[[instrument]]\nplugin = \"builtin:osc\"\n[[group]]\n[[cable]]\n{cable}\n");
+        for (cable, why) in [
+            ("from = \"device[1]\"\nto = \"instrument[0]\"", "cable[0].from: device[1] is not in the session"),
+            ("from = \"device[0]\"\nto = \"instrument[3]\"", "cable[0].to: instrument[3] is not in the session"),
+            ("from = \"device[0]\"\nto = \"master\"", "cable[0].to: master has no input of notes: a cable of notes ends at a lane"),
+            ("from = \"keys\"\nto = \"group[0]\"", "cable[0].to: group[0] has no input of notes"),
+            ("from = \"keys\"\nto = \"device[0]\"", "cable[0].to: device[0] has no input of notes"),
+            ("from = \"device[0]\"\nto = \"instrument[0].effect[0]\"", "cable[0].to: instrument[0].effect[0] has no input of notes"),
+            ("from = \"instrument[0]\"\nto = \"keys\"", "cable[0].to: keys is a source of notes, which has no input of audio"),
+            ("from = \"instrument[0]\"\nto = \"device[0]\"", "cable[0].to: device[0] is a source of notes, which has no input of audio"),
+        ] {
+            let error = try_load(&with(cable)).expect_err(cable).to_string();
+            assert!(error.contains(why), "{error}\nfor:\n{cable}");
+        }
+        // The cable that is named is the one that is wrong, and a cable between the same two places twice is refused.
+        let twice = "[[device]]\nname = \"A\"\n[[instrument]]\nplugin = \"builtin:osc\"\n[[cable]]\nfrom = \"device[0]\"\nto = \"instrument[0]\"\n[[cable]]\nfrom = \"device[0]\"\nto = \"instrument[0]\"\n";
+        let error = try_load(twice).unwrap_err().to_string();
+        assert!(error.contains("cable[1]: there is a cable from device[0] to instrument[0] already"), "{error}");
+        // A cable from the keys with no table for them makes the node, and one from a device that no table makes is refused.
+        let error = try_load("[[instrument]]\nplugin = \"builtin:osc\"\n[[cable]]\nfrom = \"device[0]\"\nto = \"instrument[0]\"\n").unwrap_err().to_string();
+        assert!(error.contains("cable[0].from: device[0] is not in the session"), "{error}");
+    }
+
+    #[test]
+    fn what_a_session_with_sources_is_saved_as_is_loaded_as_the_same_sources_cables_and_places_and_the_same_file() {
+        let model = load(SOURCES).model;
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(&model);
+        let saved = session::to_toml(&instruments, &groups, &cables, &sources, None, model.master_ui(), model.bpm_to_save()).unwrap();
+        assert!(saved.starts_with("[keys]\nui = { x = 0, y = 40 }\n\n[[device]]\nname = \"Launchkey Mini MK4 37\"\nui = { x = 0, y = 300.5 }\n\n[[device]]\nname = \"Seaboard\"\n\n[[instrument]]"), "{saved}");
+        let order: Vec<&str> = saved.lines().filter(|line| line.starts_with("from = ")).collect();
+        assert_eq!(order, ["from = \"keys\"", "from = \"device[0]\"", "from = \"device[1]\"", "from = \"instrument[2]\""], "the cables are in the order of their ids, the audio cable among them: {saved}");
+        let again = load(&saved).model;
+        assert_eq!(again.sources.iter().map(|source| &source.kind).collect::<Vec<_>>(), model.sources.iter().map(|source| &source.kind).collect::<Vec<_>>());
+        assert_eq!(again.event_cables, model.event_cables, "the cables of notes are the same, under the same ids");
+        assert_eq!(again.cables, model.cables);
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(&again);
+        assert_eq!(session::to_toml(&instruments, &groups, &cables, &sources, None, again.master_ui(), again.bpm_to_save()).unwrap(), saved, "and the file is the same");
     }
 
     /// Every `SetGlobalBpm` that a session sent the audio thread, as the tempo it says.

@@ -676,7 +676,7 @@ impl Controller {
         match to.port {
             Port::Param { index: param } => self.add_param_cable(at, index, to.node, param)?,
             Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release | Port::Depth { .. } => self.add_field_cable(at, index, &to)?,
-            Port::ModOut | Port::AudioIn | Port::AudioOut => {
+            Port::ModOut | Port::AudioIn | Port::AudioOut | Port::EventsIn | Port::EventsOut => {
                 return Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth"));
             }
         }
@@ -696,13 +696,13 @@ impl Controller {
             NodePath::Instrument(inst) | NodePath::Effect { inst, .. } => ModulatorLocation::Lane(inst),
             NodePath::GroupEffect { group, .. } => ModulatorLocation::Group(group),
             NodePath::Modulator { at, .. } => at,
-            NodePath::Group(_) => return Err(invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither")),
+            NodePath::Group(_) | NodePath::Source(_) => return Err(invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither")),
         };
         let index = self.model.modulators(at).map_or(0, |rack| rack.len());
         let cable = match to.port {
             Port::Param { index: param } => self.param_cable(at, index, to.node, param)?,
             Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release | Port::Depth { .. } => self.field_cable(at, index, &to)?,
-            Port::ModOut | Port::AudioIn | Port::AudioOut => {
+            Port::ModOut | Port::AudioIn | Port::AudioOut | Port::EventsIn | Port::EventsOut => {
                 return Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth"));
             }
         };
@@ -776,7 +776,7 @@ impl Controller {
                 Port::Decay => invalid("that modulator has no decay"),
                 Port::Sustain => invalid("that modulator has no sustain"),
                 Port::Release => invalid("that modulator has no release"),
-                Port::Param { .. } | Port::ModOut | Port::AudioIn | Port::AudioOut => invalid("that is not a setting of a modulator"),
+                Port::Param { .. } | Port::ModOut | Port::AudioIn | Port::AudioOut | Port::EventsIn | Port::EventsOut => invalid("that is not a setting of a modulator"),
             });
         };
         let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.kind == target.kind));
@@ -831,6 +831,7 @@ impl Controller {
             NodePath::Group(group) => {
                 self.remove_group(group);
             }
+            NodePath::Source(_) => return Err(invalid("a source of notes cannot be taken out yet")),
         }
         Ok(Done::Restructured)
     }
@@ -847,7 +848,7 @@ impl Controller {
                 refuse_a_loop(self.model.loop_if_effect_goes_to(node, to), "moving that effect there")?;
                 self.move_bus_effect(group, from, to);
             }
-            NodePath::Instrument(_) | NodePath::Group(_) | NodePath::Modulator { .. } => return Err(invalid("only an effect can be moved")),
+            NodePath::Instrument(_) | NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) => return Err(invalid("only an effect can be moved")),
         }
         Ok(Done::Restructured)
     }
@@ -912,7 +913,7 @@ impl Controller {
             NodePath::Instrument(inst) => Ok(PluginAt::Lane { inst, slot: 0 }),
             NodePath::Effect { inst, index } => Ok(PluginAt::Lane { inst, slot: index + 1 }),
             NodePath::GroupEffect { group, index } => Ok(PluginAt::Bus { group, index }),
-            NodePath::Group(_) | NodePath::Modulator { .. } => Err(invalid("that node has no plugin")),
+            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) => Err(invalid("that node has no plugin")),
         }
     }
 
@@ -1343,7 +1344,7 @@ plugin = "builtin:reverb"
         let (_engine, mut ctl) = controller();
         let instrument = lane(&ctl);
         range(&mut ctl, instrument, 40, 90).unwrap();
-        let saved = |ctl: &Controller| crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], &[], None, None, None).unwrap();
+        let saved = |ctl: &Controller| crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], &[], &Default::default(), None, None, None).unwrap();
         assert!(saved(&ctl).contains("range = \"E2-F#6\""), "{}", saved(&ctl));
         ctl.apply(Intent::SetRange { node: instrument, range: None }).unwrap();
         assert!(!saved(&ctl).contains("range ="), "{}", saved(&ctl));
@@ -1423,8 +1424,8 @@ plugin = "builtin:reverb"
         ctl.apply(Intent::SetMute { node: instrument, muted: true }).unwrap();
         ctl.apply(Intent::SetSolo { node: group, solo: true }).unwrap();
         let saved = |ctl: &Controller| {
-            let (instruments, groups, cables) = crate::app::save::to_save(&ctl.model);
-            crate::session::to_toml(&instruments, &groups, &cables, None, None, None).unwrap()
+            let (instruments, groups, cables, sources) = crate::app::save::to_save(&ctl.model);
+            crate::session::to_toml(&instruments, &groups, &cables, &sources, None, None, None).unwrap()
         };
         let text = saved(&ctl);
         assert_eq!((text.matches("mute = true").count(), text.matches("solo = true").count()), (1, 1), "{text}");
@@ -1532,8 +1533,8 @@ plugin = "builtin:reverb"
         ctl.apply(Intent::SetRoute { node: instrument, route: Route::None }).unwrap();
         ctl.apply(Intent::SetRoute { node: group, route: Route::None }).unwrap();
         let saved = |ctl: &Controller| {
-            let (instruments, groups, cables) = crate::app::save::to_save(&ctl.model);
-            crate::session::to_toml(&instruments, &groups, &cables, None, None, None).unwrap()
+            let (instruments, groups, cables, sources) = crate::app::save::to_save(&ctl.model);
+            crate::session::to_toml(&instruments, &groups, &cables, &sources, None, None, None).unwrap()
         };
         let text = saved(&ctl);
         assert_eq!(text.matches("route = \"none\"").count(), 2, "{text}");
@@ -4007,7 +4008,7 @@ type = "midi"
                     NodePath::Instrument(i) => ctl.model.instruments[i].instrument.as_ref(),
                     NodePath::Effect { inst, index } => ctl.model.instruments[inst].effects.get(index),
                     NodePath::GroupEffect { group, index } => ctl.model.groups[group].effects.get(index),
-                    NodePath::Group(_) | NodePath::Modulator { .. } => return None,
+                    NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) => return None,
                 };
                 Some((id, slot.map_or(0, |plugin| plugin.params[0].index)))
             })
@@ -5195,8 +5196,8 @@ type = "midi"
         let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
         let (sustain, _) = param(&ctl, NodePath::Instrument(0), "sustain");
         let saved = |ctl: &Controller| {
-            let (instruments, groups, cables) = crate::app::save::to_save(&ctl.model);
-            crate::session::to_toml(&instruments, &groups, &cables, None, None, None).unwrap()
+            let (instruments, groups, cables, sources) = crate::app::save::to_save(&ctl.model);
+            crate::session::to_toml(&instruments, &groups, &cables, &sources, None, None, None).unwrap()
         };
         assert!(!saved(&ctl).contains("pinned"), "{}", saved(&ctl));
         pin(&mut ctl, osc, &[sustain, detune]).unwrap();

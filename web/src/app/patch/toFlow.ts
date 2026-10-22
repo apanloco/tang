@@ -153,6 +153,8 @@ export function handleOf(port: Port): string {
   switch (port.type) {
     case "audioIn":
     case "audioOut":
+    case "eventsIn":
+    case "eventsOut":
     case "modOut":
     case "rate":
     case "attack":
@@ -598,13 +600,30 @@ const NOTHING_REMEMBERED: Places = new Map();
 /** No node shows a scope. */
 const NO_SCOPES: ReadonlySet<NodeId> = new Set();
 
+/** A node that the canvas draws: every node but the sources of notes. */
+type DrawnNode = Exclude<Node, { kind: "source" }>;
+
+/** The graph without the sources of notes, the cables from them and the links to the lanes that hear every source: the canvas does not draw them yet. */
+interface DrawnGraph {
+  nodes: DrawnNode[];
+  edges: Edge[];
+}
+
+function withoutNotes(graph: Graph): DrawnGraph {
+  return {
+    nodes: graph.nodes.filter((node): node is DrawnNode => node.kind !== "source"),
+    edges: graph.edges.filter((edge) => edge.kind !== "events" && edge.kind !== "hears"),
+  };
+}
+
 /**
  * The nodes of the session on the canvas, and the cables between them. `remembered` is the places of the last layout (`Flow.places`): a node stays where it was while it is in
  * the slot it was put for, so that what is drawn or added or taken out does not rearrange the canvas; without it every node goes where the layout puts it. `scopes` are the
  * nodes that the viewer shows a scope in (a scope is not part of the session): those of them that have a signal are taller by it, and room is made for it as for a knob that is
  * pinned.
  */
-export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, scopes: ReadonlySet<NodeId> = NO_SCOPES): Flow {
+export function toFlow(whole: Graph, remembered: Places = NOTHING_REMEMBERED, scopes: ReadonlySet<NodeId> = NO_SCOPES): Flow {
+  const graph = withoutNotes(whole);
   const names = displayNames(graph);
   const modulated = modulatedParams(graph);
   const settingsDriven = drivenSettings(graph);

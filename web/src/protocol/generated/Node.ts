@@ -6,6 +6,7 @@ import type { NoteRange } from "./NoteRange";
 import type { PatternInfo } from "./PatternInfo";
 import type { Plugin } from "./Plugin";
 import type { Route } from "./Route";
+import type { SourceInfo } from "./SourceInfo";
 
 /**
  * One node of the graph. What it is, and what it carries, is in `kind`.
@@ -25,4 +26,4 @@ name: string,
  * Where a front-end draws the node, in the pixels of its canvas, if the session says (it is in the file as the
  * node's `ui`); a node that has no place is laid out by the front-end, and has no `ui` on the wire.
  */
-ui?: NodeUi, } & ({ "kind": "instrument", plugin: Plugin | null, range: NoteRange | null, transpose: number, volume: number, muted: boolean, solo: boolean, route: Route, pattern: PatternInfo | null, } | { "kind": "effect", plugin: Plugin, mix: number, } | { "kind": "modulator", source: ModulatorSource, } | { "kind": "group", volume: number, pan: number, muted: boolean, solo: boolean, route: Route, } | { "kind": "master" });
+ui?: NodeUi, } & ({ "kind": "instrument", plugin: Plugin | null, range: NoteRange | null, transpose: number, volume: number, muted: boolean, solo: boolean, route: Route, pattern: PatternInfo | null, } | { "kind": "effect", plugin: Plugin, mix: number, } | { "kind": "modulator", source: ModulatorSource, } | { "kind": "group", volume: number, pan: number, muted: boolean, solo: boolean, route: Route, } | { "kind": "master" } | { "kind": "source", source: SourceInfo, });

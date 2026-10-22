@@ -942,7 +942,7 @@ impl Controller {
                     let value = value_of(self.model.groups.get(group)?.effects.get(effect)?, index)?;
                     Some(GraphCommand::SetGroupParameter { group, index: effect, param_index: index, value })
                 }
-                NodePath::Group(_) | NodePath::Modulator { .. } => None,
+                NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) => None,
             },
             Driven::Setting { modulator, field } => {
                 let NodePath::Modulator { at, index } = self.model.locate(modulator)? else { return None };
@@ -1075,14 +1075,14 @@ impl Controller {
     /// Write the session, with the Piano tab's scale and mode, to `path`, as `mode` says. Does
     /// not touch `session_path`: callers decide what a failed save means for it.
     pub(super) fn save_to(&mut self, path: &Path, mode: FileMode) -> anyhow::Result<()> {
-        let (instruments, groups, cables) = to_save(&self.model);
+        let (instruments, groups, cables, sources) = to_save(&self.model);
         let piano = PianoConfig {
             scale: Some(self.piano_filter.scale().short()),
             locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
         };
         match mode {
-            FileMode::Replace => session::save(path, &instruments, &groups, &cables, Some(&piano), self.model.master_ui(), self.model.bpm_to_save())?,
-            FileMode::CreateNew => session::save_new(path, &instruments, &groups, &cables, Some(&piano), self.model.master_ui(), self.model.bpm_to_save())?,
+            FileMode::Replace => session::save(path, &instruments, &groups, &cables, &sources, Some(&piano), self.model.master_ui(), self.model.bpm_to_save())?,
+            FileMode::CreateNew => session::save_new(path, &instruments, &groups, &cables, &sources, Some(&piano), self.model.master_ui(), self.model.bpm_to_save())?,
         }
         self.dirty = false;
         log::info!("Session saved to {}", path.display());
@@ -3665,7 +3665,7 @@ group = 1
         ctl.put_instrument(0, "builtin:osc").unwrap();
         assert!(ctl.model.instruments[0].remap.is_empty());
         assert_eq!(ctl.model.instruments[0].pitch_bend_range, 2.0, "a plugin of its own has the usual range until it is told otherwise");
-        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], &[], None, None, None).unwrap();
+        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], &[], &Default::default(), None, None, None).unwrap();
         assert!(!saved.contains("remap"), "the file says what the audio thread has: {saved}");
     }
 
@@ -3677,7 +3677,7 @@ group = 1
         assert!(ctl.clear_instrument(0));
         assert!(ctl.model.instruments[0].remap.is_empty(), "the audio thread drops the remapper with the plugin");
         assert_eq!(ctl.model.instruments[0].pitch_bend_range, 2.0);
-        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], &[], None, None, None).unwrap();
+        let saved = crate::session::to_toml(&crate::app::save::to_save(&ctl.model).0, &[], &[], &Default::default(), None, None, None).unwrap();
         assert!(!saved.contains("remap"), "the file says what the audio thread has: {saved}");
     }
 

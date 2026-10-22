@@ -881,6 +881,64 @@ impl Sends {
     }
 }
 
+/// A session to route notes in (P4b of `docs/patch-graph.md` §11.6): the keys (placed) and two devices (the first placed), and three lanes: lane 0 hears the keys only, lane 1 hears both
+/// devices, and lane 2 has no cable and hears every source. The cables of notes have ids 0, 1 and 2, in the order of the file, and the audio cable after them has 3.
+pub const SOURCES: &str = r#"
+[keys]
+ui = { x = 0, y = 40 }
+
+[[device]]
+name = "Launchkey Mini MK4 37"
+ui = { x = 0, y = 300.5 }
+
+[[device]]
+name = "Seaboard"
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[cable]]
+from = "keys"
+to = "instrument[0]"
+
+[[cable]]
+from = "device[0]"
+to = "instrument[1]"
+
+[[cable]]
+from = "device[1]"
+to = "instrument[1]"
+
+[[cable]]
+from = "instrument[2]"
+to = "master"
+"#;
+
+/// The nodes of `SOURCES`: the keys, the two devices and the three lanes.
+#[derive(Clone, Copy, Debug)]
+pub struct Routed {
+    pub keys: NodeId,
+    pub devices: [NodeId; 2],
+    pub lane: [NodeId; 3],
+}
+
+impl Routed {
+    /// The nodes of a model that was loaded from `SOURCES`.
+    pub fn of(model: &SessionModel) -> Routed {
+        Routed {
+            keys: model.sources[0].node,
+            devices: [model.sources[1].node, model.sources[2].node],
+            lane: [model.instruments[0].node, model.instruments[1].node, model.instruments[2].node],
+        }
+    }
+}
+
 /// A session with audio cables that can make the audio go round when a lane changes group or an effect moves, and an empty lane, a lane's modulator and a bus of three effects (P3d: the
 /// fixture of what audio cables come to, `web/src/client/fixtures/audioCables.json`). Group 0 ("Pad") has a filter, a reverb and a delay on its bus, and lane 0 in it; lane 0 has a filter,
 /// a delay and an LFO that drives the filter; lane 1, in no group, has a drive; lane 2 is empty. The audio cables, in the order of the file (their ids come after the LFO's cable's, 0):

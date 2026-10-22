@@ -101,6 +101,8 @@ pub enum NodePath {
     Group(usize),
     GroupEffect { group: usize, index: usize },
     Modulator { at: ModulatorLocation, index: usize },
+    /// A source of notes: the keys, or a MIDI device.
+    Source(usize),
 }
 
 /// What a cable drives, named so that it can be found again once other cables and modulators have gone
@@ -155,6 +157,11 @@ pub struct SessionModel {
     /// The audio cables that have been drawn (P3c of `docs/patch-graph.md` §11.6), in the order of their ids: sends from one place of the audio to another, besides the
     /// way that a lane and a group are wired by themselves.
     pub cables: Vec<AudioCable>,
+    /// The sources of notes that a person put in the session (P4b of `docs/patch-graph.md` §11.6): the keys, and the MIDI devices that it names. None until one is added, and then a lane
+    /// that no event cable ends at hears every source (the program is as it was), and one that has some hears the sources they start at.
+    pub sources: Vec<SourceNode>,
+    /// The event cables that have been drawn, in the order of their ids: the notes of a source go to a lane.
+    pub event_cables: Vec<EventCable>,
 }
 
 impl Default for SessionModel {
@@ -167,8 +174,49 @@ impl Default for SessionModel {
             ui: BTreeMap::new(),
             bpm: DEFAULT_BPM,
             cables: Vec::new(),
+            sources: Vec::new(),
+            event_cables: Vec::new(),
         }
     }
+}
+
+/// A source of notes that a session has (P4b of `docs/patch-graph.md` §11.6): a node of the graph with an output of events, which event cables start at. Its id is from the
+/// series that the other nodes' are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceNode {
+    pub node: NodeId,
+    pub kind: SourceKind,
+}
+
+/// What a source of notes is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceKind {
+    /// The computer's keys, the page's piano and keys, and every browser's: they are one source (`Source::KEYS`).
+    Keys,
+    /// A MIDI device, by the name of its port as the system gives it, or as much of it as tells it ("Launchkey" is both ports of a Launchkey Mini): the sources of the open ports that
+    /// have the name (`DeviceWatcher::sources_of`).
+    Device(String),
+}
+
+impl SourceKind {
+    /// What the node of the source is called.
+    pub fn display_name(&self) -> String {
+        match self {
+            SourceKind::Keys => "Keys".to_string(),
+            SourceKind::Device(name) => name.clone(),
+        }
+    }
+}
+
+/// An event cable that a session has: the notes of a source go to a lane, which then hears that source (and the others that cables bring it) and no other. Its id is from the series
+/// that the other cables' are, so that no two edges of the graph a client gets have one id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventCable {
+    pub id: EdgeId,
+    /// The node of the source it starts at.
+    pub from: NodeId,
+    /// The node of the lane it ends at (the lane's instrument is the lane's own node).
+    pub to: NodeId,
 }
 
 /// An audio cable that a session has: a send from one place of the audio to another (P3c of `docs/patch-graph.md` §11.6). Its id is from the series that the modulation
@@ -283,6 +331,20 @@ impl SessionModel {
         }
     }
 
+    /// Put an event cable among the event cables, in the order of the ids (one that is there under the id is replaced): the place it went to.
+    pub fn insert_event_cable(&mut self, cable: EventCable) -> usize {
+        match self.event_cables.binary_search_by_key(&cable.id, |other| other.id) {
+            Ok(at) => {
+                self.event_cables[at] = cable;
+                at
+            }
+            Err(at) => {
+                self.event_cables.insert(at, cable);
+                at
+            }
+        }
+    }
+
     /// Take the audio cable `id` out: the place it had and what it was. None if there is no such cable.
     pub fn remove_audio_cable(&mut self, id: EdgeId) -> Option<(usize, AudioCable)> {
         let at = self.cables.binary_search_by_key(&id, |cable| cable.id).ok()?;
@@ -311,9 +373,9 @@ impl SessionModel {
         self.groups.get(group).map_or_else(Vec::new, |bus| std::iter::once(bus.node).chain(bus.effects.iter().map(|effect| effect.node)).collect())
     }
 
-    /// Whether a cable, of either kind, has the id: the modulation cables and the audio cables are one series.
+    /// Whether a cable, of any kind, has the id: the modulation cables, the audio cables and the event cables are one series.
     pub fn edge_in_use(&self, id: EdgeId) -> bool {
-        self.locate_edge(id).is_some() || self.audio_cable(id).is_some()
+        self.locate_edge(id).is_some() || self.audio_cable(id).is_some() || self.event_cables.iter().any(|cable| cable.id == id)
     }
 
     /// The ends that a cable from the port `from` to the port `to` of the graph has: an instrument's, an effect's or a group's `AudioOut` to an effect's, a group's or the master's
@@ -335,6 +397,7 @@ impl SessionModel {
                 NodePath::Effect { .. } | NodePath::GroupEffect { .. } => CableFrom::Effect(from.node),
                 NodePath::Group(_) => CableFrom::Group(from.node),
                 NodePath::Modulator { .. } => return Err(invalid("a modulator has no output of audio")),
+                NodePath::Source(_) => return Err(invalid("a source of notes has no output of audio: it has an output of events")),
             }
         };
         let end = if to.node == NodeId::MASTER {
@@ -345,6 +408,7 @@ impl SessionModel {
                 NodePath::Group(_) => CableTo::GroupBus(to.node),
                 NodePath::Instrument(_) => return Err(invalid("a lane has no input of audio: a cable ends at an effect, a group or the mix")),
                 NodePath::Modulator { .. } => return Err(invalid("a modulator has no input of audio")),
+                NodePath::Source(_) => return Err(invalid("a source of notes has no input of audio")),
             }
         };
         Ok((start, end))
@@ -393,7 +457,8 @@ impl SessionModel {
                     (m.node, NodePath::Modulator { at: ModulatorLocation::Lane(inst), index })
                 }))
         });
-        groups.chain(lanes)
+        let sources = self.sources.iter().enumerate().map(|(index, source)| (source.node, NodePath::Source(index)));
+        groups.chain(lanes).chain(sources)
     }
 
     /// Where the node `id` sits, if it is still in the session.
@@ -507,6 +572,39 @@ impl SessionModel {
             }
             if let Some(problem) = crate::plugin::chain::cable_problem(&lanes, &groups, drawn(), (cable.id, cable.from, cable.to), crate::plugin::chain::CHAIN_CHANNELS) {
                 return Err(format!("{whose}: {problem}"));
+            }
+        }
+        // The sources: the keys once at most, and a device once for a name.
+        if self.sources.iter().filter(|source| source.kind == SourceKind::Keys).count() > 1 {
+            return Err("the keys are a source more than once".to_string());
+        }
+        for (at, source) in self.sources.iter().enumerate() {
+            if let SourceKind::Device(name) = &source.kind {
+                if self.sources[..at].iter().any(|earlier| earlier.kind == source.kind) {
+                    return Err(format!("the device {name:?} is a source more than once"));
+                }
+            }
+        }
+        // The event cables: ids from the same series, each from a source to a lane, none twice between the same two.
+        for (at, cable) in self.event_cables.iter().enumerate() {
+            let whose = format!("event cable {:?}", cable.id);
+            if cable.id.0 >= self.ids.next_edge {
+                return Err(format!("{whose} was never allocated"));
+            }
+            if !edges.insert(cable.id) {
+                return Err(format!("{whose} has an id which another edge has too"));
+            }
+            if !self.sources.iter().any(|source| source.node == cable.from) {
+                return Err(format!("{whose} starts at {:?}, which is not a source", cable.from));
+            }
+            if !self.instruments.iter().any(|lane| lane.node == cable.to) {
+                return Err(format!("{whose} ends at {:?}, which is not a lane", cable.to));
+            }
+            if self.event_cables[..at].iter().any(|earlier| (earlier.from, earlier.to) == (cable.from, cable.to)) {
+                return Err(format!("{whose} is between two nodes that another event cable is between"));
+            }
+            if at > 0 && self.event_cables[at - 1].id >= cable.id {
+                return Err(format!("{whose} is not after the one before it"));
             }
         }
         Ok(())
@@ -2737,6 +2835,118 @@ type = "envelope"
         // It is the rack itself, not a copy.
         model.modulators_mut(ModulatorLocation::Group(0)).unwrap().pop();
         assert_eq!((model.instruments[0].modulators.len(), model.groups[0].modulators.len()), (2, 0));
+    }
+
+    // -- sources of notes and the cables from them (P4b of docs/patch-graph.md §11.6) --
+
+    fn the_sources() -> (SessionModel, crate::app::testutil::Routed) {
+        let model = load(crate::app::testutil::SOURCES).model;
+        let nodes = crate::app::testutil::Routed::of(&model);
+        (model, nodes)
+    }
+
+    #[test]
+    fn the_sources_are_nodes_that_come_after_the_groups_and_the_lanes_and_are_found_by_their_ids() {
+        let (model, n) = the_sources();
+        let nodes: Vec<(NodeId, NodePath)> = model.nodes().collect();
+        assert_eq!(
+            nodes,
+            [
+                (n.lane[0], NodePath::Instrument(0)),
+                (n.lane[1], NodePath::Instrument(1)),
+                (n.lane[2], NodePath::Instrument(2)),
+                (n.keys, NodePath::Source(0)),
+                (n.devices[0], NodePath::Source(1)),
+                (n.devices[1], NodePath::Source(2)),
+            ]
+        );
+        assert_eq!(model.locate(n.devices[0]), Some(NodePath::Source(1)));
+        assert_eq!(model.locate(NodeId(900)), None);
+    }
+
+    #[test]
+    fn the_cables_of_notes_have_ids_of_the_series_that_the_other_cables_have() {
+        let (mut model, n) = the_sources();
+        assert!(model.edge_in_use(EdgeId(0)) && model.edge_in_use(EdgeId(2)), "the cables of notes");
+        assert!(model.edge_in_use(EdgeId(3)), "and the audio cable after them");
+        assert!(!model.edge_in_use(EdgeId(4)));
+        // The id that an event cable has is not handed out again.
+        assert_eq!(model.alloc_edge(), EdgeId(4));
+        // (A cable that goes out of the model frees nothing: ids are not reused but for what undo puts back.)
+        model.event_cables.retain(|cable| cable.to != n.lane[1]);
+        assert!(!model.edge_in_use(EdgeId(1)));
+    }
+
+    #[test]
+    fn an_event_cable_goes_in_among_the_event_cables_in_the_order_of_the_ids_and_one_that_is_there_under_the_id_is_replaced() {
+        let (mut model, n) = the_sources();
+        model.ids.reuse(&[], &[EdgeId(10), EdgeId(11)]);
+        let first = model.alloc_edge();
+        let second = model.alloc_edge();
+        assert_eq!((first, second), (EdgeId(10), EdgeId(11)));
+        assert_eq!(model.insert_event_cable(EventCable { id: second, from: n.keys, to: n.lane[1] }), 3, "at the end: the id is the highest");
+        assert_eq!(model.insert_event_cable(EventCable { id: EdgeId(5), from: n.keys, to: n.lane[2] }), 3, "in the middle, before the one that has a higher id");
+        assert_eq!(model.event_cables.iter().map(|cable| cable.id.0).collect::<Vec<_>>(), [0, 1, 2, 5, 11]);
+        let place = model.insert_event_cable(EventCable { id: EdgeId(5), from: n.devices[0], to: n.lane[2] });
+        assert_eq!(place, 3);
+        assert_eq!(model.event_cables.len(), 5, "replaced");
+        assert_eq!((model.event_cables[3].from, model.event_cables[3].to), (n.devices[0], n.lane[2]));
+    }
+
+    #[test]
+    fn check_ids_notices_sources_and_cables_of_notes_that_are_not_what_they_should_be() {
+        let (model, _) = the_sources();
+        model.check_ids().unwrap();
+        // The keys twice, and a device by one name twice.
+        let (mut model, _) = the_sources();
+        let node = model.alloc_node();
+        model.sources.push(SourceNode { node, kind: SourceKind::Keys });
+        assert!(model.check_ids().unwrap_err().contains("the keys are a source more than once"));
+        let (mut model, _) = the_sources();
+        let node = model.alloc_node();
+        model.sources.push(SourceNode { node, kind: SourceKind::Device("Seaboard".to_string()) });
+        assert!(model.check_ids().unwrap_err().contains("\"Seaboard\" is a source more than once"));
+        // A node that is not a source's id: a stranger, or another node's.
+        let (mut model, n) = the_sources();
+        model.sources[0].node = n.lane[0];
+        assert!(model.check_ids().unwrap_err().contains("another node has too"));
+        // An id that nothing handed out, and one that an audio cable has.
+        let (mut model, n) = the_sources();
+        model.insert_event_cable(EventCable { id: EdgeId(9_999), from: n.keys, to: n.lane[2] });
+        assert!(model.check_ids().unwrap_err().contains("never allocated"));
+        let (mut model, n) = the_sources();
+        model.insert_event_cable(EventCable { id: EdgeId(3), from: n.keys, to: n.lane[2] });
+        assert!(model.check_ids().unwrap_err().contains("another edge has too"));
+        // A start that is not a source (a lane, a stranger) and an end that is not a lane (a source, a stranger).
+        let (mut model, n) = the_sources();
+        model.event_cables[0].from = n.lane[2];
+        assert!(model.check_ids().unwrap_err().contains("which is not a source"));
+        let (mut model, _) = the_sources();
+        model.event_cables[0].from = NodeId(900);
+        assert!(model.check_ids().unwrap_err().contains("which is not a source"));
+        let (mut model, n) = the_sources();
+        model.event_cables[0].to = n.keys;
+        assert!(model.check_ids().unwrap_err().contains("which is not a lane"));
+        let (mut model, _) = the_sources();
+        model.event_cables[0].to = NodeId(900);
+        assert!(model.check_ids().unwrap_err().contains("which is not a lane"));
+        // Two between the same nodes, and out of the order of their ids.
+        let (mut model, n) = the_sources();
+        model.event_cables[1] = EventCable { id: EdgeId(1), from: n.keys, to: n.lane[0] };
+        assert!(model.check_ids().unwrap_err().contains("between two nodes that another event cable is between"));
+        let (mut model, _) = the_sources();
+        model.event_cables.swap(1, 2);
+        assert!(model.check_ids().unwrap_err().contains("is not after the one before it"));
+    }
+
+    #[test]
+    fn an_audio_cable_cannot_start_or_end_at_a_source_of_notes() {
+        let (model, n) = the_sources();
+        let audio = |node: NodeId, port| crate::app::graph::Endpoint { node, port };
+        use crate::app::graph::Port;
+        let refused = |from, to| model.cable_ends(from, to).unwrap_err();
+        assert!(matches!(refused(audio(n.keys, Port::AudioOut), audio(NodeId::MASTER, Port::AudioIn)), IntentError::Invalid(why) if why.contains("no output of audio")));
+        assert!(matches!(refused(audio(n.lane[0], Port::AudioOut), audio(n.devices[0], Port::AudioIn)), IntentError::Invalid(why) if why.contains("no input of audio")));
     }
 
     // -- audio cables (P3c of docs/patch-graph.md §11.6) --

@@ -462,7 +462,7 @@ impl Controller {
                     Port::Sustain => Some("sustain".to_string()),
                     Port::Release => Some("release".to_string()),
                     Port::Depth { .. } => Some("depth".to_string()),
-                    Port::ModOut | Port::AudioIn | Port::AudioOut => None,
+                    Port::ModOut | Port::AudioIn | Port::AudioOut | Port::EventsIn | Port::EventsOut => None,
                 };
                 let verb = if matches!(kind, ModulatorKind::MidiLearn) { "learn" } else { "modulate" };
                 name.map_or(Plan::Nothing, |name| added(format!("{verb} {name}")))
@@ -513,8 +513,8 @@ impl Controller {
                 Some(NodePath::Group(group)) => {
                     Plan::Removed { label: format!("remove {}", self.model.groups[group].display_name(group)), intent: intent.clone(), at: now }
                 }
-                // (A node that is not there is refused, and the plan is not looked at.)
-                None => Plan::Nothing,
+                // (A node that is not there is refused, and the plan is not looked at; so is a source of notes, which cannot be taken out yet.)
+                Some(NodePath::Source(_)) | None => Plan::Nothing,
             },
             // The instrument of a lane goes with the cables that drove it, and comes back with them: the very plugin if the audio thread handed it back, and the lane's note remap (a
             // step of the words of the button that puts one in, by the name the catalog has for the new one; an empty lane is filled, and emptied again).
@@ -609,7 +609,7 @@ impl Controller {
             NodePath::Instrument(inst) => self.model.instruments[inst].instrument.as_ref(),
             NodePath::Effect { inst, index } => self.model.instruments[inst].effects.get(index),
             NodePath::GroupEffect { group, index } => self.model.groups[group].effects.get(index),
-            NodePath::Group(_) | NodePath::Modulator { .. } => None,
+            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) => None,
         }
     }
 
@@ -2386,8 +2386,8 @@ depth = 0.4
 
     /// What `Ctrl+S` would write.
     fn written(ctl: &Controller) -> String {
-        let (instruments, groups, cables) = crate::app::save::to_save(&ctl.model);
-        crate::session::to_toml(&instruments, &groups, &cables, None, None, None).unwrap()
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(&ctl.model);
+        crate::session::to_toml(&instruments, &groups, &cables, &sources, None, None, None).unwrap()
     }
 
     fn cable_edge(ctl: &Controller, modulator: usize, cable: usize) -> EdgeId {

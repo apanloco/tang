@@ -80,6 +80,8 @@ export function portName(graph: Graph, node: NodeId, port: Port): string | null 
     case "depth":
       return port.type;
     case "modOut":
+    case "eventsIn":
+    case "eventsOut":
     case "audioIn":
     case "audioOut":
       return null;

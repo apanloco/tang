@@ -25,7 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::model::{EdgeId, FieldTarget, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel};
+use crate::app::model::{EdgeId, FieldTarget, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, SourceKind};
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::{NodeUi, Route};
 
@@ -74,6 +74,28 @@ pub enum NodeKind {
     Group { volume: f32, pan: f32, muted: bool, solo: bool, route: Route },
     /// The master mix.
     Master,
+    /// A source of notes that a person put in the session: the keys, or a MIDI device. Its output of events is where the event cables start.
+    Source { source: SourceInfo },
+}
+
+/// What a source of notes is, as a front-end sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum SourceInfo {
+    /// The computer's keys, the page's piano and keys, and every browser's.
+    Keys,
+    /// A MIDI device, by the name of its port or as much of it as tells it.
+    Device { name: String },
+}
+
+impl From<&SourceKind> for SourceInfo {
+    fn from(kind: &SourceKind) -> Self {
+        match kind {
+            SourceKind::Keys => SourceInfo::Keys,
+            SourceKind::Device(name) => SourceInfo::Device { name: name.clone() },
+        }
+    }
 }
 
 /// The pattern of a lane as a front-end sees it: its settings, how long it is and how many notes it has (not the notes: a front-end that draws them asks for them).
@@ -223,6 +245,11 @@ pub enum EdgeKind {
     /// An audio cable that a person drew: a send from an output of audio (an instrument's, an effect's, a group's) to an input of audio (an effect's, a group's bus, the
     /// master's), at the level `gain`. It is added to what the input has already, so the links of the audio path stay as they are.
     Cable { id: EdgeId, gain: f32 },
+    /// An event cable that a person drew: the notes of a source go to a lane, which then hears that source and the others that cables bring it, and no other. It has no level.
+    Events { id: EdgeId },
+    /// A source feeding a lane that no event cable ends at, which hears every source. Derived; there is nothing to edit (draw a cable to the lane, and it hears the sources
+    /// that its cables start at). There are none while the session has no source node.
+    Hears,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -241,6 +268,10 @@ pub enum Port {
     AudioIn,
     /// What a node puts out (an instrument, an effect, a group).
     AudioOut,
+    /// What a source of notes puts out: where an event cable starts.
+    EventsOut,
+    /// What a lane takes in: where an event cable ends.
+    EventsIn,
     /// A modulator's output.
     ModOut,
     /// A parameter of the plugin in a node, by the plugin's own index.
@@ -314,13 +345,22 @@ impl From<MidiBindSource> for MidiControl {
 }
 
 impl SessionModel {
-    /// The session as a graph: groups first (each followed by its bus effects and
+    /// The session as a graph: the sources of notes first, then groups (each followed by its bus effects and
     /// modulators), then lanes (each followed by its effects and modulators), then
-    /// the master. The edges are the audio path, then the modulation targets in the
+    /// the master. The edges are the audio path, the sources' links to the lanes that hear every source, the audio cables, the event cables, then the modulation targets in the
     /// order of the nodes that own them.
     pub fn graph(&self) -> Graph {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
+
+        // The sources of notes come first: the notes go from them to the lanes.
+        nodes.extend(self.sources.iter().map(|source| Node {
+            id: source.node,
+            parent: None,
+            name: source.kind.display_name(),
+            ui: None,
+            kind: NodeKind::Source { source: SourceInfo::from(&source.kind) },
+        }));
 
         for (g, group) in self.groups.iter().enumerate() {
             nodes.push(Node {
@@ -371,9 +411,29 @@ impl SessionModel {
         for node in &mut nodes {
             node.ui = self.ui.get(&node.id).copied();
         }
+        self.hears_edges(&mut edges);
         self.audio_cable_edges(&mut edges);
+        self.event_cable_edges(&mut edges);
         self.modulation_edges(&mut edges);
         Graph { nodes, edges }
+    }
+
+    /// One edge from each source to each lane that no event cable ends at, which hears every source: the sources in order, and for each the lanes in order.
+    fn hears_edges(&self, edges: &mut Vec<Edge>) {
+        for source in &self.sources {
+            for lane in self.instruments.iter().filter(|lane| !self.event_cables.iter().any(|cable| cable.to == lane.node)) {
+                edges.push(Edge { from: Endpoint { node: source.node, port: Port::EventsOut }, to: Endpoint { node: lane.node, port: Port::EventsIn }, kind: EdgeKind::Hears });
+            }
+        }
+    }
+
+    /// One edge for each event cable, in the order of their ids.
+    fn event_cable_edges(&self, edges: &mut Vec<Edge>) {
+        edges.extend(self.event_cables.iter().map(|cable| Edge {
+            from: Endpoint { node: cable.from, port: Port::EventsOut },
+            to: Endpoint { node: cable.to, port: Port::EventsIn },
+            kind: EdgeKind::Events { id: cable.id },
+        }));
     }
 
     /// One edge for each audio cable, in the order of their ids.
@@ -627,6 +687,117 @@ mod tests {
             serde_json::to_value(&edges[links]).unwrap(),
             json!({"from": {"node": lane.0, "port": {"type": "audioOut"}}, "to": {"node": bus.0, "port": {"type": "audioIn"}}, "kind": "cable", "id": 4, "gain": 1.0})
         );
+    }
+
+    fn events(from: Endpoint, to: Endpoint, id: u32) -> Edge {
+        Edge { from, to, kind: EdgeKind::Events { id: EdgeId(id) } }
+    }
+
+    fn hears(from: Endpoint, to: Endpoint) -> Edge {
+        Edge { from, to, kind: EdgeKind::Hears }
+    }
+
+    fn notes_out(node: NodeId) -> Endpoint {
+        at(node, Port::EventsOut)
+    }
+
+    fn notes_in(node: NodeId) -> Endpoint {
+        at(node, Port::EventsIn)
+    }
+
+    #[test]
+    fn a_session_with_no_source_has_no_node_of_one_and_no_edge_from_one() {
+        for text in [crate::app::testutil::SENDS, GROUPS, OSC] {
+            let graph = load(text).model.graph();
+            assert!(graph.nodes.iter().all(|n| !matches!(n.kind, NodeKind::Source { .. })), "{text}");
+            assert!(graph.edges.iter().all(|e| !matches!(e.kind, EdgeKind::Events { .. } | EdgeKind::Hears)), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_sources_are_the_first_nodes_with_the_names_and_the_places_the_session_gave_them() {
+        let model = load(crate::app::testutil::SOURCES).model;
+        let n = crate::app::testutil::Routed::of(&model);
+        let graph = model.graph();
+        let first = &graph.nodes[..3];
+        assert_eq!(first.iter().map(|node| (node.id, node.parent, node.name.as_str())).collect::<Vec<_>>(), [(n.keys, None, "Keys"), (n.devices[0], None, "Launchkey Mini MK4 37"), (n.devices[1], None, "Seaboard")]);
+        assert_eq!(first.iter().map(|node| node.ui).collect::<Vec<_>>(), [Some(NodeUi { x: 0.0, y: 40.0 }), Some(NodeUi { x: 0.0, y: 300.5 }), None]);
+        assert_eq!(
+            first.iter().map(|node| node.kind.clone()).collect::<Vec<_>>(),
+            [
+                NodeKind::Source { source: SourceInfo::Keys },
+                NodeKind::Source { source: SourceInfo::Device { name: "Launchkey Mini MK4 37".to_string() } },
+                NodeKind::Source { source: SourceInfo::Device { name: "Seaboard".to_string() } },
+            ]
+        );
+        assert_eq!(graph.nodes.len(), 3 + 3 + 1, "the sources, the lanes and the master, and nothing else");
+        assert_eq!(
+            serde_json::to_value(&graph.nodes[0]).unwrap(),
+            json!({"id": n.keys.0, "parent": null, "name": "Keys", "ui": {"x": 0.0, "y": 40.0}, "kind": "source", "source": {"type": "keys"}})
+        );
+        assert_eq!(
+            serde_json::to_value(&graph.nodes[2]).unwrap(),
+            json!({"id": n.devices[1].0, "parent": null, "name": "Seaboard", "kind": "source", "source": {"type": "device", "name": "Seaboard"}})
+        );
+    }
+
+    #[test]
+    fn an_event_cable_is_an_edge_from_the_output_of_events_of_a_source_to_the_input_of_events_of_a_lane_and_a_lane_that_has_none_is_fed_by_every_source() {
+        let model = load(crate::app::testutil::SOURCES).model;
+        let n = crate::app::testutil::Routed::of(&model);
+        let edges = model.graph().edges;
+        let drawn: Vec<&Edge> = edges.iter().filter(|e| matches!(e.kind, EdgeKind::Events { .. })).collect();
+        assert_eq!(
+            drawn,
+            [
+                &events(notes_out(n.keys), notes_in(n.lane[0]), 0),
+                &events(notes_out(n.devices[0]), notes_in(n.lane[1]), 1),
+                &events(notes_out(n.devices[1]), notes_in(n.lane[1]), 2),
+            ],
+            "in the order of their ids"
+        );
+        let heard: Vec<&Edge> = edges.iter().filter(|e| matches!(e.kind, EdgeKind::Hears)).collect();
+        assert_eq!(
+            heard,
+            [&hears(notes_out(n.keys), notes_in(n.lane[2])), &hears(notes_out(n.devices[0]), notes_in(n.lane[2])), &hears(notes_out(n.devices[1]), notes_in(n.lane[2]))],
+            "lane 2 has no cable and every source feeds it: the sources in order, and for each the lanes that have none; lanes 0 and 1 have cables"
+        );
+        // The links come after the audio path and before the audio cables, which come before the cables of notes.
+        let place = |kind: fn(&EdgeKind) -> bool| edges.iter().position(|e| kind(&e.kind)).unwrap();
+        let (audio_path, heard_at, audio_cable, notes) = (
+            place(|k| matches!(k, EdgeKind::Audio | EdgeKind::Member)),
+            place(|k| matches!(k, EdgeKind::Hears)),
+            place(|k| matches!(k, EdgeKind::Cable { .. })),
+            place(|k| matches!(k, EdgeKind::Events { .. })),
+        );
+        assert!(audio_path < heard_at && heard_at < audio_cable && audio_cable < notes, "{audio_path} {heard_at} {audio_cable} {notes}");
+        assert_eq!(
+            serde_json::to_value(drawn[1]).unwrap(),
+            json!({"from": {"node": n.devices[0].0, "port": {"type": "eventsOut"}}, "to": {"node": n.lane[1].0, "port": {"type": "eventsIn"}}, "kind": "events", "id": 1})
+        );
+        assert_eq!(
+            serde_json::to_value(heard[0]).unwrap(),
+            json!({"from": {"node": n.keys.0, "port": {"type": "eventsOut"}}, "to": {"node": n.lane[2].0, "port": {"type": "eventsIn"}}, "kind": "hears"})
+        );
+    }
+
+    #[test]
+    fn a_session_with_the_keys_and_no_cable_has_the_keys_feed_every_lane() {
+        let model = load("[keys]\n[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let keys = model.sources[0].node;
+        let lanes = [model.instruments[0].node, model.instruments[1].node];
+        let edges = model.graph().edges;
+        let notes: Vec<&Edge> = edges.iter().filter(|e| matches!(e.kind, EdgeKind::Hears | EdgeKind::Events { .. })).collect();
+        assert_eq!(notes, [&hears(notes_out(keys), notes_in(lanes[0])), &hears(notes_out(keys), notes_in(lanes[1]))]);
+    }
+
+    #[test]
+    fn a_source_and_a_cable_do_not_change_the_edges_of_the_audio_path() {
+        let plain = load(&format!("{OSC}{OSC}")).model.graph();
+        let routed = load(&format!("[keys]\n{OSC}{OSC}[[cable]]\nfrom = \"keys\"\nto = \"instrument[1]\"\n")).model.graph();
+        let links = |graph: &Graph| graph.edges.iter().filter(|e| matches!(e.kind, EdgeKind::Audio | EdgeKind::Member)).cloned().collect::<Vec<_>>();
+        // (The nodes' ids are not the same: the keys take the next, after the lanes' and the master's has no id of the series.)
+        assert_eq!(links(&plain), links(&routed));
     }
 
     fn node(graph: &Graph, id: NodeId) -> &Node {
@@ -1561,6 +1732,8 @@ depth = 0.2
                     (Port::AudioOut, NodeKind::Instrument { .. } | NodeKind::Effect { .. } | NodeKind::Group { .. }) => {}
                     (Port::AudioIn, NodeKind::Effect { .. } | NodeKind::Group { .. } | NodeKind::Master) => {}
                     (Port::ModOut, NodeKind::Modulator { .. }) => {}
+                    (Port::EventsOut, NodeKind::Source { .. }) => {}
+                    (Port::EventsIn, NodeKind::Instrument { .. }) => {}
                     (Port::Param { index }, NodeKind::Instrument { plugin: Some(p), .. } | NodeKind::Effect { plugin: p, .. }) => {
                         assert!(p.params.iter().any(|q| q.index == index), "{what}: {e:?} names a parameter {index} the plugin lacks");
                     }
@@ -1584,6 +1757,11 @@ depth = 0.2
                     assert_eq!((e.from.port, e.to.port), (Port::AudioOut, Port::AudioIn), "{what}");
                     assert!(!modulation_ids.contains(&id), "{what}: a cable has an id of its own");
                 }
+                EdgeKind::Events { id } => {
+                    assert_eq!((e.from.port, e.to.port), (Port::EventsOut, Port::EventsIn), "{what}");
+                    assert!(!modulation_ids.contains(&id), "{what}: a cable has an id of its own");
+                }
+                EdgeKind::Hears => assert_eq!((e.from.port, e.to.port), (Port::EventsOut, Port::EventsIn), "{what}"),
             }
         }
     }
