@@ -4833,6 +4833,27 @@ fn the_tab_bar_says_where_the_web_interface_is_and_how_many_browsers_are_on_it()
 }
 
 #[test]
+fn a_click_on_a_tab_is_a_click_on_the_tab_that_is_drawn_there_with_the_mark_on_the_session_tab_or_without() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    for dirty in [false, true] {
+        let mut h = Harness::new(scene_split());
+        h.s.ctl.dirty = dirty;
+        let bar = tab_bar(&mut h);
+        assert_eq!(bar.contains("Session *"), dirty, "{bar}");
+        for (tab, name) in [(TAB_SESSION, "(1) Session"), (TAB_PIANO, "(2) Piano"), (TAB_SCOPE, "(3) Scope"), (TAB_HELP, "(4) Help")] {
+            let first = bar[..bar.find(name).unwrap()].chars().count() as u16;
+            // Both ends of the word that is drawn: the first column and the last.
+            for column in [first, first + name.chars().count() as u16 - 1] {
+                h.s.active_tab = (tab + 1) % TAB_NAMES.len();
+                let click = Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row: 0, modifiers: KeyModifiers::NONE });
+                process_event(&mut h.s, click);
+                assert_eq!(h.s.active_tab, tab, "a click at column {column} on `{name}` (the session is {}): {bar}", if dirty { "changed" } else { "as saved" });
+            }
+        }
+    }
+}
+
+#[test]
 fn the_web_label_comes_before_the_clip_light() {
     let mut h = Harness::new(scene_split());
     h.s.web = Some(web_status("127.0.0.1:8765", 1));

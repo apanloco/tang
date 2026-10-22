@@ -57,6 +57,16 @@ const TAB_SCOPE: usize = 2;
 const TAB_HELP: usize = 3;
 const TAB_SEP: &str = " │ ";
 
+/// What the tab bar says on each tab: the names, and the mark on the Session tab while the session has changes that are not saved. What a click hits is
+/// worked out from the same words, so that it is the tab that is drawn where it is clicked.
+fn tab_labels(dirty: bool) -> Vec<&'static str> {
+    let mut labels = TAB_NAMES.to_vec();
+    if dirty {
+        labels[TAB_SESSION] = "(1) Session *";
+    }
+    labels
+}
+
 /// Addresses a specific node in the instrument tree.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TreeAddress {
@@ -3006,7 +3016,7 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
             s.param_dragging = false;
             s.param_scrollbar_dragging = false;
 
-            if let Some(tab) = TabBar::tab_at(x, y, s.areas.tab, TAB_NAMES, TAB_SEP) {
+            if let Some(tab) = TabBar::tab_at(x, y, s.areas.tab, &tab_labels(s.ctl.dirty), TAB_SEP) {
                 s.active_tab = tab;
                 return;
             }
@@ -3147,9 +3157,7 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
     s.areas.content = content_area;
     s.areas.action_bar = action_area;
 
-    let session_label = if s.ctl.dirty { "(1) Session *" } else { TAB_NAMES[TAB_SESSION] };
-    let mut tab_names = TAB_NAMES.to_vec();
-    tab_names[TAB_SESSION] = session_label;
+    let tab_names = tab_labels(s.ctl.dirty);
     frame.render_widget(TabBar::new(&tab_names, s.active_tab), tab_area);
 
     // The right side of the tab bar: the web interface when there is one, the CLIP
