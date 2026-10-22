@@ -5,7 +5,7 @@ import { open } from "./canvas";
 
 // The bar at the top of the page with the field of Save as open, against the mock engine in the page: it fits the windows the page is used in (the page does not
 // scroll sideways, what the bar says stays on a line and nothing in it is over anything else), and in a window that is wide enough the field takes no room from the
-// rest: the bar is as tall as it was.
+// rest: the bar is as tall as it was. (With the field open the bar needs 1,358 pixels in a row: 1,265 before the button that adds a source of notes, which is 93 more.)
 
 interface Fit {
   /** How far the page scrolls sideways: more than the window is wide, or not. */
@@ -43,7 +43,10 @@ function fit(page: Page): Promise<Fit> {
   });
 }
 
-for (const width of [1600, 1280, 1100, 1000, 900]) {
+/** The width from which the open bar is as tall as the closed one: it needs 1,358 pixels in a row (1,265 before the button that adds a source of notes). */
+const ONE_ROW = 1400;
+
+for (const width of [1600, ONE_ROW, 1280, 1100, 1000, 900]) {
   test(`with the field of Save as open the bar fits a window ${String(width)} pixels wide: no sideways scrolling, texts on a line, nothing over anything`, async ({ page }) => {
     await open(page);
     await page.setViewportSize({ width, height: 700 });
@@ -55,8 +58,8 @@ for (const width of [1600, 1280, 1100, 1000, 900]) {
     expect(opened.keysHeight, "the keys' hint wraps").toBeLessThan(24);
     expect(opened.engineHeight, "the engine's name wraps").toBeLessThan(24);
     expect(opened.overlaps).toEqual([]);
-    // Where the closed bar fits on one row, so does the open one in a window of 1280 or more.
-    if (width >= 1280) expect(opened.barHeight, "the bar grows when the field opens").toBe(closed.barHeight);
+    // Where the closed bar fits on one row, so does the open one in a window that is wide enough for the field too.
+    if (width >= ONE_ROW) expect(opened.barHeight, "the bar grows when the field opens").toBe(closed.barHeight);
   });
 }
 
