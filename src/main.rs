@@ -20,6 +20,7 @@ mod piano_filter;
 mod plugin;
 mod scale;
 mod session;
+mod source;
 mod telemetry;
 mod tty;
 mod tui;
@@ -415,7 +416,7 @@ fn run_session(
     let runtime = plugin::Runtime::default();
 
     // Create channels
-    let (midi_tx, midi_rx) = crossbeam_channel::bounded::<audio::MidiEvent>(1024);
+    let (midi_tx, midi_rx) = crossbeam_channel::bounded::<audio::MidiEvent>(audio::MIDI_CHANNEL_CAPACITY);
     let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<plugin::chain::GraphCommand>(64);
     let (return_tx, return_rx) = crossbeam_channel::bounded::<Box<dyn plugin::Plugin>>(16);
 

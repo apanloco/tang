@@ -11,6 +11,7 @@ use crate::ids::{EdgeId, NodeId};
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget, Route};
+use crate::source::Events;
 use crate::telemetry::{self, Meter, MeterSlots, Slot, Telemetry};
 
 mod nodes;
@@ -1563,11 +1564,11 @@ fn lane_member_ordinal(instruments: &[InstrumentLane], inst: usize) -> Option<(u
 fn build_group_midi(
     instruments: &[InstrumentLane],
     group: usize,
-    midi: &[(u64, [u8; 3])],
+    midi: Events<'_>,
     out: &mut Vec<(u64, [u8; 3])>,
 ) {
     out.clear();
-    for &(frame, bytes) in midi {
+    for (_source, frame, bytes) in midi.iter() {
         let status = bytes[0] & 0xF0;
         if matches!(status, 0x80 | 0x90) {
             let note = bytes[1];
@@ -3462,9 +3463,9 @@ impl InstrumentLane {
     /// Filter MIDI events by this instrument's key range.
     /// Note-on/note-off: only pass if note is within range (inclusive).
     /// CC, pitch bend, channel pressure, etc.: always pass through.
-    fn filter_midi(&mut self, midi_events: &[(u64, [u8; 3])]) {
+    fn filter_midi(&mut self, midi_events: Events<'_>) {
         self.filtered_midi.clear();
-        for &(frame, bytes) in midi_events {
+        for (_source, frame, bytes) in midi_events.iter() {
             let status = bytes[0] & 0xF0;
             let ch = (bytes[0] & 0x0F) as usize;
             match status {
@@ -3512,7 +3513,7 @@ impl InstrumentLane {
     #[cfg(test)]
     fn process(
         &mut self,
-        midi_events: &[(u64, [u8; 3])],
+        midi_events: Events<'_>,
         inst_out: &mut [Vec<f32>],
         num_channels: usize,
         scale: ScaleSetting,
@@ -5369,15 +5370,25 @@ impl AudioGraph {
         }
     }
 
+    /// `process_events` for events that are all from the keys, which is what a plugin's own list of notes is and what the tests play: `midi_events` are the frame and the bytes of each.
+    #[cfg(test)]
+    pub fn process(
+        &mut self,
+        midi_events: &[(u64, [u8; 3])],
+        audio_out: &mut [Vec<f32>],
+    ) -> anyhow::Result<()> {
+        self.process_events(Events::keys(midi_events), audio_out)
+    }
+
     /// Process audio: drain commands, run all instruments, sum to output.
     /// Outputs silence if no instruments are loaded.
     ///
     /// The lanes, the groups and the output mix are the nodes of a plan that the kernel makes of how they are wired (`Schedule`), and `process` is: the commands; the plan,
     /// made again if the wiring is not the one it was made for; what is heard (the mutes and solos of all of them, worked out before any of them runs); the group modulators,
     /// which reach across lanes and groups and so are not nodes yet (P5); the plan, run; and what the group modulators drove in the members, published.
-    pub fn process(
+    pub fn process_events(
         &mut self,
-        midi_events: &[(u64, [u8; 3])],
+        midi_events: Events<'_>,
         audio_out: &mut [Vec<f32>],
     ) -> anyhow::Result<()> {
         self.drain_commands();
@@ -5496,6 +5507,16 @@ impl AudioGraph {
     pub fn process_legacy(
         &mut self,
         midi_events: &[(u64, [u8; 3])],
+        audio_out: &mut [Vec<f32>],
+    ) -> anyhow::Result<()> {
+        self.process_legacy_events(Events::keys(midi_events), audio_out)
+    }
+
+    /// `process_legacy`, with the sources of the events.
+    #[cfg(test)]
+    pub fn process_legacy_events(
+        &mut self,
+        midi_events: Events<'_>,
         audio_out: &mut [Vec<f32>],
     ) -> anyhow::Result<()> {
         self.drain_commands();
@@ -9802,7 +9823,7 @@ mod tests {
             (0u64, [0xd0, 90, 0]),      // channel pressure, ch idx 0 (master) → keep
             (0u64, [0xe2, 0x00, 0x60]), // pitch bend, ch idx 2 → no note → drop
         ];
-        lane.filter_midi(&events);
+        lane.filter_midi(Events::keys(&events));
         let kept: Vec<u8> = lane.filtered_midi.iter().map(|(_, b)| b[0]).collect();
         assert!(kept.contains(&0x91), "note kept: {kept:02x?}");
         assert!(kept.contains(&0xd1), "own-channel pressure kept: {kept:02x?}");
@@ -9815,7 +9836,7 @@ mod tests {
             (0u64, [0x81, 64, 0]), // note off, ch idx 1
             (0u64, [0xd1, 40, 0]), // channel pressure, ch idx 1 → now dropped
         ];
-        lane.filter_midi(&after);
+        lane.filter_midi(Events::keys(&after));
         let kept2: Vec<u8> = lane.filtered_midi.iter().map(|(_, b)| b[0]).collect();
         assert!(kept2.contains(&0x81), "note-off kept: {kept2:02x?}");
         assert!(!kept2.contains(&0xd1), "pressure dropped after note-off: {kept2:02x?}");
@@ -9831,7 +9852,7 @@ mod tests {
             (0u64, [0xd3, 77, 0]),   // pressure, ch idx 3 → own note → keep
             (0u64, [0xb0, 1, 64]),   // CC1 on master channel → keep (global)
         ];
-        lane.filter_midi(&events);
+        lane.filter_midi(Events::keys(&events));
         let kept: Vec<u8> = lane.filtered_midi.iter().map(|(_, b)| b[0]).collect();
         assert!(kept.contains(&0xd3), "own-channel pressure kept: {kept:02x?}");
         assert!(kept.contains(&0xb0), "global CC kept: {kept:02x?}");

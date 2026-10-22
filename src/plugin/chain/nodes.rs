@@ -31,8 +31,8 @@ use super::*;
 
 /// What every node is told of the block besides its buffers.
 pub(super) struct BlockCx<'a> {
-    /// The notes and controllers that came in, with their frames in this block.
-    pub midi: &'a [(u64, [u8; 3])],
+    /// The notes and controllers that came in, with their frames in this block and the sources they came from.
+    pub midi: Events<'a>,
     /// Where the output mix goes.
     pub audio_out: &'a mut [Vec<f32>],
     pub num_channels: usize,
@@ -1178,7 +1178,7 @@ mod tests {
     fn run_with(schedule: &mut Schedule, lanes: &mut [InstrumentLane], groups: &mut [Group], midi: &[(u64, [u8; 3])], frames: usize) -> Vec<Vec<f32>> {
         let mut master = Master::new();
         let mut out = vec![vec![1.0f32; frames]; 2];
-        let mut cx = BlockCx { midi, audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
+        let mut cx = BlockCx { midi: Events::keys(midi), audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
         schedule.run(lanes, groups, &mut master, frames, &mut cx).unwrap();
         out
     }
@@ -1636,7 +1636,7 @@ mod tests {
         schedule.refresh(&lanes, &groups, 2, 128);
         let mut master = Master::new();
         let mut out = vec![vec![0.0f32; 128]; 2];
-        let mut cx = BlockCx { midi: &[], audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
+        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
         let (result, asked) = allocations_in(|| schedule.run(&mut lanes, &mut groups, &mut master, 128, &mut cx));
         result.unwrap();
         assert_eq!(asked, 0, "refresh made the room, as the pool of the kernel has it made before a block");
@@ -2155,7 +2155,7 @@ mod tests {
         assert!(schedule.delay_frames().len() == 2 && schedule.dry_frames(lanes[0].effect_nodes[0]).is_some());
         let mut master = Master::new();
         let mut out = vec![vec![0.0f32; 256]; 2];
-        let mut cx = BlockCx { midi: &NOTE_ON, audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
+        let mut cx = BlockCx { midi: Events::keys(&NOTE_ON), audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
         let (_, asked) = allocations_in(|| {
             for _ in 0..8 {
                 schedule.refresh(&lanes, &groups, 2, 256);

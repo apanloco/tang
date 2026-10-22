@@ -7,6 +7,10 @@
 //! on the channel the audio thread drains. `NoteInput` does them in one place. It
 //! is `Clone` and lock-free, so every source holds its own copy and calls it from
 //! whatever thread it runs on, the real-time MIDI callback included.
+//!
+//! A `NoteInput` is made for a source (`for_source`; `new` is the keys' own: the computer's
+//! keys, the page's piano and keys and every browser): what it sends is tagged with it, so
+//! that a lane can hear some sources and not others (P4a of `docs/patch-graph.md` §11.6).
 
 use std::sync::Arc;
 
@@ -15,6 +19,7 @@ use crossbeam_channel::Sender;
 use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
 use crate::piano_filter::PianoFilter;
+use crate::source::Source;
 
 /// What became of a message sent with `NoteInput::send`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,11 +40,25 @@ pub struct NoteInput {
     tx: Sender<MidiEvent>,
     held: Arc<HeldNotes>,
     piano_filter: Arc<PianoFilter>,
+    /// Who the messages sent are from.
+    source: Source,
 }
 
 impl NoteInput {
+    /// The note path of the keys (`Source::KEYS`): the computer's keys, the page's piano and keys, and every browser.
     pub fn new(tx: Sender<MidiEvent>, held: Arc<HeldNotes>, piano_filter: Arc<PianoFilter>) -> Self {
-        NoteInput { tx, held, piano_filter }
+        NoteInput { tx, held, piano_filter, source: Source::KEYS }
+    }
+
+    /// The same path for another source: a MIDI device. The held notes and the Locked mode are the same, the messages are its own.
+    pub fn for_source(&self, source: Source) -> NoteInput {
+        NoteInput { source, ..self.clone() }
+    }
+
+    /// Who the messages that this sends are from.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the tests ask what a path is for; the program hands a device its path when it opens it"))]
+    pub fn source(&self) -> Source {
+        self.source
     }
 
     /// Send a MIDI message (one to three bytes: a note, a controller, a pitch bend,
@@ -70,7 +89,7 @@ impl NoteInput {
         // Timestamp 0: the start of the next buffer.
         let mut message = [0u8; 3];
         message[..bytes.len()].copy_from_slice(bytes);
-        match self.tx.try_send((0, message)) {
+        match self.tx.try_send(MidiEvent::from_source(self.source, 0, message)) {
             Ok(()) => Delivery::Sent,
             Err(_) => Delivery::Full,
         }
@@ -86,10 +105,11 @@ impl NoteInput {
     /// Let go of everything that sounds: on every channel the pedal goes up, then each note that is held ends (a plugin that has no ear for the controllers
     /// that follow still hears these), and then all notes off and all sound off go to every channel, and the held notes are none. They go to the audio thread at the
     /// start of its next buffer, as every message does. Returns how many of them the channel had no room for (it holds 1024, and a panic is 48 and the notes that are held).
+    /// The messages are no source's (`Source::BROADCAST`), so that every lane hears them whatever the sources it hears are, and they are sent whichever source this is.
     pub fn panic(&self) -> usize {
         let mut lost = 0;
         let mut send = |message: [u8; 3]| {
-            if self.tx.try_send((0, message)).is_err() {
+            if self.tx.try_send(MidiEvent::from_source(Source::BROADCAST, 0, message)).is_err() {
                 lost += 1;
             }
         };
@@ -225,11 +245,12 @@ mod tests {
         sent(&rig);
         assert_eq!(rig.input.panic(), 0);
         let mut expected: Vec<MidiEvent> = Vec::new();
+        let to_all = |bytes: [u8; 3]| MidiEvent::from_source(Source::BROADCAST, 0, bytes);
         // The pedal goes up on every channel (so that the notes that follow are not held by it), each note that is held ends, and then all notes off and all sound off go to every channel.
-        expected.extend((0..16u8).map(|channel| (0, [0xB0 | channel, 64, 0])));
-        expected.extend([(0, [0x80, 60, 0]), (0, [0x80, 64, 0])]);
-        expected.extend((0..16u8).map(|channel| (0, [0xB0 | channel, 123, 0])));
-        expected.extend((0..16u8).map(|channel| (0, [0xB0 | channel, 120, 0])));
+        expected.extend((0..16u8).map(|channel| to_all([0xB0 | channel, 64, 0])));
+        expected.extend([to_all([0x80, 60, 0]), to_all([0x80, 64, 0])]);
+        expected.extend((0..16u8).map(|channel| to_all([0xB0 | channel, 123, 0])));
+        expected.extend((0..16u8).map(|channel| to_all([0xB0 | channel, 120, 0])));
         assert_eq!(sent(&rig), expected);
         assert!(rig.held.held().is_empty(), "and nothing is held after it");
     }
@@ -298,6 +319,53 @@ mod tests {
         assert!(Arc::ptr_eq(&rig.input.held(), &rig.held));
         rig.input.clone().note_on(64, 100);
         assert_eq!(rig.input.held().held(), [64]);
+    }
+
+    #[test]
+    fn what_a_note_input_sends_is_from_the_keys_unless_it_was_made_for_another_source() {
+        let rig = rig();
+        assert_eq!(rig.input.source(), Source::KEYS);
+        rig.input.note_on(60, 100);
+        let launchkey = rig.input.for_source(Source::device(0));
+        assert_eq!(launchkey.source(), Source::device(0));
+        assert_eq!(rig.input.source(), Source::KEYS, "the one it was made from is what it was");
+        launchkey.note_on(64, 90);
+        launchkey.send(&[0xB0, 1, 64]);
+        rig.input.note_off(60);
+        assert_eq!(
+            sent(&rig),
+            [
+                MidiEvent::from_source(Source::KEYS, 0, [0x90, 60, 100]),
+                MidiEvent::from_source(Source::device(0), 0, [0x90, 64, 90]),
+                MidiEvent::from_source(Source::device(0), 0, [0xB0, 1, 64]),
+                MidiEvent::from_source(Source::KEYS, 0, [0x80, 60, 0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_paths_of_the_sources_share_the_held_notes_and_the_lock() {
+        let rig = rig();
+        let device = rig.input.for_source(Source::device(3));
+        device.note_on(60, 100);
+        assert_eq!(rig.held.held(), [60], "what a device holds is held for the Piano tab as what the keys hold is");
+        rig.filter.set_mode(PianoMode::Locked);
+        assert_eq!(device.note_on(61, 100), Delivery::Blocked, "C# is not in C major, whoever plays it");
+        assert_eq!(sent(&rig).len(), 1);
+        assert_eq!(device.note_off(60), Delivery::Sent);
+        assert!(rig.held.held().is_empty());
+    }
+
+    #[test]
+    fn a_panic_is_sent_as_no_source_whichever_source_it_is_asked_of() {
+        let rig = rig_with_capacity(256);
+        let device = rig.input.for_source(Source::device(1));
+        device.note_on(64, 100);
+        sent(&rig);
+        assert_eq!(device.panic(), 0);
+        let panic = sent(&rig);
+        assert_eq!(panic.len(), 16 + 1 + 16 + 16);
+        assert!(panic.iter().all(|event| event.source == Source::BROADCAST), "no lane is left out by what it hears");
     }
 
     #[test]

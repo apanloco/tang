@@ -5,6 +5,29 @@ use midir::{MidiInput, MidiInputConnection};
 
 use crate::midi_monitor::MidiMonitor;
 use crate::note_input::{Delivery, NoteInput};
+use crate::source::Source;
+
+/// The sources of the MIDI devices (P4a of `docs/patch-graph.md` §11.6): each device has a number of its own for as long as the program runs, handed out in the order the devices are
+/// first seen, so that a device that is unplugged and plugged in again is the source it was (what a lane hears it by, and what it has sounding, stay with the number).
+#[derive(Default)]
+pub struct SourceTable {
+    /// The names of the devices, in the order they were first seen: the device at place `n` is the source `Source::device(n)`.
+    names: Vec<String>,
+}
+
+impl SourceTable {
+    /// The source of the device called `name`: the one it was given when it was first seen, or the next that is free if it is new.
+    pub fn source_of(&mut self, name: &str) -> Source {
+        let nth = match self.names.iter().position(|seen| seen == name) {
+            Some(nth) => nth,
+            None => {
+                self.names.push(name.to_string());
+                self.names.len() - 1
+            }
+        };
+        Source::device(nth)
+    }
+}
 
 pub struct MidiManager {
     notes: NoteInput,
@@ -12,6 +35,8 @@ pub struct MidiManager {
     connections: Vec<MidiInputConnection<()>>,
     connected_names: HashSet<String>,
     monitor: Arc<MidiMonitor>,
+    /// The source of each device that has been opened.
+    sources: SourceTable,
 }
 
 impl MidiManager {
@@ -22,6 +47,7 @@ impl MidiManager {
             connections: Vec::new(),
             connected_names: HashSet::new(),
             monitor,
+            sources: SourceTable::default(),
         }
     }
 
@@ -50,7 +76,9 @@ impl MidiManager {
                 }
             }
 
-            let notes = self.notes.clone();
+            // Each device is a source of its own: what it plays is tagged with it, so that a lane can hear it or not.
+            let source = self.sources.source_of(&name);
+            let notes = self.notes.for_source(source);
             let monitor = self.monitor.clone();
             let log_name = name.clone();
             let conn_name = name.clone();
@@ -91,7 +119,7 @@ impl MidiManager {
                 (),
             ) {
                 Ok(conn) => {
-                    log::info!("Opened MIDI input: {name}");
+                    log::info!("Opened MIDI input: {name} ({source})");
                     self.connected_names.insert(name);
                     self.connections.push(conn);
                     opened += 1;
@@ -116,5 +144,32 @@ impl MidiManager {
 
     pub fn connection_count(&self) -> usize {
         self.connections.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_device_has_the_source_it_was_given_when_it_was_first_seen_for_as_long_as_the_program_runs() {
+        let mut table = SourceTable::default();
+        let launchkey = table.source_of("Launchkey 25");
+        let seaboard = table.source_of("Seaboard RISE");
+        assert_eq!((launchkey, seaboard), (Source::device(0), Source::device(1)));
+        assert_ne!(launchkey, Source::KEYS, "no device is the keys");
+        assert_eq!(table.source_of("Launchkey 25"), launchkey, "plugged in again, it is the source it was");
+        assert_eq!(table.source_of("Seaboard RISE"), seaboard);
+        assert_eq!(table.source_of("IAC Driver Bus 1"), Source::device(2), "a device that is new has the next");
+    }
+
+    #[test]
+    fn the_devices_past_the_last_source_share_it() {
+        let mut table = SourceTable::default();
+        let sources: Vec<Source> = (0..70).map(|n| table.source_of(&format!("device {n}"))).collect();
+        assert_eq!(sources[61], Source::device(61));
+        assert!(sources[..62].windows(2).all(|pair| pair[0] != pair[1]), "62 devices have a source each");
+        assert!(sources[62..].iter().all(|&source| source == Source::LAST), "the rest share the last: {sources:?}");
+        assert_eq!(table.source_of("device 3"), Source::device(3), "and the ones before it are what they were");
     }
 }

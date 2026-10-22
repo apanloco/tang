@@ -8,9 +8,10 @@ use crossbeam_channel::Receiver;
 
 use crate::plugin::chain::AudioGraph;
 
-/// A MIDI event: (frame_offset, raw_bytes).
+/// A MIDI event on its way to the audio thread: who sent it (`Source`), its frame in the next block and its raw bytes.
 /// Standard MIDI messages are 1–3 bytes; we use a fixed array to avoid heap allocation.
-pub type MidiEvent = (u64, [u8; 3]);
+pub use crate::source::MidiEvent;
+use crate::source::{Events, Source};
 
 /// What the audio callback renders with: everything between the notes that arrive and the samples that go out. `AudioGraph` is the one there is. It is a trait so that there can be
 /// another one (the compiled graph of `docs/patch-graph.md` §11) next to it, chosen at start, and so that the oracle of `crate::oracle` can run two of them on the same input and
@@ -20,8 +21,8 @@ pub trait Engine: Send {
     fn num_channels(&self) -> usize;
 
     /// Render a block: `out` has a buffer for each channel, and its length is the length of the block. The events are the notes and controllers that arrived since the last block, each
-    /// with its frame in this one. What the controller has sent since the last block (commands, plugins coming and going) is taken first.
-    fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()>;
+    /// with its frame in this one and the source it came from. What the controller has sent since the last block (commands, plugins coming and going) is taken first.
+    fn process(&mut self, midi_events: Events<'_>, out: &mut [Vec<f32>]) -> anyhow::Result<()>;
 
     /// What the lanes, the groups and the audio cables are, for the oracle to hold to the model (the ids that the engine has for them are the model's): `None` for an engine that has no such
     /// things to say.
@@ -36,8 +37,8 @@ impl Engine for AudioGraph {
         AudioGraph::num_channels(self)
     }
 
-    fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
-        AudioGraph::process(self, midi_events, out)
+    fn process(&mut self, midi_events: Events<'_>, out: &mut [Vec<f32>]) -> anyhow::Result<()> {
+        AudioGraph::process_events(self, midi_events, out)
     }
 
     #[cfg(test)]
@@ -56,7 +57,7 @@ impl<E: Engine + ?Sized> Engine for Box<E> {
         (**self).facts()
     }
 
-    fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
+    fn process(&mut self, midi_events: Events<'_>, out: &mut [Vec<f32>]) -> anyhow::Result<()> {
         (**self).process(midi_events, out)
     }
 }
@@ -253,6 +254,9 @@ mod fpu {
     pub fn restore(_: State) {}
 }
 
+/// How many messages the channel to the audio thread holds (`main` makes it so): what a block can take without the allocator.
+pub const MIDI_CHANNEL_CAPACITY: usize = 1024;
+
 /// What an audio callback does with the audio thread's end of the session, apart
 /// from where the samples go: take the MIDI that has arrived, render the graph into
 /// one buffer per channel, and interleave them into the output. The buffers are
@@ -260,8 +264,9 @@ mod fpu {
 pub(crate) struct Renderer {
     graph: Box<dyn Engine>,
     midi_rx: Receiver<MidiEvent>,
-    /// The MIDI that arrived since the last block.
-    midi_events: Vec<MidiEvent>,
+    /// The MIDI that arrived since the last block: the frame and bytes of each, as the engine and the plugins have them, and beside it the source of each.
+    midi_events: Vec<(u64, [u8; 3])>,
+    midi_sources: Vec<Source>,
     /// One buffer per channel, a block long.
     channel_bufs: Vec<Vec<f32>>,
     num_channels: usize,
@@ -273,7 +278,9 @@ impl Renderer {
         Renderer {
             graph: Box::new(graph),
             midi_rx,
-            midi_events: Vec::with_capacity(64),
+            // Room for what the channel holds, so that a block that takes a burst of events (a panic is 48 and the notes held) asks the allocator for nothing.
+            midi_events: Vec::with_capacity(MIDI_CHANNEL_CAPACITY),
+            midi_sources: Vec::with_capacity(MIDI_CHANNEL_CAPACITY),
             channel_bufs: (0..num_channels).map(|_| vec![0.0f32; buffer_size]).collect(),
             num_channels,
         }
@@ -296,10 +303,12 @@ impl Renderer {
     fn render_block(&mut self, data: &mut [f32], cb_num: u64) {
         let num_channels = self.num_channels;
 
-        // Drain all pending MIDI events (reuse the pre-allocated vec)
+        // Drain all pending MIDI events (reuse the pre-allocated vecs)
         self.midi_events.clear();
+        self.midi_sources.clear();
         while let Ok(event) = self.midi_rx.try_recv() {
-            self.midi_events.push(event);
+            self.midi_events.push((event.frame, event.bytes));
+            self.midi_sources.push(event.source);
         }
 
         if !self.midi_events.is_empty() {
@@ -318,7 +327,7 @@ impl Renderer {
             buf.fill(0.0);
         }
 
-        if let Err(e) = self.graph.process(&self.midi_events, &mut self.channel_bufs) {
+        if let Err(e) = self.graph.process(Events::new(&self.midi_events, &self.midi_sources), &mut self.channel_bufs) {
             log::error!("Audio graph process error: {e}");
             data.fill(0.0);
             return;
@@ -552,7 +561,7 @@ mod tests {
     use super::*;
     use crate::app::testutil::load_onto;
 
-    const NOTE_ON_A4: MidiEvent = (0, [0x90, 69, 100]);
+    const NOTE_ON_A4: MidiEvent = MidiEvent::keys(0, [0x90, 69, 100]);
 
     /// A renderer for `session`, with the channels it listens on and the audio
     /// thread's end of the plugin hand-back channel kept alive.
@@ -582,7 +591,7 @@ mod tests {
         fn num_channels(&self) -> usize {
             self.channels
         }
-        fn process(&mut self, _: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
+        fn process(&mut self, _: Events<'_>, out: &mut [Vec<f32>]) -> anyhow::Result<()> {
             self.blocks += 1;
             for (c, channel) in out.iter_mut().enumerate() {
                 channel.fill(c as f32 + 1.0);
@@ -620,7 +629,7 @@ mod tests {
         let mut bufs = vec![vec![0.0f32; 64]; 2];
         let mut by_hand = Vec::new();
         for block in 0..8 {
-            let events: &[MidiEvent] = if block == 0 { &chord } else { &[] };
+            let events: &[(u64, [u8; 3])] = if block == 0 { &chord } else { &[] };
             for buf in bufs.iter_mut() {
                 buf.fill(0.0);
             }
@@ -638,7 +647,7 @@ mod tests {
         for block in 0..8 {
             if block == 0 {
                 for event in chord {
-                    midi_tx.send(event).unwrap();
+                    midi_tx.send(event.into()).unwrap();
                 }
             }
             renderer.render(&mut data, block);
@@ -706,7 +715,7 @@ mod tests {
         let mut data = vec![0.0f32; 64 * 2];
         rig.renderer.render(&mut data, 0);
         assert!(data.iter().any(|&s| s != 0.0));
-        rig.midi_tx.send((0, [0x80, 69, 0])).unwrap();
+        rig.midi_tx.send(MidiEvent::keys(0, [0x80, 69, 0])).unwrap();
         for cb in 1..20 {
             rig.renderer.render(&mut data, cb);
         }
@@ -775,6 +784,82 @@ mod tests {
         assert!(data.iter().all(|&s| s == 0.0), "what the callback was handed is not played");
     }
 
+    /// What an engine was given in a block: the source, the frame and the bytes of each event.
+    type Block = Vec<(Source, u64, [u8; 3])>;
+
+    /// An engine that is not the graph either: it writes down the events of every block that it is given, each with its source.
+    struct Listener {
+        blocks: std::sync::Arc<std::sync::Mutex<Vec<Block>>>,
+    }
+
+    impl Engine for Listener {
+        fn num_channels(&self) -> usize {
+            2
+        }
+        fn process(&mut self, midi_events: Events<'_>, _: &mut [Vec<f32>]) -> anyhow::Result<()> {
+            self.blocks.lock().unwrap().push(midi_events.iter().collect());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_renderer_gives_the_engine_the_events_of_the_block_in_the_order_they_came_and_the_source_of_each() {
+        let (midi_tx, midi_rx) = crossbeam_channel::bounded(16);
+        let blocks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut renderer = Renderer::new(Listener { blocks: blocks.clone() }, midi_rx, 4);
+        let mut data = vec![0.0f32; 4 * 2];
+        midi_tx.send(MidiEvent::from_source(Source::device(1), 0, [0x90, 64, 90])).unwrap();
+        midi_tx.send(MidiEvent::keys(0, [0x90, 60, 100])).unwrap();
+        midi_tx.send(MidiEvent::from_source(Source::BROADCAST, 2, [0xB0, 123, 0])).unwrap();
+        renderer.render(&mut data, 0);
+        renderer.render(&mut data, 1);
+        midi_tx.send(MidiEvent::from_source(Source::device(0), 0, [0x80, 64, 0])).unwrap();
+        renderer.render(&mut data, 2);
+        assert_eq!(
+            *blocks.lock().unwrap(),
+            [
+                vec![(Source::device(1), 0, [0x90, 64, 90]), (Source::KEYS, 0, [0x90, 60, 100]), (Source::BROADCAST, 2, [0xB0, 123, 0])],
+                vec![],
+                vec![(Source::device(0), 0, [0x80, 64, 0])],
+            ]
+        );
+    }
+
+    /// An engine that only counts what it is given: it keeps no list, so that nothing but the renderer can ask for memory while a block is rendered.
+    struct Counter {
+        events: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        from_devices: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Engine for Counter {
+        fn num_channels(&self) -> usize {
+            2
+        }
+        fn process(&mut self, midi_events: Events<'_>, _: &mut [Vec<f32>]) -> anyhow::Result<()> {
+            use std::sync::atomic::Ordering::Relaxed;
+            self.events.fetch_add(midi_events.len(), Relaxed);
+            self.from_devices.fetch_add(midi_events.iter().filter(|(source, ..)| *source != Source::KEYS).count(), Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_block_that_takes_as_many_events_as_the_channel_holds_asks_the_allocator_for_nothing() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let (midi_tx, midi_rx) = crossbeam_channel::bounded(MIDI_CHANNEL_CAPACITY);
+        let (events, from_devices) = (std::sync::Arc::new(AtomicUsize::new(0)), std::sync::Arc::new(AtomicUsize::new(0)));
+        let mut renderer = Renderer::new(Counter { events: events.clone(), from_devices: from_devices.clone() }, midi_rx, 4);
+        let mut data = vec![0.0f32; 4 * 2];
+        for n in 0..MIDI_CHANNEL_CAPACITY {
+            let source = if n % 2 == 0 { Source::KEYS } else { Source::device(n % 5) };
+            midi_tx.send(MidiEvent::from_source(source, 0, [0x90, (n % 128) as u8, 100])).unwrap();
+        }
+        let ((), allocated) = crate::alloc_guard::allocations_in(|| renderer.render(&mut data, 0));
+        assert_eq!(allocated, 0, "the room for the events and their sources was made with the renderer");
+        assert_eq!((events.load(Relaxed), from_devices.load(Relaxed)), (MIDI_CHANNEL_CAPACITY, MIDI_CHANNEL_CAPACITY / 2), "the whole burst is in one block, with its sources");
+        assert!(midi_tx.is_empty());
+    }
+
     #[test]
     fn midi_that_arrived_is_taken_off_the_channel() {
         let mut rig = rig("[[instrument]]\nplugin = \"builtin:osc\"\n", 64);
@@ -803,7 +888,7 @@ mod tests {
         let mut denormals = 0;
         for cb in 0..400 {
             if cb == 4 {
-                rig.midi_tx.send((0, [0x80, 69, 0])).unwrap();
+                rig.midi_tx.send(MidiEvent::keys(0, [0x80, 69, 0])).unwrap();
             }
             render(&mut rig.renderer, &mut data, cb);
             denormals += data.iter().filter(|s| s.is_subnormal()).count();
@@ -834,7 +919,7 @@ mod tests {
         let mut peaks = Vec::new();
         for cb in 0..hold + (seconds * 48_000.0 / 256.0) as usize {
             if cb == hold {
-                rig.midi_tx.send((0, [0x80, 69, 0])).unwrap();
+                rig.midi_tx.send(MidiEvent::keys(0, [0x80, 69, 0])).unwrap();
             }
             rig.renderer.render(&mut data, cb as u64);
             if cb >= hold {
@@ -1135,12 +1220,12 @@ mod tests {
         for cb in 0..blocks {
             if cb == press_at {
                 for &key in keys {
-                    rig.midi_tx.send((0, [0x90, key, velocity])).unwrap();
+                    rig.midi_tx.send(MidiEvent::keys(0, [0x90, key, velocity])).unwrap();
                 }
             }
             if cb == release_at {
                 for &key in keys {
-                    rig.midi_tx.send((0, [0x80, key, 0])).unwrap();
+                    rig.midi_tx.send(MidiEvent::keys(0, [0x80, key, 0])).unwrap();
                 }
             }
             rig.renderer.render(&mut data, cb as u64);

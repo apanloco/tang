@@ -6001,8 +6001,8 @@ mod panic {
         let sent = h.notes();
         // The pedal up on 16 channels, the one note, all notes off on 16 and all sound off on 16.
         assert_eq!(sent.len(), 16 + 1 + 16 + 16, "{sent:?}");
-        assert_eq!(sent[16], (0, [0x80, 60, 0]));
-        assert!(sent.iter().filter(|(_, m)| m[1] == 123).count() == 16 && sent.iter().filter(|(_, m)| m[1] == 120).count() == 16);
+        assert_eq!(sent[16], crate::source::MidiEvent::from_source(crate::source::Source::BROADCAST, 0, [0x80, 60, 0]), "no source's: every lane hears a panic");
+        assert!(sent.iter().filter(|e| e.bytes[1] == 123).count() == 16 && sent.iter().filter(|e| e.bytes[1] == 120).count() == 16);
         assert!(held.held().is_empty(), "and nothing is held");
         assert!(h.commands().is_empty(), "it asks nothing of the engine's lanes: it is notes, and not the session");
     }

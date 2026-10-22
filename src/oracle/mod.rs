@@ -36,6 +36,7 @@ use crate::app::controller::Controller;
 use crate::app::load::load_session;
 use crate::app::testutil;
 use crate::audio::{Engine, MidiEvent, Renderer};
+use crate::source::Events;
 use self::edits::{Counts, Edit};
 use crate::piano_filter::PianoFilter;
 use crate::plugin::chain::{AudioGraph, GraphCommand, MidiLearnedNotification, PatternNotification};
@@ -85,8 +86,8 @@ pub fn legacy(wiring: Wiring) -> Box<dyn Engine> {
             self.0.num_channels()
         }
 
-        fn process(&mut self, midi_events: &[MidiEvent], out: &mut [Vec<f32>]) -> anyhow::Result<()> {
-            self.0.process_legacy(midi_events, out)
+        fn process(&mut self, midi_events: Events<'_>, out: &mut [Vec<f32>]) -> anyhow::Result<()> {
+            self.0.process_legacy_events(midi_events, out)
         }
 
         fn facts(&self) -> Option<crate::plugin::chain::Facts> {
@@ -466,7 +467,7 @@ impl Rig {
         }
         while self.next < self.script.len() && self.script[self.next].0 < end {
             let (frame, bytes) = self.script[self.next];
-            self.midi_tx.send((frame.saturating_sub(start), bytes)).expect("room for the notes of a block");
+            self.midi_tx.send(MidiEvent::keys(frame.saturating_sub(start), bytes)).expect("room for the notes of a block");
             self.next += 1;
         }
         let cb = self.done as u64;
