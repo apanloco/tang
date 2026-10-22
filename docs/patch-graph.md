@@ -634,6 +634,42 @@ the new one grows under today's structure until it equals it, and is then taken 
     outputs today, and gives silence to a sidechain).
 - **P4, events.** The event with its note id; keyboard, device, pattern, range, remap and transpose as nodes; MPE; time stamps; no hanging notes. *To try:* a
   split, a layer, two keyboards into one synth, an arpeggiator between the keys and the synth.
+  **Cut, 2026-10-22 (P3f was done and P4 was next; written here first so that it survives a restart):** the order of P3 again, the engine first and what can be seen after it, the
+  old behaviour held bit for bit until the first cable is drawn, and the smallest thing that gives two keyboards two synths before the kernel learns a kind of port (§5's "C2": a source on
+  each event and a mask on each lane; the events as cables of the kernel are P4f, and what the model, the file and the pages have by then stays as it is).
+  - **P4a, sources and masks in the engine** (nothing to see, the same bits). An event on the channel to the audio thread has a *source* (`Source`, a number below 64: 0 is the keys, the
+    computer's, the page's and every browser's, one source as they are one `NoteInput` path today; each MIDI device the program opens has a number of its own, handed out in the order they are
+    first seen and kept for the run, so that a device that is unplugged and plugged in again is the source it was; `BROADCAST` is no source, and is what a panic is sent as). `NoteInput`
+    is made for a source (`for_source`; `new` is the keys) and the audio callback hands the engine the block's events with their sources (`Events`: the events of a block and, beside them, the source of
+    each, or none, which says that every event is from the keys, so that the plugin trait and the hundreds of tests that call `process` with a list of notes are as they were). A lane has `sources`,
+    a mask of the sources it hears (`SourceSet`, every source by default, which is today's behaviour), and its first step drops what the mask does not have, before the range. **No hanging
+    notes:** a lane keeps, for each source, what that source has sounding in it (the notes by channel, the channels whose pedal is down, the channels whose wheel is off centre), and when a
+    source is taken out of its mask (`SetLaneSources`) or is gone (`ReleaseSource`: the unplugged device, which today leaves its keys held for ever) it lets go of what it holds from that source,
+    a few events a block, as note-offs, a pedal up and a wheel centred, into the same list that the range, the remap, the pattern, the transpose and the modulators read, so that the pattern that a
+    held key plays stops and a controller that learned a key lets go. A group's modulators hear the union of its members' (the events of a source that no member hears are not theirs).
+    The tests are the engine's own: the oracle's corpus is held to the bits it had (the sessions have no source but the keys), and the scenarios that put masks in are P4b's, which has the
+    intents to edit them with.
+  - **P4b, MIDI cables in the model, the file, the intents and the history.** A source is a node of the graph (`NodeKind::Source`: the keys, which are always there, and each device that has been
+    seen or that a file names; a device node stays for the run, dim while the device is not there, so that undo that puts a cable back to it has a node to put it to) with a port of events out;
+    an event cable goes from a source to a lane (the lane's node: an input of events, which only a source's cable ends at, as an input of audio is no lane's). *The default is the template's, as
+    a lane that is in no group goes to the mix:* **a lane that no event cable ends at hears every source**, and one that has some hears the sources they come from and no others (a source that
+    is not there, an unplugged device, is not heard, and does not leave the lane to the others). In the file, the devices a session names are `[[device]]` tables (`name`, `ui`), and the cables
+    are `[[cable]]` tables, whose kind is told by their places as the audio cables' are (`from = "keys"` or `from = "device[0]"`, `to = "instrument[1]"`: an audio cable never ends at a lane and
+    an event cable never ends anywhere else); a device is found among the MIDI inputs by its name (the whole name first, and then the text in it, as `--midi-device` does). The intents are
+    `AddCable` and `RemoveEdge` with ports of events (no level: an event cable has none), a step of the history each, the cables of a lane that goes written down and put back with it (and a
+    device's node, which does not go), the controller works the masks out from the cables and the sources that are there, sends `SetLaneSources` when either changes (a device that comes or goes,
+    a cable) and `ReleaseSource` for a device that went, and `resync` tells the browsers when a device came. The oracle gets the scenario `edited:sources`.
+  - **P4c, the page draws them.** The source nodes at the left, an output of events on each, a cable dragged to a lane's input of events, a menu for the keyboard (`From`), the lane that hears
+    every source drawn as that, a light on a source that has sent something lately (a count of events for each source in the telemetry), the mock engine doing as the controller does.
+  - **P4d, the terminal's patchbay has them:** a matrix of the sources down the side and the lanes across the top, in the Patch tab.
+  - **P4e, time stamps.** A note is stamped when it arrives, against the audio clock, and played one block later, so that it has the latency of a block and no jitter (up to 5.3 ms at
+    256 frames and 21 ms at 1,024 today: `NoteInput::send` stamps 0), and a note and a pattern share one clock.
+  - **P4f, events as cables of the kernel.** A kind of port (`PortSpec::events`: a list of events with their frames, merged by time where cables meet, the pool and the executor and the
+    reference interpreter knowing it, and the random patches drawing them), the sources and the head of a lane as nodes with ports of events, the mask of P4a become the cables that the plan has,
+    and then the range, the remap, the transpose and the pattern as nodes of their own between a source and the instrument (§5's C3: a move of code that works), with an arpeggiator as the first
+    node that is new.
+  - **P4g, notes with names.** The note id (CLAP's and VST3's per-note expression, the built-in oscillator's voice found by it), so that a Seaboard's pressure and slide reach one voice of a chord
+    (`CLAUDE.md`, "MIDI routing", says plainly that they cannot), and MIDI out.
 - **P5, control.** Parameters as ports, modulators as nodes (the racks become layout), math nodes, the transport. *To try:* one LFO on two lanes, the quantizer
   on a cable, LFOs in phase with the beat.
 - **P6, modules and voices.** Modules and a library of them; the `Patch` node on the kernel (the kernels of `docs/track-b.md` §7, B0, first).
