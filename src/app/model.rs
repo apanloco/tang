@@ -1128,8 +1128,11 @@ pub const DEFAULT_EFFECT_MIX: f32 = 0.5;
 /// Default dry/wet mix for a freshly added effect, by plugin. Filters and
 /// other tone-shaping inserts must be fully wet — at 50% the dry path passes
 /// the very frequencies the filter removes, so e.g. a highpass barely changes
-/// the sound — and so must a drive, whose latency (the oversampling it makes
-/// its shapes with) would put the dry sound and the wet one out of step.
+/// the sound — and so must a drive, which is an insert too (what it does to
+/// the sound is the point, and half of it is a parallel distortion that is a
+/// choice, not a default). A drive's latency (the oversampling it makes its
+/// shapes with) is no reason now: the host makes the dry sound as late as the
+/// wet one, so a drive that is blended is in step.
 /// Blend effects (reverb) keep the half-wet default.
 pub fn default_effect_mix(id: &str) -> f32 {
     if id == "builtin:filter" || id == "builtin:drive" {

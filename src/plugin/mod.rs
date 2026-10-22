@@ -59,6 +59,15 @@ pub trait Plugin: Send {
 
     fn presets(&self) -> Vec<Preset>;
     fn load_preset(&mut self, id: &str) -> anyhow::Result<()>;
+
+    /// How many frames later what comes out is than what went in (the look-ahead of a limiter, the filters of an oversampler), or, for an instrument, than the notes that made it.
+    /// The host puts the paths that are added up in step by it (P3f of `docs/patch-graph.md` §11.6: where two paths of different latency meet, the shorter is delayed; the dry part of an
+    /// effect that is blended with its output is as late as the output is), so it has to be what the plugin does: too little leaves a comb filter where the dry sound and the
+    /// plugin's meet, and too much puts them out of step the other way. It is asked once a block, so an adapter answers from what it already has and does not call into the plugin.
+    /// A plugin whose latency changes while it runs may say the new one: the host makes its plan again for it. The default is none.
+    fn latency(&self) -> u32 {
+        0
+    }
 }
 
 /// Summary info returned by plugin enumeration.

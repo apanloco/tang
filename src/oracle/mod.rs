@@ -69,6 +69,12 @@ pub fn engine(wiring: Wiring) -> Box<dyn Engine> {
     Box::new(graph(wiring))
 }
 
+/// The engine without the latency compensation (P3f): the paths that are added are not put in step by what the plugins say of their latency. The loop that the plan replaced has none,
+/// so `agree` holds the plan to it with this, and the compensation is held apart: where nothing has latency the two engines are one (`has_latency`).
+pub fn engine_uncompensated(wiring: Wiring) -> Box<dyn Engine> {
+    Box::new(graph(wiring).without_latency_compensation())
+}
+
 /// The same `AudioGraph` run by the loop that the plan replaced (`AudioGraph::process_legacy`), which is what `agree` holds the plan to, on every platform and with no file to be
 /// out of date: the lanes and groups, the commands and the sums are the same, and only the thing that runs them is not.
 pub fn legacy(wiring: Wiring) -> Box<dyn Engine> {
@@ -146,6 +152,14 @@ impl Scenario {
     pub fn has_cut_routes(&self) -> bool {
         self.session.contains("route = \"none\"")
             || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::Route { route: Route::None, .. } | Edit::RouteGroup { route: Route::None, .. }))
+    }
+
+    /// Whether it has a plugin that is late (the built-in drive, in its file or put in by an edit). Where the paths that are added are not in step by the plugins' latencies, the engine is
+    /// what the loop that the plan replaced is (P3f: the plan puts them in step, and the loop does not, so `agree` holds the two with the compensation off); where nothing is late the
+    /// compensation changes nothing, bit for bit, and a scenario that has nothing late is held to that.
+    pub fn has_latency(&self) -> bool {
+        self.session.contains("builtin:drive")
+            || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddEffect { plugin, .. } | Edit::AddBusEffect { plugin, .. } if *plugin == "builtin:drive"))
     }
 
     /// Whether the loop that the plan replaced can run it: it has no audio cables and no way out that is cut, which that loop is from before.
@@ -277,7 +291,25 @@ const SOLO_EDITS: [(u64, Edit); 12] = [
     (40_000, Edit::SoloGroup { group: 0, solo: false }),
 ];
 
-/// The scenarios that edit the cables, the ways out and the solos of a session while it plays.
+/// What is done to the latency of `CABLED` while it plays (P3f): a drive, which is late, is put in lane 0 (lane 1, which is added to it at the mix, is delayed to match), its mix is
+/// turned down (its dry sound is as late as it is), a drive is put on the bus of the group too (the delay of lane 1 is longer), a cable from lane 0's drive to lane 1's delay is drawn
+/// (what is added to lane 1's own sound at the delay is delayed to match) and taken out by Undo, so is the drive on the bus, the drive of lane 0 is taken out (nothing is late, and
+/// nothing is delayed), put back by Undo and taken out again by Redo, and put back. Each is made (`Counts` says so: none is skipped or refused).
+const LATENCY_EDITS: [(u64, Edit); 11] = [
+    (6_000, Edit::AddEffect { lane: 0, plugin: "builtin:drive" }),
+    (10_000, Edit::Mix { lane: 0, effect: 1, value: 0.5 }),
+    (14_000, Edit::AddBusEffect { group: 0, plugin: "builtin:drive" }),
+    (18_000, Edit::AddCable { from: 2, to: 2, gain: 0.5 }),
+    (22_000, Edit::Undo),
+    (24_000, Edit::Undo),
+    (28_000, Edit::RemoveEffect { lane: 0, effect: 1 }),
+    (32_000, Edit::Undo),
+    (36_000, Edit::Redo),
+    (40_000, Edit::Undo),
+    (44_000, Edit::Mix { lane: 0, effect: 1, value: 1.0 }),
+];
+
+/// The scenarios that edit the cables, the ways out, the solos and the latency of a session while it plays.
 pub fn edited() -> Vec<Scenario> {
     let scenario = |name: &str, edits: &[(u64, Edit)]| Scenario {
         id: format!("edited:{name}@{BLOCK}"),
@@ -288,7 +320,7 @@ pub fn edited() -> Vec<Scenario> {
         script: performance(),
         edits: edits.to_vec(),
     };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -733,7 +765,7 @@ mod tests {
 
     #[test]
     fn the_plan_gives_what_the_loop_it_replaced_gave_bit_for_bit() {
-        let differences: Vec<String> = always_on().iter().filter(|scenario| scenario.is_in_the_old_loop()).filter_map(|scenario| agree(scenario, &legacy, &engine)).collect();
+        let differences: Vec<String> = always_on().iter().filter(|scenario| scenario.is_in_the_old_loop()).filter_map(|scenario| agree(scenario, &legacy, &engine_uncompensated)).collect();
         assert!(differences.is_empty(), "the engine on the plan is not the engine of the loop:\n{}", differences.join("\n"));
     }
 
@@ -777,7 +809,7 @@ mod tests {
     #[test]
     fn the_scenarios_that_have_cables_are_those_that_the_loop_the_plan_replaced_is_not_held_to() {
         let with: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cables()).map(|scenario| scenario.id.clone()).collect();
-        assert_eq!(with, ["session:patched@256", "session:routed@256", "session:sends@256", "edited:cables@256", "edited:routes@256", "edited:solos@256"]);
+        assert_eq!(with, ["session:patched@256", "session:routed@256", "session:sends@256", "edited:cables@256", "edited:routes@256", "edited:solos@256", "edited:latency@256"]);
     }
 
     #[test]
@@ -787,6 +819,27 @@ mod tests {
         // (A scenario that has no cable and no cut is what the loop can run: there are many of them, and every generated session is one.)
         assert!(always_on().iter().filter(|scenario| scenario.is_in_the_old_loop()).count() > 20);
         assert!(always_on().iter().filter(|scenario| scenario.id.starts_with("generated:")).all(|scenario| scenario.is_in_the_old_loop()));
+    }
+
+    #[test]
+    fn where_nothing_has_latency_the_engine_is_what_it_is_without_the_compensation_bit_for_bit() {
+        let scenarios: Vec<Scenario> = always_on().into_iter().filter(|scenario| !scenario.has_latency()).collect();
+        assert!(scenarios.len() > 15, "{} scenarios have nothing that is late", scenarios.len());
+        let differences: Vec<String> = scenarios.iter().filter_map(|scenario| agree(scenario, &engine_uncompensated, &engine)).collect();
+        assert!(differences.is_empty(), "the compensation changes what nothing makes late:\n{}", differences.join("\n"));
+    }
+
+    #[test]
+    fn the_scenarios_that_have_something_that_is_late_are_the_sessions_with_a_drive_and_the_scenarios_that_put_one_in() {
+        let late: Vec<String> = always_on().iter().filter(|scenario| scenario.has_latency() && !scenario.id.starts_with("generated:")).map(|scenario| scenario.id.clone()).collect();
+        assert_eq!(late, ["session:cross@256", "session:fold@256", "session:patched@256", "edited:latency@256"]);
+    }
+
+    #[test]
+    fn the_compensation_is_heard_where_what_is_late_is_added_to_what_is_not() {
+        // The scenario that edits the latency (a drive put in lane 0, which is added to lane 1 at the mix) renders another sound than the engine without the compensation does.
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:latency")).expect("a scenario of the corpus");
+        assert!(agree(&scenario, &engine_uncompensated, &engine).is_some(), "the compensation is heard");
     }
 
     #[test]
@@ -957,8 +1010,16 @@ mod tests {
     #[test]
     #[ignore = "the whole corpus at three block sizes: cargo test --release oracle -- --ignored"]
     fn the_whole_corpus_is_the_same_under_the_plan_and_under_the_loop_it_replaced() {
-        let differences: Vec<String> = whole().iter().filter(|scenario| !scenario.has_cables()).filter_map(|scenario| agree(scenario, &legacy, &engine)).collect();
+        let differences: Vec<String> = whole().iter().filter(|scenario| !scenario.has_cables()).filter_map(|scenario| agree(scenario, &legacy, &engine_uncompensated)).collect();
         assert!(differences.is_empty(), "{} of the {} renders differ:\n{}", differences.len(), whole().len(), differences.join("\n"));
+    }
+
+    #[test]
+    #[ignore = "the whole corpus at three block sizes: cargo test --release oracle -- --ignored"]
+    fn the_whole_corpus_is_what_it_is_without_the_compensation_where_nothing_has_latency() {
+        let scenarios: Vec<Scenario> = whole().into_iter().filter(|scenario| !scenario.has_latency()).collect();
+        let differences: Vec<String> = scenarios.iter().filter_map(|scenario| agree(scenario, &engine_uncompensated, &engine)).collect();
+        assert!(differences.is_empty(), "{} of the {} renders that have nothing late differ:\n{}", differences.len(), scenarios.len(), differences.join("\n"));
     }
 
     #[test]

@@ -4072,6 +4072,14 @@ impl AudioGraph {
         }
     }
 
+    /// The same graph, with the paths that are added no longer put in step by the latencies of the plugins (P3f), which is what the loop that the plan replaced does not do: the oracle
+    /// holds the plan to that loop with it.
+    #[cfg(test)]
+    pub fn without_latency_compensation(mut self) -> Self {
+        self.schedule.without_compensation();
+        self
+    }
+
     pub fn num_channels(&self) -> usize {
         self.num_channels
     }

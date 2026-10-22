@@ -9,6 +9,12 @@
 //! had: a group's bus is the lanes added in the order of their places, and the mix is the lanes that have no group and then the groups. The nodes run the code that was in the loop,
 //! cut where it was cut by what it did (`InstrumentLane::process` and `Group::finish` are still there, in test builds, as the specification that the oracle holds the nodes to).
 //!
+//! **Latency** (P3f): a plugin says how late what it makes is (`Plugin::latency`), and where cables are added at an input, the plan has a delay on those that are early, so that the paths
+//! are in step: `kernel::align` finds how much each cable is to be delayed by, from the latencies of the nodes (an instrument's, in its lane's head, and an effect's), and `kernel::with_delays`
+//! puts a node on each (`Stage::Delay`, whose line is kept by the schedule under the two nodes it joins, so that it goes on through a plan that is made again). The dry part of an effect that
+//! is blended with its output by its `mix` is put in step with the output the same way (a line of the effect's own, kept under its id). A session in which nothing has latency has no
+//! delays, and is what it was, bit for bit.
+//!
 //! A node of the plan is named by the id that the model gave it (`NodeId`, which the creating commands carry: a lane's, a group's, an effect's) and what part of it that is, and the
 //! mix by `Stage::Master`: the plan says the things that the model says. The places of the stages are made when the plan is (a sorted list that a block looks a node up in),
 //! since the vectors are still addressed by place.
@@ -19,7 +25,7 @@
 
 use anyhow::Result;
 use crossbeam_channel::Sender;
-use kernel::{Io, NodeSpec, Nodes, Patch, Plan, Pool, Port, PortSpec};
+use kernel::{DelayLine, Io, NodeSpec, Nodes, Patch, Plan, Pool, Port, PortSpec};
 
 use super::*;
 
@@ -50,6 +56,8 @@ pub(super) enum Stage {
     Tail(NodeId),
     /// An audio cable that a person drew (its id): the node that its level is made by.
     Cable(EdgeId),
+    /// A delay that the plan has put on a cable (its number among the plan's delays), so that the paths that are added where the cable ends are in step.
+    Delay(u32),
     /// The output mix.
     Master,
 }
@@ -82,17 +90,23 @@ impl Master {
     }
 }
 
-/// An effect of a chain as a node: it makes its output of what its input is, and the output is blended with the input by `mix` (the sound that was put in is the dry part).
-fn run_effect(effect: &mut dyn Plugin, mix: f32, io: &mut Io, num_channels: usize) -> Result<()> {
+/// An effect of a chain as a node: it makes its output of what its input is, and the output is blended with the input by `mix` (the sound that was put in is the dry part). An effect
+/// that has latency makes its output late, so the dry part goes through `dry`, a line of as many frames, to be as late (P3f): the line is run whatever the `mix` is, so that it has
+/// what was put in when the `mix` is turned down.
+fn run_effect(effect: &mut dyn Plugin, mix: f32, dry: Option<&mut DelayLine>, io: &mut Io, num_channels: usize) -> Result<()> {
     let frames = io.frames();
     let (inputs, outputs) = io.split();
-    let (input, output) = (&inputs[0], &mut outputs[0]);
+    let (input, output) = (&mut inputs[0], &mut outputs[0]);
     {
         let mut in_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
         let mut out_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
         let in_refs = shared_slices(input, &mut in_s);
         let out_refs = mut_slices(output, &mut out_s);
         effect.process(&[], in_refs, out_refs)?;
+    }
+    // (The input is the node's own to use as scratch once the plugin has read it.)
+    if let Some(line) = dry {
+        line.run(input);
     }
     if mix < 1.0 {
         let dry = 1.0 - mix;
@@ -206,12 +220,12 @@ impl InstrumentLane {
     }
 
     /// An effect of the lane's chain as a node (its place in the chain is `index`). The effects of a lane that has no instrument do not run, and what they make is silence.
-    fn run_fx(&mut self, index: usize, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
+    fn run_fx(&mut self, index: usize, dry: Option<&mut DelayLine>, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         if self.instrument.is_none() {
             return Ok(());
         }
         let (Some(effect), Some(&mix)) = (self.effects.get_mut(index), self.mix_values.get(index)) else { return Ok(()) };
-        run_effect(effect.as_mut(), mix as f32, io, cx.num_channels)?;
+        run_effect(effect.as_mut(), mix as f32, dry, io, cx.num_channels)?;
         store_taps(&self.taps, cx.telemetry, TapStage::Effect(index), &io.outputs()[0]);
         Ok(())
     }
@@ -254,9 +268,9 @@ impl Group {
     }
 
     /// An effect of the group's bus as a node (its place in the chain is `index`).
-    fn run_fx(&mut self, index: usize, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
+    fn run_fx(&mut self, index: usize, dry: Option<&mut DelayLine>, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         let (Some(effect), Some(&mix)) = (self.effects.get_mut(index), self.mix_values.get(index)) else { return Ok(()) };
-        run_effect(effect.as_mut(), mix as f32, io, cx.num_channels)?;
+        run_effect(effect.as_mut(), mix as f32, dry, io, cx.num_channels)?;
         store_taps(&self.taps, cx.telemetry, TapStage::Effect(index), &io.outputs()[0]);
         Ok(())
     }
@@ -310,7 +324,24 @@ impl Cable {
     }
 }
 
-/// Where a node of the plan is kept: a lane or a group at a place of its vector, or an effect at a place of the chain of one.
+/// A delay that the plan has put on a cable (P3f), as the schedule keeps it: the nodes that the cable starts and ends at name it, so that it is the same delay, with what it holds, in
+/// the next plan that has a cable between them.
+struct Link {
+    from: Stage,
+    to: Stage,
+    line: DelayLine,
+}
+
+impl Link {
+    /// The delay as a node: what is given is handed on in place, through the line.
+    fn run_node(&mut self, io: &mut Io) -> Result<()> {
+        io.forward(0, 0);
+        self.line.run(&mut io.outputs_mut()[0]);
+        Ok(())
+    }
+}
+
+/// Where a node of the plan is kept: a lane or a group at a place of its vector, an effect at a place of the chain of one, a cable or a delay at a place of the schedule's lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
     Lane(usize),
@@ -318,6 +349,48 @@ enum Place {
     Group(usize),
     GroupFx(usize, usize),
     Cable(usize),
+    Delay(usize),
+}
+
+/// The most that a plugin may say its latency is, in frames (2.7 seconds at 48 kHz): a plugin that says more is held to it, since a delay is a line of that many frames for each channel
+/// that is made when the plan is, and a number that is not meant (a plugin that says what it was not asked) would make one of gigabytes.
+const MAX_LATENCY: u32 = 1 << 17;
+
+/// What the host takes a plugin's latency to be: what it says, held to `MAX_LATENCY`.
+fn latency_of(plugin: &dyn Plugin) -> u32 {
+    plugin.latency().min(MAX_LATENCY)
+}
+
+/// The latency of every node of the plan that has some, by stage (sorted, so that it is looked up by a search): an instrument's in the head of its lane, and an effect's.
+fn latencies_of(lanes: &[InstrumentLane], groups: &[Group]) -> Vec<(Stage, u32)> {
+    let mut all = Vec::new();
+    for lane in lanes {
+        let instrument = lane.instrument.as_deref().map_or(0, latency_of);
+        if instrument > 0 {
+            all.push((Stage::Head(lane.node), instrument));
+        }
+        for (index, effect) in lane.effect_nodes.iter().enumerate() {
+            let frames = lane.effects.get(index).map_or(0, |plugin| latency_of(plugin.as_ref()));
+            if frames > 0 {
+                all.push((Stage::Fx(*effect), frames));
+            }
+        }
+    }
+    for group in groups {
+        for (index, effect) in group.effect_nodes.iter().enumerate() {
+            let frames = group.effects.get(index).map_or(0, |plugin| latency_of(plugin.as_ref()));
+            if frames > 0 {
+                all.push((Stage::Fx(*effect), frames));
+            }
+        }
+    }
+    all.sort_unstable_by_key(|&(stage, _)| stage);
+    all
+}
+
+/// The line that is the dry sound of the effect `id`, if it has one.
+fn dry_line(dry: &mut [(NodeId, DelayLine)], id: NodeId) -> Option<&mut DelayLine> {
+    dry.binary_search_by_key(&id, |&(node, _)| node).ok().map(|at| &mut dry[at].1)
 }
 
 /// The nodes of the plan, by name: what `Plan::run` asks for a block of.
@@ -326,6 +399,9 @@ struct Store<'a> {
     groups: &'a mut [Group],
     master: &'a mut Master,
     cables: &'a mut [Cable],
+    delays: &'a mut [Link],
+    /// The dry sound of the effects that have latency, by the effect's id.
+    dry: &'a mut [(NodeId, DelayLine)],
     /// Where each node was when the plan was made, in the order of the stages.
     places: &'a [(Stage, Place)],
 }
@@ -348,7 +424,7 @@ impl<'a, 'cx> Nodes<Stage, BlockCx<'cx>> for Store<'a> {
                 _ => Ok(()),
             },
             (Stage::Fx(id), Place::LaneFx(at, index)) => match self.lanes.get_mut(at) {
-                Some(lane) if lane.effect_nodes.get(index) == Some(&id) => lane.run_fx(index, io, cx),
+                Some(lane) if lane.effect_nodes.get(index) == Some(&id) => lane.run_fx(index, dry_line(self.dry, id), io, cx),
                 _ => Ok(()),
             },
             (Stage::Head(id), Place::Group(at)) => match self.groups.get_mut(at) {
@@ -360,11 +436,15 @@ impl<'a, 'cx> Nodes<Stage, BlockCx<'cx>> for Store<'a> {
                 _ => Ok(()),
             },
             (Stage::Fx(id), Place::GroupFx(at, index)) => match self.groups.get_mut(at) {
-                Some(group) if group.effect_nodes.get(index) == Some(&id) => group.run_fx(index, io, cx),
+                Some(group) if group.effect_nodes.get(index) == Some(&id) => group.run_fx(index, dry_line(self.dry, id), io, cx),
                 _ => Ok(()),
             },
             (Stage::Cable(id), Place::Cable(at)) => match self.cables.get_mut(at) {
                 Some(cable) if cable.id == id => cable.run_node(io, cx.num_channels),
+                _ => Ok(()),
+            },
+            (Stage::Delay(number), Place::Delay(at)) => match self.delays.get_mut(at) {
+                Some(link) if at == number as usize => link.run_node(io),
                 _ => Ok(()),
             },
             _ => Ok(()),
@@ -393,6 +473,9 @@ const TO_EFFECT: u64 = 9 << 32;
 const TO_BUS: u64 = 10 << 32;
 const TO_MASTER: u64 = 11 << 32;
 const CUT: u64 = 12 << 32;
+/// The latency, in frames, of the instrument of the lane that came before it in the list, and of the effect that did.
+const HEAD_LATENCY: u64 = 13 << 32;
+const FX_LATENCY: u64 = 14 << 32;
 const NO_GROUP: u64 = u32::MAX as u64;
 
 impl Shape {
@@ -403,23 +486,37 @@ impl Shape {
     }
 
     /// Read the wiring of `lanes`, `groups` and `cables` into this, keeping the room it has.
-    fn read(&mut self, lanes: &[InstrumentLane], groups: &[Group], cables: &[Cable], channels: usize) {
+    fn read(&mut self, lanes: &[InstrumentLane], groups: &[Group], cables: &[Cable], channels: usize, compensates: bool) {
         self.channels = channels;
         self.list.clear();
         for lane in lanes {
             self.list.push(LANE | u64::from(lane.node.0));
             self.list.push(GROUP_OF | lane.group.and_then(|g| groups.get(g)).map_or(NO_GROUP, |group| u64::from(group.node.0)));
+            // (What has no latency has no entry, so that a session that has none has the shape it had, and neither has anything where the latency is not made up for.)
+            if let Some(frames) = lane.instrument.as_deref().map(latency_of).filter(|&frames| compensates && frames > 0) {
+                self.list.push(HEAD_LATENCY | u64::from(frames));
+            }
             if lane.route == Route::None {
                 self.list.push(CUT);
             }
-            self.list.extend(lane.effect_nodes.iter().map(|effect| EFFECT | u64::from(effect.0)));
+            for (index, effect) in lane.effect_nodes.iter().enumerate() {
+                self.list.push(EFFECT | u64::from(effect.0));
+                if let Some(frames) = lane.effects.get(index).map(|plugin| latency_of(plugin.as_ref())).filter(|&frames| compensates && frames > 0) {
+                    self.list.push(FX_LATENCY | u64::from(frames));
+                }
+            }
         }
         for group in groups {
             self.list.push(GROUP | u64::from(group.node.0));
             if group.route == Route::None {
                 self.list.push(CUT);
             }
-            self.list.extend(group.effect_nodes.iter().map(|effect| EFFECT | u64::from(effect.0)));
+            for (index, effect) in group.effect_nodes.iter().enumerate() {
+                self.list.push(EFFECT | u64::from(effect.0));
+                if let Some(frames) = group.effects.get(index).map(|plugin| latency_of(plugin.as_ref())).filter(|&frames| compensates && frames > 0) {
+                    self.list.push(FX_LATENCY | u64::from(frames));
+                }
+            }
         }
         for cable in cables {
             self.list.push(CABLE | u64::from(cable.id.0));
@@ -653,6 +750,15 @@ pub(super) struct Schedule {
     patch: Patch<Stage>,
     /// The audio cables that have been drawn, by id (P3b).
     cables: Vec<Cable>,
+    /// The delays that the plan has put on cables so that the paths that are added are in step (P3f), in the order of their numbers (`Stage::Delay`).
+    delays: Vec<Link>,
+    /// The dry sound of each effect that has latency, by the effect's id (sorted): the line that makes it as late as the effect's own sound is.
+    dry: Vec<(NodeId, DelayLine)>,
+    /// How late the latest of what the lanes and groups make is, in frames, when the plan was made: the latency of the session.
+    latency: u32,
+    /// Whether the paths that are added are put in step by the latencies of the plugins. It is always so in the program; the loop that the plan replaced does not do it, so the oracle
+    /// holds the plan to it with this off.
+    compensates: bool,
     /// How many frames of a block the pool has room for.
     room: usize,
     /// How many times a plan has been made, for the tests to see that a block that finds the wiring as it was makes none.
@@ -671,6 +777,10 @@ impl Schedule {
             now: Shape::default(),
             patch: Patch::new(),
             cables: Vec::new(),
+            delays: Vec::new(),
+            dry: Vec::new(),
+            latency: 0,
+            compensates: true,
             room: 0,
             #[cfg(test)]
             compiles: 0,
@@ -682,11 +792,11 @@ impl Schedule {
     pub(super) fn refresh(&mut self, lanes: &[InstrumentLane], groups: &[Group], channels: usize, frames: usize) {
         // A cable that was told to go, and has gone down to nothing, is taken out.
         self.cables.retain(|cable| !(cable.leaving && cable.at == 0.0));
-        self.now.read(lanes, groups, &self.cables, channels);
+        self.now.read(lanes, groups, &self.cables, channels, self.compensates);
         if self.now != self.shape {
             self.compile(lanes, groups, channels);
             // The cables that had an end that has gone are gone, so the wiring is read again: what the plan was made for.
-            self.now.read(lanes, groups, &self.cables, channels);
+            self.now.read(lanes, groups, &self.cables, channels, self.compensates);
             // Copied, not swapped: both keep their room, so that reading the wiring of the next block asks for none.
             self.shape.copy_from(&self.now);
         }
@@ -704,10 +814,57 @@ impl Schedule {
         }
         let (lane_wiring, group_wiring) = wiring_of(lanes, groups);
         build_patch(&mut self.patch, &lane_wiring, &group_wiring, self.cables.iter().map(|cable| (cable.id, cable.from, cable.to)), channels);
+        // The latency of the nodes, and where cables are added whose paths are not as late as each other, the delay that puts them in step.
+        let latencies = if self.compensates { latencies_of(lanes, groups) } else { Vec::new() };
+        let (mut latency, mut wanted) = (0, Vec::new());
+        if !latencies.is_empty() {
+            let of = |stage: Stage| latencies.binary_search_by_key(&stage, |&(node, _)| node).map_or(0, |at| latencies[at].1);
+            // (The patch that `build_patch` made compiles, or the plan below says so: an error here is that one's.)
+            if let Ok(alignment) = kernel::align(&self.patch, of) {
+                latency = alignment.latency();
+                if alignment.is_needed() {
+                    self.patch = kernel::with_delays(&self.patch, &alignment, |number, cable, frames| {
+                        wanted.push((cable.from.node, cable.to.node, frames));
+                        Stage::Delay(number as u32)
+                    });
+                }
+            }
+        }
         match kernel::compile(&self.patch) {
             Ok(plan) => {
                 self.pool.fit(&plan);
                 self.plan = plan;
+                self.latency = latency;
+                // The delays: those between the same two nodes as before are the same lines, with what they hold (a line that is another length keeps the newest of it), the others are new.
+                let mut before = std::mem::take(&mut self.delays);
+                self.delays = wanted
+                    .into_iter()
+                    .map(|(from, to, frames)| match before.iter().position(|link| link.from == from && link.to == to) {
+                        Some(at) => {
+                            let mut link = before.swap_remove(at);
+                            link.line.resize(frames as usize);
+                            link
+                        }
+                        None => Link { from, to, line: DelayLine::new(frames as usize, channels) },
+                    })
+                    .collect();
+                // The dry sound of an effect that has latency, in the same way, by the effect's id.
+                let mut before = std::mem::take(&mut self.dry);
+                for &(stage, frames) in &latencies {
+                    if let Stage::Fx(id) = stage {
+                        let line = match before.iter().position(|(node, _)| *node == id) {
+                            Some(at) => {
+                                let mut line = before.swap_remove(at).1;
+                                line.resize(frames as usize);
+                                line
+                            }
+                            None => DelayLine::new(frames as usize, channels),
+                        };
+                        self.dry.push((id, line));
+                    }
+                }
+                // (They are in the order of `latencies`, which is sorted by stage, so that the effects are by id, as `dry_line` looks them up.)
+                debug_assert!(self.dry.windows(2).all(|pair| pair[0].0 < pair[1].0), "the dry lines are by the id of the effect");
                 // A cable that has an end that is not in the wiring (a lane, a group or an effect that went) goes with it.
                 let patch = &self.patch;
                 self.cables.retain(|cable| patch.nodes().iter().any(|(stage, _)| *stage == Stage::Cable(cable.id)));
@@ -723,6 +880,7 @@ impl Schedule {
                     self.places.extend(group.effect_nodes.iter().enumerate().map(|(index, effect)| (Stage::Fx(*effect), Place::GroupFx(at, index))));
                 }
                 self.places.extend(self.cables.iter().enumerate().map(|(at, cable)| (Stage::Cable(cable.id), Place::Cable(at))));
+                self.places.extend((0..self.delays.len()).map(|at| (Stage::Delay(at as u32), Place::Delay(at))));
                 self.places.sort_unstable_by_key(|&(stage, _)| stage);
             }
             Err(error) => {
@@ -904,14 +1062,42 @@ impl Schedule {
         self.plan.order().collect()
     }
 
+    /// How late the latest of what the lanes and groups make is, in frames: the latency of the session, as the plan was made.
+    #[cfg(test)]
+    pub(super) fn latency(&self) -> u32 {
+        self.latency
+    }
+
+    /// Stop putting the paths that are added in step by the latencies of the plugins: what the loop that the plan replaced did, for the oracle to hold the plan to.
+    #[cfg(test)]
+    pub(super) fn without_compensation(&mut self) {
+        self.compensates = false;
+    }
+
+    /// The delays that the plan has put on cables: the nodes each joins and the frames.
+    #[cfg(test)]
+    fn delay_frames(&self) -> Vec<(Stage, Stage, usize)> {
+        self.delays.iter().map(|link| (link.from, link.to, link.line.frames())).collect()
+    }
+
+    /// The frames of the line that is the dry sound of an effect, if it has one.
+    #[cfg(test)]
+    fn dry_frames(&self, effect: NodeId) -> Option<usize> {
+        self.dry.iter().find(|(id, _)| *id == effect).map(|(_, line)| line.frames())
+    }
+
     /// Run one block: the lanes, the groups and the mix.
     pub(super) fn run(&mut self, lanes: &mut [InstrumentLane], groups: &mut [Group], master: &mut Master, frames: usize, cx: &mut BlockCx<'_>) -> Result<()> {
-        self.plan.run(&mut self.pool, frames, &mut Store { lanes, groups, master, cables: &mut self.cables, places: &self.places }, cx)
+        self.plan.run(&mut self.pool, frames, &mut Store { lanes, groups, master, cables: &mut self.cables, delays: &mut self.delays, dry: &mut self.dry, places: &self.places }, cx)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
     use crate::alloc_guard::allocations_in;
 
@@ -955,6 +1141,7 @@ mod tests {
         match stage {
             Stage::Master => "mix".to_string(),
             Stage::Cable(id) => format!("cable {}", id.0),
+            Stage::Delay(number) => format!("delay {number}"),
             Stage::Head(id) => format!("{} head", owner(id)),
             Stage::Tail(id) => format!("{} tail", owner(id)),
             Stage::Fx(id) => {
@@ -1588,5 +1775,594 @@ mod tests {
         with_effects(&mut lanes[0], 2);
         lanes[0].effect_nodes[1] = lanes[0].effect_nodes[0];
         schedule.refresh(&lanes, &groups, 2, 8);
+    }
+
+    // ---- latency (P3f of `docs/patch-graph.md` §11.6) ----------------------------------------------------------------------------------------------------------
+
+    /// What the plugins of these tests have in common: no parameters and no presets, at 48 kHz.
+    macro_rules! plain_plugin {
+        () => {
+            fn sample_rate(&self) -> f32 {
+                48_000.0
+            }
+            fn parameters(&self) -> Vec<crate::plugin::ParameterInfo> {
+                Vec::new()
+            }
+            fn get_parameter(&mut self, _: u32) -> Option<f32> {
+                None
+            }
+            fn set_parameter(&mut self, index: u32, _: f32) -> anyhow::Result<()> {
+                anyhow::bail!("no parameter {index}")
+            }
+            fn presets(&self) -> Vec<crate::plugin::Preset> {
+                Vec::new()
+            }
+            fn load_preset(&mut self, id: &str) -> anyhow::Result<()> {
+                anyhow::bail!("no preset {id}")
+            }
+        };
+    }
+
+    /// A plugin that is no more than a delay of `frames` frames, and says so, as a plugin with a look-ahead is to the host. It is a queue of its own, apart from the line that the host
+    /// makes the paths late with, so that what the host does is held to a delay that was made another way. What it says can be changed (`said`) without changing what it does.
+    struct Lagging {
+        kept: Vec<VecDeque<f32>>,
+        said: Arc<AtomicU32>,
+    }
+
+    impl Lagging {
+        fn new(frames: usize) -> (Self, Arc<AtomicU32>) {
+            let said = Arc::new(AtomicU32::new(frames as u32));
+            (Lagging { kept: vec![VecDeque::from(vec![0.0; frames]); 2], said: said.clone() }, said)
+        }
+    }
+
+    impl Plugin for Lagging {
+        fn name(&self) -> &str {
+            "Lagging"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
+        fn process(&mut self, _: &[(u64, [u8; 3])], audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            for ((out, input), kept) in audio_out.iter_mut().zip(audio_in).zip(&mut self.kept) {
+                for (o, &i) in out.iter_mut().zip(input.iter()) {
+                    kept.push_back(i);
+                    *o = kept.pop_front().unwrap_or(0.0);
+                }
+            }
+            Ok(())
+        }
+        fn latency(&self) -> u32 {
+            self.said.load(Ordering::Relaxed)
+        }
+        plain_plugin!();
+    }
+
+    /// An instrument that puts out one frame of `level` on every channel `lag` frames after each note on, and says that it is late by that: a click, so that where a sound arrives is a
+    /// frame number.
+    struct Click {
+        level: f32,
+        lag: usize,
+        pending: Vec<usize>,
+        /// What it says its latency is: `lag` to begin with.
+        said: Arc<AtomicU32>,
+    }
+
+    impl Plugin for Click {
+        fn name(&self) -> &str {
+            "Click"
+        }
+        fn is_instrument(&self) -> bool {
+            true
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            0
+        }
+        fn process(&mut self, midi: &[(u64, [u8; 3])], _: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            let frames = audio_out.first().map_or(0, |out| out.len());
+            for &(frame, bytes) in midi {
+                if bytes[0] & 0xF0 == 0x90 && bytes[2] > 0 {
+                    self.pending.push(frame as usize + self.lag);
+                }
+            }
+            self.pending.retain_mut(|at| {
+                if *at < frames {
+                    for channel in audio_out.iter_mut() {
+                        channel[*at] = self.level;
+                    }
+                    false
+                } else {
+                    *at -= frames;
+                    true
+                }
+            });
+            Ok(())
+        }
+        fn latency(&self) -> u32 {
+            self.said.load(Ordering::Relaxed)
+        }
+        plain_plugin!();
+    }
+
+    /// A lane whose instrument is a click of `level` that is `lag` frames late, and what it says its latency is.
+    fn lane_of_click_saying(level: f32, lag: usize) -> (InstrumentLane, Arc<AtomicU32>) {
+        let mut lane = InstrumentLane::new(super::test_node());
+        lane.inst_buf = vec![Vec::new(), Vec::new()];
+        let said = Arc::new(AtomicU32::new(lag as u32));
+        // (The room for the clicks that are waiting is made here: the instrument of a test is held to asking for none while it runs, too.)
+        lane.instrument = Some(Box::new(Click { level, lag, pending: Vec::with_capacity(64), said: said.clone() }));
+        (lane, said)
+    }
+
+    /// A lane whose instrument is a click of `level` that is `lag` frames late.
+    fn lane_of_click(level: f32, lag: usize) -> InstrumentLane {
+        lane_of_click_saying(level, lag).0
+    }
+
+    /// Put an effect that is late by `frames` last in a lane's chain, blended in by `mix`: its id, and what it says its latency is.
+    fn push_lagging(lane: &mut InstrumentLane, frames: usize, mix: f64) -> (NodeId, Arc<AtomicU32>) {
+        let (plugin, said) = Lagging::new(frames);
+        let id = super::test_node();
+        lane.effects.push(Box::new(plugin));
+        lane.mix_values.push(mix);
+        lane.effect_nodes.push(id);
+        (id, said)
+    }
+
+    /// The same for the bus of a group.
+    fn push_bus_lagging(group: &mut Group, frames: usize, mix: f64) -> (NodeId, Arc<AtomicU32>) {
+        let (plugin, said) = Lagging::new(frames);
+        let id = super::test_node();
+        group.effects.push(Box::new(plugin));
+        group.mix_values.push(mix);
+        group.effect_nodes.push(id);
+        (id, said)
+    }
+
+    /// A note on at a frame of the whole render.
+    fn note_at(frame: u64) -> (u64, [u8; 3]) {
+        (frame, [0x90, 60, 100])
+    }
+
+    /// The frames `from` to `to` of the mix (its left side), in blocks of `block`, each made as `AudioGraph::process` makes one (the plan, the gates, the lanes and the groups), with the notes
+    /// that are given by their frame in the whole render. A cable has come in over its first block, so a note that is to be heard through one is played after that.
+    fn render(schedule: &mut Schedule, lanes: &mut [InstrumentLane], groups: &mut [Group], notes: &[(u64, [u8; 3])], block: usize, from: usize, to: usize) -> Vec<f32> {
+        let mut all = Vec::new();
+        let mut at = from;
+        while at < to {
+            let frames = block.min(to - at);
+            schedule.refresh(lanes, groups, 2, frames);
+            schedule.set_gates(lanes, groups);
+            let here: Vec<(u64, [u8; 3])> = notes.iter().filter(|&&(frame, _)| frame >= at as u64 && frame < (at + frames) as u64).map(|&(frame, bytes)| (frame - at as u64, bytes)).collect();
+            all.extend_from_slice(&run_with(schedule, lanes, groups, &here, frames)[0]);
+            at += frames;
+        }
+        all
+    }
+
+    /// The frames at which the output is not silence, and what it is there (the first frame of `out` is the frame `from`).
+    fn arrivals(out: &[f32], from: usize) -> Vec<(usize, f32)> {
+        out.iter().enumerate().filter(|(_, x)| **x != 0.0).map(|(i, x)| (from + i, *x)).collect()
+    }
+
+    /// Block lengths that are shorter than the delays of these tests, about as long and longer, and one frame.
+    const BLOCKS: [usize; 5] = [1, 7, 64, 256, 1000];
+
+    #[test]
+    fn a_session_where_nothing_has_latency_has_no_delay_and_no_latency() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(1));
+        lanes[0].group = Some(0);
+        push_lagging(&mut lanes[0], 0, 0.5);
+        let out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], 256, 0, 1400);
+        assert_eq!(arrivals(&out, 0), [(1000, 1.5)]);
+        assert_eq!((schedule.delay_frames(), schedule.latency(), schedule.dry_frames(lanes[0].effect_nodes[0])), (vec![], 0, None));
+        assert!(schedule.stages().iter().all(|stage| !matches!(stage, Stage::Delay(_))));
+    }
+
+    #[test]
+    fn a_lane_that_has_no_latency_is_delayed_by_the_latency_of_the_one_it_is_added_to_at_the_mix() {
+        for block in BLOCKS {
+            let mut schedule = Schedule::new();
+            let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(0));
+            push_lagging(&mut lanes[0], 23, 1.0);
+            let out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], block, 0, 1400);
+            assert_eq!(arrivals(&out, 0), [(1023, 1.5)], "blocks of {block}");
+            assert_eq!(schedule.delay_frames(), [(Stage::Tail(lanes[1].node), Stage::Master, 23)], "blocks of {block}");
+            assert_eq!(schedule.latency(), 23);
+        }
+    }
+
+    #[test]
+    fn the_lanes_of_a_group_are_in_step_at_its_bus_and_what_goes_round_it_is_as_late_as_the_group_is_at_the_mix() {
+        // Lane 0 (late by 23) and lane 1 are added at the bus of group 0, whose own effect is late by 7; lane 2 goes to the mix, where it is added to the group.
+        for block in BLOCKS {
+            let mut schedule = Schedule::new();
+            let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0), lane_of_click(0.25, 0)], groups(1));
+            lanes[0].group = Some(0);
+            lanes[1].group = Some(0);
+            push_lagging(&mut lanes[0], 23, 1.0);
+            push_bus_lagging(&mut groups[0], 7, 1.0);
+            let out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], block, 0, 1400);
+            assert_eq!(arrivals(&out, 0), [(1030, 1.75)], "blocks of {block}");
+            let mut delays = schedule.delay_frames();
+            delays.sort_by_key(|&(from, _, _)| from);
+            let mut want = vec![(Stage::Tail(lanes[1].node), Stage::Head(groups[0].node), 23), (Stage::Tail(lanes[2].node), Stage::Master, 30)];
+            want.sort_by_key(|&(from, _, _)| from);
+            assert_eq!(delays, want, "blocks of {block}");
+            assert_eq!(schedule.latency(), 30);
+        }
+    }
+
+    #[test]
+    fn the_paths_that_are_added_where_an_audio_cable_ends_are_in_step() {
+        // Lane 0's chain is an effect that is late by 23 and one that is not; lane 1's is one that is late by 10, and a cable goes from it to the second effect of lane 0, where it is added to
+        // what comes from the first. The cable (and lane 1's own way to the mix) is delayed by the 13 that it lacks.
+        for block in BLOCKS {
+            let mut schedule = Schedule::new();
+            let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(0));
+            push_lagging(&mut lanes[0], 23, 1.0);
+            let (second, _) = push_lagging(&mut lanes[0], 0, 1.0);
+            let (late_by_ten, _) = push_lagging(&mut lanes[1], 10, 1.0);
+            schedule.add_cable(Cable::new(EdgeId(1), CableFrom::Effect(late_by_ten), CableTo::Effect(second), 1.0), &lanes, &groups, 2);
+            let out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], block, 0, 1400);
+            assert_eq!(arrivals(&out, 0), [(1023, 2.0)], "blocks of {block}: lane 0's click and lane 1's, which reaches the mix by its cable and by its own way, and each is heard at its own level");
+            assert_eq!(schedule.delay_frames(), [(Stage::Tail(lanes[1].node), Stage::Master, 13), (Stage::Cable(EdgeId(1)), Stage::Fx(second), 13)], "blocks of {block}");
+        }
+    }
+
+    #[test]
+    fn what_an_instrument_that_is_late_makes_is_late_in_its_lane_and_the_other_lanes_wait_for_it() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 12), lane_of_click(0.5, 0)], groups(0));
+        let out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], 64, 0, 1400);
+        assert_eq!(arrivals(&out, 0), [(1012, 1.5)]);
+        assert_eq!(schedule.delay_frames(), [(Stage::Tail(lanes[1].node), Stage::Master, 12)]);
+        assert_eq!(schedule.latency(), 12);
+    }
+
+    #[test]
+    fn the_dry_part_of_an_effect_that_is_late_is_as_late_as_the_rest_of_it() {
+        // Half of the sound is the effect's (late by 23) and half is what was put in: they are heard together, and none of it 23 frames before.
+        for block in BLOCKS {
+            let mut schedule = Schedule::new();
+            let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0)], groups(0));
+            let (effect, _) = push_lagging(&mut lanes[0], 23, 0.5);
+            let out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], block, 0, 1400);
+            assert_eq!(arrivals(&out, 0), [(1023, 1.0)], "blocks of {block}");
+            assert_eq!((schedule.dry_frames(effect), schedule.delay_frames(), schedule.latency()), (Some(23), vec![], 23));
+        }
+    }
+
+    #[test]
+    fn the_dry_part_of_a_bus_effect_that_is_late_is_as_late_as_the_rest_of_it() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0)], groups(1));
+        lanes[0].group = Some(0);
+        let (effect, _) = push_bus_lagging(&mut groups[0], 23, 0.25);
+        let out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], 64, 0, 1400);
+        assert_eq!(arrivals(&out, 0), [(1023, 1.0)]);
+        assert_eq!(schedule.dry_frames(effect), Some(23));
+    }
+
+    #[test]
+    fn the_dry_line_has_what_was_put_in_while_the_mix_was_all_wet_so_that_the_mix_can_be_turned_down() {
+        for block in [1usize, 7, 64] {
+            let mut schedule = Schedule::new();
+            let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0)], groups(0));
+            push_lagging(&mut lanes[0], 23, 1.0);
+            // The click is at 1000 and the effect's own is at 1023; the mix is turned down at 1010, in between.
+            let mut out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], block, 0, 1010);
+            lanes[0].mix_values[0] = 0.5;
+            out.extend(render(&mut schedule, &mut lanes, &mut groups, &[], block, 1010, 1400));
+            assert_eq!(arrivals(&out, 0), [(1023, 1.0)], "blocks of {block}");
+        }
+    }
+
+    #[test]
+    fn a_plan_that_is_made_again_keeps_what_the_delays_hold() {
+        // The click of lane 1 is in the delay that is between it and the mix when an effect is put in its chain, which makes the plan again.
+        for block in [1usize, 7, 64] {
+            let mut schedule = Schedule::new();
+            let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(0));
+            push_lagging(&mut lanes[0], 23, 1.0);
+            let mut out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], block, 0, 1005);
+            let plans = schedule.plans_made();
+            push_lagging(&mut lanes[1], 0, 1.0);
+            out.extend(render(&mut schedule, &mut lanes, &mut groups, &[], block, 1005, 1400));
+            assert_eq!(schedule.plans_made(), plans + 1, "the plan was made again");
+            assert_eq!(arrivals(&out, 0), [(1023, 1.5)], "blocks of {block}");
+        }
+    }
+
+    #[test]
+    fn the_dry_line_of_an_effect_goes_through_a_plan_that_is_made_again() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(0));
+        push_lagging(&mut lanes[0], 23, 0.5);
+        let mut out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], 7, 0, 1005);
+        push_lagging(&mut lanes[1], 0, 1.0);
+        out.extend(render(&mut schedule, &mut lanes, &mut groups, &[], 7, 1005, 1400));
+        // Lane 0: the dry click and the effect's are the same frame; lane 1 is delayed to meet them.
+        assert_eq!(arrivals(&out, 0), [(1023, 1.5)]);
+    }
+
+    #[test]
+    fn a_latency_that_changes_makes_the_plan_again_and_the_delays_are_what_it_says_now() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(0));
+        let (effect, said) = push_lagging(&mut lanes[0], 23, 0.5);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 0, 128);
+        let plans = schedule.plans_made();
+        assert_eq!((schedule.latency(), schedule.dry_frames(effect), schedule.delay_frames()), (23, Some(23), vec![(Stage::Tail(lanes[1].node), Stage::Master, 23)]));
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 128, 256);
+        assert_eq!(schedule.plans_made(), plans, "what it says is what it said");
+        said.store(40, Ordering::Relaxed);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 256, 320);
+        assert_eq!(schedule.plans_made(), plans + 1);
+        assert_eq!((schedule.latency(), schedule.dry_frames(effect), schedule.delay_frames()), (40, Some(40), vec![(Stage::Tail(lanes[1].node), Stage::Master, 40)]));
+        said.store(0, Ordering::Relaxed);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 320, 384);
+        assert_eq!((schedule.latency(), schedule.dry_frames(effect), schedule.delay_frames()), (0, None, vec![]));
+    }
+
+    #[test]
+    fn an_effect_that_is_taken_out_takes_its_delays_with_it() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(0));
+        let (effect, _) = push_lagging(&mut lanes[0], 23, 0.5);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 0, 128);
+        assert_eq!(schedule.delay_frames().len(), 1);
+        lanes[0].effects.pop();
+        lanes[0].mix_values.pop();
+        lanes[0].effect_nodes.pop();
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 128, 256);
+        assert_eq!((schedule.latency(), schedule.dry_frames(effect), schedule.delay_frames()), (0, None, vec![]));
+    }
+
+    #[test]
+    fn a_latency_that_is_absurd_is_held_to_the_most_a_delay_may_have() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(0));
+        let (effect, said) = push_lagging(&mut lanes[0], 0, 0.5);
+        said.store(u32::MAX, Ordering::Relaxed);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 0, 128);
+        assert_eq!((schedule.latency(), schedule.dry_frames(effect)), (MAX_LATENCY, Some(MAX_LATENCY as usize)));
+        assert_eq!(schedule.delay_frames(), [(Stage::Tail(lanes[1].node), Stage::Master, MAX_LATENCY as usize)]);
+    }
+
+    #[test]
+    fn a_block_with_delays_and_dry_lines_in_the_plan_asks_the_allocator_for_nothing() {
+        let mut schedule = Schedule::new();
+        // Lanes 0 and 1 are in the group, whose bus is late by 7, and lane 2 goes to the mix: a delay for lane 1 at the bus and one for lane 2 at the mix.
+        let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0), lane_of_click(0.25, 0)], groups(1));
+        lanes[0].group = Some(0);
+        lanes[1].group = Some(0);
+        push_lagging(&mut lanes[0], 23, 0.5);
+        push_bus_lagging(&mut groups[0], 7, 0.5);
+        // These blocks make the plan, its delays and its dry lines, and may ask for memory, as the first block of a session does.
+        render(&mut schedule, &mut lanes, &mut groups, &[], 256, 0, 512);
+        assert!(schedule.delay_frames().len() == 2 && schedule.dry_frames(lanes[0].effect_nodes[0]).is_some());
+        let mut master = Master::new();
+        let mut out = vec![vec![0.0f32; 256]; 2];
+        let mut cx = BlockCx { midi: &NOTE_ON, audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
+        let (_, asked) = allocations_in(|| {
+            for _ in 0..8 {
+                schedule.refresh(&lanes, &groups, 2, 256);
+                schedule.set_gates(&mut lanes, &mut groups);
+                schedule.run(&mut lanes, &mut groups, &mut master, 256, &mut cx).unwrap();
+            }
+        });
+        assert_eq!(asked, 0);
+        assert!(loudest(&out) > 0.0, "the blocks were heard");
+    }
+
+    #[test]
+    fn the_latency_of_an_instrument_and_of_effects_in_other_lanes_are_each_found_for_their_own_node() {
+        // Lane 0's instrument is late by 12, lane 1's effect by 5, lane 2's by 3 and its instrument by 7: lane 0 is 12, lane 1 is 5 and lane 2 is 10 late at the mix, and the
+        // click that each makes arrives at the latest of them.
+        let mut schedule = Schedule::new();
+        let mut lanes = vec![lane_of_click(1.0, 12), lane_of_click(0.5, 0), lane_of_click(0.25, 7)];
+        let mut groups = groups(0);
+        push_lagging(&mut lanes[1], 5, 1.0);
+        push_lagging(&mut lanes[2], 3, 1.0);
+        let out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], 64, 0, 1400);
+        assert_eq!(arrivals(&out, 0), [(1012, 1.75)]);
+        let mut delays = schedule.delay_frames();
+        delays.sort_by_key(|&(from, _, _)| from);
+        let mut want = vec![(Stage::Tail(lanes[1].node), Stage::Master, 7), (Stage::Tail(lanes[2].node), Stage::Master, 2)];
+        want.sort_by_key(|&(from, _, _)| from);
+        assert_eq!(delays, want);
+        assert_eq!(schedule.latency(), 12);
+    }
+
+    #[test]
+    fn the_latency_that_an_instrument_says_changes_the_plan_when_it_changes() {
+        let mut schedule = Schedule::new();
+        let (first, said) = lane_of_click_saying(1.0, 0);
+        let (mut lanes, mut groups) = (vec![first, lane_of_click(0.5, 0)], groups(0));
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 0, 128);
+        let plans = schedule.plans_made();
+        assert_eq!((schedule.latency(), schedule.delay_frames()), (0, vec![]));
+        said.store(30, Ordering::Relaxed);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 128, 192);
+        assert_eq!(schedule.plans_made(), plans + 1);
+        assert_eq!((schedule.latency(), schedule.delay_frames()), (30, vec![(Stage::Tail(lanes[1].node), Stage::Master, 30)]));
+    }
+
+    #[test]
+    fn the_latency_that_a_bus_effect_says_changes_the_plan_when_it_changes() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(1));
+        lanes[0].group = Some(0);
+        let (effect, said) = push_bus_lagging(&mut groups[0], 9, 0.5);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 0, 128);
+        let plans = schedule.plans_made();
+        assert_eq!((schedule.latency(), schedule.dry_frames(effect), schedule.delay_frames()), (9, Some(9), vec![(Stage::Tail(lanes[1].node), Stage::Master, 9)]));
+        said.store(21, Ordering::Relaxed);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 128, 192);
+        assert_eq!(schedule.plans_made(), plans + 1);
+        assert_eq!((schedule.latency(), schedule.dry_frames(effect), schedule.delay_frames()), (21, Some(21), vec![(Stage::Tail(lanes[1].node), Stage::Master, 21)]));
+    }
+
+    #[test]
+    fn delays_that_end_at_one_node_each_keep_their_own_line_when_the_plan_is_made_again() {
+        // Lane 0 is late by 40, lane 1 by 10 and lane 2 by nothing, all at the mix: lane 1 is delayed by 30 and lane 2 by 40, and the plan is made again 5 frames after the click, with
+        // the click of each in its line. Each arrives with the latest, and a line that went to the other cable would be too short or too long for the click that is in it.
+        for block in [1usize, 7, 64] {
+            let mut schedule = Schedule::new();
+            let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0), lane_of_click(0.25, 0)], groups(0));
+            push_lagging(&mut lanes[0], 40, 1.0);
+            push_lagging(&mut lanes[1], 10, 1.0);
+            let mut out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], block, 0, 1005);
+            let plans = schedule.plans_made();
+            push_lagging(&mut lanes[2], 0, 1.0);
+            out.extend(render(&mut schedule, &mut lanes, &mut groups, &[], block, 1005, 1400));
+            assert_eq!(schedule.plans_made(), plans + 1, "the plan was made again");
+            assert_eq!(arrivals(&out, 0), [(1040, 1.75)], "blocks of {block}");
+        }
+    }
+
+    #[test]
+    fn a_schedule_that_does_not_compensate_has_no_delay_and_makes_no_plan_for_a_latency_that_changes() {
+        let mut schedule = Schedule::new();
+        schedule.without_compensation();
+        let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(0));
+        let (effect, said) = push_lagging(&mut lanes[0], 23, 0.5);
+        let out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], 64, 0, 1400);
+        assert_eq!(arrivals(&out, 0), [(1000, 1.0), (1023, 0.5)], "the effect's own sound is late and the sound that was put in is not: nothing is made up for");
+        assert_eq!((schedule.latency(), schedule.delay_frames(), schedule.dry_frames(effect)), (0, vec![], None));
+        let plans = schedule.plans_made();
+        said.store(40, Ordering::Relaxed);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 1400, 1464);
+        assert_eq!(schedule.plans_made(), plans, "a latency that changes is nothing to a schedule that does not make it up");
+    }
+
+    #[test]
+    fn delays_that_end_at_one_node_keep_their_own_line_when_the_lanes_change_places() {
+        // The same lanes as above, and the plan is made again by two of them swapping places, which puts the delays in the other order: each keeps the line with its click in it.
+        for block in [1usize, 7, 64] {
+            let mut schedule = Schedule::new();
+            let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0), lane_of_click(0.25, 0)], groups(0));
+            push_lagging(&mut lanes[0], 40, 1.0);
+            push_lagging(&mut lanes[1], 10, 1.0);
+            let mut out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], block, 0, 1005);
+            let plans = schedule.plans_made();
+            lanes.swap(1, 2);
+            out.extend(render(&mut schedule, &mut lanes, &mut groups, &[], block, 1005, 1400));
+            assert_eq!(schedule.plans_made(), plans + 1, "the plan was made again");
+            assert_eq!(arrivals(&out, 0), [(1040, 1.75)], "blocks of {block}");
+        }
+    }
+
+    #[test]
+    fn a_dry_line_stays_with_its_effect_when_an_effect_before_it_is_taken_out() {
+        // Two effects that are late have a dry line each, half of their mix; the first is taken out 5 frames after the click, and the second's dry sound, which has the click in it, is
+        // still its own (the first's dry line, which has another click in it, is not its dry line any more).
+        for block in [1usize, 7, 64] {
+            let mut schedule = Schedule::new();
+            let (mut lanes, mut groups) = (vec![lane_of_click(1.0, 0), lane_of_click(0.5, 0)], groups(0));
+            push_lagging(&mut lanes[0], 23, 0.5);
+            let (second, _) = push_lagging(&mut lanes[1], 10, 0.5);
+            let mut out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(1000)], block, 0, 1005);
+            lanes[0].effects.pop();
+            lanes[0].mix_values.pop();
+            lanes[0].effect_nodes.pop();
+            out.extend(render(&mut schedule, &mut lanes, &mut groups, &[], block, 1005, 1400));
+            assert_eq!(schedule.dry_frames(second), Some(10));
+            assert_eq!(arrivals(&out, 0), [(1010, 0.5)], "blocks of {block}: half of lane 1's click as it was put in and half of it from its effect, 10 frames later, and nothing of lane 0's");
+        }
+    }
+
+    #[test]
+    fn a_schedule_that_does_not_compensate_makes_no_plan_for_a_latency_that_an_instrument_or_a_bus_effect_says() {
+        let mut schedule = Schedule::new();
+        schedule.without_compensation();
+        let (first, instrument_said) = lane_of_click_saying(1.0, 0);
+        let (mut lanes, mut groups) = (vec![first, lane_of_click(0.5, 0)], groups(1));
+        lanes[0].group = Some(0);
+        let (bus_effect, bus_said) = push_bus_lagging(&mut groups[0], 9, 0.5);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 0, 128);
+        let plans = schedule.plans_made();
+        instrument_said.store(30, Ordering::Relaxed);
+        bus_said.store(40, Ordering::Relaxed);
+        render(&mut schedule, &mut lanes, &mut groups, &[], 64, 128, 192);
+        assert_eq!(schedule.plans_made(), plans);
+        assert_eq!((schedule.latency(), schedule.delay_frames(), schedule.dry_frames(bus_effect)), (0, vec![], None));
+    }
+
+    /// Set the parameter of a plugin that has `name`.
+    fn set_named(plugin: &mut dyn Plugin, name: &str, value: f32) {
+        let index = plugin.parameters().iter().position(|p| p.name == name).unwrap_or_else(|| panic!("a parameter called {name}"));
+        plugin.set_parameter(index as u32, value).unwrap();
+    }
+
+    /// The oscillator's waveforms, by their place in its list.
+    const SINE: f32 = 0.0;
+    const SAW: f32 = 3.0;
+
+    /// A lane with an oscillator of the waveform and volume given, and, if `drive` is a mix, a drive that lets a quiet sound through as it is (no drive, none of the tone filter, the
+    /// full level), blended in by that mix.
+    fn lane_of_oscillator(waveform: f32, volume: f32, drive: Option<f64>) -> InstrumentLane {
+        let mut lane = InstrumentLane::new(super::test_node());
+        let mut osc = crate::plugin::load("builtin:osc", 48_000.0, 256, &Default::default()).unwrap();
+        set_named(osc.as_mut(), "waveform", waveform);
+        set_named(osc.as_mut(), "volume", volume);
+        lane.inst_buf = (0..osc.audio_output_count()).map(|_| Vec::new()).collect();
+        lane.instrument = Some(osc);
+        if let Some(mix) = drive {
+            let mut plugin = crate::plugin::load("builtin:drive", 48_000.0, 256, &Default::default()).unwrap();
+            set_named(plugin.as_mut(), "drive", 0.0);
+            set_named(plugin.as_mut(), "tone", 1.0);
+            set_named(plugin.as_mut(), "level", 1.0);
+            lane.effects.push(plugin);
+            lane.mix_values.push(mix);
+            lane.effect_nodes.push(super::test_node());
+        }
+        lane
+    }
+
+    #[test]
+    fn two_lanes_one_through_the_drive_are_in_step_at_the_mix_as_the_drive_says() {
+        // The drive says 23 frames. What the two lanes make together is what the first makes alone and what the second makes alone, 23 frames later: the sound that has no drive waits.
+        let notes = [note_at(100)];
+        for block in [64usize, 256, 1000] {
+            let (mut a, mut b) = (Schedule::new(), Schedule::new());
+            let alone_a = render(&mut a, &mut [lane_of_oscillator(SINE, 0.5, Some(1.0))], &mut [], &notes, block, 0, 4800);
+            let alone_b = render(&mut b, &mut [lane_of_oscillator(SAW, 0.25, None)], &mut [], &notes, block, 0, 4800);
+            let mut together = Schedule::new();
+            let mut lanes = [lane_of_oscillator(SINE, 0.5, Some(1.0)), lane_of_oscillator(SAW, 0.25, None)];
+            let both = render(&mut together, &mut lanes, &mut [], &notes, block, 0, 4800);
+            let want: Vec<f32> = (0..4800).map(|n| alone_a[n] + if n >= 23 { alone_b[n - 23] } else { 0.0 }).collect();
+            assert!(loudest(std::slice::from_ref(&both)) > 0.05, "something is heard");
+            assert_eq!(both, want, "blocks of {block}");
+            assert_eq!(together.latency(), 23);
+        }
+    }
+
+    #[test]
+    fn a_drive_that_is_blended_with_the_sound_that_went_in_does_not_make_a_comb_of_the_two() {
+        // A quiet sine through a drive that does nothing to it but make it late, at half the mix: it is the sine, 23 frames late. (With the dry sound as it went in, the blend is
+        // 0.5 x(t) + 0.5 x(t - 23): 39% of the sine's height off the sine that is 23 frames late, at this pitch, and a few percent of the sine at 1 kHz.)
+        let notes = [note_at(100)];
+        let mut plain = Schedule::new();
+        let input = render(&mut plain, &mut [lane_of_oscillator(SINE, 0.15, None)], &mut [], &notes, 256, 0, 4800);
+        let mut blended = Schedule::new();
+        let out = render(&mut blended, &mut [lane_of_oscillator(SINE, 0.15, Some(0.5))], &mut [], &notes, 256, 0, 4800);
+        let worst = (1000..4800).map(|n| (out[n] - input[n - 23]).abs()).fold(0.0f32, f32::max);
+        assert!(loudest(&[input[1000..].to_vec()]) > 0.03, "a sine of 0.04 or so is heard");
+        assert!(worst < 0.0001, "{worst} from the sine that went in, 23 frames late");
+        let comb = (1000..4800).map(|n| (0.5 * input[n] + 0.5 * input[n - 23] - input[n - 23]).abs()).fold(0.0f32, f32::max);
+        assert!(comb > 0.01, "the blend that the host used to make is {comb} from it, so that this test would see it");
     }
 }

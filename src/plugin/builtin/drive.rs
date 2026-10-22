@@ -4,7 +4,8 @@
 //!
 //! The shape is made at twice the sample rate (a half-band filter up and another down), since a shape that is bent by a hard corner makes
 //! harmonics far above the Nyquist frequency, and in a sampled signal they fold down into the band as notes that are not in tune with
-//! anything. The price is a delay of `LATENCY` frames, which the host's dry/wet mix does not make up for: a drive is put in fully wet.
+//! anything. The price is a delay of `LATENCY` frames, which the drive says (`Plugin::latency`) and the host makes up for (P3f of `docs/patch-graph.md` §11.6): the dry part of its
+//! dry/wet mix is as late as the wet part is, and a path that is added to the drive's is delayed to match it.
 
 use std::f32::consts::TAU;
 
@@ -17,9 +18,7 @@ pub const PARAM_COUNT: usize = 4;
 /// How many of the half-band's taps the oversampling filters have on each side of the middle one that matter (the taps at odd distances from
 /// the middle are the only ones that are not 0), and so how long they are: `4 * HALF - 1` taps.
 const HALF: usize = 12;
-/// How many frames the sound is late by, for the two filters that it goes through, up and down. (Nothing in the program needs the number: the host has no way to be told of it,
-/// and the tests line the sound up by it.)
-#[cfg(test)]
+/// How many frames the sound is late by, for the two filters that it goes through, up and down: what the drive says its latency is.
 const LATENCY: usize = 2 * HALF - 1;
 
 /// The shape of the window that the half-band is cut out of an ideal one with (Kaiser's `beta`): about 70 decibels of the images and the aliases gone.
@@ -229,6 +228,10 @@ impl Plugin for Drive {
 
     fn audio_output_count(&self) -> usize {
         2
+    }
+
+    fn latency(&self) -> u32 {
+        LATENCY as u32
     }
 
     fn process(&mut self, _midi_events: &[(u64, [u8; 3])], audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
