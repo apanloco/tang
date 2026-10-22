@@ -19,6 +19,14 @@ fn a_command_that_works_says_all_it_has_to_say_and_ends_with_status_0() {
 }
 
 #[test]
+fn describe_says_how_late_a_plugin_is() {
+    // The drive is late by the 23 frames of its oversampling filters (0.48 ms at 48 kHz); the oscillator is not late.
+    let said = |plugin: &str| String::from_utf8_lossy(&tang(&["describe", plugin]).stdout).to_string();
+    assert!(said("builtin:drive").contains("\n  Latency:       23 frames (0.48 ms at 48000 Hz)\n"), "{}", said("builtin:drive"));
+    assert!(said("builtin:osc").contains("\n  Latency:       none\n"), "{}", said("builtin:osc"));
+}
+
+#[test]
 fn a_command_that_fails_says_why_on_stderr_and_ends_with_status_1() {
     let output = tang(&["describe", "builtin:nope"]);
     assert_eq!(output.status.code(), Some(1));

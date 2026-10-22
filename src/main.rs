@@ -161,6 +161,11 @@ fn run() -> anyhow::Result<()> {
                 }
             );
             println!("  Audio outputs: {}", p.audio_output_count());
+            // (The sample rate that the plugin is loaded at above, which is what its latency is in frames of.)
+            match p.latency() {
+                0 => println!("  Latency:       none"),
+                frames => println!("  Latency:       {frames} frames ({:.2} ms at 48000 Hz)", f64::from(frames) * 1000.0 / 48000.0),
+            }
             let params = p.parameters();
             println!("  Parameters:    {}", params.len());
             for param in &params {

@@ -591,6 +591,9 @@ pub struct Vst3Plugin {
     audio_out_channel_count: usize,
     audio_in_bus_count: usize,
     audio_out_bus_count: usize,
+    /// How many frames late what the plugin makes is (`IAudioProcessor::getLatencySamples`), as it said when it was set up (`Plugin::latency`). A plugin that changes it while it
+    /// runs, and tells the host by `restartComponent(kLatencyChanged)`, is not followed: the plugin is on the audio thread by then, and the host's handler ignores the restart.
+    latency: u32,
     separate_controller: bool,
     params_cache: Vec<ParameterInfo>,
     param_ids: Vec<u32>,
@@ -757,6 +760,10 @@ impl Plugin for Vst3Plugin {
 
     fn audio_output_count(&self) -> usize {
         self.audio_out_channel_count
+    }
+
+    fn latency(&self) -> u32 {
+        self.latency
     }
 
     fn process(
@@ -1410,6 +1417,12 @@ pub fn load(
         log::warn!("VST3 setProcessing returned {result}");
     }
 
+    // The latency, which a plugin knows once it is set up.
+    let latency = unsafe { processor.getLatencySamples() };
+    if latency > 0 {
+        log::info!("VST3 plugin {name} has a latency of {latency} frames");
+    }
+
     // Pre-allocate buffers sized to capacity — never grow on audio thread.
     let mut output_bufs: Vec<Vec<f32>> = (0..audio_out_channel_count)
         .map(|_| vec![0.0f32; buffer_capacity])
@@ -1489,6 +1502,7 @@ pub fn load(
         audio_out_channel_count,
         audio_in_bus_count: audio_in_bus_count.max(0) as usize,
         audio_out_bus_count: audio_out_bus_count.max(0) as usize,
+        latency,
         _module: module,
         component,
         processor,
