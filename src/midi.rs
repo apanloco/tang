@@ -4,7 +4,7 @@ use midir::{MidiInput, MidiInputConnection, MidiInputPort};
 
 use crate::midi_monitor::MidiMonitor;
 use crate::note_input::{Delivery, NoteInput};
-use crate::source::Source;
+use crate::source::{Source, SourceSet};
 
 /// The sources of the MIDI devices (P4a of `docs/patch-graph.md` §11.6): each device has a number of its own for as long as the program runs, handed out in the order the devices are
 /// first seen, so that a device that is unplugged and plugged in again is the source it was (what a lane hears it by, and what it has sounding, stay with the number).
@@ -74,6 +74,22 @@ fn plan(open: &[(&str, &str)], listed: &[Listed], filter: Option<&str>) -> Plan 
         })
         .collect();
     Plan { to_open, gone }
+}
+
+/// The sources of the open devices that the device called `name` in a session stands for: the devices that are called exactly that, or, if there is none, those that have it in their name,
+/// whatever the case (a Launchkey Mini has two ports, "Launchkey Mini MK4 37 MIDI Out" and "Launchkey Mini MK4 37 DAW Out", and "Launchkey Mini" is both). A name that is blank stands for none.
+fn matching(open: &[(&str, Source)], name: &str) -> SourceSet {
+    let name = name.trim();
+    if name.is_empty() {
+        return SourceSet::NONE;
+    }
+    let sources = |called: &dyn Fn(&str) -> bool| open.iter().filter(|(device, _)| called(device)).fold(SourceSet::NONE, |set, (_, source)| set.with(*source));
+    let exact = sources(&|device| device == name);
+    if !exact.is_empty() {
+        return exact;
+    }
+    let lower = name.to_lowercase();
+    sources(&|device| device.to_lowercase().contains(&lower))
 }
 
 /// A device that is open: its port's id and name, its source and the connection, which is closed when the device is dropped.
@@ -207,6 +223,12 @@ impl MidiManager {
     pub fn connection_count(&self) -> usize {
         self.open.len()
     }
+
+    /// The sources of the open devices that the device called `name` in a session stands for (none while it is not plugged in).
+    pub fn sources_of(&self, name: &str) -> SourceSet {
+        let open: Vec<(&str, Source)> = self.open.iter().map(|device| (device.name.as_str(), device.source)).collect();
+        matching(&open, name)
+    }
 }
 
 #[cfg(test)]
@@ -314,6 +336,43 @@ mod tests {
         // A device that is open passed the filter when it was opened: it is gone when it is not listed, and not before.
         assert_eq!(plan_for(&opened(&["Launchkey 25"]), &named(&["Launchkey 25", "Seaboard"]), Some("Launchkey")), (vec![], vec![]));
         assert_eq!(plan_for(&opened(&["Launchkey 25"]), &named(&["Seaboard"]), Some("Launchkey")), (vec![], vec![0]));
+    }
+
+    fn open(names: &[&'static str]) -> Vec<(&'static str, Source)> {
+        names.iter().enumerate().map(|(nth, &name)| (name, Source::device(nth))).collect()
+    }
+
+    fn numbers(set: SourceSet) -> Vec<u8> {
+        set.iter().map(Source::number).collect()
+    }
+
+    #[test]
+    fn a_device_of_a_session_stands_for_the_open_ports_that_are_called_that_or_if_there_is_none_have_it_in_their_names() {
+        let ports = open(&["Launchkey Mini MK4 37 MIDI Out", "Launchkey Mini MK4 37 DAW Out", "ROLI Airwave Expression", "IAC Driver Bus 1", "IAC Driver Bus 10"]);
+        assert_eq!(numbers(matching(&ports, "ROLI Airwave Expression")), [3], "a name is itself");
+        assert_eq!(numbers(matching(&ports, "Launchkey Mini MK4 37")), [1, 2], "both ports of a device have its name in theirs");
+        assert_eq!(numbers(matching(&ports, "airwave")), [3], "whatever the case");
+        assert_eq!(numbers(matching(&ports, "IAC Driver Bus 1")), [4], "a port that is called exactly that is the device, and not the other that has it in its name");
+        assert_eq!(numbers(matching(&ports, "IAC Driver Bus")), [4, 5], "and when none is called that, every port that has it");
+        assert_eq!(numbers(matching(&ports, "  Launchkey  ")), [1, 2], "the spaces round a name go");
+    }
+
+    #[test]
+    fn a_device_that_is_not_open_or_has_no_name_stands_for_no_source() {
+        let ports = open(&["Launchkey Mini MK4 37 MIDI Out", "Seaboard RISE"]);
+        assert!(matching(&ports, "Pianoteq").is_empty());
+        assert!(matching(&[], "Seaboard").is_empty(), "nothing is open");
+        assert!(matching(&ports, "").is_empty(), "a name that is blank is in every name, and is no device");
+        assert!(matching(&ports, "   ").is_empty());
+        assert!(matching(&ports, "launchkey mini mk4 37 midi out and more").is_empty(), "the name is in the port's name, and not the other way");
+    }
+
+    #[test]
+    fn the_ports_that_share_the_last_source_are_one_source_for_a_device() {
+        let names: Vec<String> = (0..66).map(|n| format!("device {n}")).collect();
+        let ports: Vec<(&str, Source)> = names.iter().enumerate().map(|(nth, name)| (name.as_str(), Source::device(nth))).collect();
+        assert_eq!(numbers(matching(&ports, "device 65")), [63], "the 66th is the last source, which the ones after the 62nd share");
+        assert_eq!(numbers(matching(&ports, "device 3")), [4]);
     }
 
     fn device(name: &str, nth: usize) -> Open<()> {

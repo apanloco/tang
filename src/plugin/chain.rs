@@ -2374,7 +2374,6 @@ pub enum GraphCommand {
     },
     /// Set the sources that a lane hears (P4a of `docs/patch-graph.md` §11.6): its first step drops the events of the others, before its range, and what the sources it stops hearing
     /// have sounding in it is let go of (note-offs, a pedal that goes up, a wheel that is centred), a few events a block, so that nothing hangs.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller sends the sources a lane hears when it has MIDI cables to work them out from: the next step of P4"))]
     SetLaneSources {
         inst: usize,
         sources: SourceSet,

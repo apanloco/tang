@@ -52,6 +52,7 @@ use crate::midi::DeviceChanges;
 use crate::midi_monitor::MidiMonitor;
 use crate::note_input::NoteInput;
 use crate::piano_filter::{PianoFilter, PianoMode};
+use crate::source::SourceSet;
 use crate::plugin::chain::{
     CHAIN_CHANNELS, CableFrom, CableProblem, CableTo, GraphCommand, MidiLearnedNotification, ModTarget, ModTargetKind, ModulatorLocation, PatternNotification,
 };
@@ -75,11 +76,18 @@ pub struct Polled {
 pub trait DeviceWatcher {
     /// Open whatever has been connected since the last call, and close what has gone: the devices that came and the devices that went, by their sources.
     fn poll_new_devices(&mut self) -> DeviceChanges;
+
+    /// The sources of the open devices that the device called `name` in a session stands for: none while it is not plugged in.
+    fn sources_of(&self, name: &str) -> SourceSet;
 }
 
 impl DeviceWatcher for crate::midi::MidiManager {
     fn poll_new_devices(&mut self) -> DeviceChanges {
         crate::midi::MidiManager::poll_new_devices(self)
+    }
+
+    fn sources_of(&self, name: &str) -> SourceSet {
+        crate::midi::MidiManager::sources_of(self, name)
     }
 }
 
@@ -262,8 +270,10 @@ pub struct Controller {
 
     /// Plugins the audio thread has taken out of the graph.
     return_rx: Receiver<Box<dyn Plugin>>,
-    devices: Option<Box<dyn DeviceWatcher>>,
+    pub(super) devices: Option<Box<dyn DeviceWatcher>>,
     last_device_poll: Instant,
+    /// What the audio thread was last told that each lane hears (`app::sources`), by the lane's node: a lane that is not here has not been told, and hears every source until it is.
+    pub(super) sent_sources: Vec<(NodeId, SourceSet)>,
     /// Who hears what `apply` does.
     subscribers: Subscribers,
     /// What can be undone and redone (`app::history`).
@@ -292,6 +302,8 @@ impl Controller {
         session_path: Option<PathBuf>,
         now: Instant,
     ) -> Self {
+        // (A lane that was just loaded hears every source: that is what the audio thread has until it is told another.)
+        let sent_sources = model.instruments.iter().map(|lane| (lane.node, SourceSet::ALL)).collect();
         let EngineHandles {
             cmd_tx,
             midi_tx,
@@ -307,7 +319,7 @@ impl Controller {
             telemetry,
             recovery_wait,
         } = engine;
-        Controller {
+        let mut controller = Controller {
             rev: 0,
             catalog: Catalog::default(),
             model,
@@ -328,6 +340,7 @@ impl Controller {
             return_rx,
             devices: None,
             last_device_poll: now,
+            sent_sources,
             subscribers: Subscribers::default(),
             history: History::default(),
             made_last: Made::default(),
@@ -335,7 +348,10 @@ impl Controller {
             taken_last: Journal::default(),
             clock: Box::new(Instant::now),
             probes: super::probes::Probes::default(),
-        }
+        };
+        // (A lane that cables of notes end at hears the sources they start at: the audio thread is told, as it is when a device is plugged in.)
+        controller.sync_lane_sources();
+        controller
     }
 
     /// The ids the intent that was carried out last made.
@@ -709,9 +725,10 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
-        // The audio cables at its instrument and at each of its effects go with it.
+        // The audio cables at its instrument and at each of its effects go with it, and so do the cables of notes that end at it.
         let nodes = self.model.audio_nodes_of_lane(inst);
         self.take_out_audio_cables_at(&nodes);
+        self.take_out_event_cables_at(&[self.model.instruments[inst].node]);
         // The whole lane is kept for the history, when an intent is carried out: the audio thread hands it to a channel of its own.
         let (keep, kept) = self.channel_for();
         let _ = self.cmd_tx.send(GraphCommand::RemoveInstrument { inst, keep });
@@ -906,6 +923,21 @@ impl Controller {
         }
     }
 
+    /// Take the event cable `id` out of the model, and write it down for the history, as what puts it back. (The audio thread has no cable of notes: what a lane hears is the set of sources that
+    /// the controller tells it, `app::sources`.) False if there is no such cable.
+    pub(super) fn take_out_event_cable(&mut self, id: EdgeId) -> bool {
+        let Some(cable) = self.model.remove_event_cable(id) else { return false };
+        self.took_out(Inverse::EventCable(cable));
+        true
+    }
+
+    /// Take out the cables of notes that start or end at any of `nodes`: what goes with the lane that they end at, or the source that they start at, before it goes.
+    fn take_out_event_cables_at(&mut self, nodes: &[NodeId]) {
+        for id in self.model.event_cables_at(nodes) {
+            self.take_out_event_cable(id);
+        }
+    }
+
     /// Give what the user set back to what cables that are gone were driving. A cable writes into a
     /// parameter, a modulator's rate or stage, or the depth of a cable, on every buffer, and nothing
     /// writes the user's value back when it is taken out: what it wrote last would stay for ever. The
@@ -1092,6 +1124,8 @@ impl Controller {
     /// Have `poll` look for newly connected devices through `watcher`.
     pub fn watch_devices(&mut self, watcher: Box<dyn DeviceWatcher>) {
         self.devices = Some(watcher);
+        // (The devices that are open are known now: what a lane that is wired to one hears is not what it was.)
+        self.sync_lane_sources();
     }
 
     /// Housekeeping, to be called on every iteration of the front-end's loop.
@@ -1099,7 +1133,7 @@ impl Controller {
         self.poll_at(Instant::now())
     }
 
-    fn poll_at(&mut self, now: Instant) -> Polled {
+    pub(super) fn poll_at(&mut self, now: Instant) -> Polled {
         self.reap();
         if now.duration_since(self.last_device_poll) >= DEVICE_POLL_INTERVAL {
             self.last_device_poll = now;
@@ -1125,6 +1159,9 @@ impl Controller {
         for source in changes.gone {
             let _ = self.cmd_tx.send(GraphCommand::ReleaseSource { source });
         }
+        // What a lane that is wired to a device hears is the ports that are open for it: a device that came is heard, and one that went is not (and a lane that hears what it was told
+        // is told nothing, so that this is done at every look, whether or not a device came or went).
+        self.sync_lane_sources();
     }
 
     /// Fold what the audio thread has reported into the model. True if the
@@ -1263,6 +1300,10 @@ mod tests {
                 self.0.set(self.0.get() + 1);
                 DeviceChanges::default()
             }
+
+            fn sources_of(&self, _: &str) -> SourceSet {
+                SourceSet::NONE
+            }
         }
         let t0 = Instant::now();
         let (handles, _engine) = testutil::stub_engine();
@@ -1283,6 +1324,10 @@ mod tests {
     impl DeviceWatcher for Scripted {
         fn poll_new_devices(&mut self) -> DeviceChanges {
             self.0.pop_front().unwrap_or_default()
+        }
+
+        fn sources_of(&self, _: &str) -> SourceSet {
+            SourceSet::NONE
         }
     }
 
@@ -1321,6 +1366,10 @@ mod tests {
         impl DeviceWatcher for Watcher {
             fn poll_new_devices(&mut self) -> DeviceChanges {
                 DeviceChanges::default()
+            }
+
+            fn sources_of(&self, _: &str) -> SourceSet {
+                SourceSet::NONE
             }
         }
         impl Drop for Watcher {

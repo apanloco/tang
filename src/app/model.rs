@@ -15,6 +15,7 @@ use crate::app::intent::{Intent, IntentError, ModulatorField};
 use crate::plugin;
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo, CrossModField, GroupWiring, LaneWiring, ModTargetKind, ModulatorLocation, group_target_member_mut, member_moves};
 use crate::session::{NodeUi, Route};
+use crate::source::SourceSet;
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -343,6 +344,34 @@ impl SessionModel {
                 at
             }
         }
+    }
+
+    /// The source of notes whose node is `node`, if there is one.
+    pub fn source(&self, node: NodeId) -> Option<&SourceNode> {
+        self.sources.iter().find(|source| source.node == node)
+    }
+
+    /// The sources that lane `inst` hears (P4b of `docs/patch-graph.md` §11.6): every source if no event cable ends at it, and otherwise the sources of the nodes that the cables that end at it start at,
+    /// as `resolve` says them (the keys are one source, a device is the sources of the open ports that its name stands for, and none while it is not plugged in: a lane that has a cable from it
+    /// and no other does not hear the others in the meantime). A lane that is not there hears every source, as it will when it is.
+    pub fn lane_sources(&self, inst: usize, mut resolve: impl FnMut(&SourceKind) -> SourceSet) -> SourceSet {
+        let Some(lane) = self.instruments.get(inst) else { return SourceSet::ALL };
+        let mut cables = self.event_cables.iter().filter(|cable| cable.to == lane.node).peekable();
+        if cables.peek().is_none() {
+            return SourceSet::ALL;
+        }
+        cables.filter_map(|cable| self.source(cable.from)).fold(SourceSet::NONE, |heard, source| heard.or(resolve(&source.kind)))
+    }
+
+    /// Take the event cable `id` out: what it was. None if there is no such cable.
+    pub fn remove_event_cable(&mut self, id: EdgeId) -> Option<EventCable> {
+        let at = self.event_cables.binary_search_by_key(&id, |cable| cable.id).ok()?;
+        Some(self.event_cables.remove(at))
+    }
+
+    /// The event cables that start or end at any of `nodes` (a source, a lane), in the order of their ids: what goes with them when they are taken out.
+    pub fn event_cables_at(&self, nodes: &[NodeId]) -> Vec<EdgeId> {
+        self.event_cables.iter().filter(|cable| nodes.contains(&cable.from) || nodes.contains(&cable.to)).map(|cable| cable.id).collect()
     }
 
     /// Take the audio cable `id` out: the place it had and what it was. None if there is no such cable.
@@ -2937,6 +2966,67 @@ type = "envelope"
         let (mut model, _) = the_sources();
         model.event_cables.swap(1, 2);
         assert!(model.check_ids().unwrap_err().contains("is not after the one before it"));
+    }
+
+    /// What the open devices stand for in these tests: the keys are the keys; the first device is two ports, sources 1 and 2; the second is not plugged in.
+    fn open_ports(kind: &SourceKind) -> SourceSet {
+        match kind {
+            SourceKind::Keys => SourceSet::NONE.with(crate::source::Source::KEYS),
+            SourceKind::Device(name) if name.starts_with("Launchkey") => SourceSet::NONE.with(crate::source::Source::device(0)).with(crate::source::Source::device(1)),
+            SourceKind::Device(_) => SourceSet::NONE,
+        }
+    }
+
+    fn numbers(sources: SourceSet) -> Vec<u8> {
+        sources.iter().map(|source| source.number()).collect()
+    }
+
+    #[test]
+    fn a_lane_that_no_cable_of_notes_ends_at_hears_every_source_and_one_that_has_some_hears_the_sources_they_start_at() {
+        let (model, _) = the_sources();
+        assert_eq!(numbers(model.lane_sources(0, open_ports)), [0], "the keys");
+        assert_eq!(numbers(model.lane_sources(1, open_ports)), [1, 2], "both ports of the first device, and the second device that is not plugged in adds none");
+        assert_eq!(model.lane_sources(2, open_ports), SourceSet::ALL, "no cable of notes ends at it");
+        assert_eq!(model.lane_sources(9, open_ports), SourceSet::ALL, "a lane that is not there hears what a lane does until it is told otherwise");
+    }
+
+    #[test]
+    fn a_lane_whose_cables_start_at_devices_that_are_not_plugged_in_hears_nothing_and_not_every_source() {
+        let (model, _) = the_sources();
+        let nobody = |_: &SourceKind| SourceSet::NONE;
+        assert!(model.lane_sources(0, nobody).is_empty());
+        assert!(model.lane_sources(1, nobody).is_empty());
+        assert_eq!(model.lane_sources(2, nobody), SourceSet::ALL, "a lane with no cable is not one of them");
+    }
+
+    #[test]
+    fn each_cable_of_a_lane_is_asked_about_its_source_once_and_a_cable_from_what_is_no_source_counts_for_nothing() {
+        let (mut model, n) = the_sources();
+        let mut asked = Vec::new();
+        model.lane_sources(1, |kind| {
+            asked.push(kind.clone());
+            SourceSet::NONE
+        });
+        assert_eq!(asked, [SourceKind::Device("Launchkey Mini MK4 37".to_string()), SourceKind::Device("Seaboard".to_string())], "in the order of the cables");
+        // (A cable from a node that is no source: only a model that was changed behind the controller's back has one.)
+        model.event_cables[0].from = n.lane[2];
+        assert!(model.lane_sources(0, open_ports).is_empty(), "it hears nothing: it has a cable, and what the cable starts at is no source");
+    }
+
+    #[test]
+    fn an_event_cable_is_taken_out_by_its_id_and_the_cables_at_a_node_are_found_in_the_order_of_their_ids() {
+        let (mut model, n) = the_sources();
+        assert_eq!(model.event_cables_at(&[n.lane[1]]), [EdgeId(1), EdgeId(2)], "what ends at the lane");
+        assert_eq!(model.event_cables_at(&[n.keys]), [EdgeId(0)], "what starts at the source");
+        assert_eq!(model.event_cables_at(&[n.devices[1], n.lane[0]]), [EdgeId(0), EdgeId(2)], "at either of the nodes, once each, in the order of the ids");
+        assert!(model.event_cables_at(&[n.lane[2], NodeId(900)]).is_empty());
+        let taken = model.remove_event_cable(EdgeId(1)).unwrap();
+        assert_eq!((taken.id, taken.from, taken.to), (EdgeId(1), n.devices[0], n.lane[1]));
+        assert_eq!(model.event_cables.iter().map(|cable| cable.id.0).collect::<Vec<_>>(), [0, 2]);
+        assert_eq!(model.remove_event_cable(EdgeId(1)), None, "it is gone");
+        assert_eq!(model.remove_event_cable(EdgeId(3)), None, "an audio cable's is not one of these");
+        assert_eq!(model.source(n.devices[1]).map(|source| source.kind.clone()), Some(SourceKind::Device("Seaboard".to_string())));
+        assert!(model.source(n.lane[0]).is_none(), "a lane is no source");
     }
 
     #[test]

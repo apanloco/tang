@@ -1023,6 +1023,94 @@ mod tests {
         assert!(differences.is_empty(), "{} of the {} renders that have nothing late differ:\n{}", differences.len(), scenarios.len(), differences.join("\n"));
     }
 
+    // -- who hears whom (P4b: cables of notes in a session, through the real engine) --
+
+    /// Two oscillators, one hard to the left and one hard to the right, so that the channel that sounds says which lane does; the keys go to the first, and a device (that is plugged in when
+    /// a test says it is) to the second. With `wired` false there is no cable of notes at all.
+    fn two_lanes(wired: bool) -> Scenario {
+        let cables = if wired { "[[cable]]\nfrom = \"keys\"\nto = \"instrument[0]\"\n[[cable]]\nfrom = \"device[0]\"\nto = \"instrument[1]\"\n" } else { "" };
+        Scenario {
+            id: "wired".to_string(),
+            session: format!("[[device]]\nname = \"Launchkey\"\n[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\npan = -1.0\n[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\npan = 1.0\n{cables}"),
+            block: 256,
+            rate: 48_000.0,
+            frames: 0,
+            script: Vec::new(),
+            edits: Vec::new(),
+        }
+    }
+
+    /// Ports that are open, by name, with the source each has.
+    struct Plugged(Vec<(&'static str, crate::source::Source)>);
+
+    impl crate::app::controller::DeviceWatcher for Plugged {
+        fn poll_new_devices(&mut self) -> crate::midi::DeviceChanges {
+            crate::midi::DeviceChanges::default()
+        }
+
+        fn sources_of(&self, name: &str) -> crate::source::SourceSet {
+            self.0.iter().filter(|(open, _)| open.contains(name)).fold(crate::source::SourceSet::NONE, |set, (_, source)| set.with(*source))
+        }
+    }
+
+    /// How little sound a lane that is not played makes, in the sum of the squares of a few blocks: the pan of an oscillator is smoothed, and what is left of it after four blocks is a few
+    /// thousandths (a lane that is played makes tens).
+    const SILENT: f64 = 0.01;
+
+    /// A rig that has run a few blocks of silence: the pan of an oscillator is smoothed over about 5 ms from the middle, so that a note that begins at once has some sound on the other side.
+    fn settled(scenario: &Scenario) -> Rig {
+        let mut rig = Rig::new(scenario, &engine);
+        assert_eq!(play(&mut rig, &[], 4), (0.0, 0.0), "nobody plays");
+        rig
+    }
+
+    /// The sound of the left side and of the right side (the sum of the squares) for `blocks` blocks, after `events` are sent at the start of the first.
+    fn play(rig: &mut Rig, events: &[MidiEvent], blocks: usize) -> (f64, f64) {
+        for event in events {
+            rig.midi_tx.send(*event).unwrap();
+        }
+        let mut sound = (0.0, 0.0);
+        for _ in 0..blocks {
+            for frame in rig.block().samples.chunks(2) {
+                sound = (sound.0 + f64::from(frame[0]).powi(2), sound.1 + f64::from(frame[1]).powi(2));
+            }
+        }
+        sound
+    }
+
+    #[test]
+    fn a_lane_that_a_session_wires_to_the_keys_is_the_only_lane_that_the_keys_play() {
+        let mut rig = settled(&two_lanes(true));
+        let (left, right) = play(&mut rig, &[MidiEvent::keys(0, [0x90, 60, 100])], 8);
+        assert!(left > 1.0, "the lane that the keys are wired to sounds: {left}");
+        assert!(right < SILENT, "and the lane that a device is wired to, which is not plugged in, does not: {right}");
+    }
+
+    #[test]
+    fn a_lane_wired_to_a_device_is_played_by_the_device_once_it_is_plugged_in_and_not_by_the_keys() {
+        let launchkey = crate::source::Source::device(0);
+        let plugged = || Box::new(Plugged(vec![("Launchkey Mini MK4 37 MIDI Out", launchkey)]));
+        // The device plays the lane that it is wired to, and not the lane of the keys.
+        let mut rig = settled(&two_lanes(true));
+        rig.ctl.watch_devices(plugged());
+        let (left, right) = play(&mut rig, &[MidiEvent::from_source(launchkey, 0, [0x90, 64, 100])], 8);
+        assert!(left < SILENT, "the lane that the keys are wired to does not hear a device: {left}");
+        assert!(right > 1.0, "the lane that the device is wired to does: {right}");
+        // The keys play theirs, and not the lane of the device that is plugged in.
+        let mut rig = settled(&two_lanes(true));
+        rig.ctl.watch_devices(plugged());
+        let (left, right) = play(&mut rig, &[MidiEvent::keys(0, [0x90, 60, 100])], 8);
+        assert!(left > 1.0, "the keys play their lane: {left}");
+        assert!(right < SILENT, "and not the device's: {right}");
+    }
+
+    #[test]
+    fn a_session_with_no_cable_of_notes_is_played_by_the_keys_on_every_lane() {
+        let mut rig = settled(&two_lanes(false));
+        let (left, right) = play(&mut rig, &[MidiEvent::keys(0, [0x90, 60, 100])], 8);
+        assert!(left > 1.0 && right > 1.0, "both lanes hear the keys: {left} {right}");
+    }
+
     #[test]
     #[ignore = "the whole corpus at three block sizes: cargo test --release oracle -- --ignored"]
     fn the_whole_corpus_is_what_it_was_and_the_same_twice() {

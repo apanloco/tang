@@ -4083,6 +4083,10 @@ plugin = "builtin:reverb"
             fn poll_new_devices(&mut self) -> crate::midi::DeviceChanges {
                 crate::midi::DeviceChanges::default()
             }
+
+            fn sources_of(&self, _: &str) -> crate::source::SourceSet {
+                crate::source::SourceSet::NONE
+            }
         }
         struct Sink {
             _says: Says,
@@ -4281,6 +4285,7 @@ depth = 0.6
             ("GROUPS", testutil::GROUPS),
             ("LANES_IN_GROUPS", testutil::LANES_IN_GROUPS),
             ("CROSS_MOD_RACKS", testutil::CROSS_MOD_RACKS),
+            ("SOURCES", testutil::SOURCES),
         ];
         let mut total = 0;
         for (name, session) in sessions {
@@ -4319,6 +4324,67 @@ depth = 0.6
         assert_eq!(commands[0], "InsertInstrument index=0 plugins=2");
         assert_eq!(commands[1], "SetGlobalBpm bpm=90.0");
         assert!(commands[2].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 0, slot: 0,"), "{commands:?}");
+    }
+
+    #[test]
+    fn a_lane_that_has_cables_of_notes_is_taken_out_with_them_and_undo_puts_them_back_under_their_ids_and_tells_the_lane_what_it_hears() {
+        let (engine, mut ctl, _clock) = controller_over(load(testutil::SOURCES).model);
+        let cables = |ctl: &Controller| ctl.model.event_cables.iter().map(|cable| (cable.id.0, cable.from, cable.to)).collect::<Vec<_>>();
+        let before = cables(&ctl);
+        let lane = node(&ctl, NodePath::Instrument(1));
+        engine.drain();
+        ctl.apply(Intent::RemoveNode { node: lane }).unwrap();
+        // The two cables that ended at the lane went with it (and the cable of the lane that stays is where it was); what the others hear is not changed.
+        assert_eq!(cables(&ctl), [before[0]]);
+        assert_eq!(engine.drain().0, ["RemoveInstrument inst=1 keep"]);
+        // Undo: the lane, then its cables, under the ids they had; the lane that is back is told what it hears (which it had when it went, and is not told otherwise).
+        ctl.undo().unwrap();
+        assert_eq!(cables(&ctl), before);
+        let (commands, _) = engine.drain();
+        assert!(commands.contains(&"InsertInstrument index=1 plugins=1".to_string()), "{commands:?}");
+        assert!(commands.contains(&"SetLaneSources inst=1 sources=[]".to_string()), "{commands:?}");
+        ctl.model.check_ids().unwrap();
+        // Redo takes them out again, and undo again puts them back (the audio thread, by hand, hands the lane back).
+        ctl.redo().unwrap();
+        assert_eq!(cables(&ctl), [before[0]]);
+        engine.drain();
+        ctl.undo().unwrap();
+        assert_eq!(cables(&ctl), before);
+    }
+
+    #[test]
+    fn a_cable_of_notes_whose_source_is_gone_when_its_lane_is_put_back_is_left_out_and_the_rest_of_the_undo_is_done() {
+        let (engine, mut ctl, _clock) = controller_over(load(testutil::SOURCES).model);
+        let lane = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::RemoveNode { node: lane }).unwrap();
+        engine.drain();
+        // The first device, which the lane had a cable from, is taken out while the lane is out (nothing takes a source out by an intent yet, so the model is changed by hand).
+        let gone = ctl.model.sources[1].node;
+        ctl.model.sources.retain(|source| source.node != gone);
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments.len(), 3, "the lane is back");
+        let (commands, _) = engine.drain();
+        assert!(commands.contains(&"InsertInstrument index=1 plugins=1".to_string()), "{commands:?}");
+        assert_eq!(
+            ctl.model.event_cables.iter().map(|cable| cable.id.0).collect::<Vec<_>>(),
+            [0, 2],
+            "the keys' cable, and the cable from the device that is still there: the one from the device that is gone is left out"
+        );
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_of_notes_that_is_there_already_refuses_the_undo_that_would_put_it_back_and_nothing_changes() {
+        let (engine, mut ctl, _clock) = controller_over(load(testutil::SOURCES).model);
+        let lane = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::RemoveNode { node: lane }).unwrap();
+        engine.drain();
+        // (Another front-end has drawn a cable under the id of one that went: there is no intent for it yet, so the model is changed by hand.)
+        let (keys, other) = (ctl.model.sources[0].node, ctl.model.instruments[1].node);
+        ctl.model.insert_event_cable(crate::app::model::EventCable { id: EdgeId(1), from: keys, to: other });
+        let error = ctl.undo().unwrap_err();
+        assert!(matches!(&error, IntentError::Invalid(why) if why.contains("is there already")), "{error:?}");
+        assert_eq!(ctl.model.instruments.len(), 2, "the lane is not put back");
     }
 
     #[test]

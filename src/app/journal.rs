@@ -31,7 +31,7 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::app::apply::{Done, PluginAt};
 use crate::app::controller::{has_audio_output, outputs_fit_the_chain, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
-use crate::app::model::{mod_source_slot_to_graph, modulator_slot_commands, AudioCable, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
+use crate::app::model::{mod_source_slot_to_graph, modulator_slot_commands, AudioCable, EventCable, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable};
 use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, NoteRemapper};
 use crate::plugin::{self, Plugin};
 use crate::session::RemapTarget;
@@ -63,6 +63,9 @@ pub(super) enum Inverse {
     /// An audio cable, which goes back among the audio cables under the id it had, with the ends and the level it had. (It is taken out before the nodes that it starts and
     /// ends at, and so is put back after them.)
     AudioCable(AudioCable),
+    /// A cable of notes, which goes back among them under the id it had, from the source and to the lane that it was between. (It is taken out before the lane that it ends at, or the source that it
+    /// starts at, and so is put back after it.)
+    EventCable(EventCable),
     /// Something went that cannot be put back one thing at a time (cables that drive each other's depths, `RemovedCable::still_driven`): what
     /// the operation did is not a step of the history, which is forgotten as it is for what cannot be undone.
     NoWayBack,
@@ -335,6 +338,11 @@ impl Controller {
                         return Err(IntentError::Invalid(format!("cable {} is there already", cable.id.0)));
                     }
                 }
+                Inverse::EventCable(cable) => {
+                    if self.model.edge_in_use(cable.id) {
+                        return Err(IntentError::Invalid(format!("cable {} is there already", cable.id.0)));
+                    }
+                }
                 Inverse::Effect { slot, .. } => {
                     if self.model.locate(slot.node).is_some() {
                         return Err(IntentError::Invalid(format!("node {} is there already", slot.node.0)));
@@ -466,6 +474,15 @@ impl Controller {
                 }
                 self.model.insert_audio_cable(cable);
                 let _ = self.cmd_tx.send(GraphCommand::AddCable { id: cable.id, from: cable.from, to: cable.to, gain: cable.gain });
+            }
+            Inverse::EventCable(cable) => {
+                // (The lane it ended at is back, as it was put back before it, and so is the source it started at. One of them that is not there now, because the session was changed
+                // without the history, leaves the cable out.)
+                if self.model.source(cable.from).is_none() || !matches!(self.model.locate(cable.to), Some(NodePath::Instrument(_))) {
+                    log::warn!("cable {} was not put back: what it was between is not there", cable.id.0);
+                    return;
+                }
+                self.model.insert_event_cable(cable);
             }
             Inverse::Modulator { at, index, modulator, bases } => {
                 debug_assert_eq!(modulator.targets.len(), bases.len(), "a base for each cable");

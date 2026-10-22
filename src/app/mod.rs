@@ -18,6 +18,7 @@ pub mod probes;
 pub mod protocol;
 pub mod save;
 pub mod snapshot;
+pub mod sources;
 pub mod subscribers;
 #[cfg(test)]
 pub mod testutil;

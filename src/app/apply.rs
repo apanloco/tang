@@ -116,6 +116,8 @@ impl Controller {
         };
         self.publish(&applied);
         if applied.restructured {
+            // (The lanes that are there, and the cables of notes and the sources, are what a lane hears.)
+            self.sync_lane_sources();
             #[cfg(any(test, feature = "web"))]
             self.resync();
             // (The nodes that are watched may be somewhere else, or gone, or back.)
