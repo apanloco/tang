@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
-import { MASTER, audioCablesFixture, fieldsFixture, reachFixture, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, audioCablesFixture, fieldsFixture, reachFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
 import type { Port } from "../../protocol";
-import { audioCableOf, audioTakersOf, cableOf, canConnect, canDraw, canDrawAudio, drawableFrom, keyOf, takersOf } from "./connection";
+import { audioCableOf, audioTakersOf, cableOf, canConnect, canDraw, canDrawAudio, canDrawNotes, drawableFrom, keyOf, notesCableOf, notesTakersOf, takersOf } from "./connection";
 import { handleOf, toFlow } from "./toFlow";
 
 /** The port of a parameter, by the plugin's own index. */
@@ -263,6 +263,80 @@ describe("an audio cable dragged on the canvas", () => {
   });
 });
 
+/** The session of the sources fixture (`testutil::NOTES`): the keys (7) and a device (8) are the sources; lane 2 is in the group Pad, lane 5 is outside it and lane 6 is empty; a cable of notes (1) goes from the keys to lane 5. */
+function notesSession() {
+  const found = sourcesFixture.cases.find((entry) => entry.name === "wired");
+  if (!found) throw new Error("the fixture has the session of the sources");
+  return found.snapshot.graph;
+}
+
+describe("a cable of notes dragged on the canvas", () => {
+  const connection = (source: string, sourceHandle: string | null, target: string, targetHandle: string | null) => ({ source, sourceHandle, target, targetHandle });
+  const graph = notesSession();
+
+  test("is read when it goes from an output of events to an input of events, by the ids of the nodes: the source it starts at and the lane it ends at", () => {
+    expect(notesCableOf(connection("7", "eventsOut", "5", "eventsIn"))).toEqual({ source: 7, lane: 5 });
+    expect(notesCableOf(connection("12", "eventsOut", "30", "eventsIn"))).toEqual({ source: 12, lane: 30 });
+  });
+
+  test("is not read when it starts or ends anywhere else: an output of audio, a modulator's, a parameter, a setting, or no handle", () => {
+    const refused = [
+      connection("7", "audioOut", "5", "audioIn"),
+      connection("7", "eventsOut", "5", "audioIn"),
+      connection("7", "audioOut", "5", "eventsIn"),
+      connection("7", "modOut", "5", "eventsIn"),
+      connection("7", "eventsOut", "5", "param-3"),
+      connection("7", "eventsOut", "5", "rate"),
+      connection("7", "eventsOut", "5", "eventsOut"),
+      connection("7", "eventsIn", "5", "eventsIn"),
+      connection("7", "eventsOut", "5", "EventsIn"),
+      connection("7", "eventsOut", "5", "eventsIn "),
+      connection("7", "eventsOut", "5", "depth-3"),
+      connection("7", null, "5", "eventsIn"),
+      connection("7", "eventsOut", "5", null),
+      connection("7", "eventsOut", "5", ""),
+      connection("seven", "eventsOut", "5", "eventsIn"),
+      connection("7", "eventsOut", "five", "eventsIn"),
+      connection("", "eventsOut", "5", "eventsIn"),
+      connection("7", "eventsOut", "-5", "eventsIn"),
+      connection("7", "eventsOut", "5.5", "eventsIn"),
+    ];
+    for (const one of refused) expect(notesCableOf(one), JSON.stringify(one)).toBeNull();
+  });
+
+  test("is not an audio cable or a cable of modulation, and neither of them is a cable of notes", () => {
+    expect(audioCableOf(connection("7", "eventsOut", "5", "eventsIn"))).toBeNull();
+    expect(cableOf(connection("7", "eventsOut", "5", "eventsIn"))).toBeNull();
+    expect(notesCableOf(connection("8", "audioOut", "5", "audioIn"))).toBeNull();
+    expect(notesCableOf(connection("2", "modOut", "1", "param-3"))).toBeNull();
+  });
+
+  test("can be drawn where the controller would draw it: from a source to a lane that has none from it yet, and not from a lane, to a source, to the mix or to nothing", () => {
+    expect(canDrawNotes(graph, { source: 7, lane: 2 })).toBe(true);
+    expect(canDrawNotes(graph, { source: 7, lane: 6 })).toBe(true); // an empty lane is a lane
+    expect(canDrawNotes(graph, { source: 8, lane: 5 })).toBe(true); // another source's, to a lane that has one from the keys
+    expect(canDrawNotes(graph, { source: 7, lane: 5 })).toBe(false); // there already
+    expect(canDrawNotes(graph, { source: 2, lane: 5 })).toBe(false); // a lane is no source
+    expect(canDrawNotes(graph, { source: 7, lane: 8 })).toBe(false); // a source is no lane
+    expect(canDrawNotes(graph, { source: 7, lane: 3 })).toBe(false); // an effect has no input of events
+    expect(canDrawNotes(graph, { source: 7, lane: MASTER })).toBe(false); // the mix has none
+    expect(canDrawNotes(graph, { source: MASTER, lane: 5 })).toBe(false); // nor an output
+    expect(canDrawNotes(graph, { source: 7, lane: 77 })).toBe(false);
+    expect(canDrawNotes(graph, { source: 77, lane: 5 })).toBe(false);
+  });
+
+  test("has, for the ports of the canvas, the inputs that take a cable from a source, by the name of the node and of the handle", () => {
+    expect([...notesTakersOf(graph, 7)]).toEqual(["2:eventsIn", "6:eventsIn"]);
+    expect([...notesTakersOf(graph, 8)]).toEqual(["2:eventsIn", "5:eventsIn", "6:eventsIn"]);
+    expect(notesTakersOf(graph, 2).size).toBe(0); // (a lane is no source)
+    expect(notesTakersOf(graph, MASTER).size).toBe(0);
+    expect(notesTakersOf(graph, 77).size).toBe(0);
+    // (A key of an input of events is not that of an input of audio of the same node.)
+    expect(keyOf(5, "eventsIn")).toBe("5:eventsIn");
+    expect(keyOf(5, "eventsIn")).not.toBe(keyOf(5, "audioIn"));
+  });
+});
+
 describe("a drag that starts at a handle of the canvas", () => {
   const audio = audioCablesFixture.snapshot.graph;
   const tracer = tracerSnapshot.graph;
@@ -281,6 +355,33 @@ describe("a drag that starts at a handle of the canvas", () => {
     const { nodes } = toFlow(tracer);
     expect([...(takersOf(tracer, nodes, start("2", "source", "modOut")) ?? [])].sort()).toEqual([...drawableFrom(nodes, 2)].sort());
     expect(takersOf(tracer, nodes, start("2", "source", "modOut"))?.has("0:param-1")).toBe(true);
+  });
+
+  test("from an output of events can end at the inputs of the lanes that take notes from that source, by the name of the node and of the handle", () => {
+    const notes = notesSession();
+    expect([...(takersOf(notes, [], start("7", "source", "eventsOut")) ?? [])]).toEqual(["2:eventsIn", "6:eventsIn"]);
+    expect([...(takersOf(notes, [], start("8", "source", "eventsOut")) ?? [])]).toEqual([...notesTakersOf(notes, 8)]);
+    expect(takersOf(notes, [], start("8", "source", "eventsOut"))?.has("5:eventsIn")).toBe(true);
+  });
+
+  test("from an output of events that no lane takes ends nowhere, and the set that says so is empty and not none: a node that is no source, a node that is not there", () => {
+    const notes = notesSession();
+    expect(takersOf(notes, [], start("2", "source", "eventsOut"))?.size).toBe(0);
+    expect(takersOf(notes, [], start("77", "source", "eventsOut"))?.size).toBe(0);
+    expect(takersOf(notes, [], start(String(MASTER), "source", "eventsOut"))?.size).toBe(0);
+    // (A source that has a cable to every lane has nowhere to go.)
+    const full: typeof notes = { nodes: notes.nodes, edges: [...notes.edges, ...[2, 6].map((lane, i) => ({ kind: "events" as const, id: 50 + i, from: { node: 7, port: { type: "eventsOut" as const } }, to: { node: lane, port: { type: "eventsIn" as const } } }))] };
+    expect(takersOf(full, [], start("7", "source", "eventsOut"))?.size).toBe(0);
+  });
+
+  test("from an output of events with no session to say what is where is no drag of a cable, and from an input of events, or an output that is not events, is none either", () => {
+    const notes = notesSession();
+    expect(takersOf(null, [], start("7", "source", "eventsOut"))).toBeNull();
+    expect(takersOf(notes, [], start("7", "target", "eventsOut"))).toBeNull();
+    expect(takersOf(notes, [], start("5", "target", "eventsIn"))).toBeNull();
+    expect(takersOf(notes, [], start("5", "source", "eventsIn"))).toBeNull();
+    expect(takersOf(notes, [], start("7", "source", "EventsOut"))).toBeNull();
+    expect(takersOf(notes, [], start("seven", "source", "eventsOut"))).toBeNull();
   });
 
   test("from an output that nothing is drawn from ends nowhere, and the set that says so is empty and not none: a cable is being dragged", () => {
@@ -314,6 +415,24 @@ describe("a drag that starts at a handle of the canvas", () => {
     expect(canConnect(audio, [], connection("8", "audioOut", "10", "audioIn"))).toBe(false); // a lane has no input
     expect(canConnect(tracer, nodes, connection("2", "modOut", "0", "param-1"))).toBe(true);
     expect(canConnect(tracer, nodes, connection("2", "modOut", "1", "param-0"))).toBe(false); // already driven
+  });
+
+  test("is a cable of notes when the controller would take it: where a source has none to the lane yet", () => {
+    const notes = notesSession();
+    expect(canConnect(notes, [], connection("7", "eventsOut", "2", "eventsIn"))).toBe(true);
+    expect(canConnect(notes, [], connection("8", "eventsOut", "5", "eventsIn"))).toBe(true);
+    expect(canConnect(notes, [], connection("7", "eventsOut", "5", "eventsIn"))).toBe(false); // there already
+    expect(canConnect(notes, [], connection("2", "eventsOut", "5", "eventsIn"))).toBe(false); // a lane is no source
+    expect(canConnect(notes, [], connection("7", "eventsOut", "8", "eventsIn"))).toBe(false); // a source is no lane
+    expect(canConnect(null, [], connection("7", "eventsOut", "2", "eventsIn"))).toBe(false); // no session to say
+  });
+
+  test("is no cable of notes when it ends where it does not fit: notes at an input of audio, audio at an input of events, a modulator at one", () => {
+    const notes = notesSession();
+    expect(canConnect(notes, [], connection("7", "eventsOut", "3", "audioIn"))).toBe(false);
+    expect(canConnect(notes, [], connection("5", "audioOut", "2", "eventsIn"))).toBe(false);
+    expect(canConnect(notes, [], connection("4", "modOut", "2", "eventsIn"))).toBe(false);
+    expect(canConnect(notes, [], connection("7", "eventsOut", "3", "param-0"))).toBe(false);
   });
 
   test("is no cable when it ends anywhere that does not fit where it starts: audio at a parameter, a modulator at an input of audio, either with the session gone", () => {

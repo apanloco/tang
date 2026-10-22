@@ -4,9 +4,10 @@
 // to a plain request is what a person needs: the node that was made (the intent does not name it:
 // a client finds it in the session it is then given), and, when the server refuses, a notice that
 // says what could not be done and why, in the names the canvas shows.
-import type { EdgeId, Endpoint, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternField, Plugin, Port, Route } from "../protocol";
+import type { EdgeId, Endpoint, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternField, Plugin, Port, Route, SourceInfo } from "../protocol";
 import type { Client } from "./connection";
 import { isModulation } from "./cables";
+import { trimmed } from "./inputs";
 import { MODULATOR_LABELS } from "./modulatorKinds";
 import { cableWords, displayNames, endLabel } from "./names";
 import type { Names } from "./names";
@@ -102,6 +103,17 @@ export class Editor {
     if (!(await this.#attempt(`add ${MODULATOR_LABELS[kind]} to ${this.#name(parent)}`, { type: "addModulator", parent, kind }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "modulator" && node.parent === parent && !before.has(node.id));
     return this.#shown(added?.at(-1)?.id);
+  }
+
+  /**
+   * Add a source of notes to the session: the keys (the computer's keys and the page's piano), or a device, called by the name of the MIDI input it stands for (or as much of it as tells it:
+   * the server tidies the name). Every lane that no cable of notes ends at hears it. Resolves with the id of the node it made, which the canvas is asked to show, or with null if it was refused
+   * (the page says why). The node is the last source there is (a source goes after the others): two clients adding at once may be given each other's, which is as good.
+   */
+  async addSource(source: SourceInfo): Promise<NodeId | null> {
+    const what = source.type === "keys" ? "add the keys as a source of notes" : `add ${quoted(trimmed(source.name))} as a source of notes`;
+    if (!(await this.#attempt(what, { type: "addSource", source }))) return null;
+    return this.#shown(this.#graph?.nodes.findLast((node) => node.kind === "source")?.id);
   }
 
   /**
@@ -334,6 +346,16 @@ export class Editor {
   }
 
   /**
+   * Draw a cable of notes from the output of events of the source `from` to the input of events of the lane `to` (its instrument's node): from then on the lane hears the sources that have a cable
+   * to it and no other (a lane that has none hears every source). True if it was drawn (the page says why if it was not: a node that is not a source or not a lane, a cable between the two
+   * is there already).
+   */
+  addNotesCable(from: NodeId, to: NodeId): Promise<boolean> {
+    const ends = { from: { node: from, port: { type: "eventsOut" } }, to: { node: to, port: { type: "eventsIn" } } } as const;
+    return this.#attempt(`draw a cable of notes from ${this.#words(ends).replaceAll(" → ", " to ")}`, { type: "addCable", from: ends.from, to: ends.to, gain: null });
+  }
+
+  /**
    * Make a modulator of `kind` for what the port `to` of the node `node` is, and draw a cable from it to the port, as one change that is one step
    * of the history (`Modulate`): a parameter of the plugin in it (by the plugin's own index), or a setting of a modulator (its rate, a stage of its
    * envelope), or the depth of one of its cables. The modulator goes in the rack that reaches the port: the lane's for a lane's instrument or an
@@ -446,9 +468,9 @@ export class Editor {
     return cableWords(this.#graph ?? { nodes: [], edges: [] }, this.#names, cable);
   }
 
-  /** A cable in words, as the canvas labels it (a cable of modulation or an audio cable: their ids are one series); "that cable" if it is not in the session. */
+  /** A cable in words, as the canvas labels it (a cable of modulation, an audio cable or a cable of notes: their ids are one series); "that cable" if it is not in the session. */
   #cable(edge: EdgeId): string {
-    const found = this.#graph?.edges.find((e) => (e.kind === "modulation" || e.kind === "cable") && e.id === edge);
+    const found = this.#graph?.edges.find((e) => (e.kind === "modulation" || e.kind === "cable" || e.kind === "events") && e.id === edge);
     return found ? `the cable ${this.#words(found)}` : "that cable";
   }
 

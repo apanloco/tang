@@ -3,7 +3,8 @@
 // lane strip for each instrument (the instrument, then its effects, left to right), its
 // modulators above the strip, over the plugin each one drives (and a modulator that drives
 // the settings of another above that one), the groups to the right of the lanes that feed
-// them, and the master at the end. That is where a node is unless the
+// them, the master at the end, and the sources of notes in a column of their own before the lanes (level with the middle of
+// them, as the master is with the middle of the lanes and the groups). That is where a node is unless the
 // session says otherwise: a node that has been moved has a place (`Node.ui`, kept in the
 // session file, §4.4), and is drawn there; the layout of the others does not leave room for it,
 // but a node that the layout would put on one that was placed (or too near it) is moved clear of it (`clearOfPlaced`).
@@ -19,7 +20,7 @@ import { cableWords, displayNames, endLabel } from "../../client/names";
 import { knobsOf } from "../../client/pinning";
 import { drivablesOf } from "../../client/reach";
 import type { Drivable } from "../../client/reach";
-import type { Edge, EdgeId, Graph, Node, NodeId, NodeUi, Plugin, Port } from "../../protocol";
+import type { Edge, EdgeId, Graph, Node, NodeId, NodeUi, Plugin, Port, SourceInfo } from "../../protocol";
 
 /** The width of every node, so that the columns of the canvas are known without measuring anything. */
 export const NODE_WIDTH = 304;
@@ -52,6 +53,8 @@ export const STEPS_EXTRA = 64 + 8;
 export const STEPS_NODE_HEIGHT = MODULATOR_SETTINGS_HEIGHT + STEPS_EXTRA;
 /** The master: its name and its meter, the scope under them and the choices of the scope's view (measured in a browser: 223). */
 export const MASTER_HEIGHT = 228;
+/** A source of notes: its header, the line that says what it is and where it is plugged in, and the room at its foot. */
+export const SOURCE_HEIGHT = HEADER_HEIGHT + 40 + NODE_PADDING;
 /** A scope that an instrument, an effect or a group shows below its controls, with the choices of its view and its time: this much taller (measured in a browser: 157). */
 export const NODE_SCOPE_HEIGHT = 157;
 /** The pattern of a lane, under its controls (record, clear and its length, its three switches, the line that says what it is), as tall whatever it shows: a lane's node is this much taller (measured in a browser: 97, in both states of the record button). */
@@ -61,7 +64,7 @@ export const CABLE_ROW_HEIGHT = 20;
 /** ...and the list has this much room before it, as much as the rest of what is in the body of the node (`.tang-node__body`'s gap). */
 export const CABLES_GAP = 8;
 
-export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "master";
+export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "master" | "source";
 
 export interface PatchNodeData extends Record<string, unknown> {
   /** The node of the session this one is the picture of. */
@@ -82,6 +85,8 @@ export interface PatchNodeData extends Record<string, unknown> {
   cables: readonly CableRow[];
   /** Whether it shows a scope of what comes out of it (the viewer's own choice, `toFlow`'s `scopes`, for a node that has a signal: `canScope`), which it is taller by. */
   scope: boolean;
+  /** For a source of notes: what it is (the keys, or a device by the name it stands for); nothing for the other nodes. */
+  source: SourceInfo | null;
 }
 
 /**
@@ -99,17 +104,17 @@ export interface CableRow {
 
 export type PatchNode = FlowNode<PatchNodeData, PatchNodeKind>;
 
-export type PatchEdgeKind = "audio" | "modulation" | "send";
+export type PatchEdgeKind = "audio" | "modulation" | "send" | "notes" | "hears";
 
 export interface PatchEdgeData extends Record<string, unknown> {
   /**
-   * The id of a modulation cable, by which the cable reads how deep it goes, or of an audio cable (a `send`), by which it reads how loud it is (a value, which is
-   * turned at the pace of the frames, and so not part of what the canvas is laid out by).
+   * The id of a modulation cable, by which the cable reads how deep it goes, of an audio cable (a `send`), by which it reads how loud it is (a value, which is
+   * turned at the pace of the frames, and so not part of what the canvas is laid out by), or of a cable of notes, by which it is taken out.
    */
   cable?: EdgeId;
   /** The modulator that drives the cable, whose list the focus goes to when the cable is taken out. */
   modulator?: NodeId;
-  /** What the cable is, in words: `LFO → Filter: cutoff`, `Oscillator → Reverb`. */
+  /** What the cable is, in words: `LFO → Filter: cutoff`, `Oscillator → Reverb`, `Keys → Oscillator`. */
   label?: string;
 }
 
@@ -228,6 +233,8 @@ export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false)
     }
     case "master":
       return MASTER_HEIGHT;
+    case "source":
+      return SOURCE_HEIGHT;
     default: {
       const rows = Math.max(1, Math.ceil(controlCount(node, knobs) / CONTROLS_PER_ROW));
       return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING + (node.kind === "instrument" ? PATTERN_HEIGHT : 0) + (scope ? NODE_SCOPE_HEIGHT : 0);
@@ -379,6 +386,15 @@ function layout(graph: Graph, heightOfNode: (node: Node) => number): Map<NodeId,
     if (node.kind === "master") place(node, lanesWidth + groupsWidth, Math.max(0, middle - heightOfNode(node) / 2));
   }
 
+  // The sources of notes in a column of their own before the lanes, one under the other, level with the middle of the lanes as a whole and not above the top of the canvas.
+  const sources = graph.nodes.filter((node) => node.kind === "source");
+  const stack = sources.reduce((sum, source) => sum + heightOfNode(source) + ROW_GAP, -ROW_GAP);
+  let sourceTop = Math.max(0, (y - ROW_GAP) / 2 - stack / 2);
+  for (const source of sources) {
+    place(source, -1, sourceTop);
+    sourceTop += heightOfNode(source) + ROW_GAP;
+  }
+
   // Whatever the layout did not reach (a node whose parent is not there) goes in a row below.
   let stray = 0;
   for (const node of graph.nodes) {
@@ -416,14 +432,14 @@ const over = (a: Box, b: Box): boolean => a.left < b.right && b.left < a.right &
  * What a node is in, as far as its place goes: the slot that its place was made for, so that it stays where it is until it is in another. An effect is in the place of
  * its chain that it is at (a chain that has an effect taken out closes up, and one that has two moved past each other has them change places); a modulator is in its
  * rack, and not at a place in it (nothing that is drawn to or from it moves it, and nothing that is taken out of the rack does); both are in the slot of the node they are
- * of, so that what is in a group's strip goes along with the group when it changes column; a lane is in the session; and a group and the master are in the column that the
+ * of, so that what is in a group's strip goes along with the group when it changes column; a lane and a source are in the session; and a group and the master are in the column that the
  * layout puts them in, which is to the right of the longest lane (a lane that grows, with an effect added to it, moves them along).
  */
 function slotsOf(graph: Graph, fresh: ReadonlyMap<NodeId, Position>): Map<NodeId, string> {
   const slots = new Map<NodeId, string>();
   for (const node of graph.nodes) {
     if (node.kind === "group" || node.kind === "master") slots.set(node.id, `${node.kind}:${String(fresh.get(node.id)?.x ?? 0)}`);
-    else if (node.kind === "instrument") slots.set(node.id, node.kind);
+    else if (node.kind === "instrument" || node.kind === "source") slots.set(node.id, node.kind);
   }
   const effects = new Map<NodeId | null, number>();
   for (const node of graph.nodes) {
@@ -600,30 +616,13 @@ const NOTHING_REMEMBERED: Places = new Map();
 /** No node shows a scope. */
 const NO_SCOPES: ReadonlySet<NodeId> = new Set();
 
-/** A node that the canvas draws: every node but the sources of notes. */
-type DrawnNode = Exclude<Node, { kind: "source" }>;
-
-/** The graph without the sources of notes, the cables from them and the links to the lanes that hear every source: the canvas does not draw them yet. */
-interface DrawnGraph {
-  nodes: DrawnNode[];
-  edges: Edge[];
-}
-
-function withoutNotes(graph: Graph): DrawnGraph {
-  return {
-    nodes: graph.nodes.filter((node): node is DrawnNode => node.kind !== "source"),
-    edges: graph.edges.filter((edge) => edge.kind !== "events" && edge.kind !== "hears"),
-  };
-}
-
 /**
  * The nodes of the session on the canvas, and the cables between them. `remembered` is the places of the last layout (`Flow.places`): a node stays where it was while it is in
  * the slot it was put for, so that what is drawn or added or taken out does not rearrange the canvas; without it every node goes where the layout puts it. `scopes` are the
  * nodes that the viewer shows a scope in (a scope is not part of the session): those of them that have a signal are taller by it, and room is made for it as for a knob that is
  * pinned.
  */
-export function toFlow(whole: Graph, remembered: Places = NOTHING_REMEMBERED, scopes: ReadonlySet<NodeId> = NO_SCOPES): Flow {
-  const graph = withoutNotes(whole);
+export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, scopes: ReadonlySet<NodeId> = NO_SCOPES): Flow {
   const names = displayNames(graph);
   const modulated = modulatedParams(graph);
   const settingsDriven = drivenSettings(graph);
@@ -672,6 +671,7 @@ export function toFlow(whole: Graph, remembered: Places = NOTHING_REMEMBERED, sc
       drivenSettings: node.kind === "modulator" ? (settingsDriven.get(node.id) ?? []) : [],
       cables: node.kind === "modulator" ? (listed.get(node.id) ?? []) : [],
       scope: withScope.has(node.id),
+      source: node.kind === "source" ? node.source : null,
     },
     draggable: true,
     deletable: false,
@@ -685,6 +685,12 @@ export function toFlow(whole: Graph, remembered: Places = NOTHING_REMEMBERED, sc
     } else if (edge.kind === "cable") {
       // (An audio cable that has been drawn between two places: over the links of the audio path and under the cables of modulation. It moves no node.)
       edges.push({ ...common, id: `send:${String(edge.id)}`, type: "send", data: { cable: edge.id, label: cableWords(graph, names, edge) }, zIndex: 5 });
+    } else if (edge.kind === "events") {
+      // (A cable of notes that has been drawn from a source to a lane: over the links by which a lane hears a source and under the audio cables. It moves no node.)
+      edges.push({ ...common, id: `notes:${String(edge.id)}`, type: "notes", data: { cable: edge.id, label: cableWords(graph, names, edge) }, zIndex: 4 });
+    } else if (edge.kind === "hears") {
+      // (The link that the graph derives for a lane that no cable of notes ends at, which hears every source: nothing is drawn or taken out by it. The lowest of the cables, over the links of the audio path.)
+      edges.push({ ...common, id: `hears:${String(edge.from.node)}>${String(edge.to.node)}`, type: "hears", data: {}, zIndex: 1 });
     } else {
       edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: {} });
     }
@@ -734,8 +740,12 @@ function sameNodeStructure(x: Node, y: Node): boolean {
     return samePluginStructure(x.plugin, y.plugin);
   }
   if (x.kind === "modulator" && y.kind === "modulator") return x.source.type === y.source.type;
+  if (x.kind === "source" && y.kind === "source") return sameSource(x.source, y.source);
   return true;
 }
+
+/** Whether two sources of notes are the same: both the keys, or both a device that stands for the same name. */
+const sameSource = (x: SourceInfo, y: SourceInfo): boolean => x.type === y.type && (x.type !== "device" || (y.type === "device" && x.name === y.name));
 
 function samePluginStructure(x: Plugin | null, y: Plugin | null): boolean {
   if (x === y) return true;

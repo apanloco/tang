@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Graph, Node, NodeId, Param, Plugin } from "../../protocol";
-import { MASTER, audioCablesFixture, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, audioCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
 import { DEFAULT_KNOBS } from "../../client/pinning";
 import {
   CABLE_GAP,
@@ -23,6 +23,7 @@ import {
   PATTERN_HEIGHT,
   ROW_GAP,
   sameStructure,
+  SOURCE_HEIGHT,
   toFlow,
 } from "./toFlow";
 import type { PatchNode } from "./toFlow";
@@ -80,6 +81,9 @@ const group = (id: NodeId): Node => ({ id, parent: null, name: `Group ${String(i
 
 const master: Node = { id: MASTER, parent: null, name: "Master", kind: "master" };
 
+const keysSource = (id: NodeId): Node => ({ id, parent: null, name: "Keys", kind: "source", source: { type: "keys" } });
+const deviceSource = (id: NodeId, name: string): Node => ({ id, parent: null, name, kind: "source", source: { type: "device", name } });
+
 const audio = (from: NodeId, to: NodeId): Edge => ({ kind: "audio", from: { node: from, port: { type: "audioOut" } }, to: { node: to, port: { type: "audioIn" } } });
 const member = (from: NodeId, to: NodeId): Edge => ({ kind: "member", from: { node: from, port: { type: "audioOut" } }, to: { node: to, port: { type: "audioIn" } } });
 const cable = (id: number, from: NodeId, to: NodeId, param: number, amount = 0.5): Edge => ({
@@ -89,6 +93,9 @@ const cable = (id: number, from: NodeId, to: NodeId, param: number, amount = 0.5
   from: { node: from, port: { type: "modOut" } },
   to: { node: to, port: { type: "param", index: param } },
 });
+
+const notesCable = (id: number, from: NodeId, to: NodeId): Edge => ({ kind: "events", id, from: { node: from, port: { type: "eventsOut" } }, to: { node: to, port: { type: "eventsIn" } } });
+const hearsLink = (from: NodeId, to: NodeId): Edge => ({ kind: "hears", from: { node: from, port: { type: "eventsOut" } }, to: { node: to, port: { type: "eventsIn" } } });
 
 /** Two instruments, the first with two effects and a modulator on the second of them. */
 const twoLanes: Graph = {
@@ -195,17 +202,22 @@ describe("the nodes on the canvas", () => {
     }
   });
 
-  test("are not made for the sources of notes, and the cables and links of notes are not drawn: the canvas does not have them yet", () => {
-    const lane = tracerSnapshot.graph.nodes.find((node) => node.kind === "instrument");
-    if (lane === undefined) throw new Error("the tracer has a lane");
-    const keys: Node = { id: 40, parent: null, name: "Keys", kind: "source", source: { type: "keys" } };
-    const device: Node = { id: 41, parent: null, name: "Seaboard", ui: { x: 12, y: 34 }, kind: "source", source: { type: "device", name: "Seaboard" } };
-    const notes: Edge[] = [
-      { from: { node: 40, port: { type: "eventsOut" } }, to: { node: lane.id, port: { type: "eventsIn" } }, kind: "events", id: 90 },
-      { from: { node: 41, port: { type: "eventsOut" } }, to: { node: lane.id, port: { type: "eventsIn" } }, kind: "hears" },
-    ];
-    const withNotes: Graph = { nodes: [keys, device, ...tracerSnapshot.graph.nodes], edges: [...tracerSnapshot.graph.edges, ...notes] };
-    expect(toFlow(withNotes)).toEqual(toFlow(tracerSnapshot.graph));
+  test("are made for the sources of notes too, of a kind of their own, with what the source is in their data: the keys and a device that is called Keys are told apart by it", () => {
+    const graph: Graph = { nodes: [keysSource(40), deviceSource(41, "Keys"), ...tracerSnapshot.graph.nodes], edges: tracerSnapshot.graph.edges };
+    const flow = toFlow(graph);
+    expect(flow.nodes.map((node) => [node.id, node.type, node.data.name, node.data.source])).toEqual([
+      ["40", "source", "Keys 1", { type: "keys" }],
+      ["41", "source", "Keys 2", { type: "device", name: "Keys" }],
+      ["0", "instrument", "Oscillator", null],
+      ["1", "effect", "Filter", null],
+      ["2", "modulator", "LFO", null],
+      [String(MASTER), "master", "Master", null],
+    ]);
+    // (As wide as the others, which can be moved and not taken out of the canvas, and no source has plugin knobs, modulators' cables or a scope.)
+    for (const node of flow.nodes.filter((candidate) => candidate.type === "source")) {
+      expect([node.width, node.draggable, node.deletable, node.ariaLabel]).toEqual([NODE_WIDTH, true, false, node.data.name]);
+      expect([node.data.format, node.data.knobs, node.data.modulated, node.data.targets, node.data.drivenSettings, node.data.cables, node.data.scope]).toEqual([null, [], [], [], [], [], false]);
+    }
   });
 
   test("have a handle for the ports of events, named by the port", () => {
@@ -640,6 +652,7 @@ describe("the nodes on the canvas", () => {
       ["groups", grouped],
       ["a node whose parent is not there", orphan],
       ["nothing but the master", { nodes: [master], edges: [] }],
+      ["sources of notes, a lane in a group and the master", { nodes: [keysSource(20), deviceSource(21, "Seaboard"), ...grouped.nodes], edges: grouped.edges }],
     ];
     for (const [name, graph] of cases) {
       const rects = rectangles(graph);
@@ -731,6 +744,10 @@ describe("the nodes on the canvas", () => {
         modulatorsFor(head);
       }
       nodes.push(master);
+      // Sources of notes in front, as the server lists them, none to three (by the round, so that the graphs are the ones the generator made before them), each hearing every lane.
+      const sources = Array.from({ length: round % 4 }, (_, i) => (i === 0 ? keysSource(1000) : deviceSource(1000 + i, `Device ${String(i)}`)));
+      nodes.unshift(...sources);
+      for (const source of sources) for (const lane of nodes.filter((node) => node.kind === "instrument")) edges.push(hearsLink(source.id, lane.id));
       // A cable from a modulator to the node that is first in its scope, for some of them: where they go is part of the layout.
       for (const node of nodes) {
         if (node.kind !== "modulator" || next(2) === 0) continue;
@@ -765,6 +782,61 @@ describe("the nodes on the canvas", () => {
       if (first) first.value = 0.9;
     }
     expect(toFlow(moved)).toEqual(toFlow(tracerSnapshot.graph));
+  });
+});
+
+describe("the sources of notes on the canvas", () => {
+  const lane = instrument(1);
+  const oneLane: Graph = { nodes: [lane, master], edges: [audio(1, MASTER)] };
+  /** `base` with the sources `sources` first in it, as the server lists them. */
+  const withSources = (sources: readonly Node[], base: Graph = oneLane): Graph => ({ nodes: [...sources, ...base.nodes], edges: base.edges });
+  // (A lane that is a strip of one node: its row is as tall as the node, and the middle of the lanes is half of that.)
+  const laneMiddle = nodeHeight(lane, 3) / 2;
+
+  test("are in a column of their own, one before the first of the lanes", () => {
+    const flow = toFlow(withSources([keysSource(20), deviceSource(21, "Seaboard")]));
+    expect([20, 21].map((id) => at(flow, id).position.x)).toEqual([-COLUMN, -COLUMN]);
+    expect(at(flow, 1).position.x).toBe(0);
+  });
+
+  test("are one under the other in the order of the graph, a gap of a row apart, and level with the middle of the lanes as a whole", () => {
+    const flow = toFlow(withSources([keysSource(20), deviceSource(21, "Seaboard")]));
+    const top = laneMiddle - (2 * SOURCE_HEIGHT + ROW_GAP) / 2;
+    expect(top).toBeGreaterThan(0);
+    expect([20, 21].map((id) => at(flow, id).position.y)).toEqual([top, top + SOURCE_HEIGHT + ROW_GAP]);
+    // (One of them is level with the middle by itself.)
+    expect(at(toFlow(withSources([keysSource(20)])), 20).position.y).toBe(laneMiddle - SOURCE_HEIGHT / 2);
+  });
+
+  test("start at the top of the canvas when they are taller than the lanes are, and not above it", () => {
+    const sources = Array.from({ length: 6 }, (_, i) => deviceSource(20 + i, `Device ${String(i)}`));
+    const flow = toFlow(withSources(sources));
+    expect(sources.map((source) => at(flow, source.id).position.y)).toEqual(sources.map((_, i) => i * (SOURCE_HEIGHT + ROW_GAP)));
+  });
+
+  test("are as tall as a source is, whatever the knobs, the cables and the scope that the other nodes have", () => {
+    expect(nodeHeight(keysSource(1), 0)).toBe(SOURCE_HEIGHT);
+    expect(nodeHeight(deviceSource(1, "Seaboard"), 5, 3, true)).toBe(SOURCE_HEIGHT);
+  });
+
+  test("leave every other node where it would be without them: the lanes, the groups and the master", () => {
+    const without = toFlow(grouped);
+    const flow = toFlow(withSources([keysSource(20), deviceSource(21, "Seaboard")], grouped));
+    for (const node of grouped.nodes) expect(at(flow, node.id).position, `node ${String(node.id)}`).toEqual(at(without, node.id).position);
+  });
+
+  test("show no scope, though the viewer asked for one: a source has no signal, and a lane has", () => {
+    const flow = toFlow(withSources([keysSource(20)]), new Map(), new Set([20, 1]));
+    expect(at(flow, 20).data.scope).toBe(false);
+    expect(at(flow, 1).data.scope).toBe(true);
+  });
+
+  test("do not overlap a node of the lanes, the groups or the master, whatever they are: a canvas of nothing but a source and the master has them apart too", () => {
+    const busy = withSources([keysSource(20), deviceSource(21, "Seaboard")], grouped);
+    expect(overlapsIn(busy, toFlow(busy))).toBeNull();
+    const alone: Graph = { nodes: [keysSource(20), master], edges: [] };
+    expect(overlapsIn(alone, toFlow(alone))).toBeNull();
+    expect(at(toFlow(alone), 20).position).toEqual({ x: -COLUMN, y: 0 });
   });
 });
 
@@ -1201,6 +1273,58 @@ describe("a layout that remembers where it put the nodes", () => {
     expect(at(closed, 4).position.y).toBe(at(toFlow(noFirst), 4).position.y);
     expect(at(closed, 4).position.x).not.toBe(at(toFlow(noFirst), 4).position.x);
     expect(closed.arranged).toBe(false);
+  });
+});
+
+describe("the sources of notes on a layout that remembers where it put the nodes", () => {
+  const sources = [keysSource(20), deviceSource(21, "Seaboard")];
+  const base: Graph = { nodes: [...sources, instrument(1), master], edges: [audio(1, MASTER)] };
+
+  test("stay where they were when a lane is added, though the layout would have them lower, level with the middle of the longer canvas", () => {
+    const before = toFlow(base);
+    const more: Graph = { nodes: [...sources, instrument(1), instrument(2), master], edges: [audio(1, MASTER), audio(2, MASTER)] };
+    const after = toFlow(more, before.places);
+    for (const id of [20, 21]) expect(at(after, id).position, `source ${String(id)}`).toEqual(at(before, id).position);
+    // (A layout of nothing remembered has them lower, and says that the canvas is not arranged.)
+    expect(at(toFlow(more), 20).position.y).toBeGreaterThan(at(before, 20).position.y);
+    expect(after.arranged).toBe(false);
+  });
+
+  test("do not move when nothing changes, and the canvas is arranged", () => {
+    const before = toFlow(base);
+    const again = toFlow(base, before.places);
+    expect(again.nodes).toEqual(before.nodes);
+    expect(again.arranged).toBe(true);
+  });
+
+  test("leave the others where they are when one is taken out", () => {
+    const before = toFlow(base);
+    const fewer: Graph = { nodes: [deviceSource(21, "Seaboard"), instrument(1), master], edges: base.edges };
+    expect(at(toFlow(fewer, before.places), 21).position).toEqual(at(before, 21).position);
+  });
+
+  test("have a source that is added below the ones that stayed, a gap of a row from the last, and move none of them", () => {
+    const before = toFlow(base);
+    const more: Graph = { nodes: [...sources, deviceSource(22, "Lightpad"), instrument(1), master], edges: base.edges };
+    const after = toFlow(more, before.places);
+    for (const id of [20, 21]) expect(at(after, id).position, `source ${String(id)}`).toEqual(at(before, id).position);
+    expect(at(after, 22).position).toEqual({ x: -COLUMN, y: at(before, 21).position.y + SOURCE_HEIGHT + ROW_GAP });
+  });
+
+  test("are where the session places them, and are not remembered, as the other nodes are", () => {
+    const placed: Graph = { ...base, nodes: base.nodes.map((node) => (node.id === 20 ? { ...node, ui: { x: 33, y: -44 } } : node)) };
+    const flow = toFlow(placed);
+    expect(at(flow, 20).position).toEqual({ x: 33, y: -44 });
+    expect(flow.places.has(20)).toBe(false);
+    expect(flow.places.has(21)).toBe(true);
+  });
+
+  test("have the nodes that the layout places keep clear of one that the session placed over them", () => {
+    // (A source put down on the lane: the lane is where it was and the source stays, and a lane that is new would go clear of it.)
+    const onLane: Graph = { ...base, nodes: base.nodes.map((node) => (node.id === 20 ? { ...node, ui: { x: 10, y: 10 } } : node)) };
+    const flow = toFlow(onLane);
+    expect(overlapsIn(onLane, flow)).toBeNull();
+    expect(at(flow, 1).position.y).toBeGreaterThan(10 + SOURCE_HEIGHT);
   });
 });
 
@@ -1770,6 +1894,63 @@ describe("an audio cable that has been drawn between two places", () => {
   });
 });
 
+describe("a cable of notes, and the links by which a lane hears every source", () => {
+  // The session of the sources fixture (`testutil::NOTES`): the keys (7) and a device (8, Launchkey Mini MK4 37) are the sources; group 0 (Pad) has Reverb 1 on its bus, lane 2 is in it with Filter 3 and LFO 4,
+  // lane 5 is outside it and lane 6 is empty. A cable of notes (1) goes from the keys to lane 5, so that lanes 2 and 6, which no cable of notes ends at, hear both sources by a link each (the graph has them
+  // after the links of the audio path); an audio cable (2) goes from lane 5 to Filter 3 and a cable of modulation (0) from LFO 4 to a parameter of Filter 3.
+  const found = sourcesFixture.cases.find((entry) => entry.name === "wired");
+  if (!found) throw new Error("the fixture has the session of the sources");
+  const wired = found.snapshot.graph;
+  const bare: Graph = { nodes: wired.nodes, edges: wired.edges.filter((e) => e.kind !== "events" && e.kind !== "hears") };
+
+  test("a cable of notes is an edge of its own from the output of events of its source to the input of events of its lane, with the id of the cable and its words", () => {
+    const notes = toFlow(wired).edges.filter((edge) => edge.type === "notes");
+    expect(notes.map((edge) => [edge.id, edge.source, edge.sourceHandle, edge.target, edge.targetHandle, edge.deletable])).toEqual([["notes:1", "7", "eventsOut", "5", "eventsIn", false]]);
+    // (Told by the names the canvas gives the nodes, the numbers of the ones that share a name among them.)
+    expect(notes.map((edge) => edge.data)).toEqual([{ cable: 1, label: "Keys → Oscillator 2" }]);
+  });
+
+  test("a link by which a lane hears a source is an edge of its own between the same ports, named by its two ends, and has nothing to say", () => {
+    const links = toFlow(wired).edges.filter((edge) => edge.type === "hears");
+    expect(links.map((edge) => [edge.id, edge.source, edge.sourceHandle, edge.target, edge.targetHandle, edge.deletable])).toEqual([
+      ["hears:7>2", "7", "eventsOut", "2", "eventsIn", false],
+      ["hears:7>6", "7", "eventsOut", "6", "eventsIn", false],
+      ["hears:8>2", "8", "eventsOut", "2", "eventsIn", false],
+      ["hears:8>6", "8", "eventsOut", "6", "eventsIn", false],
+    ]);
+    expect(links.map((edge) => edge.data)).toEqual([{}, {}, {}, {}]);
+  });
+
+  test("are listed where the graph has them, among the cables of the other kinds", () => {
+    const kinds = toFlow(wired).edges.map((edge) => edge.type);
+    expect(kinds).toEqual([...Array<string>(6).fill("audio"), ...Array<string>(4).fill("hears"), "send", "notes", "modulation"]);
+  });
+
+  test("are drawn over the links of the audio path, a link of notes under a cable of notes, which is under an audio cable, which is under a cable of modulation", () => {
+    const edges = toFlow(wired).edges;
+    const zOf = (type: string): number => edges.find((edge) => edge.type === type)?.zIndex ?? 0;
+    expect(zOf("hears")).toBeGreaterThan(zOf("audio"));
+    expect(zOf("notes")).toBeGreaterThan(zOf("hears"));
+    expect(zOf("send")).toBeGreaterThan(zOf("notes"));
+    expect(zOf("modulation")).toBeGreaterThan(zOf("send"));
+  });
+
+  test("change nothing of where the nodes are, nor of the places that the layout remembers, nor of the audio path", () => {
+    const without = toFlow(bare);
+    const with_ = toFlow(wired);
+    expect(with_.nodes).toEqual(without.nodes);
+    expect([...with_.places]).toEqual([...without.places]);
+    expect(with_.arranged).toBe(without.arranged);
+    expect(with_.edges.filter((edge) => edge.type === "audio")).toEqual(without.edges.filter((edge) => edge.type === "audio"));
+  });
+
+  test("are not there in a graph that has none", () => {
+    const edges = toFlow(bare).edges;
+    expect(edges.filter((edge) => edge.type === "notes" || edge.type === "hears")).toHaveLength(0);
+    expect(toFlow(tracerSnapshot.graph).edges.filter((edge) => edge.type === "notes" || edge.type === "hears")).toHaveLength(0);
+  });
+});
+
 describe("whether two graphs are laid out the same", () => {
   const base = tracerSnapshot.graph;
 
@@ -1910,5 +2091,30 @@ describe("whether two graphs are laid out the same", () => {
     const renumbered = structuredClone(base);
     for (const edge of renumbered.edges) if (edge.kind === "modulation") edge.id = 8;
     expect(sameStructure(base, renumbered)).toBe(false);
+  });
+
+  test("they are not when a source is another, and they are when it is the same source in another object", () => {
+    const withSource = (source: Node): Graph => ({ nodes: [source, ...base.nodes], edges: base.edges });
+    expect(sameStructure(withSource(keysSource(40)), withSource({ ...keysSource(40) }))).toBe(true);
+    expect(sameStructure(withSource(deviceSource(40, "Seaboard")), withSource({ ...deviceSource(40, "Seaboard") }))).toBe(true);
+    // (The keys and a device that is called Keys have the same name and the same place in the tree: what they are is the source.)
+    expect(sameStructure(withSource(keysSource(40)), withSource(deviceSource(40, "Keys")))).toBe(false);
+    expect(sameStructure(withSource(deviceSource(40, "Keys")), withSource(keysSource(40)))).toBe(false);
+    // (And a device is told by the name it stands for, which the node's own name is what the session calls it by.)
+    const standingForAnother: Node = { id: 40, parent: null, name: "Seaboard", kind: "source", source: { type: "device", name: "Lightpad" } };
+    expect(sameStructure(withSource(standingForAnother), withSource(deviceSource(40, "Seaboard")))).toBe(false);
+    expect(sameStructure(withSource(deviceSource(40, "Seaboard")), withSource(deviceSource(41, "Seaboard")))).toBe(false);
+  });
+
+  test("they are not when a cable of notes or a link that a lane hears a source by is added, taken out or aimed elsewhere, and they are when it is the same in another object", () => {
+    const sources = [keysSource(40), deviceSource(41, "Seaboard")];
+    const withEdges = (...edges: Edge[]): Graph => ({ nodes: [...sources, ...base.nodes], edges: [...base.edges, ...edges] });
+    expect(sameStructure(withEdges(notesCable(90, 40, 0)), withEdges(notesCable(90, 40, 0)))).toBe(true);
+    expect(sameStructure(withEdges(notesCable(90, 40, 0)), withEdges())).toBe(false);
+    expect(sameStructure(withEdges(notesCable(90, 40, 0)), withEdges(notesCable(90, 41, 0)))).toBe(false);
+    expect(sameStructure(withEdges(notesCable(90, 40, 0)), withEdges(notesCable(91, 40, 0)))).toBe(false);
+    expect(sameStructure(withEdges(hearsLink(40, 0)), withEdges(hearsLink(40, 0)))).toBe(true);
+    expect(sameStructure(withEdges(hearsLink(40, 0)), withEdges(hearsLink(41, 0)))).toBe(false);
+    expect(sameStructure(withEdges(hearsLink(40, 0)), withEdges(notesCable(90, 40, 0)))).toBe(false);
   });
 });

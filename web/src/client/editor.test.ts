@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 
-import type { Edge, Port } from "../protocol";
+import type { Edge, Node, Port } from "../protocol";
 import { Client } from "./connection";
 import { MASTER, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
@@ -1403,6 +1403,178 @@ describe("taking an audio cable out", () => {
     client.stop();
     expect(await editor.removeCable(1)).toBe(false);
     expect(said(notices)).toEqual(["Could not take out the cable Oscillator → Filter: Not connected to the server."]);
+  });
+});
+
+describe("adding a source of notes", () => {
+  const sourcesOf = (client: Client): Node[] => (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "source");
+
+  test("asks for the keys, resolves with the node it made, which the canvas is asked to show, and says nothing", async () => {
+    const { client, notices, shown, editor } = await open();
+    const id = await editor.addSource({ type: "keys" });
+    // (The tracer has nodes 0 to 2: the next is 3.)
+    expect(id).toBe(3);
+    expect(sourcesOf(client)).toMatchObject([{ id: 3, parent: null, name: "Keys", kind: "source", source: { type: "keys" } }]);
+    expect(shown).toEqual([3]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("asks for a device by the name it is given, which the server tidies, and the node is called by it", async () => {
+    const { client, editor } = await open();
+    const id = await editor.addSource({ type: "device", name: "  Seaboard RISE " });
+    expect(sourcesOf(client)).toMatchObject([{ id, name: "Seaboard RISE", kind: "source", source: { type: "device", name: "Seaboard RISE" } }]);
+  });
+
+  test("resolves with the last of the sources there are, which is its own when another front-end added one just before", async () => {
+    const { server, shown, editor } = await open();
+    server.apply({ type: "addSource", source: { type: "device", name: "Other" } }); // another front-end's, before this one is answered
+    const id = await editor.addSource({ type: "keys" });
+    expect(server.snapshot.graph.nodes.find((n) => n.id === id)).toMatchObject({ name: "Keys" });
+    expect(shown).toEqual([id]);
+  });
+
+  test("finds its own source when another front-end added a node of another kind at the same time", async () => {
+    const { server, shown, editor } = await open();
+    server.apply({ type: "addGroup", members: [] }); // another front-end's, before this one is answered
+    const id = await editor.addSource({ type: "keys" });
+    expect(server.snapshot.graph.nodes.find((n) => n.id === id)).toMatchObject({ kind: "source", name: "Keys" });
+    expect(shown).toEqual([id]);
+  });
+
+  test("resolves with null when it is refused, though another front-end added a source just before: that one is not its own, and is not shown", async () => {
+    const { server, shown, editor } = await open();
+    expect(await editor.addSource({ type: "keys" })).not.toBeNull();
+    shown.length = 0;
+    server.apply({ type: "addSource", source: { type: "device", name: "Other" } }); // another front-end's, before this one is answered
+    expect(await editor.addSource({ type: "keys" })).toBeNull();
+    expect(shown).toEqual([]);
+  });
+
+  test("says what could not be done, in the controller's words, when it is refused: the keys twice, a device twice, a name that is not one", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.addSource({ type: "keys" })).not.toBeNull();
+    expect(await editor.addSource({ type: "device", name: "Seaboard" })).not.toBeNull();
+    expect(await editor.addSource({ type: "keys" })).toBeNull();
+    expect(await editor.addSource({ type: "device", name: " Seaboard " })).toBeNull();
+    expect(await editor.addSource({ type: "device", name: "   " })).toBeNull();
+    expect(said(notices)).toEqual([
+      "Could not add the keys as a source of notes: the keys are a source already",
+      'Could not add "Seaboard" as a source of notes: Seaboard is a source already',
+      'Could not add "" as a source of notes: a device\'s name is blank: a device is called by its name, or as much of it as tells it',
+    ]);
+    expect(sourcesOf(client)).toHaveLength(2);
+  });
+
+  test("names a device by what the server makes of the name: without the white space round it that Unicode has, a next-line character too, which the page's own trim leaves", async () => {
+    const { notices, editor } = await open();
+    expect(await editor.addSource({ type: "device", name: "\u0085Seaboard\u0085" })).not.toBeNull();
+    expect(await editor.addSource({ type: "device", name: "\u0085Seaboard\u0085" })).toBeNull();
+    expect(said(notices)).toEqual(['Could not add "Seaboard" as a source of notes: Seaboard is a source already']);
+  });
+
+  test("names a device that has a long name as a notice does, cut after a few characters", async () => {
+    const { notices, editor } = await open();
+    const name = "Launchkey Mini MK4 37 MIDI Out and a long tail";
+    await editor.addSource({ type: "device", name });
+    expect(await editor.addSource({ type: "device", name })).toBeNull();
+    expect(said(notices)).toEqual([`Could not add "Launchkey Mini MK4 37 MI…" as a source of notes: ${name} is a source already`]);
+  });
+
+  test("says so when the connection is gone", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.addSource({ type: "keys" })).toBeNull();
+    expect(await editor.addSource({ type: "device", name: "Seaboard" })).toBeNull();
+    expect(said(notices)).toEqual(["Could not add the keys as a source of notes: Not connected to the server.", 'Could not add "Seaboard" as a source of notes: Not connected to the server.']);
+  });
+});
+
+describe("drawing a cable of notes", () => {
+  const notesCables = (client: Client): Edge[] => (client.state.snapshot?.graph.edges ?? []).filter((e) => e.kind === "events");
+
+  test("asks for one from the output of events of a source to the input of events of a lane, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    const keys = await editor.addSource({ type: "keys" });
+    if (keys === null) throw new Error("the keys were added");
+    expect(await editor.addNotesCable(keys, oscillator.id)).toBe(true);
+    // (The tracer's cable of modulation has the first id, and a cable of notes the next: the cables of every kind are one series.)
+    expect(notesCables(client)).toEqual([{ kind: "events", id: 1, from: { node: keys, port: { type: "eventsOut" } }, to: { node: oscillator.id, port: { type: "eventsIn" } } }]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("says what could not be done, in the names of the canvas and the controller's words, when it is refused, and changes nothing", async () => {
+    const { client, notices, editor } = await open();
+    const keys = await editor.addSource({ type: "keys" });
+    if (keys === null) throw new Error("the keys were added");
+    const refused = async (call: Promise<boolean>): Promise<string | undefined> => {
+      expect(await call).toBe(false);
+      return said(notices).at(-1);
+    };
+    expect(await refused(editor.addNotesCable(oscillator.id, oscillator.id))).toBe("Could not draw a cable of notes from Oscillator to Oscillator: only a source of notes has an output of events");
+    expect(await refused(editor.addNotesCable(keys, filter.id))).toBe("Could not draw a cable of notes from Keys to Filter: a cable of notes ends at a lane: it is the lanes that have an input of events");
+    expect(await refused(editor.addNotesCable(keys, MASTER))).toBe("Could not draw a cable of notes from Keys to Master: the mix has no input of events");
+    expect(await refused(editor.addNotesCable(MASTER, oscillator.id))).toBe("Could not draw a cable of notes from Master to Oscillator: the mix has no output of events");
+    expect(await refused(editor.addNotesCable(keys, 99))).toBe("Could not draw a cable of notes from Keys to that node: there is no node 99");
+    expect(await refused(editor.addNotesCable(99, oscillator.id))).toBe("Could not draw a cable of notes from that node to Oscillator: there is no node 99");
+    expect(notesCables(client)).toEqual([]);
+  });
+
+  test("is refused when there is a cable between the two already, and the one that is there stays", async () => {
+    const { client, notices, editor } = await open();
+    const keys = await editor.addSource({ type: "keys" });
+    if (keys === null) throw new Error("the keys were added");
+    expect(await editor.addNotesCable(keys, oscillator.id)).toBe(true);
+    expect(await editor.addNotesCable(keys, oscillator.id)).toBe(false);
+    expect(said(notices)).toEqual(["Could not draw a cable of notes from Keys to Oscillator: there is a cable between those two already"]);
+    expect(notesCables(client)).toHaveLength(1);
+  });
+
+  test("says what could not be done when the connection is gone", async () => {
+    const { client, notices, editor } = await open();
+    const keys = await editor.addSource({ type: "keys" });
+    if (keys === null) throw new Error("the keys were added");
+    client.stop();
+    expect(await editor.addNotesCable(keys, oscillator.id)).toBe(false);
+    expect(said(notices)).toEqual(["Could not draw a cable of notes from Keys to Oscillator: Not connected to the server."]);
+  });
+});
+
+describe("taking a cable of notes, and a source, out", () => {
+  const notesCables = (client: Client): Edge[] => (client.state.snapshot?.graph.edges ?? []).filter((e) => e.kind === "events");
+
+  test("takes the cable out, and says nothing; the source and the cable of modulation stay", async () => {
+    const { client, notices, editor } = await open();
+    const keys = await editor.addSource({ type: "keys" });
+    if (keys === null) throw new Error("the keys were added");
+    await editor.addNotesCable(keys, oscillator.id);
+    expect(await editor.removeCable(1)).toBe(true);
+    expect(notesCables(client)).toEqual([]);
+    expect(client.state.snapshot?.graph.nodes.some((n) => n.id === keys)).toBe(true);
+    expect(client.state.snapshot?.graph.edges.filter((e) => e.kind === "modulation")).toHaveLength(1);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("names the cable of notes it could not take out, by what it joins, when the connection is gone", async () => {
+    const { client, notices, editor } = await open();
+    const keys = await editor.addSource({ type: "keys" });
+    if (keys === null) throw new Error("the keys were added");
+    await editor.addNotesCable(keys, oscillator.id);
+    client.stop();
+    expect(await editor.removeCable(1)).toBe(false);
+    expect(said(notices)).toEqual(["Could not take out the cable Keys → Oscillator: Not connected to the server."]);
+  });
+
+  test("takes the source out with its cables, by the name the canvas gives it", async () => {
+    const { client, notices, editor } = await open();
+    const keys = await editor.addSource({ type: "keys" });
+    if (keys === null) throw new Error("the keys were added");
+    await editor.addNotesCable(keys, oscillator.id);
+    expect(await editor.removeNode(keys)).toBe(true);
+    expect(client.state.snapshot?.graph.nodes.some((n) => n.id === keys)).toBe(false);
+    expect(notesCables(client)).toEqual([]);
+    expect(said(notices)).toEqual([]);
+    expect(await editor.removeNode(keys)).toBe(false);
+    expect(said(notices)).toEqual(["Could not remove that node: there is no node 3"]);
   });
 });
 
