@@ -194,11 +194,14 @@ export function effectLoops(graph: Graph, node: NodeId, index: number): boolean 
  * an end it has, with no cable between the two already and no loop. For the canvas to say which inputs take the cable that is being dragged. A node that has no output of audio has none.
  */
 export function cableTakers(graph: Graph, from: NodeId): NodeId[] {
+  // (The wiring and the cables are the same for every end that is tried: a menu on every node asks this for each of them.)
+  const wiring = wiringOf(graph);
+  const cables = cablesOf(graph);
   return graph.nodes.flatMap((node) => {
     if (node.kind !== "effect" && node.kind !== "group" && node.kind !== "master") return [];
     const ends = cableEnds(graph, { node: from, port: { type: "audioOut" } }, { node: node.id, port: { type: "audioIn" } });
     if ("error" in ends) return [];
     const drawn = graph.edges.some((e) => isAudioCable(e) && e.from.node === from && e.to.node === node.id);
-    return drawn || cableLoops(graph, ends) ? [] : [node.id];
+    return drawn || goesRound(wiring, [...cables, ends]) ? [] : [node.id];
   });
 }

@@ -1,5 +1,6 @@
 // How a modulator is put in words and on a scale, for its node: what kind it is, which
 // settings it has, and the range its output is drawn over.
+import { CABLE_GAIN_RANGE } from "../../protocol";
 import type { ModulatorField, ModulatorSource } from "../../protocol";
 import { formatValue } from "../../ui/Knob";
 
@@ -78,4 +79,13 @@ export function outputScale(source: ModulatorSource): { min: number; max: number
 /** How thick to draw a modulation cable of this depth (-1 to 1): a deeper one is thicker, in either direction. */
 export function cableWidth(amount: number): number {
   return 1.5 + 2 * Math.min(Math.abs(amount), 1);
+}
+
+/**
+ * How thick to draw an audio cable of this level (0 to 2): a louder one is thicker, from a little over the line of the audio path (2) for none to twice that for the most a cable
+ * carries. A level is held to the range a cable can have.
+ */
+export function sendWidth(level: number): number {
+  const [min, max] = CABLE_GAIN_RANGE;
+  return 2 + 2 * ((Math.min(Math.max(level, min), max) - min) / (max - min));
 }

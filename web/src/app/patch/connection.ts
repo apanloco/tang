@@ -95,6 +95,32 @@ export function canDrawAudio(graph: Graph, ends: AudioEnds): boolean {
   return cableTakers(graph, ends.from).includes(ends.to);
 }
 
+/** The handle that a drag starts at, as React Flow says it. */
+interface Start {
+  nodeId: string | null;
+  handleType: "source" | "target" | null;
+  handleId: string | null;
+}
+
+/**
+ * The ports that take the cable that is dragged from `start` (`keyOf`): the ports that a modulator can still drive for a drag from its output, the inputs of audio that take audio
+ * from the output of a node for a drag from that; null where no cable starts (an input, a port of a control, no node, no session to say what audio is where).
+ */
+export function takersOf(graph: Graph | null, nodes: readonly PatchNode[], { nodeId, handleType, handleId }: Start): Set<string> | null {
+  if (handleType !== "source" || nodeId === null || !WHOLE.test(nodeId)) return null;
+  if (handleId === "modOut") return drawableFrom(nodes, Number(nodeId));
+  if (handleId === "audioOut") return graph ? audioTakersOf(graph, Number(nodeId)) : null;
+  return null;
+}
+
+/** Whether the connection that is dragged is a cable that can be drawn: an audio cable that the controller would take, or a cable of modulation that its modulator can still drive. */
+export function canConnect(graph: Graph | null, nodes: readonly PatchNode[], connection: Connection): boolean {
+  const audio = audioCableOf(connection);
+  if (audio !== null) return graph !== null && canDrawAudio(graph, audio);
+  const ends = cableOf(connection);
+  return ends !== null && canDraw(nodes, ends);
+}
+
 /**
  * The ports that take the cable that is being dragged (`keyOf`), for the ports to say so; null while no cable is
  * being dragged. (A port is a handle in a node of its own, which cannot be told by the canvas.)

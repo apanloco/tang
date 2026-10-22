@@ -1,7 +1,8 @@
 // The canvas (docs/web-ui.md §9.3): the session as nodes and cables, drawn by React Flow.
 // What can be done on the canvas is to turn the controls on the nodes, to add a modulator to a
 // lane or a group, to take a modulator or a cable out, to draw a cable by dragging it from a
-// modulator's output to a parameter's port, and to move a node by dragging it (by what is not a
+// modulator's output to a parameter's port, or an audio cable from the output of a lane, an effect or a
+// group to an input of audio, to turn the level of an audio cable, and to move a node by dragging it (by what is not a
 // control): where it is put down goes to the server, which keeps it with the session (§4.4), and
 // every browser draws the node there. The nodes that are not moved are where the layout puts them, and stay there when the session
 // changes round them (a cable drawn, a node added or taken out: `toFlow` is given where it put them last) until the person asks for
@@ -13,15 +14,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Graph, NodeId, NodeUi } from "../../protocol";
 import { useClientSelection, useEditor, useReveals } from "../ClientProvider";
 import { focusWhenPossible } from "../focus";
-import { cableOf, canDraw, ConnectingContext, drawableFrom } from "./connection";
-import { AudioEdge, ModulationEdge } from "./edges";
+import { audioCableOf, cableOf, canConnect, ConnectingContext, takersOf } from "./connection";
+import { AudioEdge, ModulationEdge, SendEdge } from "./edges";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import type { Inspector } from "./inspector";
 import { GroupNode, MasterNode, ModulatorNode, PluginNode } from "./nodes";
 import { ParamPanel } from "./ParamPanel";
 import { ScopesContext } from "./scopes";
 import type { Scopes } from "./scopes";
-import { sameStructure } from "./toFlow";
+import { StructureContext } from "./structure";
+import { sameGraphStructure } from "./toFlow";
 import type { Flow } from "./toFlow";
 import { useLayout } from "./useLayout";
 import { useMovableNodes } from "./useMovableNodes";
@@ -39,13 +41,16 @@ const NODE_TYPES: NodeTypes = {
   master: MasterNode,
 };
 
-const EDGE_TYPES: EdgeTypes = { audio: AudioEdge, modulation: ModulationEdge };
+const EDGE_TYPES: EdgeTypes = { audio: AudioEdge, modulation: ModulationEdge, send: SendEdge };
 
-/** How a cable looks while it is dragged: as the cables of modulation do. */
-const CONNECTION_LINE = { stroke: "var(--tang-modulation)", strokeWidth: 2, strokeDasharray: "7 5" };
-
-/** Whether two graphs (or the lack of one) are laid out the same: what the canvas depends on, which is not the values. */
-export const sameGraphStructure = (a: Graph | null, b: Graph | null): boolean => (a && b ? sameStructure(a, b) : a === b);
+/**
+ * The cable that is being dragged: the ports that take it, for them to say so, and whether it is audio or modulation, which the line of the cable is drawn by (in the stylesheet, by the
+ * `data-connecting` of the canvas: a line of modulation is magenta and dashed, one of audio is amber and plain, as the cables are once they are drawn).
+ */
+interface Dragged {
+  takers: ReadonlySet<string>;
+  kind: "audio" | "modulation";
+}
 
 /** How long a node the page added is waited for: the layout that has it comes with the snapshot, which is as good as at once. */
 const SHOW_WITHIN_MS = 3000;
@@ -174,8 +179,8 @@ export function PatchView() {
   // The nodes as they are on the canvas: the layout's, but where a person is dragging one it is where the pointer has taken it.
   const moveNode = useCallback((node: NodeId, ui: NodeUi) => editor.moveNode(node, ui), [editor]);
   const { nodes, onNodesChange, onNodeDragStart, onNodeDragStop } = useMovableNodes(flow.nodes, moveNode);
-  // The parameters that take the cable being dragged, for their ports to say so.
-  const [connecting, setConnecting] = useState<ReadonlySet<string> | null>(null);
+  // The ports that take the cable being dragged, for them to say so.
+  const [connecting, setConnecting] = useState<Dragged | null>(null);
   // The plugin whose parameters are in the panel, if the panel is open.
   const [inspected, setInspected] = useState<NodeId | null>(null);
   const inspector = useMemo<Inspector>(
@@ -196,78 +201,79 @@ export function PatchView() {
   );
 
   const onConnectStart = useCallback<OnConnectStart>(
-    (_event, { nodeId, handleType }) => {
-      setConnecting(handleType === "source" && nodeId !== null ? drawableFrom(flow.nodes, Number(nodeId)) : null);
+    (_event, start) => {
+      const takers = takersOf(graph, flow.nodes, start);
+      setConnecting(takers ? { takers, kind: start.handleId === "audioOut" ? "audio" : "modulation" } : null);
     },
-    [flow.nodes],
+    [graph, flow.nodes],
   );
   const onConnectEnd = useCallback(() => {
     setConnecting(null);
   }, []);
-  const isValidConnection = useCallback(
-    (connection: Connection | Edge) => {
-      const ends = cableOf(connection);
-      return ends !== null && canDraw(flow.nodes, ends);
-    },
-    [flow.nodes],
-  );
+  const isValidConnection = useCallback((connection: Connection | Edge) => canConnect(graph, flow.nodes, connection), [graph, flow.nodes]);
   const onConnect = useCallback(
     (connection: Connection) => {
-      const ends = cableOf(connection);
       // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+      const audio = audioCableOf(connection);
+      if (audio) {
+        void editor.addAudioCable(audio.from, audio.to);
+        return;
+      }
+      const ends = cableOf(connection);
       if (ends) void editor.addCable(ends.modulator, ends.node, ends.port);
     },
     [editor],
   );
 
   return (
-    <div className="tang-patch" data-testid="patch" data-connecting={connecting ? "" : undefined}>
+    <div className="tang-patch" data-testid="patch" data-connecting={connecting?.kind}>
       <InspectorContext.Provider value={inspector}>
         <ScopesContext.Provider value={scopes}>
           <div className="tang-patch__canvas">
-            <ConnectingContext.Provider value={connecting}>
-              <ReactFlow
-                nodes={nodes}
-                edges={flow.edges}
-                onNodesChange={onNodesChange}
-                onNodeDragStart={onNodeDragStart}
-                onNodeDragStop={onNodeDragStop}
-                nodeDragThreshold={DRAG_THRESHOLD}
-                nodeTypes={NODE_TYPES}
-                edgeTypes={EDGE_TYPES}
-                colorMode="dark"
-                fitView
-                fitViewOptions={{ padding: FIT_PADDING, maxZoom: 1 }}
-                minZoom={0.2}
-                maxZoom={1.5}
-                connectionRadius={40}
-                connectionLineStyle={CONNECTION_LINE}
-                isValidConnection={isValidConnection}
-                onConnectStart={onConnectStart}
-                onConnectEnd={onConnectEnd}
-                onConnect={onConnect}
-                edgesFocusable={false}
-                elementsSelectable={false}
-                deleteKeyCode={null}
-              >
-                <Background gap={24} />
-                <Controls showInteractive={false} />
-                <Panel position="top-right">
-                  <button
-                    type="button"
-                    className="tang-patch__arrange"
-                    title="Put every node where the layout has it, and give back the places that were moved"
-                    aria-label="Arrange the nodes again"
-                    disabled={!anyMoved && flow.arranged}
-                    onClick={arrange}
-                  >
-                    Arrange
-                  </button>
-                </Panel>
-                <ShowWhatWasAdded graph={graph} flow={flow} />
-                <FitWhenArranged requests={arrangements} arranging={arranging} />
-              </ReactFlow>
-            </ConnectingContext.Provider>
+            <StructureContext.Provider value={graph}>
+              <ConnectingContext.Provider value={connecting?.takers ?? null}>
+                <ReactFlow
+                  nodes={nodes}
+                  edges={flow.edges}
+                  onNodesChange={onNodesChange}
+                  onNodeDragStart={onNodeDragStart}
+                  onNodeDragStop={onNodeDragStop}
+                  nodeDragThreshold={DRAG_THRESHOLD}
+                  nodeTypes={NODE_TYPES}
+                  edgeTypes={EDGE_TYPES}
+                  colorMode="dark"
+                  fitView
+                  fitViewOptions={{ padding: FIT_PADDING, maxZoom: 1 }}
+                  minZoom={0.2}
+                  maxZoom={1.5}
+                  connectionRadius={40}
+                  isValidConnection={isValidConnection}
+                  onConnectStart={onConnectStart}
+                  onConnectEnd={onConnectEnd}
+                  onConnect={onConnect}
+                  edgesFocusable={false}
+                  elementsSelectable={false}
+                  deleteKeyCode={null}
+                >
+                  <Background gap={24} />
+                  <Controls showInteractive={false} />
+                  <Panel position="top-right">
+                    <button
+                      type="button"
+                      className="tang-patch__arrange"
+                      title="Put every node where the layout has it, and give back the places that were moved"
+                      aria-label="Arrange the nodes again"
+                      disabled={!anyMoved && flow.arranged}
+                      onClick={arrange}
+                    >
+                      Arrange
+                    </button>
+                  </Panel>
+                  <ShowWhatWasAdded graph={graph} flow={flow} />
+                  <FitWhenArranged requests={arrangements} arranging={arranging} />
+                </ReactFlow>
+              </ConnectingContext.Provider>
+            </StructureContext.Provider>
           </div>
         </ScopesContext.Provider>
         {inspected !== null ? <ParamPanel key={inspected} node={inspected} onClose={closePanel} /> : null}

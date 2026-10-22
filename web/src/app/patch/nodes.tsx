@@ -20,19 +20,21 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible, keepFocus } from "../focus";
-import { DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, ParamCell, RangeCell, StepsControl, SyncControl } from "./controls";
+import { AudioPort, DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, ParamCell, RangeCell, StepsControl, SyncControl } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import { ModulateMenu } from "./ModulateMenu";
 import { NodeScope, ScopeButton, ScopePanel } from "./NodeScope";
 import { PatternCell } from "./PatternCell";
+import { SendMenu } from "./SendMenu";
 import type { CableRow, PatchNode } from "./toFlow";
 
 /**
  * The header of a node: its name (or, for a node whose name is edited in place, `field`), its badge and its buttons. The badge, what kind of plugin it is, is under the name, in small type: beside it,
- * it left the name 40 pixels in a lane that has a number in its name and a "×" ("Os…"), and 30 in a lane of Pianoteq 9 ("Pian…").
+ * it left the name 40 pixels in a lane that has a number in its name and a "×" ("Os…"), and 30 in a lane of Pianoteq 9 ("Pian…"). `sub` is what goes after the badge on that line (the button that
+ * sends the audio of the node: a lane's header has no room in its row of buttons for another).
  */
-function Header({ name, badge, children, field }: { name: string; badge?: string | null; children?: ReactNode; field?: ReactNode }) {
+function Header({ name, badge, sub, children, field }: { name: string; badge?: string | null; sub?: ReactNode; children?: ReactNode; field?: ReactNode }) {
   const badged = badge ? <span className="tang-node__badge">{badge}</span> : null;
   return (
     <header className="tang-node__header">
@@ -47,6 +49,7 @@ function Header({ name, badge, children, field }: { name: string; badge?: string
             {name}
           </span>
           {badged}
+          {sub}
         </span>
       )}
       {children}
@@ -384,9 +387,9 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const unheard = useUnheard(data.node);
   return (
     <div className={`tang-node tang-node--${type}${unheard}`}>
-      {effect ? <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" /> : null}
-      <Handle isConnectable={false} type="source" position={Position.Right} id="audioOut" className="tang-port tang-port--audio" />
-      <Header name={data.name} badge={data.format}>
+      {effect ? <AudioPort node={data.node} direction="in" /> : null}
+      <AudioPort node={data.node} direction="out" />
+      <Header name={data.name} badge={data.format} sub={silent ? null : <SendMenu node={data.node} name={data.name} />}>
         {effect ? (
           <span className="tang-node__actions">
             <MoveEffectButtons node={data.node} name={data.name} />
@@ -514,11 +517,12 @@ export function GroupNode({ data }: NodeProps<PatchNode>) {
   const unheard = useUnheard(data.node);
   return (
     <div className={`tang-node tang-node--group${unheard}`}>
-      <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" />
-      <Handle isConnectable={false} type="source" position={Position.Right} id="audioOut" className="tang-port tang-port--audio" />
+      <AudioPort node={data.node} direction="in" />
+      <AudioPort node={data.node} direction="out" />
       <Header
         name={data.name}
         badge="Group"
+        sub={<SendMenu node={data.node} name={data.name} />}
         field={
           editing ? (
             <GroupNameField
@@ -567,7 +571,7 @@ export function MasterNode({ data }: NodeProps<PatchNode>) {
   const readScopeFrames = useCallback(() => client.telemetry.framesOf("scope"), [client]);
   return (
     <div className="tang-node tang-node--master">
-      <Handle isConnectable={false} type="target" position={Position.Left} id="audioIn" className="tang-port tang-port--audio" />
+      <AudioPort node={data.node} direction="in" />
       <Header name={data.name} />
       <div className="tang-node__body">
         <Meter label="Master level" readPeak={readPeak} readClips={readClips} frames={frames} />

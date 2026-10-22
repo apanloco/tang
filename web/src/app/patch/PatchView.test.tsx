@@ -14,7 +14,8 @@ import { rig } from "../testing";
 import * as describeModule from "./describe";
 import { cableWidth } from "./describe";
 import { drivesId } from "./controls";
-import { PatchView, sameGraphStructure } from "./PatchView";
+import { PatchView } from "./PatchView";
+import { sameGraphStructure } from "./toFlow";
 
 // Wrapped, to count how often a node says what kind of modulator it is: once a render.
 vi.mock("./describe", async (importOriginal) => {
@@ -81,8 +82,9 @@ describe("the patch", () => {
       const header = (await nodeOf(id)).querySelector(".tang-node__header");
       const title = header?.querySelector(".tang-node__title");
       expect(title?.querySelector(".tang-node__name")?.textContent, name).toBe(name);
-      // (The badge is the second thing in the title, under the name, and the title is the first in the header, before the buttons.)
-      expect(Array.from(title?.children ?? [], (child) => child.className), name).toEqual(["tang-node__name", "tang-node__badge"]);
+      // (The badge is the second thing in the title, under the name, and the button that sends the node's audio is the third, on the badge's line, which a row of buttons that is full has no room for;
+      // the title is the first in the header, before the buttons.)
+      expect(Array.from(title?.children ?? [], (child) => child.className), name).toEqual(["tang-node__name", "tang-node__badge", "tang-menu-button nodrag nopan tang-node__send"]);
       expect(title?.querySelector(".tang-node__badge")?.textContent, name).toBe(badge);
       expect(header?.firstElementChild, name).toBe(title);
     }
@@ -455,7 +457,7 @@ describe("the patch", () => {
     expect(new Set(ports)).toEqual(new Set(["top"]));
   });
 
-  test("can be moved but not selected, and takes a cable only at a modulator's output (to start one) and at a parameter's or a setting's port (to end one)", async () => {
+  test("can be moved but not selected, and takes a cable only at an output (to start one) and at a parameter's, a setting's, a depth's or an input of audio's port (to end one)", async () => {
     const { view } = await rig(<PatchView />);
     await nodeOf(filter.id);
     for (const node of Array.from(view.container.querySelectorAll(".react-flow__node"))) {
@@ -468,13 +470,19 @@ describe("the patch", () => {
     expect(ports.filter((port) => port.startsWith("param-"))).toHaveLength(12); // the oscillator's eight and the filter's four
     expect(ports.filter((port) => port === "rate")).toHaveLength(1); // the LFO's rate, which another modulator's cable can end at
     expect(ports.filter((port) => port.startsWith("depth-"))).toHaveLength(1); // and the depth of its cable, which another modulator's cable can end at too
-    expect(ports).toHaveLength(15); // and no audio port: the audio path is derived, there is nothing to draw
-    // A cable is started at a modulator's output and ends at a parameter, never the other way.
-    const output = view.container.querySelector(".react-flow__handle[data-handleid='modOut']");
-    expect(output?.classList.contains("connectablestart")).toBe(true);
+    expect(ports.filter((port) => port === "audioOut")).toHaveLength(2); // the oscillator's and the filter's: audio that is sent starts there
+    expect(ports.filter((port) => port === "audioIn")).toHaveLength(2); // the filter's and the master's: audio that is sent ends there
+    expect(ports).toHaveLength(19);
+    // A cable is started at an output (a modulator's, or one of audio) and ends at a parameter, a setting, a depth or an input of audio, never the other way.
+    for (const output of Array.from(view.container.querySelectorAll(".react-flow__handle[data-handleid='modOut'], .react-flow__handle[data-handleid='audioOut']"))) {
+      expect(output.classList.contains("connectablestart"), output.getAttribute("data-handleid") ?? "?").toBe(true);
+    }
+    for (const output of Array.from(view.container.querySelectorAll(".react-flow__handle[data-handleid='audioOut']"))) {
+      expect(output.classList.contains("connectableend"), "audioOut").toBe(false);
+    }
     const endsCable = (handle: Element): boolean => {
       const id = handle.getAttribute("data-handleid") ?? "";
-      return id.startsWith("param-") || id.startsWith("depth-") || id === "rate";
+      return id.startsWith("param-") || id.startsWith("depth-") || id === "rate" || id === "audioIn";
     };
     for (const handle of connectable.filter(endsCable)) {
       expect(handle.classList.contains("connectablestart")).toBe(false);
@@ -1604,7 +1612,7 @@ describe("a patch with a group", () => {
     await rig(<PatchView />, { snapshot: grouped() });
     const group = await nodeOf(77);
     const title = group.querySelector(".tang-node__header > .tang-node__title");
-    expect(Array.from(title?.children ?? [], (child) => child.className)).toEqual(["tang-node__name", "tang-node__badge"]);
+    expect(Array.from(title?.children ?? [], (child) => child.className)).toEqual(["tang-node__name", "tang-node__badge", "tang-menu-button nodrag nopan tang-node__send"]);
     fireEvent.click(within(group).getByRole("button", { name: "Rename Pad" }));
     // (A name that is edited is a field in place of the title, and the badge goes beside it as it did.)
     const header = group.querySelector(".tang-node__header");

@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { MASTER, audioCablesFixture, fieldsFixture, reachFixture, tracerSnapshot } from "../../client/fixtures";
 import type { Port } from "../../protocol";
-import { audioCableOf, audioTakersOf, cableOf, canDraw, canDrawAudio, drawableFrom, keyOf } from "./connection";
+import { audioCableOf, audioTakersOf, cableOf, canConnect, canDraw, canDrawAudio, drawableFrom, keyOf, takersOf } from "./connection";
 import { handleOf, toFlow } from "./toFlow";
 
 /** The port of a parameter, by the plugin's own index. */
@@ -260,5 +260,69 @@ describe("an audio cable dragged on the canvas", () => {
     // (The tracer: oscillator 0, filter 1, LFO 2: a cable from the oscillator may end at the filter, beside the link of the chain, and at the mix.)
     expect([...audioTakersOf(tracerSnapshot.graph, 0)].sort()).toEqual(["1:audioIn", `${String(MASTER)}:audioIn`].sort());
     expect([...audioTakersOf(tracerSnapshot.graph, 1)]).toEqual([`${String(MASTER)}:audioIn`]);
+  });
+});
+
+describe("a drag that starts at a handle of the canvas", () => {
+  const audio = audioCablesFixture.snapshot.graph;
+  const tracer = tracerSnapshot.graph;
+  const start = (nodeId: string | null, handleType: "source" | "target" | null, handleId: string | null) => ({ nodeId, handleType, handleId });
+  const connection = (source: string, sourceHandle: string | null, target: string, targetHandle: string | null) => ({ source, sourceHandle, target, targetHandle });
+
+  test("from an output of audio can end at the inputs that take audio from it, by the name of the node and of the handle, whatever the canvas has laid out", () => {
+    const keys = takersOf(audio, [], start("8", "source", "audioOut"));
+    expect([...(keys ?? [])].sort()).toEqual([...audioTakersOf(audio, 8)].sort());
+    expect(keys?.has("9:audioIn")).toBe(true);
+    expect(keys?.has("5:audioIn")).toBe(false); // there is a cable there already
+    expect([...(takersOf(audio, [], start("0", "source", "audioOut")) ?? [])]).toEqual([`${String(MASTER)}:audioIn`]);
+  });
+
+  test("from a modulator's output can end at the ports it can still drive", () => {
+    const { nodes } = toFlow(tracer);
+    expect([...(takersOf(tracer, nodes, start("2", "source", "modOut")) ?? [])].sort()).toEqual([...drawableFrom(nodes, 2)].sort());
+    expect(takersOf(tracer, nodes, start("2", "source", "modOut"))?.has("0:param-1")).toBe(true);
+  });
+
+  test("from an output that nothing is drawn from ends nowhere, and the set that says so is empty and not none: a cable is being dragged", () => {
+    expect(takersOf(audio, [], start(String(MASTER), "source", "audioOut"))?.size).toBe(0);
+    expect(takersOf(audio, [], start("7", "source", "audioOut"))?.size).toBe(0);
+    expect(takersOf(audio, [], start("77", "source", "audioOut"))?.size).toBe(0);
+  });
+
+  test("from anywhere else is no drag of a cable: an input, a port of a control, no handle, no node, a node that is no number, a session that is not there yet", () => {
+    const { nodes } = toFlow(tracer);
+    expect(takersOf(audio, [], start("8", "target", "audioIn"))).toBeNull();
+    expect(takersOf(audio, [], start("8", "target", "audioOut"))).toBeNull();
+    expect(takersOf(audio, [], start("8", "source", "audioIn"))).toBeNull();
+    expect(takersOf(audio, [], start("8", "source", "param-1"))).toBeNull();
+    expect(takersOf(audio, [], start("8", "source", null))).toBeNull();
+    expect(takersOf(audio, [], start("8", null, "audioOut"))).toBeNull();
+    expect(takersOf(audio, [], start(null, "source", "audioOut"))).toBeNull();
+    expect(takersOf(audio, [], start("eight", "source", "audioOut"))).toBeNull();
+    expect(takersOf(audio, [], start("8.5", "source", "audioOut"))).toBeNull();
+    expect(takersOf(null, [], start("8", "source", "audioOut"))).toBeNull();
+    expect(takersOf(tracer, nodes, start("2", "target", "modOut"))).toBeNull();
+    expect(takersOf(tracer, nodes, start("2", "source", "audioOut"))?.size).toBe(0); // (an LFO has no audio to send)
+  });
+
+  test("is a cable when the controller would take it: an audio cable where one can be drawn, and a cable of modulation where the modulator can drive the port", () => {
+    const { nodes } = toFlow(tracer);
+    expect(canConnect(audio, [], connection("8", "audioOut", "9", "audioIn"))).toBe(true);
+    expect(canConnect(audio, [], connection("8", "audioOut", String(MASTER), "audioIn"))).toBe(true);
+    expect(canConnect(audio, [], connection("8", "audioOut", "5", "audioIn"))).toBe(false); // there already
+    expect(canConnect(audio, [], connection("9", "audioOut", "5", "audioIn"))).toBe(false); // round
+    expect(canConnect(audio, [], connection("8", "audioOut", "10", "audioIn"))).toBe(false); // a lane has no input
+    expect(canConnect(tracer, nodes, connection("2", "modOut", "0", "param-1"))).toBe(true);
+    expect(canConnect(tracer, nodes, connection("2", "modOut", "1", "param-0"))).toBe(false); // already driven
+  });
+
+  test("is no cable when it ends anywhere that does not fit where it starts: audio at a parameter, a modulator at an input of audio, either with the session gone", () => {
+    const { nodes } = toFlow(tracer);
+    expect(canConnect(tracer, nodes, connection("0", "audioOut", "1", "param-1"))).toBe(false);
+    expect(canConnect(tracer, nodes, connection("2", "modOut", "1", "audioIn"))).toBe(false);
+    expect(canConnect(tracer, nodes, connection("0", "audioIn", "1", "audioOut"))).toBe(false);
+    expect(canConnect(null, nodes, connection("0", "audioOut", String(MASTER), "audioIn"))).toBe(false);
+    // (A cable of modulation is judged by the nodes of the canvas, which need no session of their own.)
+    expect(canConnect(null, nodes, connection("2", "modOut", "0", "param-1"))).toBe(true);
   });
 });

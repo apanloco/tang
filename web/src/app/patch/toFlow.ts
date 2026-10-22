@@ -699,6 +699,9 @@ export function sameStructure(a: Graph, b: Graph): boolean {
   return true;
 }
 
+/** Whether two graphs (or the lack of one) are laid out the same: what the canvas depends on, which is not the values. */
+export const sameGraphStructure = (a: Graph | null, b: Graph | null): boolean => (a && b ? sameStructure(a, b) : a === b);
+
 /** Whether two nodes are placed alike: both left to the layout, or at the same place. */
 function samePlace(x: NodeUi | undefined, y: NodeUi | undefined): boolean {
   // (A place that is missing is neither coordinate: it equals no place that there is.)

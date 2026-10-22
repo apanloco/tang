@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { ReactFlow, ReactFlowProvider } from "@xyflow/react";
-import type { NodeTypes } from "@xyflow/react";
+import type { NodeProps, NodeTypes } from "@xyflow/react";
 import { cleanup, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { fieldsFixture } from "../../client/fixtures";
 import { rig } from "../testing";
 import { ConnectingContext } from "./connection";
-import { DepthPort, ModulatorSettingCell, ParamCell } from "./controls";
+import { AudioPort, DepthPort, ModulatorSettingCell, ParamCell } from "./controls";
 
 afterEach(cleanup);
 
@@ -83,5 +83,73 @@ describe("the port of a control", () => {
   test("does not take for a node what is another node's: the key is of the node and of the handle", async () => {
     const { ports } = await cells(new Set(["13:rate", "40:attack", "30:param-1", "14:depth-0", "50:depth-1"]));
     expect(ports.some((port) => port.classList.contains("tang-port--takes"))).toBe(false);
+  });
+});
+
+describe("the audio ports of a node", () => {
+  // Two nodes, each with the input and the output of audio that a node of the canvas has (the session is the one a node reads its own values from, and these read none).
+  const AUDIO_TYPES: NodeTypes = {
+    audio: ({ data }: NodeProps) => (
+      <div>
+        <AudioPort node={data.node as number} direction="in" />
+        <AudioPort node={data.node as number} direction="out" />
+      </div>
+    ),
+  };
+
+  async function audioPorts(connecting: ReadonlySet<string> | null) {
+    const { view } = await rig(
+      <ReactFlowProvider>
+        <ConnectingContext.Provider value={connecting}>
+          <div style={{ width: 800, height: 600 }}>
+            <ReactFlow
+              nodes={[
+                { id: "3", type: "audio", position: { x: 0, y: 0 }, data: { node: 3 } },
+                { id: "4", type: "audio", position: { x: 300, y: 0 }, data: { node: 4 } },
+              ]}
+              edges={[]}
+              nodeTypes={AUDIO_TYPES}
+            />
+          </div>
+        </ConnectingContext.Provider>
+      </ReactFlowProvider>,
+      { snapshot: fieldsFixture.snapshot },
+    );
+    await screen.findByTestId("rf__node-4");
+    const ports = Array.from(view.container.querySelectorAll(".react-flow__handle"));
+    const named = (node: number, handle: string) => ports.find((port) => port.getAttribute("data-nodeid") === String(node) && port.getAttribute("data-handleid") === handle);
+    return { ports, named };
+  }
+
+  test("is an output where a cable is started and is not where one ends, on the right edge, and an input where one ends and is not where one starts, on the left", async () => {
+    const { ports, named } = await audioPorts(null);
+    expect(ports.map((port) => `${port.getAttribute("data-nodeid") ?? "?"}:${port.getAttribute("data-handleid") ?? "?"}`)).toEqual(["3:audioIn", "3:audioOut", "4:audioIn", "4:audioOut"]);
+    for (const node of [3, 4]) {
+      const output = named(node, "audioOut");
+      expect([output?.getAttribute("data-handlepos"), output?.classList.contains("source"), output?.classList.contains("connectablestart"), output?.classList.contains("connectableend")], `output of ${String(node)}`).toEqual(["right", true, true, false]);
+      const input = named(node, "audioIn");
+      expect([input?.getAttribute("data-handlepos"), input?.classList.contains("target"), input?.classList.contains("connectablestart"), input?.classList.contains("connectableend")], `input of ${String(node)}`).toEqual(["left", true, false, true]);
+      // (The stylesheet has them by the direction: the output says so to the pointer, and the input that takes a cable grows to a strip.)
+      expect([output?.classList.contains("tang-port--out"), output?.classList.contains("tang-port--in")], `output of ${String(node)}`).toEqual([true, false]);
+      expect([input?.classList.contains("tang-port--in"), input?.classList.contains("tang-port--out")], `input of ${String(node)}`).toEqual([true, false]);
+    }
+    for (const port of ports) expect(port.classList.contains("tang-port--audio"), port.getAttribute("data-handleid") ?? "?").toBe(true);
+  });
+
+  test("says that it takes the cable that is dragged when its node is among those that do, an input only, and no other does", async () => {
+    // (Node 4 has the key of its output in the set, which is no place that audio ends: a cable that is dragged ends at inputs, so that it is not the input of node 4 that takes it, nor node 3's output.)
+    const { ports, named } = await audioPorts(new Set(["3:audioIn", "4:param-1", "4:audioOut"]));
+    expect(ports.filter((port) => port.classList.contains("tang-port--takes")).map((port) => `${port.getAttribute("data-nodeid") ?? "?"}:${port.getAttribute("data-handleid") ?? "?"}`)).toEqual(["3:audioIn"]);
+    expect(named(3, "audioOut")?.classList.contains("tang-port--takes")).toBe(false);
+    expect(named(4, "audioIn")?.classList.contains("tang-port--takes")).toBe(false);
+    expect(named(4, "audioOut")?.classList.contains("tang-port--takes")).toBe(false);
+  });
+
+  test("says nothing of the sort while no cable is dragged, or one that nothing takes, or for the key of another node's input", async () => {
+    for (const connecting of [null, new Set<string>(), new Set(["30:audioIn", "13:audioIn", "5:audioIn"])]) {
+      const { ports } = await audioPorts(connecting);
+      expect(ports.some((port) => port.classList.contains("tang-port--takes"))).toBe(false);
+      cleanup();
+    }
   });
 });

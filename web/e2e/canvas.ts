@@ -39,6 +39,15 @@ export async function drag(page: Page, from: Locator, to: Locator | { x: number;
 
 export const cables = (page: Page): Locator => page.locator(".tang-cable--modulation");
 
+/** The output of audio of a node, where an audio cable is started. */
+export const audioOut = (target: Locator): Locator => target.locator('.react-flow__handle[data-handleid="audioOut"]');
+
+/** The input of audio of a node (an effect's, a group's or the master's), where an audio cable ends. */
+export const audioIn = (target: Locator): Locator => target.locator('.react-flow__handle[data-handleid="audioIn"]');
+
+/** The audio cables that have been drawn (the links of the audio path, which are not drawn by anybody, are not among them). */
+export const sends = (page: Page): Locator => page.locator(".tang-cable--send");
+
 /** The port of a setting of a modulator (an LFO's rate, a stage of an envelope), where a cable from another modulator ends. */
 export const setting = (modulator: Locator, name: string): Locator => modulator.locator(`.react-flow__handle[data-handleid="${name}"]`);
 

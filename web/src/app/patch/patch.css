@@ -77,21 +77,45 @@
   font-weight: 600;
 }
 
-/* The name, and under it, in small type, what kind of plugin it is (the badge): the buttons at the other end leave the name what is left of the header, which a badge beside it took 50 px of. */
+/*
+ * The name, and under it, in small type, what kind of plugin it is (the badge) and the button that sends the node's audio: the buttons at the other end leave the name what is left of the header,
+ * which a badge beside it took 50 px of, and a lane's row of buttons has no room for one more. The name has the whole width; the badge and the button share the line under it.
+ */
 .tang-node__title {
-  display: flex;
+  display: grid;
   flex: 1;
-  flex-direction: column;
-  justify-content: center;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  align-content: center;
+  align-items: center;
+  column-gap: var(--tang-space-2);
   min-width: 0;
 }
 
+.tang-node__title > .tang-node__name {
+  grid-column: 1 / -1;
+}
+
 .tang-node__title .tang-node__badge {
-  align-self: flex-start;
   padding: 0;
   background: none;
   font-size: 10px;
   line-height: 1.2;
+}
+
+/* (The one that sends the audio of the node, on the badge's line: small, in the colour of the cables it draws, and quiet until it is looked at.) */
+.tang-menu-button.tang-node__send {
+  min-width: 22px;
+  height: 16px;
+  padding: 0 5px;
+  border-color: transparent;
+  background: none;
+  color: var(--tang-send);
+  font-size: 11px;
+}
+
+.tang-menu-button.tang-node__send:hover:not(:disabled),
+.tang-menu-button.tang-node__send[aria-expanded="true"] {
+  border-color: var(--tang-send);
 }
 
 /* The note length that a modulator follows the tempo by, in its header before the button that takes it out: it keeps the width its chosen name needs, and the node's name is cut instead. */
@@ -437,6 +461,11 @@
   opacity: 1;
 }
 
+/* An output of audio is where a cable of audio is started: it says so to the pointer. */
+.tang-port--audio.tang-port--out {
+  cursor: crosshair;
+}
+
 /* Cables. */
 .tang-cable {
   fill: none;
@@ -445,6 +474,11 @@
 .tang-cable--audio {
   stroke: var(--tang-text-muted);
   stroke-width: 2px;
+}
+
+/* An audio cable that a person has drawn, in the colour of audio that is sent, as thick as it is loud (the stroke's width is set from the level), over the plain links of the audio path. */
+.tang-cable--send {
+  stroke: var(--tang-send);
 }
 
 /* A cable is as bright as what its modulator puts out is high (`--signal`, from 0 to 1, written on every frame the output
@@ -487,6 +521,11 @@
   height: 14px;
   margin: 0;
   accent-color: var(--tang-modulation);
+}
+
+/* The level of an audio cable is the same slider, in the colour of the cable. */
+.tang-level__slider {
+  accent-color: var(--tang-send);
 }
 
 .tang-depth__body .tang-livebar {
@@ -761,6 +800,58 @@
 /* A modulator's output is where a cable is started: it says so to the pointer. */
 .tang-port--mod {
   cursor: crosshair;
+}
+
+/*
+ * While an audio cable is dragged, an input that takes it is where it can be let go, along the whole left edge of its node: the port grows from its dot to a strip, as a control's port grows
+ * to its cell (React Flow takes the port under the pointer, and otherwise the nearest one within the radius). The dot is drawn over it. It is only there while a cable is dragged.
+ */
+.tang-port--audio.tang-port--takes {
+  background: var(--tang-send);
+  box-shadow: 0 0 0 4px rgb(242 153 74 / 0.4);
+}
+
+.tang-port--audio.tang-port--in.tang-port--takes {
+  top: 0;
+  left: -14px;
+  width: 28px;
+  height: 100%;
+  transform: none;
+  border: 0;
+  border-radius: var(--tang-radius);
+  background: rgb(242 153 74 / 0.1);
+  box-shadow: inset 0 0 0 1px rgb(242 153 74 / 0.4);
+}
+
+.tang-port--audio.tang-port--in.tang-port--takes::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--tang-send);
+  box-shadow: 0 0 0 4px rgb(242 153 74 / 0.4);
+}
+
+.tang-port--audio.tang-port--in.tang-port--takes.valid {
+  background: rgb(242 153 74 / 0.22);
+  box-shadow: inset 0 0 0 2px rgb(242 153 74 / 0.9);
+}
+
+/* The cable that is being dragged: as a cable of modulation looks, or, for audio that is sent, as the audio cables look once they are drawn. */
+.tang-patch .react-flow__connection-path {
+  stroke: var(--tang-modulation);
+  stroke-width: 2;
+  stroke-dasharray: 7 5;
+}
+
+.tang-patch[data-connecting="audio"] .react-flow__connection-path {
+  stroke: var(--tang-send);
+  stroke-width: 3;
+  stroke-dasharray: none;
 }
 
 /* The button that arranges the nodes again, at the corner of the canvas (it looks as the buttons of the bar do). */

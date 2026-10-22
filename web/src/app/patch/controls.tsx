@@ -11,8 +11,8 @@ import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { rateAt } from "../../client/tempo";
-import { cableDepthOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
-import { DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, SYNC_DIVISIONS, SYNC_FREE, WAVEFORMS } from "../../protocol";
+import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
+import { CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, SYNC_DIVISIONS, SYNC_FREE, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
 import { formatValue, Knob } from "../../ui/Knob";
@@ -675,6 +675,27 @@ export function DepthPort({ node, edge, driven }: { node: NodeId; edge: EdgeId; 
 }
 
 /**
+ * The place on the edge of a node where audio leaves it (`out`, on the right: a cable is started there and none ends there) or comes in (`in`, on the left: a cable ends there and
+ * none is started there): a handle of the node named `audioOut` or `audioIn`, and, while a cable is dragged, an input saying whether it takes that one (an output never does: a
+ * cable that is dragged from one ends at an input).
+ */
+export function AudioPort({ node, direction }: { node: NodeId; direction: "in" | "out" }) {
+  const input = direction === "in";
+  const takes = useContext(ConnectingContext)?.has(keyOf(node, "audioIn")) ?? false;
+  const classes = ["tang-port", "tang-port--audio", input ? "tang-port--in" : "tang-port--out", ...(input && takes ? ["tang-port--takes"] : [])];
+  return (
+    <Handle
+      isConnectableStart={!input}
+      isConnectableEnd={input}
+      type={input ? "target" : "source"}
+      position={input ? Position.Left : Position.Right}
+      id={input ? "audioIn" : "audioOut"}
+      className={classes.join(" ")}
+    />
+  );
+}
+
+/**
  * A parameter in a node with a place on its top edge where a cable from a modulator ends. (That the control is
  * there when a cable ends at it is for `toFlow` to see to: a parameter that is driven is always among those a node shows.)
  */
@@ -790,6 +811,46 @@ export const CableDepthControl = memo(function CableDepthControl({ edge, label }
         />
         {driven && readEffective ? <LiveBar label={`Depth of ${label}, as modulated`} read={readEffective} min={min} max={max} centred format={percent} frames={frames} /> : null}
       </span>
+      {/* (Not an `<output>`, which is a status to a screen reader: the slider has said it.) */}
+      <span className="tang-depth__value" aria-hidden="true">
+        {percent(shown)}
+      </span>
+    </label>
+  );
+});
+
+/**
+ * How loud an audio cable is, as a slider on the cable, as the depth of a cable of modulation is (`CableDepthControl`): the level the user has set, from nothing to twice, which is
+ * shown until the engine has answered, at most one intent in a frame, and one that ends a gesture goes at once. `label` says what the cable joins.
+ */
+export const CableLevelControl = memo(function CableLevelControl({ edge, label }: { edge: EdgeId; label: string }) {
+  const control = useDrive().cableGain(edge);
+  const stored = useClientState((state) => cableGainOf(state, edge));
+  const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const shown = pending ?? stored;
+  if (shown === undefined) return null;
+  const [min, max] = CABLE_GAIN_RANGE;
+  const commit = (): void => {
+    control.commit();
+  };
+  return (
+    <label className="tang-depth tang-level">
+      <input
+        type="range"
+        className="tang-depth__slider tang-level__slider"
+        aria-label={`Level of ${label}`}
+        aria-valuetext={percent(shown)}
+        min={min}
+        max={max}
+        step={0.01}
+        value={shown}
+        onChange={(event) => {
+          control.set(event.target.valueAsNumber);
+        }}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+      />
       {/* (Not an `<output>`, which is a status to a screen reader: the slider has said it.) */}
       <span className="tang-depth__value" aria-hidden="true">
         {percent(shown)}

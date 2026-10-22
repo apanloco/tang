@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { ModulatorSource } from "../../protocol";
-import { cableWidth, controlDetail, kindOf, outputRange, outputScale, seconds, settingsOf } from "./describe";
+import { cableWidth, controlDetail, kindOf, outputRange, outputScale, seconds, sendWidth, settingsOf } from "./describe";
 
 const lfo: ModulatorSource = { type: "lfo", waveform: "triangle", rate: 0.5, retrigger: false, fade: 0, sync: 0 };
 const envelope: ModulatorSource = { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 2 };
@@ -101,6 +101,26 @@ describe("how thick a cable is", () => {
   test("is no thicker for more than there can be", () => {
     expect(cableWidth(5)).toBe(3.5);
     expect(cableWidth(-5)).toBe(3.5);
+  });
+});
+
+describe("how thick an audio cable is", () => {
+  test("is a line a little thicker than the audio path's for no level, and thicker for more, up to the most a cable can carry", () => {
+    expect(sendWidth(0)).toBe(2);
+    expect(sendWidth(0.5)).toBe(2.5);
+    expect(sendWidth(1)).toBe(3);
+    expect(sendWidth(1.5)).toBe(3.5);
+    expect(sendWidth(2)).toBe(4);
+  });
+
+  test("is no thicker for more than there can be, and no thinner for less than nothing", () => {
+    expect(sendWidth(5)).toBe(4);
+    expect(sendWidth(-1)).toBe(2);
+  });
+
+  test("is not the width of a cable of modulation of the same number: a level goes to 2 and a depth to 1", () => {
+    expect(sendWidth(1)).not.toBe(cableWidth(1));
+    expect(sendWidth(2)).toBeGreaterThan(cableWidth(1));
   });
 });
 
