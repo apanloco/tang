@@ -344,7 +344,7 @@ beside `volume`, written only when on. In the model they are `InstrumentNode::mu
   dimmed and its effects' not), pinned to the engine by `fixtures/audible.json` (no cables) and `fixtures/audibleCables.json` (two groups and four lanes with five cables of every kind of start and
   end, every combination of their mutes and solos: 4,096 cases, with the engine's sound of each lane's own notes, of its chain and of each bus read). What the effects of a lane hold of its own sound (a reverb's tail,
   a delay's repeats) is heard when the lane is let in for a send, as it is when a mute is let go: the head gate shuts what comes in, and `Plugin` has no reset.
-- The terminal (`M` and `S`, see the key table) and the page (the "Mute / Solo" cell of a lane's
+- The terminal (`M` and `S`, see the key table, and the Patch tab's) and the page (the "Mute / Solo" cell of a lane's
   and a group's node, which draws what cannot be heard dimmed) set them through the intents
   `SetMute` and `SetSolo`, which are steps of the history.
 
@@ -447,7 +447,7 @@ gain = 0.4
 - **The oracle** has the cables: `Engine::facts` gives the engine's cables (`Facts`, `CableFacts`) and the oracle holds them to the model's after every block, the corpus has two sessions with cables (`sends`: two
   oscillators into one reverb, `patched`: a cable of every kind of start and end) and a scenario that edits them while it plays (`edited:cables`: `Edit::{AddCable, CableGain, RemoveCable}`, a lane taken out and put back
   by Undo with its cables; and `edited:solos`, the solos of lanes and groups that cables carry between, step 78); the loop that the plan replaced (`process_legacy`) has no cables, so a scenario that has some is not held to it (`Scenario::has_cables`).
-- **The terminal** does not show them yet: it keeps them through a load, an edit and a save, and a front-end that asks for one gets it (P3e is the terminal's patchbay). **The page draws them** (P3d, step 76, `docs/web-ui.md` §9.3): each
+- **The terminal draws them** on the Patch tab (P3e, step 79: a matrix of outputs against inputs, see "Patch tab"). **The page draws them** (P3d, step 76, `docs/web-ui.md` §9.3): each
   audio cable of the session is an edge `send:<id>` (`SendEdge`, `app/patch/edges.tsx`), amber (`--tang-send`) and as thick as it is loud (`sendWidth`: 2 to 4 pixels for a level of 0 to 2), over the links of the audio path and under the cables of
   modulation, with a slider for its level at its middle (`CableLevelControl`: `Level of Oscillator 2 → Reverb`, 0 to 200%, a hundredth a step, turned as a depth is, `Drive.cableGain`) and the button that takes it out beside it (the focus goes to the menu of
   the node it started at). Every lane's instrument, effect and group has an output of audio on its right edge and every effect, group and the master an input on its left (`AudioPort`: a handle that starts a cable or ends one and not both; a lane has no
@@ -1159,7 +1159,8 @@ watch it without resetting it. Clips from before the TUI started do not light it
 | 1 | Session | Instrument and effects chain editor with parameter control |
 | 2 | Piano | Virtual piano using computer keyboard |
 | 3 | Scope | The output as a wave or as a spectrum (see "Scope tab") |
-| 4 | Help | Keybindings and usage reference (static, scrollable) |
+| 4 | Patch | The audio cables as a matrix of outputs against inputs, and the way out, mute and solo of the lanes and groups (see "Patch tab") |
+| 5 | Help | Keybindings and usage reference (static, scrollable) |
 
 TODO: the Piano tab draws the keyboard, the scale and the notes being held (see "Piano
 tab"), but takes no note input yet.
@@ -1170,7 +1171,7 @@ These work from any tab (except where noted for the Piano tab):
 
 | Key | Action |
 |-----|--------|
-| `1` `2` `3` `4` | Switch to tab by number |
+| `1` `2` `3` `4` `5` | Switch to tab by number |
 | `Tab` | Next tab |
 | `Shift+Tab` | Previous tab |
 | `Ctrl+Q` | Quit |
@@ -1260,7 +1261,7 @@ numeric `params` values (the index into the label list).
 | `R` | Set the selected instrument's key range (opens range popup, prefilled) — or, on a group header, rename the group (opens rename popup, prefilled) |
 | `v` | Set the output volume of the selected instrument or group (host-side gain, opens value popup) |
 | `M` / `S` | Mute / solo the lane or group the selected entry is of, as the intents `SetMute` and `SetSolo` do (see "Mute and solo"): the instrument, its effects, modulators and pattern are the lane's, a group's header, bus effects and modulators are the group's. They toggle, are steps of the history, and show at the end of the line as `[mute]`, `[solo]` or both (`▦ Pad  [mute]`, `♪ Oscillator  [Built-in]  [mute] [solo]`); the action bar of an instrument and of a group has them (and, so that the bar fits 120 columns, `replace`, `vol` and `add fx`) |
-| `w` | Cut / give back the way out of the lane or group the selected entry is of, as the intent `SetRoute` does (see "The way out"): the lane's or group's end goes nowhere but its audio cables. It toggles, is a step of the history, is refused (logged) where giving it back would make the audio go round, and shows at the end of the line as `[no out]`, after `[mute]` and `[solo]`; the Help tab lists it, the action bar does not |
+| `w` | Cut / give back the way out of the lane or group the selected entry is of, as the intent `SetRoute` does (see "The way out"): the lane's or group's end goes nowhere but its audio cables. It toggles, is a step of the history, is refused (logged) where giving it back would make the audio go round, and shows at the end of the line as `[no out]`, after `[mute]` and `[solo]`; the Help tab lists it, the action bar does not; the Patch tab has it too, for the row's lane or group |
 | `a` | Add effect to the selected instrument, or — on a group/group-effect node — to the group's bus chain (opens effect selector popup). New effects default to 0.5 mix (half-wet); `builtin:filter` defaults to 1.0 (fully wet, since a half-wet filter barely filters), and so does `builtin:drive` (its latency would put the dry sound out of step) |
 | `m` | Chain focus: add an empty LFO modulator — to the instrument's lane rack on an instrument-side node, or to the group's rack on a group / group-bus node. Param focus: modulate the selected parameter — opens a popup to bind it to a new (LFO / envelope / macro / velocity / key / step sequencer) or existing modulator (a group bus-effect param binds a group modulator; an instrument/effect param binds a lane modulator; a **modulator's own param** binds a sibling modulator for cross-mod; a new modulator and its cable are one step of the history, and a modulator that drives the parameter already is not attached again) |
 | `l` | Param focus: MIDI-learn the selected parameter — arms a MIDI modulator and binds the next incoming CC / pitch-bend / aftertouch to it (works on plugin params and modulator fields) |
@@ -1528,6 +1529,62 @@ TODO: a time base for the strip (it is 21 ms; `Left` and `Right` are the paramet
 terminal is too short for the strip (it shows nothing then), and the scope's choices and the strip's being on kept with the session or the config (the page's are not either: Open question 8).
 TODO: a reading of the pitch (a bin of the spectrum is 23 Hz wide: the peak could be interpolated between bins), a vertical zoom for a quiet sound (the tracer's wave, at its oscillator volume of 0.1, is two pixels high on the page's scope),
 and a key that freezes the picture. The page keeps the view and the time base in the master node, so that a reload goes back to the wave at 21 ms.
+
+### Patch tab
+
+The audio cables of the session (see "Audio cables (`[[cable]]`)") as a matrix, the pin matrix of an old modular synthesizer (P3e of `docs/patch-graph.md` §11.6, step 79; `src/tui/patch_view.rs`): a **row** for every output of audio, a **column** for every
+input of audio, and at each crosspoint the cable that is drawn from the one to the other, or none.
+
+```
+┌ Patch ───────────────────────────────────────────────────────────────────────┐
+│outputs ↓  inputs →              L1   L1   L2   G1   G1  Mix                  │
+│                               Filt Dela Driv  bus Reve                       │
+│▪G1     L1  ♪ Oscillator          ·    ·    ·    · 0.60    ·                  │
+│        L1    fx Filter           ×    ·    ·    ·    ·    ·                  │
+│        L1    fx Delay            ×    ×    ·    ·    ·    ·                  │
+│▪Mix    L2  ♪ Oscillator          ·    ·    ·    · 0.40    ·                  │
+│        L2    fx Drive            ·    ·    ×    ·    ·    ·                  │
+│▪Mix    G1  ▦ Group 1             ×    ×    ·    ×    ×    ·                  │
+│        G1    fx Reverb (bus)     ×    ×    ·    ×    ×    ·                  │
+│──────────────────────────────────────────────────────────────────────────────│
+│L2 Oscillator (the instrument's output, after its volume)  ▸  G1 Reverb (bus) │
+│A cable at level 0.40: Enter takes it out, + and - turn it, e types a level   │
+│L2's way out goes to the mix (w cuts it)                                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Rows** (the outputs, `CableFrom`): the instrument of each lane (`♪ Oscillator`: what it puts out after the lane's volume and before its chain; `(empty)` for a lane that has none) and each effect of its chain (`  fx Filter`), in the order of the
+  lanes, then each group (`▦ Pad`: what it puts out after its effects, its pan and its fade) and each effect of its bus (`  fx Reverb (bus)`). The tag in front of a row says whose it is: `L1` for the first lane, counted from 1 in the order of the
+  session, `G1` for the first group; the keys on any row of a lane or a group are that lane's or group's.
+- **Columns** (the inputs, `CableTo`): each effect of each lane's chain, each group's bus (`bus`) and each effect of it, and the mix (`Mix`), headed by the tag of what has it and the first four letters of its name; a lane has no input.
+- **Flags**, on the first row of a lane or a group: its way out (`▪G1`: it goes to the bus of group 1, `▪Mix`: to the mix, `▫`: it is cut), and `M` and `S` while it is muted and soloed.
+- **A crosspoint** is the level of the cable that is drawn there (`0.60`, yellow), a dot where there is none and one can be drawn, and a cross (dim red) where one cannot, because the audio would go round (a cable from an effect to one before it in the same
+  chain, from a group's output to a lane in it): the wiring with a cable there would not compile (`SessionModel::cable_problem`, the rule that the controller and the audio thread refuse by). The cell under the cursor is reversed.
+- **The foot**, three lines under a rule: what the cursor joins (`L2 Oscillator (the instrument's output, after its volume) ▸ G1 Reverb (bus)`), what is at the crosspoint (the cable and its level, none, or why none can be) and the way out of the lane
+  or group of the row, muted and soloed if it is, or what the last key was refused with (red, bold) until the next key. The terminal needs 12 rows of room inside the tab for it.
+- When the session does not fit, the title says what is in view (`outputs 5–10 of 10 · inputs 4–8 of 8`) and the view follows the cursor.
+
+| Key | Action |
+|-----|--------|
+| `Up` / `Down` / `Left` / `Right` | Move the cursor |
+| `PageUp` / `PageDown` | A page of rows, less one |
+| `Home` / `End` | The first / the last input |
+| `Enter` / `Space` | Draw a cable at the crosspoint, at level 1 (`AddCable`), or take the one that is there out (`RemoveEdge`). Where the audio would go round nothing is asked, and the foot says why |
+| `+` (`=`) / `-` (`_`) | Turn the level of the cable by 0.05 (`SetCableGain`: held to 0 … 2, and to hundredths, so that a run of steps does not drift; nothing is asked at the ends) |
+| `e` | Type the level of the cable (the value popup; text that is not a number changes nothing) |
+| `d` / `Delete` / `Backspace` | Take the cable out |
+| `w` | Cut / give back the way out of the lane or group of the row (`SetRoute`; the same as `w` on the Session tab) |
+| `M` / `S` | Mute / solo the lane or group of the row (`SetMute`, `SetSolo`) |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo: the global keys; a cable drawn, turned or taken out is a step of the history as the page's is |
+
+A click puts the cursor on the crosspoint it is on (or on the row, on its name), the wheel moves it three rows, and the items of the tab's action bar press their keys. Everything that is asked is an intent, carried out by the controller as a browser's
+request is (`State::try_apply`: the view reacts as it does to any intent, and a refusal is said in the foot, where `State::apply`, which the other tabs use, only logs it: `giving that lane its way out would make the audio go round, by the cables there
+are`), so that a cable drawn here is in the page's graph and the history at once, and the other way round. The tab reads the session from the model on every frame (`Bench::of`: the rows and the columns), so that what a browser does under `tang --web` is
+on it with the next frame; the cursor goes with the output and the input it is on when rows and columns come and go (`Patch::settle`), and what a refusal is worked out of (a compile of the wiring for each crosspoint) is worked out for the crosspoints
+in view only and kept until the wiring changes (`Patch::cell`). The tab bar has five tabs now, 58 columns: the tempo has room beside them from 66 columns, and the clip light as well from 72 (measured; below that they are drawn over the last tab).
+The matrix, the cursor and the keys have 26 unit tests of their own, and the tab through the real loop 24 tests with four snapshots; a run of 121 mutants of the tab and its place in the program found ten tests that were missing (they are held now) and three clamps of the cursor keys that `settle` made redundant (taken out).
+TODO: not here: a cable drawn with the mouse (a drag from an output to an input), a light at a pin for what the cable carries (the page has none either), rows dimmed for what is not heard (the page dims the nodes: `audibleAt`), the cables in the tree of the
+Session tab, and the links of a lane's chain, which are the template's and not cables.
 
 ### Help tab
 
@@ -2304,7 +2361,7 @@ events through `process_event`, and checks two things: the rendered frame
 (characters **and** styles, via `insta` and ratatui's `TestBackend`; snapshots
 in `src/tui/snapshots/`) and the commands the TUI sent to the audio thread. After
 an intentional UI change run `INSTA_UPDATE=always cargo test golden` and review
-the snapshot diff.
+the snapshot diff. The Patch tab's tests are in the module `patch_tab` of that file, and its matrix, cursor and keys have unit tests of their own in `src/tui/patch_view.rs`.
 
 ## The oracle
 
@@ -2878,7 +2935,7 @@ has no plugin format, sound card or interface in it (see "The kernel").
   kernel under today's structure with the old engine as a bit-for-bit oracle, not by a routing table that would be thrown away. It contains the two ideas
   at the end of this list (a keyboard as a node, audio input as a source). The user said go on 2026-10-20 ("lets go e2! I like this. I like it all!"), which takes the
   recommendations of its §11.7 as the plan. **P0 (the oracle and the boundary) is built** (step 70 of `docs/web-ui.md`; see "The oracle"); **P1 (the kernel,
-  with today's lane and group as two coarse nodes, bit for bit equal to the old engine) is built** (step 71; see "The kernel"); **P2 (ids for places, narrowed to the nodes that cables will join: the engine has the model's ids for its lanes, groups and effects, and the plan names them) is built** (step 72); **P3a (the lane and the group as rows of nodes in the plan, and the kernel's input that is its cable's own buffer) is built** (step 73); **P3b (audio cables in the engine: a cable is a node of the plan that comes, goes and is turned over a buffer, goes with the mute of its lane and is not drawn if it would close a loop) is built** (step 74); **P3c-1 (cables as sends: the model, the graph a client gets, the intents `AddCable` and `SetCableGain`, `RemoveEdge` for an audio cable, the controller's refusals of a loop, the cables that go with a node, undo and the file's `[[cable]]`; see "Audio cables (`[[cable]]`)") is built** (step 75); **P3d (the page draws audio cables: dragged from an output to an input that takes them, a level on the cable, a menu for the keyboard, undo, and the first example with two oscillators into one reverb: `examples/shared-reverb.toml`) is built** (step 76); **P3c-2a (the way out of a lane and of a group, `route = "none"`: in the file, the model, the engine, the intents and the history, the terminal's `w` and a button on the page, with the oracle's `routed` session and `edited:routes` scenario; see "The way out") is built** (step 77); **P3c-2b (the law of mute and solo for what a cable carries, with its head gate: the engine, the oracle's `edited:solos`, the page's copy of the law and the mock engine's meters; see "Mute and solo") is built** (step 78); the rest of P3 (`docs/patch-graph.md` §11.6: P3e the terminal's patchbay, P3f latency, P3g the ports that plugins have) is next
+  with today's lane and group as two coarse nodes, bit for bit equal to the old engine) is built** (step 71; see "The kernel"); **P2 (ids for places, narrowed to the nodes that cables will join: the engine has the model's ids for its lanes, groups and effects, and the plan names them) is built** (step 72); **P3a (the lane and the group as rows of nodes in the plan, and the kernel's input that is its cable's own buffer) is built** (step 73); **P3b (audio cables in the engine: a cable is a node of the plan that comes, goes and is turned over a buffer, goes with the mute of its lane and is not drawn if it would close a loop) is built** (step 74); **P3c-1 (cables as sends: the model, the graph a client gets, the intents `AddCable` and `SetCableGain`, `RemoveEdge` for an audio cable, the controller's refusals of a loop, the cables that go with a node, undo and the file's `[[cable]]`; see "Audio cables (`[[cable]]`)") is built** (step 75); **P3d (the page draws audio cables: dragged from an output to an input that takes them, a level on the cable, a menu for the keyboard, undo, and the first example with two oscillators into one reverb: `examples/shared-reverb.toml`) is built** (step 76); **P3c-2a (the way out of a lane and of a group, `route = "none"`: in the file, the model, the engine, the intents and the history, the terminal's `w` and a button on the page, with the oracle's `routed` session and `edited:routes` scenario; see "The way out") is built** (step 77); **P3c-2b (the law of mute and solo for what a cable carries, with its head gate: the engine, the oracle's `edited:solos`, the page's copy of the law and the mock engine's meters; see "Mute and solo") is built** (step 78); **P3e (the terminal's patchbay: the Patch tab, a matrix of outputs against inputs; see "Patch tab") is built** (step 79); the rest of P3 (`docs/patch-graph.md` §11.6: P3f latency, P3g the ports that plugins have) is next
 - Recording audio output to WAV file
 - Auto-reconnect on audio device disconnect
 - Background/daemon mode with system tray icon
