@@ -9,6 +9,10 @@
 # To hear the room alone, cut the way out of each oscillator: put `route = "none"` in its table (on the page, the
 # button under its mute and solo says `→ Master`, and says `no out` when it is cut), and the oscillators are heard
 # through their cables and in no other way.
+#
+# To hear one oscillator with the room that it sends to, solo it (`solo = true` in its table, or the S button on the
+# page): the room is heard for its cable, though nothing in the room's group is soloed, and the other oscillator is
+# not heard and sends nothing.
 
 [[group]]
 name = "Room"

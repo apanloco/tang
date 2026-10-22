@@ -1365,6 +1365,28 @@ mod tests {
     }
 
     #[test]
+    fn the_shared_reverb_example_with_the_saw_soloed_is_the_saw_and_the_room_that_it_sends_to_and_the_session_with_the_square_muted() {
+        // The saw is soloed: it is heard as it is, and the room is heard for its cable, though nothing in the room's group is soloed; the square is not soloed, so that it is not heard and sends
+        // nothing, as when it is muted, and the two sessions are one sound to the bit.
+        let session = example("shared-reverb.toml");
+        let heard = |session: &str| play(session, &[48, 52, 55], 0.0, 1.0, 3.0);
+        let soloed = heard(&session.replacen("[[instrument]]\n", "[[instrument]]\nsolo = true\n", 1));
+        let square = session.rfind("[[instrument]]\n").expect("the square's table") + "[[instrument]]\n".len();
+        let muted = heard(&format!("{}mute = true\n{}", &session[..square], &session[square..]));
+        assert_eq!(soloed, muted, "soloing the saw is muting the square");
+        // It is not nothing, and not the whole session: the room rings on after the keys (the saw's cable alone brings it, and it is the room that the file with that cable alone has), and the square is gone.
+        let first = session.find("\n[[cable]]\n").expect("the example has its cables") + 1;
+        let second = first + 1 + session[first + 1..].find("\n[[cable]]\n").expect("and two of them") + 1;
+        let tail = |out: &[f32]| out[(1.6 * 48_000.0) as usize..(2.6 * 48_000.0) as usize].to_vec();
+        let (room, saw_only) = (tail(&soloed), tail(&heard(&session[..second])));
+        assert!(rms(&room) > 0.001, "the room is heard for the saw's cable: {}", rms(&room));
+        let worst = room.iter().zip(&saw_only).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        // (Measured: an rms of 0.00265, and no difference at all, the same bits; the test asks for a millionth of the rms, so that it does not hold a platform whose rounding is another's to the bit.)
+        assert!(worst < 1e-6 * rms(&room), "the room is the room of the saw's cable alone: the largest difference is {worst}, against an rms of {}", rms(&room));
+        assert_ne!(soloed, heard(&session), "the square is not in what is heard");
+    }
+
+    #[test]
     fn the_examples_have_the_delay_presets_that_they_name() {
         // (A preset that the plugin does not have is only logged by the loader, so a misspelled name would load and sound like no preset at all.)
         for (name, effect, preset, time) in [("pwm.toml", 1, "Slapback", 0.09), ("epiano.toml", 0, "Chorus", 0.02)] {
