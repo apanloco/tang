@@ -18,6 +18,7 @@
   --tang-scale: rgb(110 195 215); /* a note of the scale */
   --tang-modulation: #d070d0; /* modulators and what they drive */
   --tang-send: #f2994a; /* audio cables a person has drawn, from one place to another */
+  --tang-notes: #9c8cff; /* sources of notes, and the cables that carry their notes to the lanes */
   --tang-group: #4cc9d8; /* groups and their buses */
   --tang-instrument: #e6c84c;
   --tang-effect: #5fc86f;

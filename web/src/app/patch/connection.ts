@@ -7,6 +7,7 @@
 // client's reading of the same rule, so that the canvas can show the ends that take the cable before it is dropped, and not drop it on one that does not.
 import { createContext } from "react";
 
+import type { Editor } from "../../client/editor";
 import { noteTakers } from "../../client/noteWiring";
 import type { NotesEnds } from "../../client/noteWiring";
 import { cableTakers } from "../../client/wiring";
@@ -111,6 +112,31 @@ export function notesTakersOf(graph: Graph, from: NodeId): Set<string> {
 /** Whether the cable of notes can be drawn: the controller would take it, which `noteTakers` reads from the graph. */
 export function canDrawNotes(graph: Graph, ends: NotesEnds): boolean {
   return noteTakers(graph, ends.source).includes(ends.lane);
+}
+
+/** What kind of cable a drag draws: audio, notes or modulation. */
+export type CableKind = "audio" | "notes" | "modulation";
+
+/** The kind of cable that a drag draws, by the handle it starts at (`takersOf` has the ports that take it): audio from an output of audio, notes from an output of events, modulation from anything else that starts a cable. */
+export const kindOfDrag = (handleId: string | null): CableKind => (handleId === "audioOut" ? "audio" : handleId === "eventsOut" ? "notes" : "modulation");
+
+/**
+ * Ask `editor` for the cable that a connection that was dropped stands for, of whichever kind it is: an audio cable, a cable of notes or a cable of modulation. Nothing for a connection that is none (what the controller
+ * makes of the cable is the editor's to say, and to tell the person if it is refused).
+ */
+export function drawCable(editor: Pick<Editor, "addAudioCable" | "addNotesCable" | "addCable">, connection: Connection): void {
+  const audio = audioCableOf(connection);
+  if (audio) {
+    void editor.addAudioCable(audio.from, audio.to);
+    return;
+  }
+  const notes = notesCableOf(connection);
+  if (notes) {
+    void editor.addNotesCable(notes.source, notes.lane);
+    return;
+  }
+  const ends = cableOf(connection);
+  if (ends) void editor.addCable(ends.modulator, ends.node, ends.port);
 }
 
 /** The handle that a drag starts at, as React Flow says it. */

@@ -4,6 +4,7 @@ import { ConnectionStatus } from "../ui/ConnectionStatus";
 import { NoticeBoard } from "../ui/NoticeBoard";
 import { AddGroupButton } from "./AddGroup";
 import { AddInstrumentMenu } from "./AddInstrument";
+import { AddSourceMenu } from "./AddSource";
 import { BusyLight } from "./BusyLight";
 import { useClientState, useNotices } from "./ClientProvider";
 import type { EngineKind } from "./engine";
@@ -54,6 +55,7 @@ export function App({ engine }: { engine: EngineKind }) {
         <ConnectionStatus status={status} />
         <SessionBar />
         <AddInstrumentMenu />
+        <AddSourceMenu />
         <AddGroupButton />
         <span className="tang-app__keys" title={KEYS_HINT}>
           Keys: octave {octave}

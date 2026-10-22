@@ -7,6 +7,7 @@ import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "r
 import type { ReactNode } from "react";
 
 import { effectItems, instrumentItems } from "../../client/catalog";
+import { inputsStoodFor } from "../../client/inputs";
 import { slotReader } from "../../client/readers";
 import { audibleAt, chainPlaceOf, envelopeStagesOf, nodeById, paramCountOf, presetsOf, removalOf, sameChainPlace, sameRemoval, sameStages } from "../../client/selectors";
 import type { Removal } from "../../client/selectors";
@@ -20,11 +21,12 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible, keepFocus } from "../focus";
-import { AudioPort, DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, ParamCell, RangeCell, StepsControl, SyncControl } from "./controls";
+import { AudioPort, DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, NotesPort, ParamCell, RangeCell, StepsControl, SyncControl } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import { ModulateMenu } from "./ModulateMenu";
 import { NodeScope, ScopeButton, ScopePanel } from "./NodeScope";
+import { NotesFromMenu, NotesToMenu } from "./NotesMenus";
 import { PatternCell } from "./PatternCell";
 import { SendMenu } from "./SendMenu";
 import type { CableRow, PatchNode } from "./toFlow";
@@ -247,8 +249,11 @@ function MoveEffectButtons({ node, name }: { node: NodeId; name: string }) {
   );
 }
 
-/** The button of a modulator or an effect that takes it out, with the cables that drive it; the focus goes to the button that adds one like it to its lane or group. */
-function RemoveNodeButton({ node, name, parent, focusTo }: { node: NodeId; name: string; parent: NodeId | null; focusTo: (parent: NodeId) => string }) {
+/**
+ * The button of a modulator, an effect or a source that takes it out, with the cables that drive it (or, for a source, the cables of notes from it); the focus goes to `focusTo`, the button that adds one
+ * like it (to its lane or group, or to the session), if there is one to go to.
+ */
+function RemoveNodeButton({ node, name, focusTo }: { node: NodeId; name: string; focusTo: string | null }) {
   const editor = useEditor();
   return (
     <button
@@ -259,7 +264,7 @@ function RemoveNodeButton({ node, name, parent, focusTo }: { node: NodeId; name:
       onClick={() => {
         // (If it is refused the page says so: `Editor` puts the reason among the notices.)
         void editor.removeNode(node).then((removed) => {
-          if (removed && parent !== null) focusWhenPossible(focusTo(parent));
+          if (removed && focusTo !== null) focusWhenPossible(focusTo);
         });
       }}
     >
@@ -387,16 +392,26 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const unheard = useUnheard(data.node);
   return (
     <div className={`tang-node tang-node--${type}${unheard}`}>
-      {effect ? <AudioPort node={data.node} direction="in" /> : null}
+      {/* (An effect takes audio in; a lane takes notes in, from the sources.) */}
+      {effect ? <AudioPort node={data.node} direction="in" /> : <NotesPort node={data.node} direction="in" />}
       <AudioPort node={data.node} direction="out" />
-      <Header name={data.name} badge={data.format} sub={silent ? null : <SendMenu node={data.node} name={data.name} />}>
+      <Header
+        name={data.name}
+        badge={data.format}
+        sub={
+          <>
+            {silent ? null : <SendMenu node={data.node} name={data.name} />}
+            {effect ? null : <NotesFromMenu node={data.node} name={data.name} />}
+          </>
+        }
+      >
         {effect ? (
           <span className="tang-node__actions">
             <MoveEffectButtons node={data.node} name={data.name} />
             <PresetMenu node={data.node} name={data.name} />
             <ParamsButton node={data.node} name={data.name} />
             <ScopeButton node={data.node} name={data.name} />
-            <RemoveNodeButton node={data.node} name={data.name} parent={parent} focusTo={addEffectId} />
+            <RemoveNodeButton node={data.node} name={data.name} focusTo={parent !== null ? addEffectId(parent) : null} />
           </span>
         ) : (
           <span className="tang-node__actions">
@@ -487,7 +502,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
       <Header name={data.name} badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind}>
         {/* (The note length that an LFO or a step sequencer follows the tempo by: no other kind has one, and the control is nothing for it.) */}
         <SyncControl node={data.node} />
-        <RemoveNodeButton node={data.node} name={data.name} parent={node?.parent ?? null} focusTo={addModulatorId} />
+        <RemoveNodeButton node={data.node} name={data.name} focusTo={node?.parent != null ? addModulatorId(node.parent) : null} />
       </Header>
       {settings.length > 0 ? (
         <div className="tang-node__controls nodrag nopan nowheel">
@@ -576,6 +591,33 @@ export function MasterNode({ data }: NodeProps<PatchNode>) {
       <div className="tang-node__body">
         <Meter label="Master level" readPeak={readPeak} readClips={readClips} frames={frames} />
         <ScopePanel label="Output scope" read={readScope} readFrames={readScopeFrames} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A source of notes: the keys (the keys of the computer and the page's piano) or a device, which the session calls by the name of a MIDI input, or by as much of it as tells it. It says what it is and, for a
+ * device, which of the inputs that are open it stands for, or that none is. Notes leave it at its output of events: to the lanes that no cable of notes ends at, which hear every source, and along the cables
+ * that are drawn from it; its menu draws one to a lane, and its button takes it out, with the cables of notes it has.
+ */
+export function SourceNode({ data }: NodeProps<PatchNode>) {
+  const inputs = useClientState((state) => state.inputs);
+  const device = data.source?.type === "device" ? data.source : null;
+  const stands = device ? inputsStoodFor(device.name, inputs) : [];
+  const detail = device ? (stands.length > 0 ? `Plugged in: ${stands.join(", ")}` : "Not plugged in") : "Computer keys and the piano";
+  return (
+    <div className="tang-node tang-node--source">
+      <NotesPort node={data.node} direction="out" />
+      <Header name={data.name} badge={device ? "MIDI input" : "Keyboard"} sub={<NotesToMenu node={data.node} name={data.name} />}>
+        <span className="tang-node__actions">
+          <RemoveNodeButton node={data.node} name={data.name} focusTo="add-source" />
+        </span>
+      </Header>
+      <div className="tang-node__body">
+        <p className="tang-node__detail tang-node__detail--source" title={stands.join(", ")}>
+          {detail}
+        </p>
       </div>
     </div>
   );

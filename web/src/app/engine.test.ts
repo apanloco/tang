@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { createConnection, engineFor, sceneFor } from "./engine";
+import { createConnection, engineFor, MOCK_INPUTS, sceneFor } from "./engine";
 
 describe("which scene a page asks of the mock", () => {
   test("is the tracer, unless it asks for the stress scene or the two lanes", () => {
@@ -26,6 +26,22 @@ describe("which scene a page asks of the mock", () => {
         expect(client.state.status).toBe("open");
       });
       expect(client.state.snapshot?.graph.nodes.filter((node) => node.kind === "modulator")).toHaveLength(modulators);
+      client.stop();
+    }
+  });
+});
+
+describe("the MIDI inputs of the mock", () => {
+  test("are open in every scene, so that a source of notes can be added for one: the mock has no MIDI of its own", async () => {
+    const at = { protocol: "http:", host: "localhost:5173", hash: "" };
+    expect(MOCK_INPUTS).toEqual(["Mock Keyboard MIDI In", "Mock Pad Controller"]);
+    for (const search of ["?engine=mock", "?engine=mock&scene=stress", "?engine=mock&scene=lanes"]) {
+      const { client } = createConnection({ ...at, search });
+      client.start();
+      await vi.waitFor(() => {
+        expect(client.state.status).toBe("open");
+      });
+      expect(client.state.inputs, search).toEqual(MOCK_INPUTS);
       client.stop();
     }
   });

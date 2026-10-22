@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { MASTER, audioCablesFixture, fieldsFixture, reachFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
 import type { Port } from "../../protocol";
-import { audioCableOf, audioTakersOf, cableOf, canConnect, canDraw, canDrawAudio, canDrawNotes, drawableFrom, keyOf, notesCableOf, notesTakersOf, takersOf } from "./connection";
+import { audioCableOf, audioTakersOf, cableOf, canConnect, canDraw, canDrawAudio, canDrawNotes, drawableFrom, drawCable, keyOf, kindOfDrag, notesCableOf, notesTakersOf, takersOf } from "./connection";
 import { handleOf, toFlow } from "./toFlow";
 
 /** The port of a parameter, by the plugin's own index. */
@@ -443,5 +443,70 @@ describe("a drag that starts at a handle of the canvas", () => {
     expect(canConnect(null, nodes, connection("0", "audioOut", String(MASTER), "audioIn"))).toBe(false);
     // (A cable of modulation is judged by the nodes of the canvas, which need no session of their own.)
     expect(canConnect(null, nodes, connection("2", "modOut", "0", "param-1"))).toBe(true);
+  });
+});
+
+describe("the kind of cable that a drag draws", () => {
+  test("is told by the handle it starts at: audio from an output of audio, notes from an output of events, modulation from a modulator's output", () => {
+    expect(kindOfDrag("audioOut")).toBe("audio");
+    expect(kindOfDrag("eventsOut")).toBe("notes");
+    expect(kindOfDrag("modOut")).toBe("modulation");
+  });
+
+  test("is modulation for a handle that starts no other kind, and for none", () => {
+    for (const handle of ["audioIn", "eventsIn", "param-1", "rate", "AudioOut", null]) expect(kindOfDrag(handle), String(handle)).toBe("modulation");
+  });
+});
+
+describe("a cable that is dropped on the canvas", () => {
+  const connection = (source: string, sourceHandle: string | null, target: string, targetHandle: string | null) => ({ source, sourceHandle, target, targetHandle });
+  /** An editor that says what it was asked for, and nothing else. */
+  function asked() {
+    const calls: unknown[][] = [];
+    const editor = {
+      addAudioCable: (...args: unknown[]) => {
+        calls.push(["addAudioCable", ...args]);
+        return Promise.resolve(true);
+      },
+      addNotesCable: (...args: unknown[]) => {
+        calls.push(["addNotesCable", ...args]);
+        return Promise.resolve(true);
+      },
+      addCable: (...args: unknown[]) => {
+        calls.push(["addCable", ...args]);
+        return Promise.resolve(true);
+      },
+    };
+    return { calls, editor };
+  }
+
+  test("is an audio cable from an output of audio to an input of audio: the editor is asked to draw it between the two nodes", () => {
+    const { calls, editor } = asked();
+    drawCable(editor, connection("8", "audioOut", "5", "audioIn"));
+    expect(calls).toEqual([["addAudioCable", 8, 5]]);
+  });
+
+  test("is a cable of notes from a source's output of events to a lane's input of events: the editor is asked to draw it from the source to the lane", () => {
+    const { calls, editor } = asked();
+    drawCable(editor, connection("7", "eventsOut", "5", "eventsIn"));
+    expect(calls).toEqual([["addNotesCable", 7, 5]]);
+  });
+
+  test("is a cable of modulation from a modulator's output to a port: the editor is asked to draw it from the modulator to the port of the node", () => {
+    const { calls, editor } = asked();
+    drawCable(editor, connection("2", "modOut", "1", "param-3"));
+    drawCable(editor, connection("2", "modOut", "7", "rate"));
+    expect(calls).toEqual([
+      ["addCable", 2, 1, { type: "param", index: 3 }],
+      ["addCable", 2, 7, { type: "rate" }],
+    ]);
+  });
+
+  test("is no cable when it goes from one kind of port to another, or from or to no handle: the editor is asked for nothing", () => {
+    const { calls, editor } = asked();
+    for (const one of [connection("7", "eventsOut", "5", "audioIn"), connection("8", "audioOut", "5", "eventsIn"), connection("2", "modOut", "5", "eventsIn"), connection("7", "eventsOut", "1", "param-3"), connection("8", null, "5", "audioIn")]) {
+      drawCable(editor, one);
+    }
+    expect(calls).toEqual([]);
   });
 });

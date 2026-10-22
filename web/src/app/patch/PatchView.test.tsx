@@ -75,16 +75,17 @@ describe("the patch", () => {
 
   test("puts what kind of plugin a node has under its name in the header, in a title of its own that the buttons leave what room is left", async () => {
     await rig(<PatchView />);
-    for (const [id, name, badge] of [
-      [oscillator.id, "Oscillator", "Built-in"],
-      [filter.id, "Filter", "Built-in"],
+    for (const [id, name, badge, buttons] of [
+      // (A lane has a button after the one that sends its audio: the one that takes notes into it, from the sources.)
+      [oscillator.id, "Oscillator", "Built-in", ["tang-menu-button nodrag nopan tang-node__send", "tang-menu-button nodrag nopan tang-node__notes"]],
+      [filter.id, "Filter", "Built-in", ["tang-menu-button nodrag nopan tang-node__send"]],
     ] as const) {
       const header = (await nodeOf(id)).querySelector(".tang-node__header");
       const title = header?.querySelector(".tang-node__title");
       expect(title?.querySelector(".tang-node__name")?.textContent, name).toBe(name);
-      // (The badge is the second thing in the title, under the name, and the button that sends the node's audio is the third, on the badge's line, which a row of buttons that is full has no room for;
-      // the title is the first in the header, before the buttons.)
-      expect(Array.from(title?.children ?? [], (child) => child.className), name).toEqual(["tang-node__name", "tang-node__badge", "tang-menu-button nodrag nopan tang-node__send"]);
+      // (The badge is the second thing in the title, under the name, and the buttons that send the node's audio and take notes into it are the next, on the badge's line, which a row of buttons that is full
+      // has no room for; the title is the first in the header, before the buttons.)
+      expect(Array.from(title?.children ?? [], (child) => child.className), name).toEqual(["tang-node__name", "tang-node__badge", ...buttons]);
       expect(title?.querySelector(".tang-node__badge")?.textContent, name).toBe(badge);
       expect(header?.firstElementChild, name).toBe(title);
     }
@@ -440,14 +441,14 @@ describe("the patch", () => {
     expect(renders()).toBe(settled);
   });
 
-  test("gives each node the ports it has: an effect takes audio in and puts it out, an instrument only puts it out, a modulator puts out modulation, the master takes audio in", async () => {
+  test("gives each node the ports it has: an effect takes audio in and puts it out, an instrument takes notes in and puts audio out, a modulator puts out modulation, the master takes audio in", async () => {
     await rig(<PatchView />);
     const handles = async (id: number) =>
       Array.from((await nodeOf(id)).querySelectorAll(".react-flow__handle:not(.tang-port--param)")).map(
         (handle) => `${handle.getAttribute("data-handleid") ?? "?"}:${handle.classList.contains("source") ? "source" : "target"}:${handle.getAttribute("data-handlepos") ?? "?"}`,
       );
-    // (Audio goes in on the left and out on the right; a modulator's output is at its bottom, over what it drives.)
-    expect(await handles(oscillator.id)).toEqual(["audioOut:source:right"]);
+    // (Audio goes in on the left and out on the right, and notes come in on the left of a lane; a modulator's output is at its bottom, over what it drives.)
+    expect(await handles(oscillator.id)).toEqual(["eventsIn:target:left", "audioOut:source:right"]);
     expect(await handles(filter.id)).toEqual(["audioIn:target:left", "audioOut:source:right"]);
     // (The tracer's LFO has a cable, and its row has a port at its left edge, for a cable to end at and drive how deep this one goes.)
     expect(await handles(lfo.id)).toEqual(["depth-0:target:left", "modOut:source:bottom"]);
@@ -457,7 +458,7 @@ describe("the patch", () => {
     expect(new Set(ports)).toEqual(new Set(["top"]));
   });
 
-  test("can be moved but not selected, and takes a cable only at an output (to start one) and at a parameter's, a setting's, a depth's or an input of audio's port (to end one)", async () => {
+  test("can be moved but not selected, and takes a cable only at an output (to start one) and at a parameter's, a setting's, a depth's or an input of audio's or of notes' port (to end one)", async () => {
     const { view } = await rig(<PatchView />);
     await nodeOf(filter.id);
     for (const node of Array.from(view.container.querySelectorAll(".react-flow__node"))) {
@@ -472,7 +473,8 @@ describe("the patch", () => {
     expect(ports.filter((port) => port.startsWith("depth-"))).toHaveLength(1); // and the depth of its cable, which another modulator's cable can end at too
     expect(ports.filter((port) => port === "audioOut")).toHaveLength(2); // the oscillator's and the filter's: audio that is sent starts there
     expect(ports.filter((port) => port === "audioIn")).toHaveLength(2); // the filter's and the master's: audio that is sent ends there
-    expect(ports).toHaveLength(19);
+    expect(ports.filter((port) => port === "eventsIn")).toHaveLength(1); // the oscillator's: notes from a source end there
+    expect(ports).toHaveLength(20);
     // A cable is started at an output (a modulator's, or one of audio) and ends at a parameter, a setting, a depth or an input of audio, never the other way.
     for (const output of Array.from(view.container.querySelectorAll(".react-flow__handle[data-handleid='modOut'], .react-flow__handle[data-handleid='audioOut']"))) {
       expect(output.classList.contains("connectablestart"), output.getAttribute("data-handleid") ?? "?").toBe(true);
@@ -482,7 +484,7 @@ describe("the patch", () => {
     }
     const endsCable = (handle: Element): boolean => {
       const id = handle.getAttribute("data-handleid") ?? "";
-      return id.startsWith("param-") || id.startsWith("depth-") || id === "rate" || id === "audioIn";
+      return id.startsWith("param-") || id.startsWith("depth-") || id === "rate" || id === "audioIn" || id === "eventsIn";
     };
     for (const handle of connectable.filter(endsCable)) {
       expect(handle.classList.contains("connectablestart")).toBe(false);

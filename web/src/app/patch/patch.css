@@ -55,6 +55,10 @@
   --kind: var(--tang-root);
 }
 
+.tang-node--source {
+  --kind: var(--tang-notes);
+}
+
 .tang-node__header {
   display: flex;
   align-items: center;
@@ -116,6 +120,30 @@
 .tang-menu-button.tang-node__send:hover:not(:disabled),
 .tang-menu-button.tang-node__send[aria-expanded="true"] {
   border-color: var(--tang-send);
+}
+
+/* (The one that draws a cable of notes, from a source to a lane or into a lane from a source: on the same line, as small, in the colour of the notes, and not stretched to what is left of the line.) */
+.tang-menu-button.tang-node__notes {
+  justify-self: start;
+  min-width: 22px;
+  height: 16px;
+  padding: 0 5px;
+  border-color: transparent;
+  background: none;
+  color: var(--tang-notes);
+  font-size: 11px;
+}
+
+.tang-menu-button.tang-node__notes:hover:not(:disabled),
+.tang-menu-button.tang-node__notes[aria-expanded="true"] {
+  border-color: var(--tang-notes);
+}
+
+/* What a source says it is plugged in to: a line, cut at the end of the node (the whole of it is in the title). */
+.tang-node__detail--source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The note length that a modulator follows the tempo by, in its header before the button that takes it out: it keeps the width its chosen name needs, and the node's name is cut instead. */
@@ -493,9 +521,14 @@
   opacity: 1;
 }
 
-/* An output of audio is where a cable of audio is started: it says so to the pointer. */
-.tang-port--audio.tang-port--out {
+/* An output of audio is where a cable of audio is started: it says so to the pointer. (A source's output of notes too.) */
+.tang-port--audio.tang-port--out,
+.tang-port--notes.tang-port--out {
   cursor: crosshair;
+}
+
+.tang-port--notes {
+  background: var(--tang-notes);
 }
 
 /* Cables. */
@@ -511,6 +544,21 @@
 /* An audio cable that a person has drawn, in the colour of audio that is sent, as thick as it is loud (the stroke's width is set from the level), over the plain links of the audio path. */
 .tang-cable--send {
   stroke: var(--tang-send);
+}
+
+/* A cable of notes that a person has drawn, from a source to a lane: in the colour of notes, plain and as thick as the cables of audio are, over the links by which a lane hears a source... */
+.tang-cable--notes {
+  stroke: var(--tang-notes);
+  stroke-width: 2.5px;
+}
+
+/* ...which the session has by itself for a lane that no cable of notes ends at (it hears every source): the same colour, faint and dotted, so that what is drawn and what is there anyway are told apart. */
+.tang-cable--hears {
+  stroke: var(--tang-notes);
+  stroke-opacity: 0.4;
+  stroke-width: 1.5px;
+  stroke-dasharray: 2 6;
+  stroke-linecap: round;
 }
 
 /* A cable is as bright as what its modulator puts out is high (`--signal`, from 0 to 1, written on every frame the output
@@ -873,6 +921,42 @@
   box-shadow: inset 0 0 0 2px rgb(242 153 74 / 0.9);
 }
 
+/* The same for a cable of notes: the input of a lane that takes it is where it can be let go, along the whole left edge of the lane's node. */
+.tang-port--notes.tang-port--takes {
+  background: var(--tang-notes);
+  box-shadow: 0 0 0 4px rgb(156 140 255 / 0.4);
+}
+
+.tang-port--notes.tang-port--in.tang-port--takes {
+  top: 0;
+  left: -14px;
+  width: 28px;
+  height: 100%;
+  transform: none;
+  border: 0;
+  border-radius: var(--tang-radius);
+  background: rgb(156 140 255 / 0.1);
+  box-shadow: inset 0 0 0 1px rgb(156 140 255 / 0.4);
+}
+
+.tang-port--notes.tang-port--in.tang-port--takes::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--tang-notes);
+  box-shadow: 0 0 0 4px rgb(156 140 255 / 0.4);
+}
+
+.tang-port--notes.tang-port--in.tang-port--takes.valid {
+  background: rgb(156 140 255 / 0.22);
+  box-shadow: inset 0 0 0 2px rgb(156 140 255 / 0.9);
+}
+
 /* The cable that is being dragged: as a cable of modulation looks, or, for audio that is sent, as the audio cables look once they are drawn. */
 .tang-patch .react-flow__connection-path {
   stroke: var(--tang-modulation);
@@ -882,6 +966,12 @@
 
 .tang-patch[data-connecting="audio"] .react-flow__connection-path {
   stroke: var(--tang-send);
+  stroke-width: 3;
+  stroke-dasharray: none;
+}
+
+.tang-patch[data-connecting="notes"] .react-flow__connection-path {
+  stroke: var(--tang-notes);
   stroke-width: 3;
   stroke-dasharray: none;
 }

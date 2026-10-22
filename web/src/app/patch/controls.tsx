@@ -722,6 +722,27 @@ export function AudioPort({ node, direction }: { node: NodeId; direction: "in" |
 }
 
 /**
+ * The place on the edge of a node where notes leave it (`out`, on the right of a source: a cable of notes is started there and none ends there) or come in (`in`, on the left of a lane: a cable of notes
+ * ends there and none is started there): a handle of the node named `eventsOut` or `eventsIn`, and, while a cable is dragged, an input saying whether it takes that one (an output never does: a cable
+ * that is dragged from one ends at an input).
+ */
+export function NotesPort({ node, direction }: { node: NodeId; direction: "in" | "out" }) {
+  const input = direction === "in";
+  const takes = useContext(ConnectingContext)?.has(keyOf(node, "eventsIn")) ?? false;
+  const classes = ["tang-port", "tang-port--notes", input ? "tang-port--in" : "tang-port--out", ...(input && takes ? ["tang-port--takes"] : [])];
+  return (
+    <Handle
+      isConnectableStart={!input}
+      isConnectableEnd={input}
+      type={input ? "target" : "source"}
+      position={input ? Position.Left : Position.Right}
+      id={input ? "eventsIn" : "eventsOut"}
+      className={classes.join(" ")}
+    />
+  );
+}
+
+/**
  * A parameter in a node with a place on its top edge where a cable from a modulator ends. (That the control is
  * there when a cable ends at it is for `toFlow` to see to: a parameter that is driven is always among those a node shows.)
  */

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { Client } from "../client/connection";
 import type { ClientOptions } from "../client/connection";
-import { groupsFixture, nodeNamed, tracerSnapshot } from "../client/fixtures";
+import { groupsFixture, nodeNamed, sourcesFixture, tracerSnapshot } from "../client/fixtures";
 import { MockServer } from "../client/mock";
 import type { MockOptions } from "../client/mock";
 import type { Notices } from "../client/notices";
@@ -253,6 +253,125 @@ describe("the page", () => {
     // (The menu is still there: what is installed is known, and the connection is what is not.)
     fireEvent.click(screen.getByRole("menuitem", { name: "Oscillator" }));
     expect(await screen.findByText("Could not add Oscillator as an instrument: Not connected to the server.")).toBeTruthy();
+  });
+
+  test("has a button in the bar that opens a menu of the sources of notes that can be added: the keys, and each MIDI input that is open, under a heading", async () => {
+    page({ inputs: ["Seaboard RISE", "Launchkey Mini MK4 37 MIDI Out"] });
+    fireEvent.click(await screen.findByRole("button", { name: "Add a source of notes" }));
+    const menu = screen.getByRole("menu", { name: "Add a source of notes" });
+    const listed = within(menu)
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent);
+    expect(listed).toEqual(["Keys", "Seaboard RISE", "Launchkey Mini MK4 37 MIDI Out"]);
+    expect(within(menu).getAllByRole("group").map((group) => group.getAttribute("aria-label"))).toEqual(["MIDI inputs"]);
+  });
+
+  test("asks for the source that was chosen, and the node is on the canvas when the server has made it, with its buttons; the focus is back on the button, and the keys are not offered again", async () => {
+    const { server } = page({ inputs: ["Seaboard RISE"] });
+    const patch = await screen.findByTestId("patch");
+    await waitFor(() => {
+      expect(patch.querySelectorAll(".react-flow__node")).toHaveLength(4);
+    });
+    const button = await screen.findByRole("button", { name: "Add a source of notes" });
+    fireEvent.click(button);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Keys" }));
+    await waitFor(() => {
+      expect(patch.querySelectorAll(".react-flow__node")).toHaveLength(5);
+    });
+    expect(server.received.flatMap((message) => (message.type === "request" ? [message.intent] : []))).toEqual([{ type: "addSource", source: { type: "keys" } }]);
+    expect(await screen.findByRole("button", { name: "Send notes from Keys" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove Keys" })).toBeTruthy();
+    // The menu has gone, and the focus is back on the button that opened it.
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(button);
+    fireEvent.click(button);
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Seaboard RISE"]);
+  });
+
+  test("asks for a device by the name of the input that was chosen, and the input is not offered again", async () => {
+    const { server } = page({ inputs: ["Seaboard RISE", "IAC Driver Bus 1"] });
+    fireEvent.click(await screen.findByRole("button", { name: "Add a source of notes" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Seaboard RISE" }));
+    expect(await screen.findByRole("button", { name: "Send notes from Seaboard RISE" })).toBeTruthy();
+    expect(server.received.flatMap((message) => (message.type === "request" ? [message.intent] : []))).toEqual([{ type: "addSource", source: { type: "device", name: "Seaboard RISE" } }]);
+    fireEvent.click(screen.getByRole("button", { name: "Add a source of notes" }));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Keys", "IAC Driver Bus 1"]);
+  });
+
+  test("has nothing to open when there is nothing to add: the keys are a source of the session and no input is open", async () => {
+    const wired = sourcesFixture.cases.find((entry) => entry.name === "wired");
+    if (!wired) throw new Error("the fixture has the session of the sources");
+    page({ snapshot: wired.snapshot, inputs: [] });
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Add a source of notes" });
+    expect(button.disabled).toBe(true);
+  });
+
+  test("follows the inputs that open and close: the menu lists the ones that are open when it is opened", async () => {
+    const { client, server } = page({ inputs: [] });
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Add a source of notes" });
+    act(() => {
+      server.announceInputs(["Seaboard RISE"]);
+    });
+    await waitFor(() => {
+      expect(client.state.inputs).toEqual(["Seaboard RISE"]);
+    });
+    fireEvent.click(button);
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Keys", "Seaboard RISE"]);
+  });
+
+  test("lists the inputs that are open when one takes the place of another, as many as there were", async () => {
+    const { client, server } = page({ inputs: ["Seaboard RISE"] });
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Add a source of notes" });
+    act(() => {
+      server.announceInputs(["IAC Driver Bus 1"]);
+    });
+    await waitFor(() => {
+      expect(client.state.inputs).toEqual(["IAC Driver Bus 1"]);
+    });
+    fireEvent.click(button);
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Keys", "IAC Driver Bus 1"]);
+  });
+
+  test("says why a source could not be added, among the notices", async () => {
+    const { server } = page({}, { reconnectDelay: () => 60_000 });
+    await screen.findByText("Connected");
+    fireEvent.click(await screen.findByRole("button", { name: "Add a source of notes" }));
+    server.drop();
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).not.toBe("Connected");
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Keys" }));
+    expect(await screen.findByText("Could not add the keys as a source of notes: Not connected to the server.")).toBeTruthy();
+  });
+
+  test("does not give the focus to the button that adds a source when the source could not be taken out", async () => {
+    const wired = sourcesFixture.cases.find((entry) => entry.name === "wired");
+    if (!wired) throw new Error("the fixture has the session of the sources");
+    // (An input is open, so that the button has something to offer and can take the focus.)
+    const { server } = page({ snapshot: wired.snapshot, inputs: ["Seaboard RISE"] }, { reconnectDelay: () => 60_000 });
+    await screen.findByText("Connected");
+    const remove = await screen.findByRole("button", { name: "Remove Keys" });
+    server.drop();
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).not.toBe("Connected");
+    });
+    fireEvent.click(remove);
+    expect(await screen.findByText("Could not remove Keys: Not connected to the server.")).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Add a source of notes" }));
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Add a source of notes" }).disabled).toBe(false);
+  });
+
+  test("gives the focus to the button that adds a source when a source is taken out", async () => {
+    const wired = sourcesFixture.cases.find((entry) => entry.name === "wired");
+    if (!wired) throw new Error("the fixture has the session of the sources");
+    page({ snapshot: wired.snapshot, inputs: [] });
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Keys" }));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add a source of notes" }));
+    });
   });
 
   test("does not play a note for a key typed in the filter of a plugin's parameters, which is for text; the same key anywhere else plays", async () => {

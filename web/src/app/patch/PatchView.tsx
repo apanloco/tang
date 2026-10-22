@@ -2,7 +2,7 @@
 // What can be done on the canvas is to turn the controls on the nodes, to add a modulator to a
 // lane or a group, to take a modulator or a cable out, to draw a cable by dragging it from a
 // modulator's output to a parameter's port, or an audio cable from the output of a lane, an effect or a
-// group to an input of audio, to turn the level of an audio cable, and to move a node by dragging it (by what is not a
+// group to an input of audio, or a cable of notes from a source to a lane, to turn the level of an audio cable, and to move a node by dragging it (by what is not a
 // control): where it is put down goes to the server, which keeps it with the session (§4.4), and
 // every browser draws the node there. The nodes that are not moved are where the layout puts them, and stay there when the session
 // changes round them (a cable drawn, a node added or taken out: `toFlow` is given where it put them last) until the person asks for
@@ -14,11 +14,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Graph, NodeId, NodeUi } from "../../protocol";
 import { useClientSelection, useEditor, useReveals } from "../ClientProvider";
 import { focusWhenPossible } from "../focus";
-import { audioCableOf, cableOf, canConnect, ConnectingContext, takersOf } from "./connection";
-import { AudioEdge, ModulationEdge, SendEdge } from "./edges";
+import { canConnect, ConnectingContext, drawCable, kindOfDrag, takersOf } from "./connection";
+import type { CableKind } from "./connection";
+import { AudioEdge, HearsEdge, ModulationEdge, NotesEdge, SendEdge } from "./edges";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import type { Inspector } from "./inspector";
-import { GroupNode, MasterNode, ModulatorNode, PluginNode } from "./nodes";
+import { GroupNode, MasterNode, ModulatorNode, PluginNode, SourceNode } from "./nodes";
 import { ParamPanel } from "./ParamPanel";
 import { ScopesContext } from "./scopes";
 import type { Scopes } from "./scopes";
@@ -39,17 +40,18 @@ const NODE_TYPES: NodeTypes = {
   modulator: ModulatorNode,
   group: GroupNode,
   master: MasterNode,
+  source: SourceNode,
 };
 
-const EDGE_TYPES: EdgeTypes = { audio: AudioEdge, modulation: ModulationEdge, send: SendEdge };
+const EDGE_TYPES: EdgeTypes = { audio: AudioEdge, modulation: ModulationEdge, send: SendEdge, notes: NotesEdge, hears: HearsEdge };
 
 /**
- * The cable that is being dragged: the ports that take it, for them to say so, and whether it is audio or modulation, which the line of the cable is drawn by (in the stylesheet, by the
- * `data-connecting` of the canvas: a line of modulation is magenta and dashed, one of audio is amber and plain, as the cables are once they are drawn).
+ * The cable that is being dragged: the ports that take it, for them to say so, and whether it is audio, notes or modulation, which the line of the cable is drawn by (in the stylesheet, by the
+ * `data-connecting` of the canvas: a line of modulation is magenta and dashed, one of audio is amber and plain and one of notes is violet and plain, as the cables are once they are drawn).
  */
 interface Dragged {
   takers: ReadonlySet<string>;
-  kind: "audio" | "modulation";
+  kind: CableKind;
 }
 
 /** How long a node the page added is waited for: the layout that has it comes with the snapshot, which is as good as at once. */
@@ -203,7 +205,7 @@ export function PatchView() {
   const onConnectStart = useCallback<OnConnectStart>(
     (_event, start) => {
       const takers = takersOf(graph, flow.nodes, start);
-      setConnecting(takers ? { takers, kind: start.handleId === "audioOut" ? "audio" : "modulation" } : null);
+      setConnecting(takers ? { takers, kind: kindOfDrag(start.handleId) } : null);
     },
     [graph, flow.nodes],
   );
@@ -214,13 +216,7 @@ export function PatchView() {
   const onConnect = useCallback(
     (connection: Connection) => {
       // (If it is refused the page says so: `Editor` puts the reason among the notices.)
-      const audio = audioCableOf(connection);
-      if (audio) {
-        void editor.addAudioCable(audio.from, audio.to);
-        return;
-      }
-      const ends = cableOf(connection);
-      if (ends) void editor.addCable(ends.modulator, ends.node, ends.port);
+      drawCable(editor, connection);
     },
     [editor],
   );

@@ -8,6 +8,9 @@ import { serverUrl, tokenFromHash, webSocketTransport } from "../client/websocke
 
 export type EngineKind = "server" | "mock";
 
+/** The MIDI inputs that the mock engine says are open, for a source of notes to be added for (the real program says which inputs it has opened). */
+export const MOCK_INPUTS: readonly string[] = ["Mock Keyboard MIDI In", "Mock Pad Controller"];
+
 /**
  * The session the mock engine serves: the tracer, the big one that the performance test runs on, or two lanes with an
  * LFO each (where a cable can be drawn out of reach, which the tracer's one lane has no room for).
@@ -45,7 +48,7 @@ export interface Connection {
 /** A client for the page at `location`, not yet started. */
 export function createConnection(location: Pick<Location, "protocol" | "host" | "search" | "hash">): Connection {
   const engine = engineFor(location.search);
-  const mock = (): MockServer => new MockServer(snapshotOf(sceneFor(location.search)));
+  const mock = (): MockServer => new MockServer({ ...snapshotOf(sceneFor(location.search)), inputs: [...MOCK_INPUTS] });
   const transport = engine === "mock" ? mock().transport : webSocketTransport(serverUrl(location));
   // The views draw the levels, what the modulators do and the keys that are held, which the server only makes for those who ask.
   return { client: new Client({ transport, token: tokenFromHash(location.hash), telemetry: ["meters", "modulation", "held"] }), engine };

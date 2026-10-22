@@ -1,5 +1,6 @@
 // The cables of the canvas: the audio path, derived and plain; the audio cables a person has drawn (the sends), amber, and the thicker the louder they are, with a slider for
-// the level at the middle; and modulation, which is magenta, dashed, and the thicker the deeper it goes.
+// the level at the middle; the cables of notes a person has drawn, from a source to a lane, violet, with the button that takes them out at the middle, and, faint and dotted in the same
+// colour, the links by which a lane that no cable of notes ends at hears every source; and modulation, which is magenta, dashed, and the thicker the deeper it goes.
 import { BaseEdge, EdgeLabelRenderer, getBezierPath } from "@xyflow/react";
 import { useRef } from "react";
 import type { EdgeProps } from "@xyflow/react";
@@ -12,6 +13,7 @@ import { useCableLight } from "./cableLight";
 import { cableRoute } from "./cableRoute";
 import { CableDepthControl, CableLevelControl, drivesId } from "./controls";
 import { cableWidth, sendWidth } from "./describe";
+import { notesToId } from "./NotesMenus";
 import { sendId } from "./SendMenu";
 import type { PatchEdge } from "./toFlow";
 
@@ -93,4 +95,33 @@ export function SendEdge(props: EdgeProps<PatchEdge>) {
       )}
     </>
   );
+}
+
+/**
+ * A cable of notes that has been drawn from a source to a lane: a curve in the colour of notes, with the button that takes it out at the middle (it has no level: it carries notes, which are heard or not).
+ * The lane hears the sources that have a cable to it and no other; the source stays, and the focus goes to its menu, which draws the next one.
+ */
+export function NotesEdge(props: EdgeProps<PatchEdge>) {
+  const [path, labelX, labelY] = getBezierPath(props);
+  const cable = props.data?.cable;
+  const label = props.data?.label ?? "a cable of notes";
+  return (
+    <>
+      <BaseEdge id={props.id} path={path} className="tang-cable tang-cable--notes" />
+      {cable === undefined ? null : (
+        // (In the layer over the canvas that the cables' controls are in, at the middle of the cable.)
+        <EdgeLabelRenderer>
+          <div className="tang-depth-anchor nodrag nopan nowheel" style={{ transform: `translate(-50%, -50%) translate(${String(labelX)}px, ${String(labelY)}px)` }}>
+            <RemoveCableButton edge={cable} focusTo={notesToId(Number(props.source))} label={label} />
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
+}
+
+/** The link by which a lane that no cable of notes ends at hears a source (the session has it by itself: it is not drawn or taken out): faint and dotted, in the colour of notes, with nothing on it. */
+export function HearsEdge(props: EdgeProps<PatchEdge>) {
+  const [path] = getBezierPath(props);
+  return <BaseEdge id={props.id} path={path} className="tang-cable tang-cable--hears" />;
 }
