@@ -231,6 +231,27 @@ pub struct AudioCable {
     pub gain: f32,
 }
 
+/// Whose a link of the audio path is that a lane or a group makes by itself (step 88, P5.0 of `docs/patch-graph.md` §11.6): the node that it is the way out of, or the input of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkOf {
+    /// The way out of the lane or the group with this node: the end of its chain, to the bus of its group or the mix. Cut by `Route::None`.
+    WayOut(NodeId),
+    /// The input of the effect or bus effect with this node: the stage before it in its chain, to it. Cut by `Feed::None`.
+    Feed(NodeId),
+}
+
+/// A link of the audio path that a lane or a group makes by itself, as the two ends that an audio cable between them would have, and whether it is there. The page draws
+/// it as a cable (it has no id and no level of its own: it is the template's, `route` and `feed` are what the model keeps of it), and a cable that is drawn between its two ends gives
+/// it back if it is cut (`Controller::apply`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TemplateLink {
+    pub of: LinkOf,
+    pub from: CableFrom,
+    pub to: CableTo,
+    /// Whether the link is there: a way out that is not cut, a feed that is not cut.
+    pub present: bool,
+}
+
 /// The highest send level an intent can set (+6 dB).
 pub const CABLE_GAIN_MAX: f32 = 2.0;
 
@@ -267,6 +288,38 @@ impl SessionModel {
                 })
                 .collect(),
         )
+    }
+
+    /// The links of the audio path that the lanes and the groups make by themselves (what `graph` draws as `Audio` and `Member` edges), each as the two ends that an audio cable between
+    /// them would have, and whether it is there: a lane's instrument to its first effect, each effect to the next, and the end of the chain to the bus of the lane's group or to the mix; and a
+    /// group's own link into its first bus effect (it starts at the group's node, as the graph draws it), from bus effect to bus effect, and from the end of its chain to the mix. The lanes' in
+    /// the order of the lanes, and then the groups'.
+    pub fn template_links(&self) -> Vec<TemplateLink> {
+        let mut links = Vec::new();
+        for lane in &self.instruments {
+            let mut before = CableFrom::Instrument(lane.node);
+            for effect in &lane.effects {
+                links.push(TemplateLink { of: LinkOf::Feed(effect.node), from: before, to: CableTo::Effect(effect.node), present: effect.fed });
+                before = CableFrom::Effect(effect.node);
+            }
+            // (A lane whose group is gone goes to the mix, as the plan and the graph have it.)
+            let sink = lane.group.and_then(|group| self.groups.get(group)).map_or(CableTo::Master, |group| CableTo::GroupBus(group.node));
+            links.push(TemplateLink { of: LinkOf::WayOut(lane.node), from: before, to: sink, present: lane.route == Route::Out });
+        }
+        for group in &self.groups {
+            let mut before = CableFrom::Group(group.node);
+            for effect in &group.effects {
+                links.push(TemplateLink { of: LinkOf::Feed(effect.node), from: before, to: CableTo::Effect(effect.node), present: effect.fed });
+                before = CableFrom::Effect(effect.node);
+            }
+            links.push(TemplateLink { of: LinkOf::WayOut(group.node), from: before, to: CableTo::Master, present: group.route == Route::Out });
+        }
+        links
+    }
+
+    /// The link of the audio path that joins `from` and `to`, if one does.
+    pub fn template_link(&self, from: CableFrom, to: CableTo) -> Option<TemplateLink> {
+        self.template_links().into_iter().find(|link| (link.from, link.to) == (from, to))
     }
 
     /// Why a cable from `from` to `to` cannot be drawn: an end that is not there, or a loop (the audio would go round). None if it can. (The plan is compiled on the side with it, as
@@ -3203,6 +3256,62 @@ type = "lfo"
         let (lanes, groups) = model.wiring();
         assert_eq!(lanes.iter().map(|lane| (lane.node, lane.group, lane.effects.clone())).collect::<Vec<_>>(), [(n.lane[0], Some(0), vec![n.fx[0], n.fx[1]]), (n.lane[1], None, vec![n.fx[2]])]);
         assert_eq!(groups.iter().map(|group| (group.node, group.effects.clone())).collect::<Vec<_>>(), [(n.group, vec![n.bus])]);
+    }
+
+    #[test]
+    fn the_links_the_lanes_and_the_groups_make_by_themselves_are_listed_by_the_two_ends_a_cable_between_them_would_have() {
+        let (model, n) = the_sends();
+        let link = |of, from, to| TemplateLink { of, from, to, present: true };
+        assert_eq!(
+            model.template_links(),
+            [
+                // Lane 0 is in the group, so its chain ends at the group's bus.
+                link(LinkOf::Feed(n.fx[0]), CableFrom::Instrument(n.lane[0]), CableTo::Effect(n.fx[0])),
+                link(LinkOf::Feed(n.fx[1]), CableFrom::Effect(n.fx[0]), CableTo::Effect(n.fx[1])),
+                link(LinkOf::WayOut(n.lane[0]), CableFrom::Effect(n.fx[1]), CableTo::GroupBus(n.group)),
+                // Lane 1 is in none: its chain ends at the mix.
+                link(LinkOf::Feed(n.fx[2]), CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[2])),
+                link(LinkOf::WayOut(n.lane[1]), CableFrom::Effect(n.fx[2]), CableTo::Master),
+                // The group's own link into its first bus effect starts at the group's node, as the graph draws it.
+                link(LinkOf::Feed(n.bus), CableFrom::Group(n.group), CableTo::Effect(n.bus)),
+                link(LinkOf::WayOut(n.group), CableFrom::Effect(n.bus), CableTo::Master),
+            ]
+        );
+        // A link is found by its two ends, and a pair of places that no link joins has none.
+        assert_eq!(model.template_link(CableFrom::Effect(n.fx[2]), CableTo::Master), Some(link(LinkOf::WayOut(n.lane[1]), CableFrom::Effect(n.fx[2]), CableTo::Master)));
+        assert_eq!(model.template_link(CableFrom::Instrument(n.lane[1]), CableTo::Master), None, "lane 1's instrument goes into its effect, and not to the mix");
+        assert_eq!(model.template_link(CableFrom::Effect(n.fx[0]), CableTo::Effect(n.fx[2])), None);
+        assert_eq!(model.template_link(CableFrom::Effect(n.fx[1]), CableTo::Master), None, "lane 0 goes to the bus of its group, and not to the mix");
+    }
+
+    #[test]
+    fn a_link_is_there_unless_the_way_out_or_the_feed_it_is_of_is_cut() {
+        let (mut model, n) = the_sends();
+        let absent = |model: &SessionModel| model.template_links().iter().filter(|link| !link.present).map(|link| link.of).collect::<Vec<_>>();
+        assert_eq!(absent(&model), []);
+        model.instruments[0].route = Route::None;
+        model.instruments[0].effects[1].fed = false;
+        model.groups[0].route = Route::None;
+        model.groups[0].effects[0].fed = false;
+        assert_eq!(absent(&model), [LinkOf::Feed(n.fx[1]), LinkOf::WayOut(n.lane[0]), LinkOf::Feed(n.bus), LinkOf::WayOut(n.group)]);
+    }
+
+    #[test]
+    fn a_lane_with_no_effect_and_a_group_with_no_bus_effect_have_their_way_out_at_their_own_node_and_a_lane_whose_group_is_gone_goes_to_the_mix() {
+        let mut model = load("[[group]]\n\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let (lanes, group) = (model.instruments.iter().map(|lane| lane.node).collect::<Vec<_>>(), model.groups[0].node);
+        let way_out = |of, from, to| TemplateLink { of, from, to, present: true };
+        assert_eq!(
+            model.template_links(),
+            [
+                way_out(LinkOf::WayOut(lanes[0]), CableFrom::Instrument(lanes[0]), CableTo::GroupBus(group)),
+                way_out(LinkOf::WayOut(lanes[1]), CableFrom::Instrument(lanes[1]), CableTo::Master),
+                way_out(LinkOf::WayOut(group), CableFrom::Group(group), CableTo::Master),
+            ]
+        );
+        // (The model keeps the lanes in step, but a front-end must not crash if it did not: a group that is not there is no group.)
+        model.instruments[0].group = Some(7);
+        assert_eq!(model.template_links()[0], way_out(LinkOf::WayOut(lanes[0]), CableFrom::Instrument(lanes[0]), CableTo::Master));
     }
 
     #[test]

@@ -260,7 +260,7 @@ describe("adding an effect that stands by itself", () => {
     // (The lane's node is made first, and the effect's next.)
     expect(id).toBe(4);
     const nodes = client.state.snapshot?.graph.nodes ?? [];
-    expect(nodes.find((n) => n.id === 3)).toMatchObject({ kind: "instrument", parent: null, name: "(empty)", plugin: null, range: null, pattern: null, muted: false, solo: false, route: "out" });
+    expect(nodes.find((n) => n.id === 3)).toMatchObject({ kind: "instrument", parent: null, name: "(empty)", plugin: null, range: null, pattern: null, muted: false, solo: false, route: "none" });
     expect(nodes.find((n) => n.id === id)).toMatchObject({ kind: "effect", parent: 3, name: "Reverb", mix: 0.5 });
     expect(said(notices)).toEqual([]);
     // The next goes in a lane of its own again: two nodes more.
@@ -1561,10 +1561,10 @@ describe("taking an audio cable out", () => {
 
   test("names the audio cable it could not take out, by what it joins, when the connection is gone", async () => {
     const { client, notices, editor } = await open();
-    await editor.addAudioCable(oscillator.id, filter.id);
+    await editor.addAudioCable(oscillator.id, MASTER);
     client.stop();
     expect(await editor.removeCable(1)).toBe(false);
-    expect(said(notices)).toEqual(["Could not take out the cable Oscillator → Filter: Not connected to the server."]);
+    expect(said(notices)).toEqual(["Could not take out the cable Oscillator → Master: Not connected to the server."]);
   });
 });
 

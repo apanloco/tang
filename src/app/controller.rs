@@ -607,7 +607,8 @@ impl Controller {
 
     /// Add the plugin `source` as an effect that stands by itself (step 87): a lane of its own at the end, with no instrument, full range and in no group,
     /// with the effect as the whole of its chain (`add_lane` and then `add_effect`). The node of the effect, which is the second that is made, the lane's the first.
-    /// Refused, with nothing changed, as `add_effect` refuses, and with no lane made and no id used.
+    /// It is a bare module (step 88): the lane's way out is cut, so that the effect sends where cables are drawn from it and nowhere before. Refused, with nothing
+    /// changed, as `add_effect` refuses, and with no lane made and no id used.
     pub fn add_free_effect(&mut self, source: &str) -> Result<NodeId, IntentError> {
         let loaded = self.load_effect(source)?;
         self.add_free_effect_loaded(loaded, source)
@@ -618,6 +619,9 @@ impl Controller {
     fn add_free_effect_loaded(&mut self, loaded: Box<dyn Plugin>, source: &str) -> Result<NodeId, IntentError> {
         outputs_fit_the_chain(loaded.name(), loaded.audio_output_count())?;
         let inst = self.add_lane();
+        // (Cut before the effect is in, as the loader cuts what a file cuts, before the cables: a way out that was there for a moment would be one that is heard.)
+        self.model.instruments[inst].route = Route::None;
+        let _ = self.cmd_tx.send(GraphCommand::SetLaneRoute { inst, route: Route::None });
         self.insert_effect(ChainAt::Lane(inst), loaded, source)
     }
 
@@ -3715,7 +3719,8 @@ group = 1
         assert_eq!(lane.effects.iter().map(|e| (e.node, e.name.as_str(), e.mix)).collect::<Vec<_>>(), [(effect, "Filter", 1.0)]);
         // The lane's node is made first and the effect's next: what a redo gives back under the ids they had, in that order.
         assert_eq!(effect.0, lane.node.0 + 1);
-        assert_eq!(sent(&engine), ["AddInstrument range=None".to_string(), format!("InsertEffect inst={lanes} index=0 plugin=Filter mix=1.000")]);
+        assert_eq!(lane.route, Route::None, "a bare module: it has no cable out, and sends where cables are drawn from it");
+        assert_eq!(sent(&engine), ["AddInstrument range=None".to_string(), format!("SetLaneRoute inst={lanes} route=none"), format!("InsertEffect inst={lanes} index=0 plugin=Filter mix=1.000")]);
         ctl.model.check_ids().unwrap();
         // It goes at the end each time, in a lane of its own: two are two lanes, and not one chain.
         ctl.add_free_effect("builtin:reverb").expect("and a reverb");

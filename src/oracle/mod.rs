@@ -149,10 +149,11 @@ impl Scenario {
         self.session.contains("[[cable]]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddCable { .. }))
     }
 
-    /// Whether a lane or a group has its way out cut, in its file or by its edits: the old loop has no such thing either (every lane goes to its group's bus or the mix).
+    /// Whether a lane or a group has its way out cut, in its file or by its edits (an effect that is added by itself is a lane whose way out is cut: step 88): the old loop has no such thing either
+    /// (every lane goes to its group's bus or the mix).
     pub fn has_cut_routes(&self) -> bool {
         self.session.contains("route = \"none\"")
-            || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::Route { route: Route::None, .. } | Edit::RouteGroup { route: Route::None, .. }))
+            || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::Route { route: Route::None, .. } | Edit::RouteGroup { route: Route::None, .. } | Edit::AddFreeEffect { .. }))
     }
 
     /// Whether an effect has the link into it cut, in its file or by its edits (step 86): the old loop has no such thing either (every effect is fed by the stage before it).
@@ -383,8 +384,9 @@ const FEED_EDITS: [(u64, Edit); 14] = [
     (46_000, Edit::Feed { effect: 2, feed: Feed::Chain }),
 ];
 
-/// What is done to an effect that stands by itself, on `CABLED` while it plays (step 87): a reverb is added in a lane of its own, which has no instrument (lane 2), lane 1's instrument is sent to it by a
-/// cable, the lane is muted and unmuted (what it puts out goes and comes back), its way out is cut and a cable from the reverb to the mix is drawn (it is heard through that cable alone), it is soloed
+/// What is done to an effect that stands by itself, on `CABLED` while it plays (step 87): a reverb is added in a lane of its own, which has no instrument (lane 2) and whose way out is cut (step 88: it is a
+/// bare module, which goes nowhere until a cable or its way out takes it), lane 1's instrument is sent to it by a cable, the lane is muted and unmuted (what it puts out goes and comes back), it is given its
+/// way out (the reverb is then heard at the mix) and a cable from the reverb to the mix is drawn beside it (the two are added there), the lane is soloed
 /// and not (lane 1's sound is heard only for what the cable sends to the reverb), a filter is added after the reverb in the lane (a chain of two that no instrument feeds), the lane is taken out with its two
 /// effects and its two cables and put back whole by Undo, the filter is taken out by the Undo after it and put back by Redo, and taken out again by the last Undo. Each is made (`Counts` says so: none is
 /// skipped or refused). The places of the cables are those of the session as it is at the time: the starts are each lane's instrument and effects and then each group and its bus effects, so that 2 is lane 1's
@@ -394,7 +396,7 @@ const FREE_EDITS: [(u64, Edit); 14] = [
     (10_000, Edit::AddCable { from: 2, to: 2, gain: 0.8 }),
     (14_000, Edit::Mute { lane: 2, muted: true }),
     (17_000, Edit::Mute { lane: 2, muted: false }),
-    (20_000, Edit::Route { lane: 2, route: Route::None }),
+    (20_000, Edit::Route { lane: 2, route: Route::Out }),
     (22_000, Edit::AddCable { from: 5, to: 5, gain: 0.7 }),
     (26_000, Edit::Solo { lane: 2, solo: true }),
     (29_000, Edit::Solo { lane: 2, solo: false }),

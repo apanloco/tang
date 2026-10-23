@@ -1538,6 +1538,44 @@ rate = 3.0
     }
 
     #[test]
+    fn a_cable_that_gives_a_link_back_is_the_step_that_gives_it_back_in_the_words_of_the_link_and_undo_cuts_it_again() {
+        let (engine, mut ctl, clock) = controller();
+        let (instrument, reverb, filter, group) = (lane(&ctl), node(&ctl, NodePath::Effect { inst: 0, index: 0 }), node(&ctl, NodePath::Effect { inst: 0, index: 1 }), node(&ctl, NodePath::Group(0)));
+        let step = |ctl: &mut Controller, intent: Intent| {
+            clock.advance(Duration::from_secs(5));
+            ctl.apply(intent).unwrap();
+        };
+        step(&mut ctl, Intent::SetRoute { node: instrument, route: Route::None });
+        step(&mut ctl, Intent::SetFeed { node: reverb, feed: Feed::None });
+        sent(&engine);
+        // The end of lane 0's chain to its group's bus is its way out, and its instrument to its first effect is that effect's input: a cable drawn between the two ends gives the link
+        // back, and is the step of that, in its words (the page draws the links as cables, and the steps of the history are those of the intents that make them).
+        step(&mut ctl, Intent::AddCable { from: out(filter), to: into(group), gain: None });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("give the lane of Oscillator its way out"));
+        step(&mut ctl, Intent::AddCable { from: out(instrument), to: into(reverb), gain: None });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("give Reverb its input back"));
+        assert_eq!(sent(&engine), ["SetLaneRoute inst=0 route=out".to_string(), format!("SetEffectFeed node={} fed=true", reverb.0)]);
+        assert!(ctl.model.cables.is_empty(), "no cable was made: they are the links");
+        let linked = |ctl: &Controller| (ctl.model.instruments[0].route, ctl.model.instruments[0].effects[0].fed);
+        assert_eq!(linked(&ctl), (Route::Out, true));
+        // Undo cuts them again, the last first, and Redo gives them back.
+        ctl.undo().unwrap();
+        assert_eq!(linked(&ctl), (Route::Out, false));
+        assert_eq!(redo_label(&ctl).as_deref(), Some("give Reverb its input back"));
+        ctl.undo().unwrap();
+        assert_eq!(linked(&ctl), (Route::None, false));
+        assert_eq!(sent(&engine), [format!("SetEffectFeed node={} fed=false", reverb.0), "SetLaneRoute inst=0 route=none".to_string()]);
+        ctl.redo().unwrap();
+        ctl.redo().unwrap();
+        assert_eq!(linked(&ctl), (Route::Out, true));
+        // A cable that is refused (the link is there) leaves no step, and what could be redone is still to redo.
+        ctl.undo().unwrap();
+        assert!(ctl.apply(Intent::AddCable { from: out(filter), to: into(group), gain: None }).is_err());
+        assert_eq!(undo_label(&ctl).as_deref(), Some("give the lane of Oscillator its way out"));
+        assert_eq!(redo_label(&ctl).as_deref(), Some("give Reverb its input back"));
+    }
+
+    #[test]
     fn a_feed_that_is_as_it_is_asked_to_be_or_that_is_refused_keeps_no_step_and_what_could_be_redone_is_still_to_redo() {
         let (_engine, mut ctl, _clock) = controller();
         let (instrument, reverb) = (lane(&ctl), node(&ctl, NodePath::Effect { inst: 0, index: 0 }));
@@ -2007,8 +2045,9 @@ rate = 3.0
         for (intent, label) in [
             (Intent::SetMute { node: lane, muted: true }, "mute Reverb"),
             (Intent::SetSolo { node: lane, solo: true }, "solo Reverb"),
-            (Intent::SetRoute { node: lane, route: Route::None }, "cut the way out of Reverb"),
+            // (A free effect has no way out to begin with: it is given one, and then it is cut again.)
             (Intent::SetRoute { node: lane, route: Route::Out }, "give Reverb its way out"),
+            (Intent::SetRoute { node: lane, route: Route::None }, "cut the way out of Reverb"),
             (Intent::SetSolo { node: lane, solo: false }, "unsolo Reverb"),
         ] {
             clock.advance(Duration::from_secs(5));
@@ -6243,8 +6282,8 @@ size = 0.5
                 redo(),
             ],
         ));
-        // An effect that stands by itself is a lane with the effect in it (the lane's node, and then the effect's, are the next two ids): undo takes the lane out with it, and what is done to
-        // the lane, a mute and a way out cut, is in the words of what it holds, the effect, or a chain of effects when there is more than one.
+        // An effect that stands by itself is a lane with the effect in it (the lane's node, and then the effect's, are the next two ids) and no way out (step 88: a bare module): undo takes the lane out
+        // with it, and what is done to the lane, a mute and a way out given, is in the words of what it holds, the effect, or a chain of effects when there is more than one.
         scripts.push((
             "an effect that stands by itself is a lane that undo takes out with the effect in it and redo puts back, and the lane is called by what it holds",
             {
@@ -6252,7 +6291,7 @@ size = 0.5
                     Op::Do(Intent::AddFreeEffect { plugin: "builtin:reverb".to_string() }),
                     gain(fresh(1), Gain::Mix, 0.25),
                     Op::Do(Intent::SetMute { node: fresh(0), muted: true }),
-                    route(fresh(0), Route::None),
+                    route(fresh(0), Route::Out),
                     add_effect(fresh(0), "builtin:filter"),
                     Op::Do(Intent::SetSolo { node: fresh(0), solo: true }),
                 ];

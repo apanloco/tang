@@ -10,8 +10,8 @@ use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
 use crate::app::model::{
-    BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NEW_CABLE_GAIN, NodeId, NodePath, ParamKind, ParamSlot, PatternState,
-    PluginSlot, STEP_MAX, STEP_MIN, sync_beats,
+    BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, LinkOf, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NEW_CABLE_GAIN, NodeId, NodePath, ParamKind, ParamSlot,
+    PatternState, PluginSlot, STEP_MAX, STEP_MIN, sync_beats,
 };
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, MAX_STEPS, ModulatorLocation};
@@ -48,10 +48,35 @@ impl Controller {
             Intent::Redo => return self.redo(),
             _ => {}
         }
+        let intent = self.link_or_cable(intent)?;
         let plan = self.plan_history(&intent);
         let applied = self.carry_out(intent)?;
         self.keep_in_history(plan);
         Ok(applied)
+    }
+
+    /// An audio cable asked for between the two ends of a link of the audio path that a lane or a group makes by itself (step 88, P5.0 of `docs/patch-graph.md` §11.6: the page draws the links as
+    /// cables) is that link: given back if it is cut, as `SetRoute` or `SetFeed` give it back (so that it is a step of the history in their words), and refused if it is there, in the words of a
+    /// cable between the two that is there already. A cable asked for at a level that is not the link's (a link has none: it is the plain level, 1), one whose ends the controller does not take
+    /// (its own words say so) and one between the two of which there is a cable already are judged as cables, as they always were.
+    fn link_or_cable(&self, intent: Intent) -> Result<Intent, IntentError> {
+        let (from, to, gain) = match &intent {
+            Intent::AddCable { from, to, gain } => (*from, *to, *gain),
+            _ => return Ok(intent),
+        };
+        if gain.is_some_and(|gain| gain != NEW_CABLE_GAIN) {
+            return Ok(intent);
+        }
+        let Ok((start, end)) = self.model.cable_ends(from, to) else { return Ok(intent) };
+        if self.model.cables.iter().any(|cable| (cable.from, cable.to) == (start, end)) {
+            return Ok(intent);
+        }
+        let Some(link) = self.model.template_link(start, end) else { return Ok(intent) };
+        match (link.present, link.of) {
+            (true, _) => Err(invalid("there is a cable between those two already")),
+            (false, LinkOf::WayOut(node)) => Ok(Intent::SetRoute { node, route: Route::Out }),
+            (false, LinkOf::Feed(node)) => Ok(Intent::SetFeed { node, feed: Feed::Chain }),
+        }
     }
 
     /// Carry out `intent` and tell the subscribers, with nothing kept in the history: what `apply`, `undo` and `redo` are made of.
@@ -3411,7 +3436,7 @@ type = "steps"
         let drawn = [
             (out(n.lane[1]), into(n.fx[0]), CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[0])),
             (out(n.fx[2]), into(n.bus), CableFrom::Effect(n.fx[2]), CableTo::Effect(n.bus)),
-            (out(n.bus), into(NodeId::MASTER), CableFrom::Effect(n.bus), CableTo::Master),
+            (out(n.fx[1]), into(NodeId::MASTER), CableFrom::Effect(n.fx[1]), CableTo::Master),
             (out(n.fx[0]), into(n.group), CableFrom::Effect(n.fx[0]), CableTo::GroupBus(n.group)),
             (out(n.group), into(NodeId::MASTER), CableFrom::Group(n.group), CableTo::Master),
             (out(n.lane[0]), into(NodeId::MASTER), CableFrom::Instrument(n.lane[0]), CableTo::Master),
@@ -3473,8 +3498,102 @@ type = "steps"
         assert_eq!(ctl.model.cables.len(), 1);
         // Another end, or another start, is another cable.
         draw(&mut ctl, out(n.lane[0]), into(NodeId::MASTER), None).unwrap();
-        draw(&mut ctl, out(n.lane[1]), into(n.fx[2]), None).unwrap();
+        draw(&mut ctl, out(n.lane[1]), into(n.fx[1]), None).unwrap();
         assert_eq!(ctl.model.cables.len(), 3);
+    }
+
+    #[test]
+    fn a_cable_drawn_between_the_ends_of_a_link_that_is_cut_gives_the_link_back_and_makes_no_cable() {
+        let (engine, mut ctl, n) = sends();
+        // Lane 1 is in no group: its drive's way out goes to the mix, and its instrument feeds the drive. The group's bus effect is fed by the group.
+        ctl.apply(Intent::SetRoute { node: n.lane[1], route: Route::None }).unwrap();
+        ctl.apply(Intent::SetFeed { node: n.fx[2], feed: Feed::None }).unwrap();
+        ctl.apply(Intent::SetFeed { node: n.bus, feed: Feed::None }).unwrap();
+        ctl.apply(Intent::SetRoute { node: n.group, route: Route::None }).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+
+        // The end of lane 1's chain to the mix: its way out.
+        let applied = draw(&mut ctl, out(n.fx[2]), into(NodeId::MASTER), None).unwrap();
+        assert_eq!(applied, Applied::restructured(rev + 1));
+        assert!(applied.events.is_empty(), "told by a snapshot, as `SetRoute` is");
+        assert_eq!(sent(&engine), ["SetLaneRoute inst=1 route=out"]);
+        // The instrument of lane 1 to its drive: the drive's feed.
+        draw(&mut ctl, out(n.lane[1]), into(n.fx[2]), Some(1.0)).unwrap();
+        assert_eq!(sent(&engine), [format!("SetEffectFeed node={} fed=true", n.fx[2].0)]);
+        // The group to its bus effect (a cable that starts at the group, and would go round if it were one: it is the link into the effect), and the end of its chain to the mix.
+        draw(&mut ctl, out(n.group), into(n.bus), None).unwrap();
+        draw(&mut ctl, out(n.bus), into(NodeId::MASTER), None).unwrap();
+        assert_eq!(sent(&engine), [format!("SetEffectFeed node={} fed=true", n.bus.0), "SetGroupRoute group=0 route=out".to_string()]);
+        assert_eq!(ctl.model.template_links().iter().filter(|link| !link.present).count(), 0, "every link is there");
+        assert!(ctl.model.cables.is_empty(), "none of them made a cable: they are the links");
+        assert_eq!(ctl.rev, rev + 4);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_drawn_between_the_ends_of_a_link_that_is_there_is_refused_as_one_between_the_two_is() {
+        let (engine, mut ctl, n) = sends();
+        let links = [
+            (out(n.lane[0]), into(n.fx[0])),
+            (out(n.fx[0]), into(n.fx[1])),
+            (out(n.fx[1]), into(n.group)),
+            (out(n.lane[1]), into(n.fx[2])),
+            (out(n.fx[2]), into(NodeId::MASTER)),
+            (out(n.group), into(n.bus)),
+            (out(n.bus), into(NodeId::MASTER)),
+        ];
+        for (from, to) in links {
+            for gain in [None, Some(1.0)] {
+                assert_eq!(draw(&mut ctl, from, to, gain), Err(invalid("there is a cable between those two already")), "{from:?} to {to:?}");
+            }
+        }
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.rev, ctl.dirty, ctl.model.cables.len()), (0, false, 0), "a refusal is nothing");
+    }
+
+    #[test]
+    fn a_cable_at_another_level_than_the_links_is_a_cable_beside_the_link() {
+        let (engine, mut ctl, n) = sends();
+        // A link has no level but the plain one. Asked at another, it is a send, and the link is as it was.
+        draw(&mut ctl, out(n.fx[2]), into(NodeId::MASTER), Some(0.5)).unwrap();
+        assert_eq!(ctl.model.cables.len(), 1);
+        assert_eq!((ctl.model.cables[0].from, ctl.model.cables[0].to, ctl.model.cables[0].gain), (CableFrom::Effect(n.fx[2]), CableTo::Master, 0.5));
+        assert_eq!(ctl.model.instruments[1].route, Route::Out);
+        assert!(sent(&engine)[0].starts_with("AddCable"));
+        // And a cable that is there between the two makes the link no part of it: the cable's own refusal.
+        ctl.apply(Intent::SetRoute { node: n.lane[1], route: Route::None }).unwrap();
+        sent(&engine);
+        let error = draw(&mut ctl, out(n.fx[2]), into(NodeId::MASTER), None).unwrap_err();
+        assert!(error.to_string().contains("already"), "{error}");
+        assert_eq!(ctl.model.instruments[1].route, Route::None, "the link is not given back under a cable that is there");
+        assert!(sent(&engine).is_empty());
+    }
+
+    #[test]
+    fn a_link_that_a_cable_gives_back_is_refused_where_the_audio_would_go_round_as_the_intents_are() {
+        let (engine, mut ctl, n) = sends();
+        // The group's output goes to the drive of lane 1; with the way out of lane 1 cut, the lane can be in the group and feeds nothing.
+        draw(&mut ctl, out(n.group), into(n.fx[2]), None).unwrap();
+        ctl.apply(Intent::SetRoute { node: n.lane[1], route: Route::None }).unwrap();
+        ctl.apply(Intent::SetLaneGroup { node: n.lane[1], group: Some(n.group) }).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+        // A cable from the end of the lane's chain to its group's bus is its way out, given back: it would feed the group that feeds it.
+        let error = draw(&mut ctl, out(n.fx[2]), into(n.group), None).unwrap_err();
+        assert!(error.to_string().contains("go round"), "{error}");
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.rev, ctl.model.instruments[1].route, ctl.model.cables.len()), (rev, Route::None, 1));
+    }
+
+    #[test]
+    fn an_end_that_the_controller_does_not_take_is_judged_as_a_cable_in_the_cables_words_whether_or_not_a_link_joins_the_nodes() {
+        let (_engine, mut ctl, n) = sends();
+        ctl.apply(Intent::SetRoute { node: n.lane[1], route: Route::None }).unwrap();
+        // (An end that the controller does not take is judged as a cable, in the cable's words, whether or not a link joins the nodes.)
+        assert_eq!(draw(&mut ctl, out(n.fx[2]), into(NodeId(901)), None), Err(IntentError::NotFound(NodeId(901))));
+        assert_eq!(draw(&mut ctl, out(n.fx[2]), into(n.lane[1]), None), Err(invalid("a lane has no input of audio: a cable ends at an effect, a group or the mix")));
+        assert_eq!(ctl.model.instruments[1].route, Route::None);
     }
 
     fn level(ctl: &Controller, edge: EdgeId) -> f32 {
@@ -3581,8 +3700,9 @@ type = "steps"
     fn a_bus_effect_is_not_moved_to_where_the_audio_would_go_round_and_nothing_changes() {
         let (engine, mut ctl) = chains();
         let (filter, reverb) = (ctl.model.groups[0].effects[0].node, ctl.model.groups[0].effects[1].node);
-        // The filter sends into the reverb that is after it, which is no loop; with the filter after the reverb the audio would go round.
-        draw(&mut ctl, out(filter), into(reverb), None).unwrap();
+        // The filter sends into the reverb that is after it, which is no loop; with the filter after the reverb the audio would go round. (At a level that is not the link's: the link between the
+        // two is there, and a cable at its level would be the link.)
+        draw(&mut ctl, out(filter), into(reverb), Some(0.5)).unwrap();
         sent(&engine);
         let rev = ctl.rev;
         let error = ctl.apply(Intent::MoveEffect { node: filter, index: 1 }).unwrap_err();
@@ -3691,10 +3811,45 @@ type = "steps"
             };
             rows.push(row);
         }
+        // The same session with every link of the audio path cut (the way out of every lane and group, the input of every effect and bus effect), and every start tried with every end again, each on a
+        // session of its own (step 88): a cable between the two ends of a link that is cut gives the link back, where the audio would not go round (and not by the rule of a cable: the group's own link into
+        // its first bus effect would go round as a cable), and a cable between the ends of one that is there, now cut, is one of the six that are drawn. What is kept of a session that took one is its links and
+        // what is cut, the nodes' own words that say it (`audio`, `routes`, `feeds`) and the audio cables there are after it (`sends`).
+        let cut = || {
+            let (engine, mut ctl) = patched();
+            for node in [lanes[0], lanes[1], lanes[2], group] {
+                ctl.apply(Intent::SetRoute { node, route: Route::None }).unwrap();
+            }
+            for node in [fx[0], fx[1], fx[2], bus[0], bus[1], bus[2]] {
+                ctl.apply(Intent::SetFeed { node, feed: Feed::None }).unwrap();
+            }
+            (engine, ctl)
+        };
+        let mut cut_rows = Vec::new();
+        for from in everything {
+            for to in everything {
+                let (_engine, mut fresh) = cut();
+                let intent = Intent::AddCable { from: out(from), to: into(to), gain: None };
+                let what = testutil::wire(&intent);
+                cut_rows.push(match fresh.apply(intent) {
+                    Err(error) => serde_json::json!({ "intent": what, "error": error.to_string() }),
+                    Ok(applied) => {
+                        assert!(applied.restructured);
+                        let after = testutil::shape_of(&fresh.snapshot());
+                        let kept = |key: &str| after.get(key).cloned().unwrap_or(serde_json::json!([]));
+                        serde_json::json!({ "intent": what, "links": { "audio": kept("audio"), "routes": kept("routes"), "feeds": kept("feeds"), "sends": kept("sends") } })
+                    }
+                });
+            }
+        }
+        let (_engine, cut_ctl) = cut();
+        let mut cut_snapshot = testutil::wire(&cut_ctl.snapshot());
+        cut_snapshot["telemetry"]["rev"] = serde_json::json!(1);
+
         let mut snapshot = testutil::wire(&before);
         // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
         snapshot["telemetry"]["rev"] = serde_json::json!(1);
-        let fixture = serde_json::json!({ "snapshot": snapshot, "rows": rows });
+        let fixture = serde_json::json!({ "snapshot": snapshot, "rows": rows, "cutSnapshot": cut_snapshot, "cutRows": cut_rows });
         let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
 
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/audioCables.json");
@@ -6007,11 +6162,11 @@ type = "midi"
         let applied = add_free_effect(&mut ctl, "builtin:filter").unwrap();
         assert_eq!(applied, Applied::restructured(1));
         assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
-        assert_eq!(sent(&engine), ["AddInstrument range=None", "InsertEffect inst=2 index=0 plugin=Filter mix=1.000"]);
+        assert_eq!(sent(&engine), ["AddInstrument range=None", "SetLaneRoute inst=2 route=none", "InsertEffect inst=2 index=0 plugin=Filter mix=1.000"]);
         assert_eq!(ctl.model.instruments.len(), 3);
         let lane = &ctl.model.instruments[2];
         assert!(lane.instrument.is_none());
-        assert_eq!((lane.range, lane.group, lane.volume, lane.route), (None, None, 1.0, Route::Out));
+        assert_eq!((lane.range, lane.group, lane.volume, lane.route), (None, None, 1.0, Route::None), "a bare module: it has no cable out, and sends where cables are drawn from it");
         let chain: Vec<_> = lane.effects.iter().map(|e| (e.name.as_str(), e.mix, e.fed)).collect();
         assert_eq!(chain, [("Filter", 1.0, true)], "fed by the chain, as every effect is to begin with");
         assert_eq!(lane.effects[0].node.0, lane.node.0 + 1, "the lane's node, and then the effect's");
@@ -6026,7 +6181,7 @@ type = "midi"
     }
 
     #[test]
-    fn the_graph_after_adding_a_free_effect_has_an_empty_lane_and_the_effect_after_it_and_both_in_the_audio_path_to_the_master() {
+    fn the_graph_after_adding_a_free_effect_has_an_empty_lane_and_the_effect_after_it_and_no_link_out_of_them() {
         use crate::app::graph::EdgeKind;
         use crate::app::layout::SlotKind;
         let (_engine, mut ctl) = controller_with_builtins();
@@ -6039,13 +6194,15 @@ type = "midi"
         assert!(matches!(&head.kind, NodeKind::Instrument { plugin: None, range: None, .. }), "{head:?}");
         let filter = graph.nodes.iter().find(|n| n.id == fx).unwrap();
         assert_eq!((filter.parent, filter.name.as_str()), (Some(lane), "Filter"));
-        // The audio goes from the lane to its effect and from the effect to the master, after the links that the lanes there were have.
+        // The audio goes from the lane to its effect, after the links that the lanes there were have, and the effect is a bare module: no link goes out of it, to the master or anywhere (step 88: it
+        // sends where cables are drawn from it).
         let audio = |graph: &crate::app::graph::Graph| -> Vec<(NodeId, NodeId)> {
             graph.edges.iter().filter(|e| !matches!(e.kind, EdgeKind::Modulation { .. })).map(|e| (e.from.node, e.to.node)).collect()
         };
         let (before_audio, audio) = (audio(&before), audio(&graph));
-        assert_eq!(audio.len(), before_audio.len() + 2);
-        assert_eq!(audio[audio.len() - 2..], [(lane, fx), (fx, NodeId::MASTER)]);
+        assert_eq!(audio.len(), before_audio.len() + 1);
+        assert_eq!(audio[audio.len() - 1..], [(lane, fx)]);
+        assert!(matches!(&head.kind, NodeKind::Instrument { route: Route::None, .. }), "{head:?}");
         // The lane has a meter of its own in the layout, after the others.
         let meters = ctl.model.telemetry_layout().meters;
         let mine: Vec<_> = meters.iter().filter(|m| m.node == lane).map(|m| (m.port, m.kind)).collect();

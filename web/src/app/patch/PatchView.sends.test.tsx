@@ -219,8 +219,9 @@ describe("the menu that sends the audio of a node", () => {
   test("lists, when it is opened, the places that take audio from the node, by the names the canvas gives them, under what each is", async () => {
     await rig(<PatchView />, { snapshot });
     fireEvent.click(await buttonIn(8, "Oscillator 2"));
+    // (Not Drive, which is the lane's own first effect: the link of its chain is a cable that is there already, and so is the cable to Filter 2.)
     expect(listed()).toEqual([
-      ["Effects", ["Filter 1", "Reverb", "Delay 1", "Delay 2", "Drive"]],
+      ["Effects", ["Filter 1", "Reverb", "Delay 1", "Delay 2"]],
       ["Group buses", ["Pad"]],
       ["Mix", ["Master"]],
     ]);
@@ -246,7 +247,7 @@ describe("the menu that sends the audio of a node", () => {
     // (The focus is on the button that opened the menu, so that the next one is a key away.)
     expect(document.activeElement).toBe(menu);
     fireEvent.click(menu);
-    expect(listed()[0]).toEqual(["Effects", ["Filter 1", "Delay 1", "Delay 2", "Drive"]]);
+    expect(listed()[0]).toEqual(["Effects", ["Filter 1", "Delay 1", "Delay 2"]]);
   });
 
   test("follows the session: a cable that is drawn by somebody else takes its end off the list", async () => {
@@ -257,7 +258,7 @@ describe("the menu that sends the audio of a node", () => {
     });
     await levelOf("Oscillator 2 → Delay 1");
     fireEvent.click(menu);
-    expect(listed()[0]).toEqual(["Effects", ["Filter 1", "Reverb", "Delay 2", "Drive"]]);
+    expect(listed()[0]).toEqual(["Effects", ["Filter 1", "Reverb", "Delay 2"]]);
   });
 
   test("looks for the places again when the structure of the session changes, and not when a value is turned: a knob, a level", async () => {

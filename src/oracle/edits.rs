@@ -473,7 +473,7 @@ plugin = "builtin:osc"
         let mut ctl = controller(TWO_LANES);
         assert_eq!(Edit::CableGain { cable: 0, gain: 0.5 }.make(&mut ctl), Outcome::Skipped);
         assert_eq!(Edit::RemoveCable { cable: 0 }.make(&mut ctl), Outcome::Skipped);
-        assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 1.0 }.make(&mut ctl), Outcome::Applied, "the second lane's instrument to the mix");
+        assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 0.9 }.make(&mut ctl), Outcome::Applied, "the second lane's instrument to the mix: a send at a level that is not the way out's, which has none");
         assert_eq!(Edit::AddCable { from: 0, to: 3, gain: 0.5 }.make(&mut ctl), Outcome::Applied);
         let (first, second) = (ctl.model.cables[0].id, ctl.model.cables[1].id);
         assert_eq!(Edit::CableGain { cable: 1, gain: 1.5 }.resolve(&ctl), Some(Intent::SetCableGain { edge: second, gain: 1.5 }));
@@ -488,9 +488,11 @@ plugin = "builtin:osc"
         let mut ctl = controller(TWO_LANES);
         // The filter into the reverb, which is before it: a loop. The same cable twice.
         assert_eq!(Edit::AddCable { from: 2, to: 0, gain: 1.0 }.make(&mut ctl), Outcome::Refused);
-        assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 1.0 }.make(&mut ctl), Outcome::Applied);
-        assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 1.0 }.make(&mut ctl), Outcome::Refused);
+        assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 0.9 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 0.9 }.make(&mut ctl), Outcome::Refused);
         assert_eq!(ctl.model.cables.len(), 1);
+        // A cable between the two ends of a link that is there (lane 1's instrument is its whole chain, and its way out goes to the mix) is refused as a cable between the two is.
+        assert_eq!(Edit::AddCable { from: 3, to: 3, gain: 1.0 }.make(&mut ctl), Outcome::Refused);
     }
 
     #[test]

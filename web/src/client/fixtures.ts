@@ -112,12 +112,17 @@ export const groupsFixture = groups as unknown as {
  * effect in no group, an empty lane, and six audio cables between them: `testutil::PATCHED`), and what the controller makes of the intents about audio cables: every start tried with every
  * end (the master, a node that is not there and a modulator among them), the ports that are not audio's, levels, the level and the depth of each kind of cable, the cables taken out,
  * every node taken out, every lane put in the group and out of it and every effect moved to every place of its chain. For one that is refused its words; for a cable that is drawn and a
- * level that is set the audio cables the session has after it (`sends`, in the lines of `shapeOf`: nothing else changes); for the others what the session comes to (`shapeOf`). Written by the
- * controller (`the_web_clients_fixture_of_what_audio_cables_come_to_is_current`).
+ * level that is set the audio cables the session has after it (`sends`, in the lines of `shapeOf`: nothing else changes); for the others what the session comes to (`shapeOf`). `cutSnapshot` is the
+ * same session with every link of the audio path cut, and `cutRows` what the controller makes of an `addCable` between every start and every end of it, each on a session of its own: a cable between the
+ * two ends of a link that is cut gives the link back (the links, what is cut and the cables after it are kept of the session it comes to). Written by the controller
+ * (`the_web_clients_fixture_of_what_audio_cables_come_to_is_current`).
  */
 export const audioCablesFixture = audioCables as unknown as {
   snapshot: Snapshot;
   rows: ({ intent: Intent } & ({ error: string } | { sends: string[] } | { after: Shape }))[];
+  /** The same session with every link of the audio path cut (step 88), and what the controller makes of a cable asked for between every start and every end, each on a session of its own. */
+  cutSnapshot: Snapshot;
+  cutRows: ({ intent: Intent } & ({ error: string } | { links: { audio: string[]; routes: string[]; feeds: string[]; sends: string[] } }))[];
 };
 
 /**

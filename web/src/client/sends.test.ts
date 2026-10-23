@@ -11,20 +11,20 @@ const words = (items: ReturnType<typeof sendItems>): [string | undefined, string
 
 describe("the places that a cable of audio can be sent to, as the items of a menu", () => {
   test("are the effects, then the buses of the groups, then the mix, each under what it is, by the names the canvas gives them and in the order the canvas has them", () => {
-    // From the second lane: not Filter 2, where a cable of its own goes already, and not a lane, which has no input.
+    // From the second lane: not Filter 2, where a cable of its own goes already, not Drive, which its instrument is linked to (the link is a cable that is drawn: it is there), and not a lane,
+    // which has no input.
     expect(words(sendItems(graph, 8))).toEqual([
       ["Effects", "Filter 1"],
       ["Effects", "Reverb"],
       ["Effects", "Delay 1"],
       ["Effects", "Delay 2"],
-      ["Effects", "Drive"],
       ["Group buses", "Pad"],
       ["Mix", "Master"],
     ]);
   });
 
   test("are named by the id of the node, as text, which is what the menu says was chosen", () => {
-    expect(sendItems(graph, 8).map((item) => item.id)).toEqual(["1", "2", "3", "6", "9", "0", String(MASTER)]);
+    expect(sendItems(graph, 8).map((item) => item.id)).toEqual(["1", "2", "3", "6", "0", String(MASTER)]);
   });
 
   test("leave out where the audio would go round, and where a cable is drawn already: the group's output can go to the mix and nowhere else", () => {
@@ -40,12 +40,19 @@ describe("the places that a cable of audio can be sent to, as the items of a men
     expect(sendItems(graph, 77)).toEqual([]);
   });
 
-  test("are the filter and the mix for the tracer's oscillator, and the mix alone for its filter", () => {
-    expect(words(sendItems(tracerSnapshot.graph, 0))).toEqual([
+  test("are the mix alone for the tracer's oscillator and nothing for its filter: the oscillator is linked to the filter and the filter to the mix, which are cables that are drawn", () => {
+    expect(words(sendItems(tracerSnapshot.graph, 0))).toEqual([["Mix", "Master"]]);
+    expect(sendItems(tracerSnapshot.graph, 1)).toEqual([]);
+  });
+
+  test("have a link back where it is cut, and not where giving it back would make the audio go round", () => {
+    // The filter's feed is cut: the oscillator can send to it again. The filter's way out is cut: it can send to the mix again.
+    const cut: Graph = { ...tracerSnapshot.graph, nodes: tracerSnapshot.graph.nodes.map((node) => (node.kind === "effect" ? { ...node, feed: "none" as const } : node.kind === "instrument" ? { ...node, route: "none" as const } : node)) };
+    expect(words(sendItems(cut, 0))).toEqual([
       ["Effects", "Filter"],
       ["Mix", "Master"],
     ]);
-    expect(words(sendItems(tracerSnapshot.graph, 1))).toEqual([["Mix", "Master"]]);
+    expect(words(sendItems(cut, 1))).toEqual([["Mix", "Master"]]);
   });
 
   test("are none for a node that every place of is taken", () => {

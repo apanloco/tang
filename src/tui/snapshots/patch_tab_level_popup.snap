@@ -7,15 +7,15 @@ source: src/tui/golden_tests.rs
 ┌ Patch ───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │outputs ↓  inputs →              L1   L1   L2   G1   G1   G1   G1  Mix                                                │
 │                               Filt Dela Driv  bus Filt Reve Dela                                                     │
-│▪G1     L1  ♪ Oscillator          ·    ·    ·    ·    ·    ·    ·    ·                                                │
+│▪G1     L1  ♪ Oscillator          ●    ·    ·    ·    ·    ·    ·    ·                                                │
 │        L1    fx Filter           × 0.75    ·    ·    ·    ·    ·    ·                                                │
 │        L1    fx Delay            ×    ×    · 1.00    ·    ·    ·    ·                                                │
-│▪Mix    L2  ♪ Oscillator       0.50    ·    ·    ·    ·    ·    ·    ·                                                │
-│        L2    fx Drive            ×    ×    ×    ×    ×    ×    ×    ·                                                │
-│▪Mix    L3  ♪ (empty)             ·    ·    ·    ·    ·    ·    ·    ·                                                │
-│▪Mix    G1  ▦ Pad                 ×    × 1.50    ×    ×    ×    ×    ·                                                │
+│▪Mix    L2  ♪ Oscillator       0.50    ·    ●    ·    ·    ·    ·    ·                                                │
+│        L2    fx Drive            ×    ×    ×    ×    ×    ×    ×    ●                                                │
+│▪Mix    L3  ♪ (empty)             ·    ·    ·    ·    ·    ·    ·    ●                                                │
+│▪Mix    G1  ▦ Pad                 ×    × 1.50    ×    ●    ×    ×    ·                                                │
 │        G1    fx Filter (bus)     ×    ×    ·    ×    × 1.00    ·    ·                                                │
-│        G1    fx Reverb (bus)     ×    ×    ·    ×    ×    ×    · 0.50                                                │
+│        G1    fx Reverb (bus)     ×    ×    ·    ×    ×    ×    ● 0.50                                                │
 │        G1    fx Delay (bus)      ×    ×  ┌ level of the cable ────────────┐                                          │
 │                                          │Range: 0.00 — 2.00              │                                          │
 │                                          │Value: 0.75                     │                                          │
@@ -40,20 +40,20 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbaaaaaaaaaaa......................
 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
 c...............................aaaaabbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
-caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
-cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbdddddeeeeeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
-caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaddddddddddaaaaafffffaaaaaaaaaaaaaaaaaaaa...............................................c
-caaaaabbbaaaaaaaaaaaaaaaaaaaaaaafffffaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
-caaaaabbbaaaaaaaaaaaaaaaaaaaaaaadddddddddddddddddddddddddddddddddddaaaaa...............................................c
-caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
-caaaaabbbgggggggggggggggggggggggddddddddddfffffddddddddddddddddddddaaaaa...............................................c
-caaaaabbbgggggggggggggggggggggggddddddddddaaaaaddddddddddfffffaaaaaaaaaa...............................................c
-caaaaabbbgggggggggggggggggggggggddddddddddaaaaadddddddddddddddaaaaafffff...............................................c
-caaaaabbbgggggggggggggggggggggggddddddddddahhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..........................................c
-c..........................................haaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaah..........................................c
-c..........................................hccccccc....i....................h..........................................c
-c..........................................h................................h..........................................c
-c..........................................hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..........................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaadddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbeeeeefffffaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeaaaaagggggaaaaaaaaaaaaaaaaaaaa...............................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaagggggaaaaadddddaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeddddd...............................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaddddd...............................................c
+caaaaabbbhhhhhhhhhhhhhhhhhhhhhhheeeeeeeeeegggggeeeeedddddeeeeeeeeeeaaaaa...............................................c
+caaaaabbbhhhhhhhhhhhhhhhhhhhhhhheeeeeeeeeeaaaaaeeeeeeeeeegggggaaaaaaaaaa...............................................c
+caaaaabbbhhhhhhhhhhhhhhhhhhhhhhheeeeeeeeeeaaaaaeeeeeeeeeeeeeeedddddggggg...............................................c
+caaaaabbbhhhhhhhhhhhhhhhhhhhhhhheeeeeeeeeeadddddddddddddddddddddddddddddddddd..........................................c
+c..........................................daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad..........................................c
+c..........................................dccccccc....i....................d..........................................c
+c..........................................d................................d..........................................c
+c..........................................dddddddddddddddddddddddddddddddddd..........................................c
 c......................................................................................................................c
 c......................................................................................................................c
 c......................................................................................................................c
@@ -64,7 +64,7 @@ c...............................................................................
 c......................................................................................................................c
 caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac
 cbbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbb.....................................................................c
-chhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh...........................................c
+cddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd...........................................c
 caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...................................................................................c
 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 iiiiiiicccccccccccc.iiiccccccc.iiiccccccc.iiiccccccccccccc.iiiccccccc.iiicccccccc.iiiccccc.iiiccccc
@@ -72,9 +72,9 @@ iiiiiiicccccccccccc.iiiccccccc.iiiccccccc.iiiccccccccccccc.iiiccccccc.iiiccccccc
 a  fg=Indexed(245) bg=Reset mod=-
 b  fg=White bg=Reset mod=BOLD
 c  fg=White bg=Reset mod=-
-d  fg=Red bg=Reset mod=DIM
-e  fg=Yellow bg=Reset mod=BOLD | REVERSED
-f  fg=Yellow bg=Reset mod=BOLD
-g  fg=Cyan bg=Reset mod=DIM
-h  fg=Yellow bg=Reset mod=-
+d  fg=Yellow bg=Reset mod=-
+e  fg=Red bg=Reset mod=DIM
+f  fg=Yellow bg=Reset mod=BOLD | REVERSED
+g  fg=Yellow bg=Reset mod=BOLD
+h  fg=Cyan bg=Reset mod=DIM
 i  fg=Black bg=White mod=BOLD

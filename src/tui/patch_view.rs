@@ -2,7 +2,8 @@
 //!
 //! The audio cables of a session as a matrix, as the pin matrix of an old modular synthesizer has them: a row for every output of audio (what a lane's instrument puts out, each effect, each
 //! group) and a column for every input of audio (each effect, each group's bus, the mix). The pin at a crosspoint is the level of the cable that is drawn there; a dot says that there is
-//! none, and a cross that one drawn there would make the audio go round. What is done with a pin is done by the intents that the page's cables are (`AddCable`, `SetCableGain`, `RemoveEdge`), and
+//! none, and a cross that one drawn there would make the audio go round. The links that a lane or a group makes by itself (step 88: an instrument to its first effect, an effect to the next, the end of
+//! a chain to its group's bus or the mix) are cables here too, a filled dot at their crosspoints, with no level of their own: Enter cuts one, and Enter where one is cut gives it back. What is done with a pin is done by the intents that the page's cables are (`AddCable`, `SetCableGain`, `RemoveEdge`), and
 //! so are the way out of a lane or a group (`SetRoute`), its mute and its solo, which the first columns of a row show: the tab only says which. Everything on it is read from the model on
 //! every frame, so what a browser draws is here at once and what is done here is seen there.
 
@@ -19,9 +20,9 @@ use view::DIM;
 
 use crate::app::graph::{Endpoint, Port};
 use crate::app::intent::Intent;
-use crate::app::model::{CABLE_GAIN_MAX, EdgeId, NodeId, SessionModel};
+use crate::app::model::{CABLE_GAIN_MAX, EdgeId, LinkOf, NodeId, SessionModel};
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo};
-use crate::session::Route;
+use crate::session::{Feed, Route};
 
 /// How wide a column of the matrix is, in cells of the terminal: a level (`0.60`) and a blank.
 pub const COLUMN: u16 = 5;
@@ -98,6 +99,9 @@ pub struct Bench {
 pub enum Cell {
     /// A cable is drawn from the row to the column, at this level.
     Pin { edge: EdgeId, gain: f32 },
+    /// The link of the audio path that a lane or a group makes by itself joins the row and the column (step 88): there, or cut. It has no level of its own, and a cable drawn between its ends gives it
+    /// back, if it can be given back (where it would make the audio go round the cell is `Refused`).
+    Link { of: LinkOf, present: bool },
     /// There is none, and one can be drawn.
     Free,
     /// There is none, and one cannot: the reason.
@@ -128,6 +132,17 @@ fn why(problem: CableProblem) -> String {
 /// The first letters of a name, for the head of a column.
 fn short(name: &str) -> String {
     name.chars().filter(|c| !c.is_whitespace()).take(COLUMN as usize - 1).collect()
+}
+
+/// What is said of a link that a key would give a level.
+const NO_LEVEL: &str = "A link of the audio path has no level of its own: cut it (Enter) and it is the cables that you draw that have one";
+
+/// What cuts the link `of`: the intent that the cable between its ends is taken out by.
+fn cut(of: LinkOf) -> Intent {
+    match of {
+        LinkOf::WayOut(node) => Intent::SetRoute { node, route: Route::None },
+        LinkOf::Feed(node) => Intent::SetFeed { node, feed: Feed::None },
+    }
 }
 
 /// The node that a cable from `from` is drawn from, as the intents name it.
@@ -248,10 +263,22 @@ impl Patch {
             return Cell::Pin { edge, gain };
         }
         let (Some(from), Some(to)) = (bench.rows.get(row).map(|row| row.from), bench.cols.get(col).map(|col| col.to)) else { return Cell::Free };
-        let problem = self.refusals.entry((row, col)).or_insert_with(|| model.cable_problem(from, to).map(why));
-        match problem {
-            Some(why) => Cell::Refused(why.clone()),
-            None => Cell::Free,
+        // A link of the audio path: there, or cut and given back by a cable drawn between its ends, which the intents refuse where the audio would go round with the link (and not by the rule of a
+        // cable: a group's own link into its first bus effect starts at the group, and as a cable it would go round).
+        let link = model.template_link(from, to);
+        let problem = self.refusals.entry((row, col)).or_insert_with(|| match link {
+            None => model.cable_problem(from, to).map(why),
+            Some(link) if link.present => None,
+            Some(link) => match link.of {
+                LinkOf::WayOut(node) => model.locate(node).and_then(|path| model.loop_if_route_is(path, Route::Out)),
+                LinkOf::Feed(node) => model.loop_if_feed_is(node, true),
+            }
+            .map(|_| "the audio would go round".to_string()),
+        });
+        match (problem, link) {
+            (Some(why), _) => Cell::Refused(why.clone()),
+            (None, Some(link)) => Cell::Link { of: link.of, present: link.present },
+            (None, None) => Cell::Free,
         }
     }
 
@@ -292,22 +319,26 @@ impl Patch {
         match code {
             // A pin is put in, or taken out.
             KeyCode::Enter | KeyCode::Char(' ') => match cell {
-                Cell::Free => Act::Apply(Intent::AddCable {
+                // (A link that is cut is given back by the cable that is asked for between its ends: the controller turns it into the link.)
+                Cell::Free | Cell::Link { present: false, .. } => Act::Apply(Intent::AddCable {
                     from: Endpoint { node: node_from(row.from), port: Port::AudioOut },
                     to: Endpoint { node: node_to(col.to), port: Port::AudioIn },
                     gain: None,
                 }),
                 Cell::Pin { edge, .. } => Act::Apply(Intent::RemoveEdge { edge }),
+                Cell::Link { of, present: true } => Act::Apply(cut(of)),
                 Cell::Refused(why) => Act::Notice(format!("{} cannot send to {}: {why}", row.name, col.name)),
             },
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => match cell {
                 Cell::Pin { edge, .. } => Act::Apply(Intent::RemoveEdge { edge }),
+                Cell::Link { of, present: true } => Act::Apply(cut(of)),
                 _ => Act::None,
             },
             KeyCode::Char('+' | '=') => self.turn(cell, LEVEL_STEP),
             KeyCode::Char('-' | '_') => self.turn(cell, -LEVEL_STEP),
             KeyCode::Char('e') => match cell {
                 Cell::Pin { edge, gain } => Act::TypeLevel { edge, gain },
+                Cell::Link { present: true, .. } => Act::Notice(NO_LEVEL.to_string()),
                 _ => Act::None,
             },
             // What is the lane's or the group's whose row it is.
@@ -321,6 +352,9 @@ impl Patch {
     /// The level of the cable under the cursor, `delta` more (held to what a level can be, and to hundredths, so that a run of steps does not drift); nothing for a crosspoint with no cable and
     /// for a level that is at the end.
     fn turn(&self, cell: Cell, delta: f32) -> Act {
+        if matches!(cell, Cell::Link { present: true, .. }) {
+            return Act::Notice(NO_LEVEL.to_string());
+        }
         let Cell::Pin { edge, gain } = cell else { return Act::None };
         let next = (((gain + delta) * 100.0).round() / 100.0).clamp(0.0, CABLE_GAIN_MAX);
         if next == gain {
@@ -366,6 +400,8 @@ impl Patch {
         let joined = Line::from(vec![Span::styled(row.name.clone(), LIT), Span::styled(format!(" ({what})  \u{25b8}  "), QUIET), Span::styled(col.name.clone(), LIT)]);
         let cell = match self.here(model, bench) {
             Cell::Pin { gain, .. } => Line::from(Span::styled(format!("A cable at level {gain:.2}: Enter takes it out, + and - turn it, e types a level"), Style::default().fg(Color::Yellow))),
+            Cell::Link { present: true, .. } => Line::from(Span::styled("A link of the audio path (no level of its own): Enter cuts it", Style::default().fg(Color::Yellow))),
+            Cell::Link { present: false, .. } => Line::from(Span::styled("The link of the audio path is cut: Enter gives it back", plain)),
             Cell::Free => Line::from(Span::styled("No cable: Enter draws one at level 1.00", plain)),
             Cell::Refused(why) => Line::from(Span::styled(format!("No cable can go here: {why}"), Style::default().fg(Color::Red))),
         };
@@ -444,7 +480,8 @@ impl Patch {
         for col in cols {
             let (text, mut style) = match self.cell(model, bench, row, col) {
                 Cell::Pin { gain, .. } => (format!("{gain:>4.2} "), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Cell::Free => (format!("{:>4} ", "\u{b7}"), QUIET),
+                Cell::Link { present: true, .. } => (format!("{:>4} ", "\u{25cf}"), Style::default().fg(Color::Yellow)),
+                Cell::Free | Cell::Link { present: false, .. } => (format!("{:>4} ", "\u{b7}"), QUIET),
                 Cell::Refused(_) => (format!("{:>4} ", "\u{d7}"), Style::default().fg(Color::Red).add_modifier(Modifier::DIM)),
             };
             if on_it && col == self.col {
@@ -533,6 +570,7 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::model::AudioCable;
     use crate::app::testutil::{self, PATCHED, SENDS, Sends};
 
     fn bench_of(text: &str) -> (testutil::Run, Bench) {
@@ -673,6 +711,107 @@ mod tests {
                 other => panic!("{from:?} to {to:?}: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn the_links_of_the_audio_path_are_cables_at_their_crosspoints_with_no_level_of_their_own() {
+        let (run, bench) = bench_of(SENDS);
+        let n = Sends::of(&run.model);
+        let mut patch = Patch::new();
+        // Lane 0 is in the group: its instrument into its filter, the filter into its delay, the delay into the group's bus. Lane 1: its instrument into its drive and the drive to the mix. The group: into
+        // its bus effect (the link starts at the group), and from the bus effect to the mix.
+        let links = [
+            (CableFrom::Instrument(n.lane[0]), CableTo::Effect(n.fx[0]), LinkOf::Feed(n.fx[0])),
+            (CableFrom::Effect(n.fx[0]), CableTo::Effect(n.fx[1]), LinkOf::Feed(n.fx[1])),
+            (CableFrom::Effect(n.fx[1]), CableTo::GroupBus(n.group), LinkOf::WayOut(n.lane[0])),
+            (CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[2]), LinkOf::Feed(n.fx[2])),
+            (CableFrom::Effect(n.fx[2]), CableTo::Master, LinkOf::WayOut(n.lane[1])),
+            (CableFrom::Group(n.group), CableTo::Effect(n.bus), LinkOf::Feed(n.bus)),
+            (CableFrom::Effect(n.bus), CableTo::Master, LinkOf::WayOut(n.group)),
+        ];
+        for (from, to, of) in links {
+            let (row, col) = at(&bench, from, to);
+            assert_eq!(patch.cell(&run.model, &bench, row, col), Cell::Link { of, present: true }, "{from:?} to {to:?}");
+        }
+        // No other crosspoint is one.
+        let all = (0..bench.rows.len()).flat_map(|row| (0..bench.cols.len()).map(move |col| (row, col)));
+        assert_eq!(all.filter(|&(row, col)| matches!(patch.cell(&run.model, &bench, row, col), Cell::Link { .. })).count(), links.len());
+    }
+
+    #[test]
+    fn a_cable_that_is_drawn_at_the_ends_of_a_link_is_the_pin_and_the_link_is_not_seen_under_it() {
+        let (mut run, _) = bench_of(SENDS);
+        let n = Sends::of(&run.model);
+        run.model.instruments[1].route = Route::None;
+        run.model.insert_audio_cable(AudioCable { id: EdgeId(7), from: CableFrom::Effect(n.fx[2]), to: CableTo::Master, gain: 0.5 });
+        let bench = Bench::of(&run.model);
+        let mut patch = Patch::new();
+        let (row, col) = at(&bench, CableFrom::Effect(n.fx[2]), CableTo::Master);
+        assert_eq!(patch.cell(&run.model, &bench, row, col), Cell::Pin { edge: EdgeId(7), gain: 0.5 });
+    }
+
+    #[test]
+    fn enter_and_d_cut_a_link_by_the_intent_that_cuts_it_and_enter_where_it_is_cut_draws_the_cable_that_gives_it_back() {
+        let (mut run, bench) = bench_of(SENDS);
+        let n = Sends::of(&run.model);
+        // The way out of lane 1 (its drive to the mix), cut by every key that takes a cable out; the feed of its drive (its instrument into it), and a group's.
+        let mut patch = on(&bench, CableFrom::Effect(n.fx[2]), CableTo::Master);
+        for code in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Char('d'), KeyCode::Delete, KeyCode::Backspace] {
+            assert_eq!(key(&mut patch, &run.model, code), Act::Apply(Intent::SetRoute { node: n.lane[1], route: Route::None }), "{code:?}");
+        }
+        let mut patch = on(&bench, CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[2]));
+        assert_eq!(key(&mut patch, &run.model, KeyCode::Enter), Act::Apply(Intent::SetFeed { node: n.fx[2], feed: Feed::None }));
+        let mut patch = on(&bench, CableFrom::Group(n.group), CableTo::Effect(n.bus));
+        assert_eq!(key(&mut patch, &run.model, KeyCode::Char('d')), Act::Apply(Intent::SetFeed { node: n.bus, feed: Feed::None }));
+        // Cut, they are crosspoints that a cable can be drawn at, which gives them back (the controller turns it into the link), and there is nothing to take out.
+        run.model.instruments[1].route = Route::None;
+        run.model.instruments[1].effects[0].fed = false;
+        let mut patch = on(&bench, CableFrom::Effect(n.fx[2]), CableTo::Master);
+        assert_eq!(patch.here(&run.model, &bench), Cell::Link { of: LinkOf::WayOut(n.lane[1]), present: false });
+        let draws = |from: NodeId, to: NodeId| Act::Apply(Intent::AddCable { from: Endpoint { node: from, port: Port::AudioOut }, to: Endpoint { node: to, port: Port::AudioIn }, gain: None });
+        assert_eq!(key(&mut patch, &run.model, KeyCode::Enter), draws(n.fx[2], NodeId::MASTER));
+        assert_eq!(key(&mut patch, &run.model, KeyCode::Char('d')), Act::None);
+        let mut patch = on(&bench, CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.fx[2]));
+        assert_eq!(key(&mut patch, &run.model, KeyCode::Char(' ')), draws(n.lane[1], n.fx[2]));
+    }
+
+    #[test]
+    fn a_link_has_no_level_to_turn_or_to_type_and_the_keys_that_would_say_so() {
+        let (run, bench) = bench_of(SENDS);
+        let n = Sends::of(&run.model);
+        let mut patch = on(&bench, CableFrom::Effect(n.fx[2]), CableTo::Master);
+        for code in [KeyCode::Char('+'), KeyCode::Char('='), KeyCode::Char('-'), KeyCode::Char('_'), KeyCode::Char('e')] {
+            assert!(matches!(key(&mut patch, &run.model, code), Act::Notice(why) if why.contains("no level")), "{code:?}");
+        }
+        // Where there is nothing, they are as they were: nothing.
+        let mut patch = on(&bench, CableFrom::Effect(n.fx[0]), CableTo::Master);
+        for code in [KeyCode::Char('+'), KeyCode::Char('-'), KeyCode::Char('e')] {
+            assert_eq!(key(&mut patch, &run.model, code), Act::None, "{code:?}");
+        }
+    }
+
+    #[test]
+    fn a_link_that_is_cut_is_refused_where_giving_it_back_would_make_the_audio_go_round_and_not_where_a_cable_would() {
+        let (mut run, bench) = bench_of(SENDS);
+        let n = Sends::of(&run.model);
+        // The group's own link into its bus effect starts at the group, and a cable from the group into the effect would go round (the effect is in the group): the link is given back all the same.
+        run.model.groups[0].effects[0].fed = false;
+        let mut patch = Patch::new();
+        let (row, col) = at(&bench, CableFrom::Group(n.group), CableTo::Effect(n.bus));
+        assert_eq!(patch.cell(&run.model, &bench, row, col), Cell::Link { of: LinkOf::Feed(n.bus), present: false });
+        // Lane 1 is put in the group with its way out cut, and the group's output goes into lane 1's drive: the way out given back would feed the group that feeds it. (The group's chain is whole.)
+        run.model.groups[0].effects[0].fed = true;
+        run.model.instruments[1].route = Route::None;
+        run.model.instruments[1].group = Some(0);
+        run.model.insert_audio_cable(AudioCable { id: EdgeId(3), from: CableFrom::Group(n.group), to: CableTo::Effect(n.fx[2]), gain: 1.0 });
+        let bench = Bench::of(&run.model);
+        let mut patch = Patch::new();
+        let (row, col) = at(&bench, CableFrom::Effect(n.fx[2]), CableTo::GroupBus(n.group));
+        assert_eq!(patch.cell(&run.model, &bench, row, col), Cell::Refused("the audio would go round".to_string()));
+        patch.row = row;
+        patch.col = col;
+        patch.settle(&bench);
+        assert!(matches!(key(&mut patch, &run.model, KeyCode::Enter), Act::Notice(why) if why.contains("cannot send") && why.contains("go round")));
     }
 
     #[test]

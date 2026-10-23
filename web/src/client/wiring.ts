@@ -8,7 +8,8 @@
 // The graph has one node for a lane's instrument and one for a group, which stand for their head and their tail as the cable at them says (a cable from a group leaves its tail, a cable to a group
 // ends at its head), so the stages are made from the nodes and the kind of end. A lane or a group whose way out is cut (`route` is `none`) has no link out of its tail, and an effect whose feed is
 // cut (`feed` is `none`) has no link into it from the stage before it: it is fed by its cables and by nothing else, and the chain goes on from it all the same.
-import type { Edge, Endpoint, Feed, Graph, Node, NodeId, Route, WireError } from "../protocol";
+import type { Edge, Endpoint, Feed, Graph, Intent, Node, NodeId, Route, WireError } from "../protocol";
+import { NEW_CABLE_GAIN } from "../protocol";
 import { isAudioCable } from "./cables";
 
 /** The master's node id, as the server numbers it (`NodeId::MASTER`). */
@@ -264,18 +265,87 @@ export function effectLoops(graph: Graph, node: NodeId, index: number): boolean 
 }
 
 /**
+ * A link of the audio path that a lane or a group makes by itself (step 88: the page draws them as cables), as the two ends that a cable between them has, and whether it is there: the way out of
+ * a lane or a group (`wayOut`: the end of its chain to the bus of its group or the mix, cut by its `route`) or the input of an effect (`feed`: the stage before it in its chain to it, cut by its `feed`).
+ * `SessionModel::template_links`.
+ */
+export interface TemplateLink {
+  of: { kind: "wayOut" | "feed"; node: NodeId };
+  from: CableStart;
+  to: CableEnd;
+  present: boolean;
+}
+
+/**
+ * The links that the lanes and the groups of the graph make by themselves, the lanes' in the order of the graph and then the groups' (`SessionModel::template_links`): a lane's instrument to its first
+ * effect, each effect to the next and the end of the chain to the bus of the lane's group or the mix; a group's own link into its first bus effect (it starts at the group's node), from bus effect to
+ * bus effect, and from the end of its chain to the mix.
+ */
+export function templateLinks(graph: Graph): TemplateLink[] {
+  const groupIds = new Set(graph.nodes.filter((n) => n.kind === "group").map((n) => n.id));
+  const links: TemplateLink[] = [];
+  const chain = (owner: Node, first: CableStart, wayOut: { to: CableEnd; present: boolean }): void => {
+    let before = first;
+    for (const effect of graph.nodes) {
+      if (effect.kind !== "effect" || effect.parent !== owner.id) continue;
+      links.push({ of: { kind: "feed", node: effect.id }, from: before, to: { kind: "effect", node: effect.id }, present: effect.feed !== "none" });
+      before = { kind: "effect", node: effect.id };
+    }
+    links.push({ of: { kind: "wayOut", node: owner.id }, from: before, to: wayOut.to, present: wayOut.present });
+  };
+  for (const lane of graph.nodes) {
+    if (lane.kind !== "instrument") continue;
+    // (A lane whose group is not there goes to the mix, as the plan has it.)
+    const to: CableEnd = lane.parent !== null && groupIds.has(lane.parent) ? { kind: "groupBus", node: lane.parent } : { kind: "master", node: MASTER_ID };
+    chain(lane, { kind: "instrument", node: lane.id }, { to, present: lane.route === "out" });
+  }
+  for (const group of graph.nodes) {
+    if (group.kind === "group") chain(group, { kind: "group", node: group.id }, { to: { kind: "master", node: MASTER_ID }, present: group.route === "out" });
+  }
+  return links;
+}
+
+/** Whether the link joins the two ends of a cable. */
+const joins = (link: TemplateLink, ends: Ends): boolean => link.from.kind === ends.from.kind && link.from.node === ends.from.node && link.to.kind === ends.to.kind && link.to.node === ends.to.node;
+
+/** Whether giving the link back would make the audio go round, with the cables there are: what `SetRoute` and `SetFeed` refuse by, which a cable between the link's two ends is turned into. */
+function linkLoops(graph: Graph, link: TemplateLink): boolean {
+  return link.of.kind === "wayOut" ? routeLoops(graph, link.of.node, "out") : feedLoops(graph, link.of.node, "chain");
+}
+
+/**
+ * What the controller makes of an `addCable` between the two ends of a link of the audio path that a lane or a group makes by itself (`Controller::link_or_cable`): the link given back if it is cut
+ * (`setRoute` or `setFeed`, which are the steps of the history that it is), a refusal in the words of a cable between the two if it is there. Any other intent, and a cable that has a level that is not the
+ * link's (it has none: the plain one), one whose ends the controller does not take and one between the two of which there is a cable already, are as they were.
+ */
+export function linkOrCable(graph: Graph, intent: Intent): Intent | { error: WireError } {
+  if (intent.type !== "addCable" || (intent.gain !== null && intent.gain !== NEW_CABLE_GAIN)) return intent;
+  const ends = cableEnds(graph, intent.from, intent.to);
+  if ("error" in ends) return intent;
+  if (graph.edges.some((e) => isAudioCable(e) && e.from.node === ends.from.node && e.to.node === ends.to.node)) return intent;
+  const link = templateLinks(graph).find((found) => joins(found, ends));
+  if (link === undefined) return intent;
+  if (link.present) return invalid("there is a cable between those two already");
+  return link.of.kind === "wayOut" ? { type: "setRoute", node: link.of.node, route: "out" } : { type: "setFeed", node: link.of.node, feed: "chain" };
+}
+
+/**
  * The nodes that a cable from the output of `from` can be drawn to now: every effect, every group (its bus) and the mix that the controller would take a cable to from there, that is
- * an end it has, with no cable between the two already and no loop. For the canvas to say which inputs take the cable that is being dragged. A node that has no output of audio has none.
+ * an end it has, with no cable between the two already and no loop. A link of the audio path that joins the two is a cable that is drawn already while it is there, and is given back, where the audio
+ * would not go round, while it is cut. For the canvas to say which inputs take the cable that is being dragged. A node that has no output of audio has none.
  */
 export function cableTakers(graph: Graph, from: NodeId): NodeId[] {
   // (The wiring and the cables are the same for every end that is tried: a menu on every node asks this for each of them.)
   const wiring = wiringOf(graph);
   const cables = cablesOf(graph);
+  const links = templateLinks(graph);
   return graph.nodes.flatMap((node) => {
     if (node.kind !== "effect" && node.kind !== "group" && node.kind !== "master") return [];
     const ends = cableEnds(graph, { node: from, port: { type: "audioOut" } }, { node: node.id, port: { type: "audioIn" } });
     if ("error" in ends) return [];
-    const drawn = graph.edges.some((e) => isAudioCable(e) && e.from.node === from && e.to.node === node.id);
-    return drawn || goesRound(wiring, [...cables, ends]) ? [] : [node.id];
+    if (graph.edges.some((e) => isAudioCable(e) && e.from.node === from && e.to.node === node.id)) return [];
+    const link = links.find((found) => joins(found, ends));
+    if (link !== undefined) return !link.present && !linkLoops(graph, link) ? [node.id] : [];
+    return goesRound(wiring, [...cables, ends]) ? [] : [node.id];
   });
 }

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import type { Edge, Endpoint, Graph, NodeId } from "../protocol";
+import type { Edge, Endpoint, Graph, Intent, NodeId } from "../protocol";
 import { MASTER, audioCablesFixture, groupsFixture, reachFixture, tracerSnapshot } from "./fixtures";
 import { isLink } from "./cables";
-import { cableEnds, cableLoops, cableTakers, cablesOf, effectLoops, feedLoops, goesRound, laneLoops, linksOf, routeLoops, wiringOf } from "./wiring";
+import { cableEnds, cableLoops, cableTakers, cablesOf, effectLoops, feedLoops, goesRound, laneLoops, linkOrCable, linksOf, routeLoops, templateLinks, wiringOf } from "./wiring";
 import type { Ends } from "./wiring";
 
 // The session of the fixture (`fixtures/audioCables.json`): group 0 ("Pad") has Filter 1, Reverb 2 and Delay 3 on its bus; lane 4 is in it and has Filter 5 and Delay 6 (and an LFO, 7); lane 8, in no group,
@@ -295,12 +295,28 @@ describe("whether the audio would go round if the link into an effect were given
 
 describe("the nodes that take a cable from an output", () => {
   test("are the effects, the buses and the mix that the controller would draw it to: not where a cable between the two is already, and not where the audio would go round", () => {
-    // Lane 8: the cable to Filter 5 is drawn already, and every other end is free.
-    expect(cableTakers(graph, 8)).toEqual([0, 1, 2, 3, 6, 9, MASTER]);
+    // Lane 8: the cable to Filter 5 is drawn already, and so is the link to Drive 9 (a cable between the two ends of a link that is there is one that is drawn); every other end is free.
+    expect(cableTakers(graph, 8)).toEqual([0, 1, 2, 3, 6, MASTER]);
     // The group's output feeds Drive 9 already, and what it comes from it cannot feed: only the mix is left.
     expect(cableTakers(graph, 0)).toEqual([MASTER]);
-    // A lane's instrument may send beside its chain's own link, to the effects of the bus and to the group, and to the mix.
-    expect(cableTakers(graph, 4)).toEqual([0, 1, 2, 3, 5, 6, 9, MASTER]);
+    // A lane's instrument may send to the effects of the bus and to the group and the mix, and to the second of its own effects, beside its chain's links: not to its first, which the instrument is linked to.
+    expect(cableTakers(graph, 4)).toEqual([0, 1, 2, 3, 6, 9, MASTER]);
+  });
+
+  test("have the links of the audio path that are cut: the end of a chain whose way out is cut can go to its group or the mix again, an effect whose feed is cut can be fed by the stage before it again", () => {
+    const cut = withFeedsCut(withWaysOutCut(graph, 0, 4, 8), 5, 9);
+    // Lane 4's instrument is linked to Filter 5 no longer, and can send to it; lane 8's to Drive 9, the same; Drive 9's way out to the mix is cut, so Drive 9 can send there, and so can Delay 3,
+    // the last effect of the group's bus, whose way out is cut with the group's. (Delay 6's way out to the group's bus is cut too, and a cable is drawn there: it is not listed again.)
+    expect(cableTakers(cut, 4)).toContain(5);
+    expect(cableTakers(cut, 8)).toContain(9);
+    expect(cableTakers(cut, 9)).toContain(MASTER);
+    expect(cableTakers(cut, 3)).toContain(MASTER);
+    expect(cableTakers(cut, 6)).not.toContain(0);
+    // The link that is cut is not given back where the audio would go round with it: the group's output into Drive 9 goes round if lane 8 is in the group, and lane 8 is in none; but the
+    // group's own link into its bus (Filter 1, which the group's output feeds by a cable) is not a loop as a link, whatever it would be as a cable.
+    const bus = withFeedsCut(graph, 1);
+    expect(cableTakers(bus, 0)).toContain(1);
+    expect(cableTakers(graph, 0)).not.toContain(1);
   });
 
   test("are those of the controller's AddCable, for every start of the fixture: the ends that it takes with no level of its own are the takers", () => {
@@ -317,9 +333,102 @@ describe("the nodes that take a cable from an output", () => {
     }
   });
 
+  test("are those of the controller's AddCable on the session with every link cut, for every start: a link that is cut is given back where the audio would not go round, as a cable would not be", () => {
+    const cutGraph = audioCablesFixture.cutSnapshot.graph;
+    const starts = cutGraph.nodes.filter((n) => n.kind === "instrument" || n.kind === "effect" || n.kind === "group").map((n) => n.id);
+    const taken = (from: NodeId): NodeId[] =>
+      audioCablesFixture.cutRows.flatMap((row) =>
+        row.intent.type === "addCable" && row.intent.from.node === from && row.intent.from.port.type === "audioOut" && row.intent.to.port.type === "audioIn" && !("error" in row) ? [row.intent.to.node] : [],
+      );
+    const byId = (a: NodeId, b: NodeId): number => a - b;
+    let given = 0;
+    for (const start of starts) {
+      const takers = [...cableTakers(cutGraph, start)].sort(byId);
+      expect(takers, `from ${String(start)}`).toEqual(taken(start).sort(byId));
+      given += takers.length;
+    }
+    // (Every link is cut, and most of them can be given back: the fixture is not one that has none.)
+    expect(given).toBeGreaterThanOrEqual(50);
+  });
+
   test("are none for what has no output of audio: a modulator, the mix and a node that is not there", () => {
     expect(cableTakers(graph, 7)).toEqual([]);
     expect(cableTakers(graph, MASTER)).toEqual([]);
     expect(cableTakers(graph, 77)).toEqual([]);
+  });
+});
+
+describe("the links of the audio path that the lanes and the groups make by themselves", () => {
+  const words = (links: ReturnType<typeof templateLinks>): string[] => links.map((l) => `${l.of.kind} ${String(l.of.node)}: ${l.from.kind} ${String(l.from.node)} > ${l.to.kind} ${String(l.to.node)}${l.present ? "" : " (cut)"}`);
+
+  test("are those that the controller lists (`SessionModel::template_links`): the lanes' in the order of the graph and then the groups', each by the two ends that a cable between them has", () => {
+    expect(words(templateLinks(graph))).toEqual([
+      // Lane 4 is in the group: its chain ends at the group's bus.
+      "feed 5: instrument 4 > effect 5",
+      "feed 6: effect 5 > effect 6",
+      "wayOut 4: effect 6 > groupBus 0",
+      "feed 9: instrument 8 > effect 9",
+      `wayOut 8: effect 9 > master ${String(MASTER)}`,
+      `wayOut 10: instrument 10 > master ${String(MASTER)}`,
+      // The group's own link into its bus effects starts at the group's node.
+      "feed 1: group 0 > effect 1",
+      "feed 2: effect 1 > effect 2",
+      "feed 3: effect 2 > effect 3",
+      `wayOut 0: effect 3 > master ${String(MASTER)}`,
+    ]);
+  });
+
+  test("say which are cut, by the ways out and the feeds that the nodes say, and a lane whose group is not in the graph goes to the mix", () => {
+    const cut = withFeedsCut(withWaysOutCut(graph, 4, 0), 6, 2);
+    expect(words(templateLinks(cut)).filter((line) => line.endsWith("(cut)"))).toEqual(["feed 6: effect 5 > effect 6 (cut)", "wayOut 4: effect 6 > groupBus 0 (cut)", "feed 2: effect 1 > effect 2 (cut)", `wayOut 0: effect 3 > master ${String(MASTER)} (cut)`]);
+    const orphan: Graph = { ...graph, nodes: graph.nodes.map((n) => (n.id === 4 && n.kind === "instrument" ? { ...n, parent: 999 } : n)) };
+    expect(words(templateLinks(orphan))).toContain(`wayOut 4: effect 6 > master ${String(MASTER)}`);
+  });
+});
+
+describe("a cable that is asked for between the two ends of a link", () => {
+  const draw = (from: NodeId, to: NodeId, gain: number | null = null): Intent => ({ type: "addCable", from: out(from), to: into(to), gain });
+  // (The graph has cables of its own at three of the links' ends: Filter 5 to Delay 6, Filter 1 to Reverb 2, and Delay 6 to the group's bus. They are left alone.)
+  const cut = withFeedsCut(withWaysOutCut(graph, 8, 0), 9, 3);
+
+  test("gives the link back if it is cut: `setRoute` for a way out and `setFeed` for an input, which are the steps of the history that it is", () => {
+    expect(linkOrCable(cut, draw(9, MASTER))).toEqual({ type: "setRoute", node: 8, route: "out" });
+    expect(linkOrCable(cut, draw(8, 9))).toEqual({ type: "setFeed", node: 9, feed: "chain" });
+    // (The group's own link into a bus effect starts at the group, and is a link, not the cable that it would go round as.)
+    expect(linkOrCable(cut, draw(2, 3))).toEqual({ type: "setFeed", node: 3, feed: "chain" });
+    expect(linkOrCable(cut, draw(3, MASTER))).toEqual({ type: "setRoute", node: 0, route: "out" });
+    // At the plain level, said or not.
+    expect(linkOrCable(cut, draw(9, MASTER, 1))).toEqual({ type: "setRoute", node: 8, route: "out" });
+  });
+
+  test("is refused, in the words of a cable between the two, if the link is there", () => {
+    for (const [from, to] of [
+      [4, 5],
+      [8, 9],
+      [9, MASTER],
+      [10, MASTER],
+      [0, 1],
+      [2, 3],
+      [3, MASTER],
+    ] as const) {
+      expect(linkOrCable(graph, draw(from, to)), `${String(from)} to ${String(to)}`).toEqual({ error: { code: "invalid", message: "there is a cable between those two already" } });
+    }
+  });
+
+  test("is a cable as it was at a level that is not the link's, between two that a cable is between already, between the ends of no link and where the controller takes no cable", () => {
+    const asked = draw(9, MASTER, 0.5);
+    expect(linkOrCable(cut, asked)).toBe(asked);
+    // (A cable of the graph: 5 from Delay 6 to the group's bus is the way out of lane 4 drawn as a cable, and the link is cut under it.)
+    const beside = withWaysOutCut(graph, 4);
+    const drawn = draw(6, 0);
+    expect(linkOrCable(beside, drawn)).toBe(drawn);
+    const elsewhere = draw(9, 0);
+    expect(linkOrCable(graph, elsewhere)).toBe(elsewhere);
+    const lane = draw(8, 10);
+    expect(linkOrCable(graph, lane)).toBe(lane);
+    const notes: Intent = { type: "addCable", from: { node: 4, port: { type: "eventsOut" } }, to: { node: 8, port: { type: "eventsIn" } }, gain: null };
+    expect(linkOrCable(graph, notes)).toBe(notes);
+    const other: Intent = { type: "undo" };
+    expect(linkOrCable(graph, other)).toBe(other);
   });
 });

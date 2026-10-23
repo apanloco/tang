@@ -1797,12 +1797,13 @@ fn capital_n_adds_an_effect_that_stands_by_itself_in_a_lane_of_its_own() {
     assert!(!selector.items.is_empty() && selector.items.iter().all(|item| item.cells[0] != "Oscillator"));
     assert_eq!(h.commands(), Vec::<String>::new());
     h.type_chars("filter").press(KeyCode::Enter);
-    assert_eq!(h.commands(), ["AddInstrument range=None", "InsertEffect inst=2 index=0 plugin=Filter mix=1.000"]);
+    assert_eq!(h.commands(), ["AddInstrument range=None", "SetLaneRoute inst=2 route=none", "InsertEffect inst=2 index=0 plugin=Filter mix=1.000"]);
     assert!(h.s.selector.is_none());
-    // A lane that has no instrument and the effect for its chain, at the end of the session.
+    // A lane that has no instrument and the effect for its chain, at the end of the session: a bare module, whose way out is cut (the tree says so).
     assert_eq!(h.s.ctl.model.instruments.len(), lanes + 1);
     let lane = &h.s.ctl.model.instruments[lanes];
     assert!(lane.instrument.is_none());
+    assert!(h.tree().iter().any(|line| line.contains("(empty)") && line.contains("[no out]")), "{:#?}", h.tree());
     assert_eq!(lane.effects.iter().map(|effect| effect.name.as_str()).collect::<Vec<_>>(), ["Filter"]);
     let tree = h.tree();
     let at = tree.iter().position(|line| line.contains("(empty)")).expect("the lane is in the tree, with no instrument");
@@ -6269,14 +6270,14 @@ mod undo_and_redo {
         h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
         let lanes = h.s.ctl.model.instruments.len();
         h.press(KeyCode::Char('N')).type_chars("reverb").press(KeyCode::Enter);
-        assert_eq!(h.commands(), ["AddInstrument range=None", "InsertEffect inst=2 index=0 plugin=Reverb mix=0.500"]);
+        assert_eq!(h.commands(), ["AddInstrument range=None", "SetLaneRoute inst=2 route=none", "InsertEffect inst=2 index=0 plugin=Reverb mix=0.500"]);
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add Reverb"));
         ctrl_z(&mut h);
         assert_eq!(h.commands(), ["RemoveInstrument inst=2 keep"]);
         assert_eq!(h.s.ctl.model.instruments.len(), lanes);
         assert!(h.tree().iter().all(|line| !line.contains("(empty)")), "{:#?}", h.tree());
         ctrl_y(&mut h);
-        assert_eq!(h.commands(), ["AddInstrument range=None", "InsertEffect inst=2 index=0 plugin=Reverb mix=0.500"]);
+        assert_eq!(h.commands(), ["AddInstrument range=None", "SetLaneRoute inst=2 route=none", "InsertEffect inst=2 index=0 plugin=Reverb mix=0.500"]);
         assert!(h.tree().iter().any(|line| line.contains("fx Reverb")), "{:#?}", h.tree());
     }
 

@@ -55,7 +55,7 @@ import { parseScale } from "./scales";
 import { stepsOutput, stepsPlace } from "./steps";
 import { rateAt } from "./tempo";
 import { fractionOf, isLog, valueAt } from "./travel";
-import { cableEnds, cableLoops, effectLoops, feedLoops, laneLoops, linksOf, routeLoops } from "./wiring";
+import { cableEnds, cableLoops, effectLoops, feedLoops, laneLoops, linkOrCable, linksOf, routeLoops } from "./wiring";
 
 export interface MockOptions {
   /** The session it serves; the tracer by default. */
@@ -669,9 +669,9 @@ function addEffectOutcome(snapshot: Snapshot, parent: NodeId, plugin: string, co
 
 /**
  * An effect that stands by itself, as the controller adds one (`Controller::add_free_effect`): a lane of its own at the end of the session, with no instrument (`(empty)`, no plugin), full range and in no group,
- * and the effect as the whole of its chain. The plugin is looked at first, as an effect that goes in a chain is (a plugin that is refused leaves no lane and uses no id), and then the lane's node is made, and the effect's
+ * and the effect as the whole of its chain, and no way out (step 88: a bare module). The plugin is looked at first, as an effect that goes in a chain is (a plugin that is refused leaves no lane and uses no id), and then the lane's node is made, and the effect's
  * (a redo gives the ids back in that order). The graph lists the lanes with their effects, and the master last, so both go before the master; the audio path is made again from the nodes (`relinked`: the
- * lane to its effect, the effect to the master, after the links of the lanes there were); and the layout of the telemetry gets the lane's two meters, a peak and a clip count, after those of the lanes there are.
+ * lane to its effect, after the links of the lanes there were, and none out of the effect); and the layout of the telemetry gets the lane's two meters, a peak and a clip count, after those of the lanes there are.
  */
 function addFreeEffectOutcome(snapshot: Snapshot, plugin: string, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
   const entry = catalog.find((e) => e.id === plugin);
@@ -683,7 +683,8 @@ function addFreeEffectOutcome(snapshot: Snapshot, plugin: string, counters: Coun
   const master = nodes.find((n) => n.kind === "master");
   if (!master) return invalid("the session has no master to hear a lane");
 
-  const lane: Node = { id: counters.node(), parent: null, name: "(empty)", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, route: "out", pattern: null };
+  // (A bare module: the lane's way out is cut, so that the effect sends where cables are drawn from it and nowhere before.)
+  const lane: Node = { id: counters.node(), parent: null, name: "(empty)", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, route: "none", pattern: null };
   const effect: Node = { id: counters.node(), parent: lane.id, name: made.name, kind: "effect", plugin: made.plugin, mix: made.mix, feed: made.feed };
   const atNode = nodes.indexOf(master);
   const grown: Graph = { nodes: [...nodes.slice(0, atNode), lane, effect, ...nodes.slice(atNode)], edges };
@@ -1489,10 +1490,14 @@ export class MockServer {
    * Do an intent as the controller does, what it keeps in the history included: the revision it made and what it told, or why it could not
    * be done. Undo and Redo apply what the last step says, each intent of it a revision of its own, and are no steps themselves.
    */
-  #carry(intent: Intent, tell: boolean): { rev: number; told: Told } | { error: WireError } {
+  #carry(requested: Intent, tell: boolean): { rev: number; told: Told } | { error: WireError } {
     // (What has run out by now is done first: an intent is about the session as it is.)
     this.settle();
-    if (intent.type === "undo" || intent.type === "redo") return this.#backAndForth(intent.type, tell);
+    if (requested.type === "undo" || requested.type === "redo") return this.#backAndForth(requested.type, tell);
+    // (An audio cable between the two ends of a link of the audio path that a lane or a group makes by itself is that link, given back if it is cut: `Controller::link_or_cable`.)
+    const asked = linkOrCable(this.#snapshot.graph, requested);
+    if ("error" in asked) return asked;
+    const intent = asked;
     const plan = planOf(this.#snapshot, intent, this.now(), this.#catalog.entries);
     const before = this.#snapshot;
     this.#counters.begin();

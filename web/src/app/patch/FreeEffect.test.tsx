@@ -71,9 +71,11 @@ describe("an effect that stands by itself", () => {
     expect(within(await nodeOf(oscillator.id)).getByRole("button", { name: "Mute Oscillator" })).toBeTruthy();
   });
 
-  test("is muted, soloed and has its way out cut by the buttons of its module, which ask for them for its lane and show what the server has", async () => {
+  test("is muted, soloed and given its way out by the buttons of its module, which ask for them for its lane and show what the server has: it begins with none (a module with no cable sends nowhere: step 88)", async () => {
     const { requests } = await withReverb();
     const reverb = await nodeOf(4);
+    // (Nothing is sent to the master unless a person says so: the button is pressed, `no out`, and a press gives the way out.)
+    expect(within(reverb).getByRole("button", { name: "Cut the way out of Reverb" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(within(reverb).getByRole("button", { name: "Mute Reverb" }));
     await waitFor(() => {
       expect(within(reverb).getByRole("button", { name: "Mute Reverb" }).getAttribute("aria-pressed")).toBe("true");
@@ -81,12 +83,12 @@ describe("an effect that stands by itself", () => {
     fireEvent.click(within(reverb).getByRole("button", { name: "Solo Reverb" }));
     fireEvent.click(within(reverb).getByRole("button", { name: "Cut the way out of Reverb" }));
     await waitFor(() => {
-      expect(within(reverb).getByRole("button", { name: "Cut the way out of Reverb" }).getAttribute("aria-pressed")).toBe("true");
+      expect(within(reverb).getByRole("button", { name: "Cut the way out of Reverb" }).getAttribute("aria-pressed")).toBe("false");
     });
     expect(asked(requests)).toEqual([
       { type: "setMute", node: 3, muted: true },
       { type: "setSolo", node: 3, solo: true },
-      { type: "setRoute", node: 3, route: "none" },
+      { type: "setRoute", node: 3, route: "out" },
     ]);
   });
 

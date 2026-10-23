@@ -57,6 +57,38 @@ describe("the mock engine's audio cables", () => {
     expect(wrong).toEqual([]);
   });
 
+  test("give back a link of the audio path that is cut when a cable is asked for between its two ends, as the controller does, on the session with every link cut: its words when it refuses, else the links, what is cut and the cables it comes to", () => {
+    const wrong: string[] = [];
+    for (const row of audioCablesFixture.cutRows) {
+      const what = JSON.stringify(row.intent);
+      const server = new MockServer({ snapshot: audioCablesFixture.cutSnapshot });
+      let refused: string | null = null;
+      try {
+        server.apply(row.intent);
+      } catch (error) {
+        refused = error instanceof Error ? error.message : String(error);
+      }
+      if ("error" in row) {
+        if (refused !== row.error) wrong.push(`${what}: ${refused ?? "done"}, and the controller says ${row.error}`);
+        continue;
+      }
+      if (refused !== null) {
+        wrong.push(`${what}: refused (${refused}), and the controller took it`);
+        continue;
+      }
+      const shape = shapeOf(server.snapshot);
+      // (The lists one by one: the fixture's keys are in the order that Rust writes them, which is not the order of a shape's.)
+      const got = { audio: shape.audio, feeds: shape.feeds ?? [], routes: shape.routes ?? [], sends: shape.sends ?? [] };
+      for (const list of ["audio", "feeds", "routes", "sends"] as const) {
+        if (!same(got[list], row.links[list])) wrong.push(`${what}: ${list} are ${JSON.stringify(got[list])}, not ${JSON.stringify(row.links[list])}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+    // (Every start tried with every end: 13 by 13, of which a good part is a link given back.)
+    expect(audioCablesFixture.cutRows).toHaveLength(169);
+    expect(audioCablesFixture.cutRows.filter((row) => "links" in row).length).toBeGreaterThanOrEqual(60);
+  });
+
   test("have been tried in each of the ways the controller refuses them and takes them: the fixture is not empty", () => {
     const rows = audioCablesFixture.rows;
     const tried = [
@@ -99,7 +131,8 @@ describe("the mock engine's audio cables", () => {
     if (!lane) throw new Error("the session has three lanes");
     const cables = (): number[] => server.snapshot.graph.edges.flatMap((e) => (e.kind === "cable" ? [e.id] : []));
     expect(cables()).toEqual([1, 2, 3, 4, 5, 6]);
-    server.apply({ type: "addCable", from: { node: lane.id, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } }, gain: null });
+    // (A cable at a level that is not the way out's: the empty lane's instrument goes to the mix by its way out, which a cable at its level would be.)
+    server.apply({ type: "addCable", from: { node: lane.id, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } }, gain: 0.5 });
     expect(cables()).toEqual([1, 2, 3, 4, 5, 6, 7]);
     server.apply({ type: "removeEdge", edge: 3 });
     expect(cables()).toEqual([1, 2, 4, 5, 6, 7]);
@@ -115,7 +148,8 @@ describe("the mock engine's audio cables", () => {
     const [oscillator] = tracerSnapshot.graph.nodes.filter((n) => n.kind === "instrument");
     const [filter] = tracerSnapshot.graph.nodes.filter((n) => n.kind === "effect");
     if (!oscillator || !filter) throw new Error("the tracer has an oscillator and a filter");
-    const draw: Intent = { type: "addCable", from: { node: oscillator.id, port: { type: "audioOut" } }, to: { node: filter.id, port: { type: "audioIn" } }, gain: null };
+    // (The oscillator to the mix: a cable between the oscillator and its filter would be the link that is there, and the filter to the mix the lane's way out.)
+    const draw: Intent = { type: "addCable", from: { node: oscillator.id, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } }, gain: null };
     const plan = planOf(tracerSnapshot, draw, 0, []);
     expect(plan).toMatchObject({ added: { label: "draw an audio cable" } });
     const server = new MockServer({ snapshot: tracerSnapshot });

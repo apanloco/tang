@@ -960,10 +960,11 @@ fn audio_cables_of(snapshot: &Value) -> Vec<Value> {
 
 #[tokio::test]
 async fn a_browser_draws_a_send_and_hears_it_in_the_meter_and_the_saved_file_has_it_and_a_program_started_on_it_draws_and_plays_it() {
-    // One sine, at a level of 0.2: a steady tone, so that what a cable that sends it to the mix adds is a number that can be told.
+    // One sine, at a level of 0.2: a steady tone, so that what a cable that sends it to the mix adds is a number that can be told. The lane is in a group, so that its way out goes to the group's bus and
+    // a cable from its instrument to the mix is a cable beside it (a lane with no effect and no group has its way out from its instrument to the mix, which a cable between the two is: it gives the link back).
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("sends.toml");
-    std::fs::write(&file, "[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 0.2\n").unwrap();
+    std::fs::write(&file, "[[group]]\n\n[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 0.2\ngroup = 0\n").unwrap();
     let tang = Tang::start_on(&file);
     let (mut client, at, snapshot) = listening(&tang).await;
     assert!(audio_cables_of(&snapshot).is_empty());
@@ -1024,6 +1025,52 @@ async fn a_browser_draws_a_send_and_hears_it_in_the_meter_and_the_saved_file_has
     assert_eq!((cables[0]["from"]["node"].clone(), cables[0]["to"]["node"].clone(), cables[0]["gain"].clone()), (json!(id_of(&snapshot, "Oscillator")), json!(MASTER), json!(0.5)));
     tell(&mut browser, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
     peak_until(&mut browser, &again, at, SOON, "the note with the send that the file has", |peak| (peak - 1.5 * dry).abs() < 0.1 * dry).await;
+}
+
+#[tokio::test]
+async fn a_browser_draws_a_cable_between_the_ends_of_a_link_that_is_cut_and_the_link_is_given_back_and_heard_and_where_the_link_is_there_the_cable_is_refused() {
+    // One sine, at a level of 0.2: a steady tone. The lane has no effect and no group, so its way out is the link from its instrument to the mix (step 88a: every audio link is a cable to a client).
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("links.toml");
+    std::fs::write(&file, "[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 0.2\n").unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, snapshot) = listening(&tang).await;
+    let lane = id_of(&snapshot, "Oscillator");
+    let (start, end) = (json!({"node": lane, "port": {"type": "audioOut"}}), json!({"node": MASTER, "port": {"type": "audioIn"}}));
+
+    tell(&mut client, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
+    let dry = peak_until(&mut client, &tang, at, SOON, "the note", |peak| peak > 0.02).await;
+    let dry = peak_until(&mut client, &tang, at, SOON, "the note, steady", |peak| (peak - dry).abs() < 0.01 * dry).await;
+
+    // The link is there: a cable between its two ends is refused, in the words of a second cable between two places, and nothing is heard of it.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addCable", "from": start, "to": end, "gain": null}})).await;
+    assert_eq!(answer(&mut client, 1).await["error"]["message"], "there is a cable between those two already");
+
+    // The way out is cut: the lane goes nowhere, and the note is silent.
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "setRoute", "node": lane, "route": "none"}})).await;
+    assert_eq!(answer(&mut client, 2).await["type"], "ack");
+    peak_until(&mut client, &tang, at, SOON, "the note, with the way out cut", |peak| peak < 0.001).await;
+
+    // A cable between the two ends gives the link back and makes no cable: the note is heard as it was, and the step that is there is the link's, which Undo cuts again.
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "addCable", "from": start, "to": end, "gain": null}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 3).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("a link that is given back is told as a snapshot");
+    assert!(audio_cables_of(told).is_empty(), "the link is given back and no cable is made: {:?}", audio_cables_of(told));
+    assert_eq!(said.iter().rfind(|m| m["type"] == "history").cloned().expect("a message of the history"), json!({"type": "history", "undo": "give the lane of Oscillator its way out", "redo": null}));
+    peak_until(&mut client, &tang, at, SOON, "the note, as it was", |peak| (peak - dry).abs() < 0.1 * dry).await;
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "undo"}})).await;
+    assert_eq!(answer(&mut client, 4).await["type"], "ack");
+    peak_until(&mut client, &tang, at, SOON, "the note, with the way out cut by Undo", |peak| peak < 0.001).await;
+
+    // Saved with the way out given back, the file has no word of a way out and no cable (a link is no cable): redo, then save.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "redo"}})).await;
+    assert_eq!(answer(&mut client, 5).await["type"], "ack");
+    peak_until(&mut client, &tang, at, SOON, "the note, with the way out given back by Redo", |peak| (peak - dry).abs() < 0.1 * dry).await;
+    tell(&mut client, json!({"type": "request", "reqId": 6, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 6).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(!saved.contains("route") && !saved.contains("[[cable]]"), "{saved}");
 }
 
 /// The edges of a snapshot message that carry notes: the cables of notes that were drawn, and what a lane that has none hears (`hears`).

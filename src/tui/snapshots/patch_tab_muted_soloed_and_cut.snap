@@ -7,13 +7,13 @@ source: src/tui/golden_tests.rs
 ┌ Patch ───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │outputs ↓  inputs →              L1   L1   L2   G1   G1  Mix                                                          │
 │                               Filt Dela Driv  bus Reve                                                               │
-│▪G1     L1  ♪ Oscillator          ·    ·    ·    ·    ·    ·                                                          │
-│        L1    fx Filter           ×    ·    ·    ·    ·    ·                                                          │
-│        L1    fx Delay            ×    ×    ·    ·    ·    ·                                                          │
-│▫    MS L2  ♪ Oscillator          ·    ·    ·    ·    ·    ·                                                          │
+│▪G1     L1  ♪ Oscillator          ●    ·    ·    ·    ·    ·                                                          │
+│        L1    fx Filter           ×    ●    ·    ·    ·    ·                                                          │
+│        L1    fx Delay            ×    ×    ·    ●    ·    ·                                                          │
+│▫    MS L2  ♪ Oscillator          ·    ·    ●    ·    ·    ·                                                          │
 │        L2    fx Drive            ·    ·    ×    ·    ·    ·                                                          │
-│▪Mix    G1  ▦ Group 1             ×    ×    ·    ×    ×    ·                                                          │
-│        G1    fx Reverb (bus)     ×    ×    ·    ×    ×    ·                                                          │
+│▪Mix    G1  ▦ Group 1             ×    ×    ·    ×    ●    ·                                                          │
+│        G1    fx Reverb (bus)     ×    ×    ·    ×    ×    ●                                                          │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
@@ -40,13 +40,13 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbaaaaaaaaaaa....................
 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbaaaaaaaaaaaaaaaaaaaaaaaaa.........................................................c
 c...............................bbbbbaaaaaaaaaaaaaaaaaaaaaaaaa.........................................................c
-caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.........................................................c
 caaaaabbbaaaaaaaaaaaaaaaaaaaaaaadddddaaaaaaaaaaaaaaaaaaaaaaaaa.........................................................c
-caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaddddddddddaaaaaaaaaaaaaaaaaaaa.........................................................c
-caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.........................................................c
-cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbeeeeeaaaaadddddaaaaaaaaaaaaaaa.........................................................c
-caaaaabbbfffffffffffffffffffffffddddddddddaaaaaddddddddddaaaaa.........................................................c
-caaaaabbbfffffffffffffffffffffffddddddddddaaaaaddddddddddaaaaa.........................................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaeeeeedddddaaaaaaaaaaaaaaaaaaaa.........................................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeaaaaadddddaaaaaaaaaa.........................................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadddddaaaaaaaaaaaaaaa.........................................................c
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbfffffaaaaaeeeeeaaaaaaaaaaaaaaa.........................................................c
+caaaaabbbgggggggggggggggggggggggeeeeeeeeeeaaaaaeeeeedddddaaaaa.........................................................c
+caaaaabbbgggggggggggggggggggggggeeeeeeeeeeaaaaaeeeeeeeeeeddddd.........................................................c
 c......................................................................................................................c
 c......................................................................................................................c
 c......................................................................................................................c
@@ -67,12 +67,13 @@ cbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbb..............................
 cccccccccccccccccccccccccccccccccccccccc...............................................................................c
 caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.......................................c
 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-gggggggcccccccccccc.gggccccccc.gggccccccc.gggccccccccccccc.gggccccccc.gggcccccccc.gggccccc.gggccccc
+hhhhhhhcccccccccccc.hhhccccccc.hhhccccccc.hhhccccccccccccc.hhhccccccc.hhhcccccccc.hhhccccc.hhhccccc
 ── legend ──
 a  fg=Indexed(245) bg=Reset mod=-
 b  fg=White bg=Reset mod=BOLD
 c  fg=White bg=Reset mod=-
-d  fg=Red bg=Reset mod=DIM
-e  fg=Indexed(245) bg=Reset mod=REVERSED
-f  fg=Cyan bg=Reset mod=DIM
-g  fg=Black bg=White mod=BOLD
+d  fg=Yellow bg=Reset mod=-
+e  fg=Red bg=Reset mod=DIM
+f  fg=Indexed(245) bg=Reset mod=REVERSED
+g  fg=Cyan bg=Reset mod=DIM
+h  fg=Black bg=White mod=BOLD

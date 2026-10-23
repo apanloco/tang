@@ -10303,8 +10303,7 @@
               "4>5 audio",
               "5>0 member",
               "8>4294967295 audio",
-              "10>11 audio",
-              "11>4294967295 audio"
+              "10>11 audio"
             ],
             "cables": [
               "#0 6>3 param1 @0.5",
@@ -10345,6 +10344,9 @@
               "10 - (empty)",
               "11 10 Reverb",
               "4294967295 - Master"
+            ],
+            "routes": [
+              "10 none"
             ]
           }
         },
@@ -10394,11 +10396,11 @@
           "events": [],
           "history": {
             "redo": null,
-            "undo": "cut the way out of Reverb"
+            "undo": "give Reverb its way out"
           },
           "intent": {
             "node": 10,
-            "route": "none",
+            "route": "out",
             "type": "setRoute"
           },
           "restructured": true,
@@ -10411,7 +10413,8 @@
               "4>5 audio",
               "5>0 member",
               "8>4294967295 audio",
-              "10>11 audio"
+              "10>11 audio",
+              "11>4294967295 audio"
             ],
             "cables": [
               "#0 6>3 param1 @0.5",
@@ -10452,9 +10455,6 @@
               "10 - (empty)",
               "11 10 Reverb",
               "4294967295 - Master"
-            ],
-            "routes": [
-              "10 none"
             ]
           }
         },
@@ -10480,7 +10480,8 @@
               "5>0 member",
               "8>4294967295 audio",
               "10>11 audio",
-              "11>12 audio"
+              "11>12 audio",
+              "12>4294967295 audio"
             ],
             "cables": [
               "#0 6>3 param1 @0.5",
@@ -10522,9 +10523,6 @@
               "11 10 Reverb",
               "12 10 Filter",
               "4294967295 - Master"
-            ],
-            "routes": [
-              "10 none"
             ]
           }
         },
@@ -10570,73 +10568,7 @@
           "events": [],
           "history": {
             "redo": "add Filter",
-            "undo": "cut the way out of Reverb"
-          },
-          "intent": {
-            "type": "undo"
-          },
-          "restructured": true,
-          "shape": {
-            "audio": [
-              "0>1 audio",
-              "1>4294967295 audio",
-              "2>4294967295 audio",
-              "3>4 audio",
-              "4>5 audio",
-              "5>0 member",
-              "8>4294967295 audio",
-              "10>11 audio"
-            ],
-            "cables": [
-              "#0 6>3 param1 @0.5",
-              "#1 7>3 param2 @0.25"
-            ],
-            "meters": [
-              "0 4294967295 audioIn peak",
-              "1 4294967295 audioIn clips",
-              "2 0 audioOut peak",
-              "3 0 audioOut clips",
-              "4 2 audioOut peak",
-              "5 2 audioOut clips",
-              "6 3 audioOut peak",
-              "7 3 audioOut clips",
-              "12 8 audioOut peak",
-              "13 8 audioOut clips",
-              "15 10 audioOut peak",
-              "16 10 audioOut clips"
-            ],
-            "modulation": [
-              "8 6 modOut modOutput",
-              "10 7 modOut modOutput",
-              "14 9 modOut modOutput",
-              "9 3 param1 effective",
-              "11 3 param2 effective"
-            ],
-            "nodes": [
-              "0 - Pad",
-              "1 0 Filter",
-              "2 - Group 2",
-              "3 0 Oscillator",
-              "4 3 Reverb",
-              "5 3 Filter",
-              "6 3 LFO",
-              "7 3 ADSR",
-              "8 - Oscillator",
-              "9 8 LFO",
-              "10 - (empty)",
-              "11 10 Reverb",
-              "4294967295 - Master"
-            ],
-            "routes": [
-              "10 none"
-            ]
-          }
-        },
-        {
-          "events": [],
-          "history": {
-            "redo": "cut the way out of Reverb",
-            "undo": "mute Reverb"
+            "undo": "give Reverb its way out"
           },
           "intent": {
             "type": "undo"
@@ -10693,6 +10625,72 @@
               "10 - (empty)",
               "11 10 Reverb",
               "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "give Reverb its way out",
+            "undo": "mute Reverb"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio",
+              "10>11 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips",
+              "15 10 audioOut peak",
+              "16 10 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - (empty)",
+              "11 10 Reverb",
+              "4294967295 - Master"
+            ],
+            "routes": [
+              "10 none"
             ]
           }
         },
@@ -10810,107 +10808,6 @@
               "4>5 audio",
               "5>0 member",
               "8>4294967295 audio",
-              "10>11 audio",
-              "11>4294967295 audio"
-            ],
-            "cables": [
-              "#0 6>3 param1 @0.5",
-              "#1 7>3 param2 @0.25"
-            ],
-            "meters": [
-              "0 4294967295 audioIn peak",
-              "1 4294967295 audioIn clips",
-              "2 0 audioOut peak",
-              "3 0 audioOut clips",
-              "4 2 audioOut peak",
-              "5 2 audioOut clips",
-              "6 3 audioOut peak",
-              "7 3 audioOut clips",
-              "12 8 audioOut peak",
-              "13 8 audioOut clips",
-              "17 10 audioOut peak",
-              "18 10 audioOut clips"
-            ],
-            "modulation": [
-              "8 6 modOut modOutput",
-              "10 7 modOut modOutput",
-              "14 9 modOut modOutput",
-              "9 3 param1 effective",
-              "11 3 param2 effective"
-            ],
-            "nodes": [
-              "0 - Pad",
-              "1 0 Filter",
-              "2 - Group 2",
-              "3 0 Oscillator",
-              "4 3 Reverb",
-              "5 3 Filter",
-              "6 3 LFO",
-              "7 3 ADSR",
-              "8 - Oscillator",
-              "9 8 LFO",
-              "10 - (empty)",
-              "11 10 Reverb",
-              "4294967295 - Master"
-            ]
-          }
-        },
-        {
-          "events": [
-            {
-              "gain": "mix",
-              "node": 11,
-              "rev": 21,
-              "type": "gainSet",
-              "value": 0.25
-            }
-          ],
-          "history": {
-            "redo": "mute Reverb",
-            "undo": "set mix"
-          },
-          "intent": {
-            "type": "redo"
-          },
-          "restructured": false
-        },
-        {
-          "events": [
-            {
-              "muted": true,
-              "node": 10,
-              "rev": 22,
-              "type": "muteSet"
-            }
-          ],
-          "history": {
-            "redo": "cut the way out of Reverb",
-            "undo": "mute Reverb"
-          },
-          "intent": {
-            "type": "redo"
-          },
-          "restructured": false
-        },
-        {
-          "events": [],
-          "history": {
-            "redo": "add Filter",
-            "undo": "cut the way out of Reverb"
-          },
-          "intent": {
-            "type": "redo"
-          },
-          "restructured": true,
-          "shape": {
-            "audio": [
-              "0>1 audio",
-              "1>4294967295 audio",
-              "2>4294967295 audio",
-              "3>4 audio",
-              "4>5 audio",
-              "5>0 member",
-              "8>4294967295 audio",
               "10>11 audio"
             ],
             "cables": [
@@ -10959,6 +10856,107 @@
           }
         },
         {
+          "events": [
+            {
+              "gain": "mix",
+              "node": 11,
+              "rev": 21,
+              "type": "gainSet",
+              "value": 0.25
+            }
+          ],
+          "history": {
+            "redo": "mute Reverb",
+            "undo": "set mix"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [
+            {
+              "muted": true,
+              "node": 10,
+              "rev": 22,
+              "type": "muteSet"
+            }
+          ],
+          "history": {
+            "redo": "give Reverb its way out",
+            "undo": "mute Reverb"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": false
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "add Filter",
+            "undo": "give Reverb its way out"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio",
+              "10>11 audio",
+              "11>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips",
+              "17 10 audioOut peak",
+              "18 10 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - (empty)",
+              "11 10 Reverb",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
           "events": [],
           "history": {
             "redo": "solo a chain of effects",
@@ -10978,7 +10976,8 @@
               "5>0 member",
               "8>4294967295 audio",
               "10>11 audio",
-              "11>12 audio"
+              "11>12 audio",
+              "12>4294967295 audio"
             ],
             "cables": [
               "#0 6>3 param1 @0.5",
@@ -11020,9 +11019,6 @@
               "11 10 Reverb",
               "12 10 Filter",
               "4294967295 - Master"
-            ],
-            "routes": [
-              "10 none"
             ]
           }
         },
@@ -11091,8 +11087,7 @@
               "4>5 audio",
               "5>0 member",
               "8>4294967295 audio",
-              "10>11 audio",
-              "11>4294967295 audio"
+              "10>11 audio"
             ],
             "cables": [
               "#0 6>3 param1 @0.5",
@@ -11133,6 +11128,9 @@
               "10 - (empty)",
               "11 10 Filter",
               "4294967295 - Master"
+            ],
+            "routes": [
+              "10 none"
             ]
           }
         },
@@ -11223,8 +11221,7 @@
               "4>5 audio",
               "5>0 member",
               "8>4294967295 audio",
-              "10>11 audio",
-              "11>4294967295 audio"
+              "10>11 audio"
             ],
             "cables": [
               "#0 6>3 param1 @0.5",
@@ -11265,6 +11262,9 @@
               "10 - (empty)",
               "11 10 Filter",
               "4294967295 - Master"
+            ],
+            "routes": [
+              "10 none"
             ]
           }
         }
@@ -32144,7 +32144,7 @@
           }
         },
         {
-          "events": [],
+          "error": "there is a cable between those two already",
           "history": {
             "redo": null,
             "undo": "draw an audio cable"
@@ -32164,44 +32164,6 @@
               }
             },
             "type": "addCable"
-          },
-          "restructured": true,
-          "shape": {
-            "audio": [
-              "0>1 audio",
-              "1>4294967295 audio",
-              "2>3 audio",
-              "3>4 audio",
-              "4>0 member",
-              "5>6 audio",
-              "6>4294967295 audio"
-            ],
-            "cables": [],
-            "meters": [
-              "0 4294967295 audioIn peak",
-              "1 4294967295 audioIn clips",
-              "2 0 audioOut peak",
-              "3 0 audioOut clips",
-              "4 2 audioOut peak",
-              "5 2 audioOut clips",
-              "6 5 audioOut peak",
-              "7 5 audioOut clips"
-            ],
-            "modulation": [],
-            "nodes": [
-              "0 - Group 1",
-              "1 0 Reverb",
-              "2 0 Oscillator",
-              "3 2 Filter",
-              "4 2 Delay",
-              "5 - Oscillator",
-              "6 5 Drive",
-              "4294967295 - Master"
-            ],
-            "sends": [
-              "#0 5>3 @0.5",
-              "#1 6>4294967295 @1"
-            ]
           }
         },
         {
@@ -32261,56 +32223,7 @@
             ],
             "sends": [
               "#0 5>3 @0.5",
-              "#1 6>4294967295 @1",
-              "#2 0>6 @2"
-            ]
-          }
-        },
-        {
-          "events": [],
-          "history": {
-            "redo": "draw an audio cable",
-            "undo": "draw an audio cable"
-          },
-          "intent": {
-            "type": "undo"
-          },
-          "restructured": true,
-          "shape": {
-            "audio": [
-              "0>1 audio",
-              "1>4294967295 audio",
-              "2>3 audio",
-              "3>4 audio",
-              "4>0 member",
-              "5>6 audio",
-              "6>4294967295 audio"
-            ],
-            "cables": [],
-            "meters": [
-              "0 4294967295 audioIn peak",
-              "1 4294967295 audioIn clips",
-              "2 0 audioOut peak",
-              "3 0 audioOut clips",
-              "4 2 audioOut peak",
-              "5 2 audioOut clips",
-              "6 5 audioOut peak",
-              "7 5 audioOut clips"
-            ],
-            "modulation": [],
-            "nodes": [
-              "0 - Group 1",
-              "1 0 Reverb",
-              "2 0 Oscillator",
-              "3 2 Filter",
-              "4 2 Delay",
-              "5 - Oscillator",
-              "6 5 Drive",
-              "4294967295 - Master"
-            ],
-            "sends": [
-              "#0 5>3 @0.5",
-              "#1 6>4294967295 @1"
+              "#1 0>6 @2"
             ]
           }
         },
@@ -32409,7 +32322,7 @@
           "events": [
             {
               "locked": false,
-              "rev": 14,
+              "rev": 10,
               "type": "lockedSet"
             }
           ],
@@ -32423,10 +32336,20 @@
           "restructured": false
         },
         {
+          "error": "there is nothing to undo",
+          "history": {
+            "redo": "lock the piano to its scale",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          }
+        },
+        {
           "events": [
             {
               "locked": true,
-              "rev": 15,
+              "rev": 11,
               "type": "lockedSet"
             }
           ],
@@ -32489,54 +32412,6 @@
         {
           "events": [],
           "history": {
-            "redo": "draw an audio cable",
-            "undo": "draw an audio cable"
-          },
-          "intent": {
-            "type": "redo"
-          },
-          "restructured": true,
-          "shape": {
-            "audio": [
-              "0>1 audio",
-              "1>4294967295 audio",
-              "2>3 audio",
-              "3>4 audio",
-              "4>0 member",
-              "5>6 audio",
-              "6>4294967295 audio"
-            ],
-            "cables": [],
-            "meters": [
-              "0 4294967295 audioIn peak",
-              "1 4294967295 audioIn clips",
-              "2 0 audioOut peak",
-              "3 0 audioOut clips",
-              "4 2 audioOut peak",
-              "5 2 audioOut clips",
-              "6 5 audioOut peak",
-              "7 5 audioOut clips"
-            ],
-            "modulation": [],
-            "nodes": [
-              "0 - Group 1",
-              "1 0 Reverb",
-              "2 0 Oscillator",
-              "3 2 Filter",
-              "4 2 Delay",
-              "5 - Oscillator",
-              "6 5 Drive",
-              "4294967295 - Master"
-            ],
-            "sends": [
-              "#0 5>3 @0.5",
-              "#1 6>4294967295 @1"
-            ]
-          }
-        },
-        {
-          "events": [],
-          "history": {
             "redo": null,
             "undo": "draw an audio cable"
           },
@@ -32578,9 +32453,18 @@
             ],
             "sends": [
               "#0 5>3 @0.5",
-              "#1 6>4294967295 @1",
-              "#2 0>6 @2"
+              "#1 0>6 @2"
             ]
+          }
+        },
+        {
+          "error": "there is nothing to redo",
+          "history": {
+            "redo": null,
+            "undo": "draw an audio cable"
+          },
+          "intent": {
+            "type": "redo"
           }
         },
         {
@@ -32626,8 +32510,7 @@
               "4294967295 - Master"
             ],
             "sends": [
-              "#0 5>3 @0.5",
-              "#1 6>4294967295 @1"
+              "#0 5>3 @0.5"
             ]
           }
         }
