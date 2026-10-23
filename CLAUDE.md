@@ -384,8 +384,16 @@ the way a lane goes by itself.
   changed before the answer, and a refusal, a way out that would make the audio go round, is said among the notices). The canvas draws no link from the end of a chain whose way out is cut (the graph has none), so
   that a cut is seen as the cable going. The mock engine does what the controller does (`setRouteOutcome`, the cut links and the loops that `routeLoops` in `client/wiring.ts` looks for, the history's words), pinned to
   it by the `routes` list of the fixtures' shapes (`shape_of`, `shapeOf`) and by the script of `history.json` that cuts and gives back ways out and takes a lane that is cut out and puts it back.
+  **The link itself can be disconnected** (step 84): the end of a lane's chain, or of a group's, into the group's bus or the master, which is the grey link that a lane has by itself, has a **×** at its middle
+  (`DisconnectButton` in `app/patch/edges.tsx`: `Disconnect Filter → Master`, and `Disconnect Oscillator 2 → Master` for a lane that has no effect, which is not the name of a cable that a person drew: the sends are
+  `Remove cable …`) that asks `SetRoute none` for the lane or group whose way out it is, as the button in the cell does, and puts the focus on that button, which gives the way out back (a cut link has nothing to press;
+  Undo does it as well). `toFlow` says whose the link is (`ownerOfWayOut`: the lane or group that a link into a group or the master starts at, or that the effect it starts at is in; `wayOut` and `label` in the link's `data`, and
+  nothing in the data of a link that is not one); the links inside a chain (an instrument to its first effect, an effect to the next) are the template's and have no ×.
 TODO: a way out that is cut over a buffer, as a cable is (the link would stay in the plan for the buffer that it goes down in, and the check for a loop would have to look at the wiring that is to be); and the
 action bar of the terminal has no `w` (its hints are in about a hundred snapshots; the Help tab lists it).
+TODO: the links inside a lane's chain cannot be disconnected (a chain's links are the template's: an effect is taken out or moved to change them), and a cut link has nothing to press to give it back (the button in the cell,
+the focus after the ×, and Undo do); the × is at the middle of its link, which can be over a node, or over the middle of a send between the same two places (a lane that has no effect and a cable from its instrument to
+the same input: the same curve), as the level of a send can.
 A way out has two words and not a place: where the end goes instead (a lane to the mix beside its group, to another group's bus) is a cable at the end of the chain (`from = "instrument[0].effect[1]"`).
 
 ### Audio cables (`[[cable]]`)
@@ -2916,6 +2924,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   Step 82 gave the controller sources of notes and cables of notes (P4b; see "Sources of notes and cables of notes"): the graph a page gets has their nodes and edges (`source` nodes, `events` and `hears` edges, the ports `eventsOut` and `eventsIn`).
   Step 83 put them on the page (P4c; see "The page" under "Sources of notes and cables of notes"): the message `inputs` and the page's rule for which input a device stands for (`client/inputs.ts`, pinned by `fixtures/inputs.json`), the mock engine's sources and cables of notes (`client/noteWiring.ts`, pinned by `fixtures/sources.json`), the canvas's source nodes in a column of their own before the lanes, `NotesPort` on a source and on a lane, the cables
   of notes and the links by which a lane hears every source (`NotesEdge`, `HearsEdge`), the menus for the keyboard (`NotesMenus`), the bar's "+ Source" (`AddSource`), `Editor.addSource` and `addNotesCable`, and `e2e/sources.spec.ts`.
+  Step 84 gave the link that every lane has by itself, the grey one from the end of its chain to its group or the master, the button that disconnects it (see "The way out (`route`)"): a × at its middle that cuts the way out, in `AudioEdge`.
   What the controller
   clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
