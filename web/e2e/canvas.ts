@@ -11,7 +11,7 @@ export async function open(page: Page, scene = "tracer"): Promise<void> {
   await expect(page.locator(".react-flow__node").first()).toBeVisible();
 }
 
-/** The node of the canvas whose name is exactly `name`. */
+/** The node of the canvas whose name is exactly `name` (the text of a regular expression: the name of a lane that has no instrument, `(empty)`, is written `\\(empty\\)`, as `MIDI \\(learning…\\)` is). */
 export const node = (page: Page, name: string): Locator => page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: new RegExp(`^${name}$`) }) });
 
 /** The output of a modulator, where a cable is started. */

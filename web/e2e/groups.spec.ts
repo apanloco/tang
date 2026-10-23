@@ -14,9 +14,12 @@ const groupChoice = (page: Page, lane: string) => page.getByRole("combobox", { n
 
 test("a group is added from the bar, a lane is put in it and taken out of it, the group is named in place and taken out after the page has asked", async ({ page }) => {
   await open(page);
-  // The tracer has one lane, which has no group, and a session keeps its last lane: nothing takes it out.
+  // The tracer has one lane, which has no group, and a session keeps its last lane: nothing takes the lane out, and its menu only offers to take the instrument out of it.
   await expect(groupChoice(page, "Oscillator")).toHaveValue("");
-  await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(1);
+  await page.getByRole("button", { name: "Remove the lane of Oscillator" }).click();
+  await expect(page.getByRole("menuitem")).toHaveText(["Keep Oscillator", "Remove Oscillator only: its 1 effect and 1 modulator stay in the lane"]);
+  await page.keyboard.press("Escape");
 
   // A group from the bar: it is on the canvas, empty and with its own buttons, and the lane can be put in it.
   await page.getByRole("button", { name: "Add a group" }).click();
@@ -74,8 +77,39 @@ test("a group is made from a lane's choice, a second lane is added and taken out
   await expect(page.getByRole("menuitem", { name: "Remove the lane of Oscillator 2 for good" })).toBeVisible();
   await page.getByRole("menuitem", { name: "Remove the lane of Oscillator 2 for good" }).click();
   await expect(groupChoice(page, "Oscillator")).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(0);
+  // (The last lane keeps its button: it can have its instrument taken out, and not be taken out.)
+  await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Add an instrument" })).toBeFocused();
+});
+
+test("the instrument of a lane is taken out alone: the lane stays, empty, with its filter and its LFO, Undo puts the instrument back and another can be put in", async ({ page }) => {
+  await open(page);
+  await page.getByRole("button", { name: "Remove the lane of Oscillator" }).click();
+  await expect(page.getByRole("menuitem")).toHaveText(["Keep Oscillator", "Remove Oscillator only: its 1 effect and 1 modulator stay in the lane"]);
+  await page.getByRole("menuitem", { name: /^Remove Oscillator only/ }).click();
+  // The lane is on the canvas still, called what a lane that has no instrument is, with its filter and its LFO; the focus is on the button that puts an instrument in.
+  await expect(node(page, "\\(empty\\)")).toBeVisible();
+  await expect(node(page, "Filter")).toBeVisible();
+  await expect(node(page, "LFO")).toBeVisible();
+  await expect(node(page, "Oscillator")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Choose an instrument for (empty)" })).toBeFocused();
+  // It is the only lane, and has no instrument: nothing is left to take out of it, and it cannot be taken out.
+  await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(0);
+
+  // The history has it, in the words of what was done: Undo puts the instrument back, and Redo takes it out again.
+  await page.getByRole("button", { name: "Undo take Oscillator out of its lane" }).click();
+  await expect(node(page, "Oscillator")).toBeVisible();
+  await expect(node(page, "\\(empty\\)")).toHaveCount(0);
+  await page.getByRole("button", { name: "Redo take Oscillator out of its lane" }).click();
+  await expect(node(page, "\\(empty\\)")).toBeVisible();
+
+  // An instrument is put in the lane from its button: the lane has one again, and its filter and its LFO are where they were.
+  await page.getByRole("button", { name: "Choose an instrument for (empty)" }).click();
+  await page.getByRole("menuitem", { name: "Oscillator" }).click();
+  await expect(node(page, "Oscillator")).toBeVisible();
+  await expect(node(page, "\\(empty\\)")).toHaveCount(0);
+  await expect(node(page, "Filter")).toBeVisible();
+  await expect(node(page, "LFO")).toBeVisible();
 });
 
 own("what is done to groups is the program's: a second page sees it, and the saved file has the groups, their names and which lane is in which", async ({ page, browser, own: tang }) => {

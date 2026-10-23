@@ -5,6 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { audioIn, audioOut, centre, drag, node, nodeBoxes, open, sends, still } from "./canvas";
 import { test } from "./own";
+import { heardAt, silentAt } from "./sound";
 
 // The way out of a lane and of a group from the page (docs/patch-graph.md §11.6, P3c-2a): a button under the mute and the solo that says where the audio goes and, pressed, cuts it, so that the
 // node is heard only through the cables that start at it. The first tests are against the mock engine in the page (what the canvas draws and says), the last against the real program (what is
@@ -145,37 +146,6 @@ mock("the history has the way out in the words of the controller's: cut, and giv
   await expect(wayOut(page, "Oscillator")).toHaveText("no out");
   await expect(links(page)).toHaveCount(1);
 });
-
-/** The loudest the master's meter is for `ms`, in decibels (its floor is -60). */
-async function loudest(page: Page, ms: number): Promise<number> {
-  const meter = page.getByRole("meter", { name: "Master level" });
-  const until = Date.now() + ms;
-  let top = Number.NEGATIVE_INFINITY;
-  while (Date.now() < until) {
-    top = Math.max(top, Number(await meter.getAttribute("aria-valuenow")));
-    await page.waitForTimeout(25);
-  }
-  return top;
-}
-
-/** The level of the master's meter now, in decibels (its floor is -60). */
-const masterLevel = async (page: Page): Promise<number> => Number(await page.getByRole("meter", { name: "Master level" }).getAttribute("aria-valuenow"));
-
-/** A key that is held, heard at the master, and let go of: the master is quiet again before the next thing is looked at. */
-async function heardAt(page: Page, what: string): Promise<void> {
-  await page.keyboard.down("z");
-  await expect.poll(() => masterLevel(page), { message: `${what} is heard` }).toBeGreaterThan(-50);
-  await page.keyboard.up("z");
-  await expect.poll(() => masterLevel(page), { message: "the master is quiet again" }).toBeLessThan(-50);
-}
-
-/** A key that is held and not heard, for the better part of a second. */
-async function silentAt(page: Page, what: string): Promise<void> {
-  await page.keyboard.down("z");
-  expect(await loudest(page, 800), `${what} is silent`).toBeLessThan(-50);
-  await page.keyboard.up("z");
-  await expect.poll(() => masterLevel(page), { message: "the master is quiet again" }).toBeLessThan(-50);
-}
 
 test("a lane whose way out is cut is silent at the master, and is heard through a cable that is drawn from it and only through that; the file keeps the way out, and undo gives it back", async ({ page, own }) => {
   // (A good many waits for silence, each the better part of a second.)
