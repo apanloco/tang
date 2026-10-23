@@ -47,7 +47,7 @@ use crate::piano_filter::PianoMode;
 use crate::plugin;
 use crate::plugin::chain::{GraphCommand, ModulatorLocation};
 use crate::scale::{ScaleSetting, NOTE_NAMES};
-use crate::session::Route;
+use crate::session::{Feed, Route};
 use crate::telemetry;
 
 const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Patch", "(5) Help"];
@@ -953,6 +953,16 @@ impl State {
             }
             address => address.inst().and_then(|inst| self.ctl.model.instruments.get(inst)).map(|lane| (lane.node, lane.muted, lane.solo, lane.route)),
         }
+    }
+
+    /// The effect that the selected entry of the tree is (a lane's or a bus's), with whether the stage before it feeds it: what `f` asks the intent `SetFeed` for. None for any other entry.
+    fn selected_effect_feed(&self) -> Option<(NodeId, bool)> {
+        let slot = match self.selected_address().copied()? {
+            TreeAddress::Effect { inst, index } => self.ctl.model.instruments.get(inst)?.effects.get(index)?,
+            TreeAddress::GroupEffect { group, index } => self.ctl.model.groups.get(group)?.effects.get(index)?,
+            _ => return None,
+        };
+        Some((slot.node, slot.fed))
     }
 
     fn open_target_selector(&mut self, inst: usize, mod_index: usize) {
@@ -2775,6 +2785,14 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
+        // 'f' (chain focus) — cut the link into the effect that the cursor is on from the stage before it in its chain (the instrument, the effect before it, or the sum of the bus), or give
+        // it back (the intent `SetFeed`): the effect is then fed by its audio cables and by nothing else. A feed that would make the audio go round is refused (logged), as the page's is.
+        KeyCode::Char('f') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some((node, fed)) = s.selected_effect_feed() {
+                s.apply(Intent::SetFeed { node, feed: if fed { Feed::None } else { Feed::Chain } });
+            }
+        }
+
         KeyCode::Char('d') if s.active_tab == TAB_SESSION && !s.focus_params => {
             let sel = s.chain_state.selected;
             if sel < s.tree_entries.len() {
@@ -4447,6 +4465,11 @@ fn flags_label(muted: bool, solo: bool, route: Route) -> String {
     if flags.is_empty() { String::new() } else { format!("  {}", flags.join(" ")) }
 }
 
+/// What the tree says at the end of an effect's line when the stage before it does not feed it (its link is cut: `SetFeed`): `  [no in]`, and nothing for an effect that is fed.
+fn feed_label(fed: bool) -> &'static str {
+    if fed { "" } else { "  [no in]" }
+}
+
 fn push_instrument_entries(
     entries: &mut Vec<TreeEntry>,
     inst: &InstrumentNode,
@@ -4500,7 +4523,7 @@ fn push_instrument_entries(
 
     for (fx_idx, fx) in inst.effects.iter().enumerate() {
         entries.push(TreeEntry {
-            label: format!("{prefix}{} fx {}  [{}]", branch_for(child_idx), fx.name, fx.format),
+            label: format!("{prefix}{} fx {}  [{}]{}", branch_for(child_idx), fx.name, fx.format, feed_label(fx.fed)),
             address: TreeAddress::Effect { inst: inst_idx, index: fx_idx },
             node: fx.node,
             color: None,
@@ -4574,7 +4597,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
         }
         for (fx_idx, fx) in group.effects.iter().enumerate() {
             entries.push(TreeEntry {
-                label: format!("  fx {}  [{}]  (bus)", fx.name, fx.format),
+                label: format!("  fx {}  [{}]  (bus){}", fx.name, fx.format, feed_label(fx.fed)),
                 address: TreeAddress::GroupEffect { group: g_idx, index: fx_idx },
                 node: fx.node,
                 color: None,
@@ -4734,6 +4757,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  M          Mute / unmute the lane or group (a mute wins over a solo)".into(),
         "  S          Solo / unsolo it (while anything is soloed only it is heard)".into(),
         "  w          Cut / give back the way out of the lane or group (it is heard only through its audio cables)".into(),
+        "  f          Cut / give back the link into the effect (it is fed by its audio cables and by nothing else)".into(),
         "  a          Add effect after selected".into(),
         "  d          Delete selected".into(),
         "  m          Add modulator (lane rack; group rack on a group node)".into(),

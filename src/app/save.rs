@@ -8,7 +8,7 @@
 use crate::app::model::{EdgeId, ModSourceSlot, ModulatorSlot, NodeId, ParamSlot, PluginSlot, SessionModel, SourceKind, sync_name};
 use crate::plugin::chain::{CableFrom, CableTo, MidiBindSource};
 use crate::session::{
-    CablePlace, NodeUi, SaveCable, SaveDevice, SaveEffect, SaveGroup, SaveInstrument, SaveInstrumentSlot, SaveKeys, SaveModSource, SaveModTarget, SaveModulator,
+    CablePlace, Feed, NodeUi, SaveCable, SaveDevice, SaveEffect, SaveGroup, SaveInstrument, SaveInstrumentSlot, SaveKeys, SaveModSource, SaveModTarget, SaveModulator,
     SavePattern, SaveSources,
 };
 use std::collections::BTreeMap;
@@ -139,6 +139,7 @@ fn effect_to_save(fx: &PluginSlot, ui: &BTreeMap<NodeId, NodeUi>) -> SaveEffect 
     SaveEffect {
         plugin: fx.id.clone(),
         mix: fx.mix,
+        feed: if fx.fed { Feed::Chain } else { Feed::None },
         preset: fx.current_preset.clone(),
         params: overrides(&fx.params),
         pinned: fx.pinned_names(),

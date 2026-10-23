@@ -4,7 +4,7 @@
 // to a plain request is what a person needs: the node that was made (the intent does not name it:
 // a client finds it in the session it is then given), and, when the server refuses, a notice that
 // says what could not be done and why, in the names the canvas shows.
-import type { EdgeId, Endpoint, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternField, Plugin, Port, Route, SourceInfo } from "../protocol";
+import type { EdgeId, Endpoint, Feed, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternField, Plugin, Port, Route, SourceInfo } from "../protocol";
 import type { Client } from "./connection";
 import { isModulation } from "./cables";
 import { trimmed } from "./inputs";
@@ -55,6 +55,7 @@ const DOING: Record<Intent["type"], string> = {
   setMute: "mute or unmute a lane or a group",
   setSolo: "solo or unsolo a lane or a group",
   setRoute: "cut or give back the way out of a lane or a group",
+  setFeed: "cut or give back the link into an effect",
   setScale: "set the scale of the piano",
   setLocked: "lock or unlock the piano",
   setBpm: "set the tempo",
@@ -223,6 +224,14 @@ export class Editor {
    */
   setRoute(node: NodeId, route: Route): Promise<boolean> {
     return this.#attempt(route === "none" ? `cut the way out of ${this.#name(node)}` : `give ${this.#name(node)} its way out`, { type: "setRoute", node, route });
+  }
+
+  /**
+   * Cut (`none`) or give back (`chain`) the link into the effect `node` from the stage before it in its chain (the lane's instrument, the effect before it, or the sum of the bus): an effect whose link is cut
+   * is fed by its audio cables and by nothing else. True if it was done (the page says why if it was not: a link that is given back where the audio would go round, by the cables there are).
+   */
+  setFeed(node: NodeId, feed: Feed): Promise<boolean> {
+    return this.#attempt(feed === "none" ? `cut the input of ${this.#name(node)}` : `give ${this.#name(node)} its input back`, { type: "setFeed", node, feed });
   }
 
   /**

@@ -17,7 +17,7 @@ use crate::piano_filter::PianoMode;
 use crate::plugin::chain::{GraphCommand, LfoWaveform, MAX_STEPS, ModulatorLocation};
 use crate::scale::ScaleSetting;
 use crate::session::NodeUi;
-use crate::session::Route;
+use crate::session::{Feed, Route};
 use crate::{plugin, session};
 
 /// What an intent did, for `apply` to tell.
@@ -79,6 +79,7 @@ impl Controller {
             Intent::SetMute { node, muted } => Done::Event(self.set_mute(node, muted)?),
             Intent::SetSolo { node, solo } => Done::Event(self.set_solo(node, solo)?),
             Intent::SetRoute { node, route } => self.set_route_intent(node, route)?,
+            Intent::SetFeed { node, feed } => self.set_feed_intent(node, feed)?,
             Intent::SetScale { scale } => Done::Event(self.set_scale(&scale)?),
             Intent::SetLocked { locked } => Done::Event(self.set_locked(locked)),
             Intent::SetBpm { bpm } => Done::Event(self.set_bpm(bpm)?),
@@ -395,6 +396,27 @@ impl Controller {
             }
             _ => unreachable!("a lane or a group, found above"),
         }
+        Ok(Done::Restructured)
+    }
+
+    /// Cut or give back the link into an effect from the stage before it in its chain, in the model and in the audio thread, which makes its plan again (`Intent::SetFeed`). A feed that
+    /// is given back is refused where the audio would go round with the cables there are (a cable may have been drawn from the effect to a stage before it, which the link had kept
+    /// from being drawn); cutting one makes no loop. The audio thread is told what the intent says, whether or not it is what the effect has.
+    fn set_feed_intent(&mut self, node: NodeId, feed: Feed) -> Result<Done, IntentError> {
+        let path = match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
+            path @ (NodePath::Effect { .. } | NodePath::GroupEffect { .. }) => path,
+            _ => return Err(invalid("only an effect has a feed")),
+        };
+        if feed.is_fed() {
+            refuse_a_loop(self.model.loop_if_feed_is(node, true), "giving that effect its input back")?;
+        }
+        let slot = match path {
+            NodePath::Effect { inst, index } => &mut self.model.instruments[inst].effects[index],
+            NodePath::GroupEffect { group, index } => &mut self.model.groups[group].effects[index],
+            _ => unreachable!("an effect, found above"),
+        };
+        slot.fed = feed.is_fed();
+        let _ = self.cmd_tx.send(GraphCommand::SetEffectFeed { node, fed: feed.is_fed() });
         Ok(Done::Restructured)
     }
 
@@ -1033,7 +1055,7 @@ mod tests {
     use crate::app::graph::{Graph, NodeKind};
     use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load};
     use crate::plugin::chain::{CableFrom, CableTo, ModTargetKind, ModulatorLocation};
-    use crate::session::{NodeUi, Route};
+    use crate::session::{Feed, NodeUi, Route};
 
     /// A group with a bus filter and an LFO, a member with a reverb, and a lane
     /// with no instrument plugin.
@@ -1577,6 +1599,120 @@ plugin = "builtin:reverb"
         ctl.apply(Intent::SetRoute { node: instrument, route: Route::Out }).unwrap();
         ctl.apply(Intent::SetRoute { node: group, route: Route::Out }).unwrap();
         assert!(!saved(&ctl).contains("route"));
+    }
+
+    #[test]
+    fn set_feed_cuts_the_link_into_an_effect_and_a_bus_effect_in_the_model_and_the_engine_and_says_the_structure_changed() {
+        let (engine, mut ctl, n) = sends();
+        let applied = ctl.apply(Intent::SetFeed { node: n.fx[0], feed: Feed::None }).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: the links of the graph change, so it is told by a snapshot");
+        let fed = |ctl: &Controller| (ctl.model.instruments[0].effects.iter().map(|fx| fx.fed).collect::<Vec<_>>(), ctl.model.instruments[1].effects[0].fed, ctl.model.groups[0].effects[0].fed);
+        assert_eq!(fed(&ctl), (vec![false, true], true, true));
+        assert_eq!(sent(&engine), [format!("SetEffectFeed node={} fed=false", n.fx[0].0)]);
+        assert!(ctl.dirty);
+
+        let applied = ctl.apply(Intent::SetFeed { node: n.bus, feed: Feed::None }).unwrap();
+        assert_eq!(applied, Applied::restructured(2));
+        assert_eq!(fed(&ctl), (vec![false, true], true, false));
+        assert_eq!(sent(&engine), [format!("SetEffectFeed node={} fed=false", n.bus.0)]);
+
+        // The last effect of a lane that has none before it in another lane is its own: the drive of lane 1 is fed by lane 1's instrument.
+        ctl.apply(Intent::SetFeed { node: n.fx[2], feed: Feed::None }).unwrap();
+        assert_eq!(fed(&ctl), (vec![false, true], false, false));
+        sent(&engine);
+
+        ctl.apply(Intent::SetFeed { node: n.fx[0], feed: Feed::Chain }).unwrap();
+        ctl.apply(Intent::SetFeed { node: n.bus, feed: Feed::Chain }).unwrap();
+        assert_eq!(sent(&engine), [format!("SetEffectFeed node={} fed=true", n.fx[0].0), format!("SetEffectFeed node={} fed=true", n.bus.0)]);
+        assert_eq!(fed(&ctl), (vec![true, true], false, true));
+    }
+
+    #[test]
+    fn set_feed_refuses_what_is_not_an_effect() {
+        let (engine, mut ctl, n) = sends();
+        for node in [n.lane[0], n.lane[1], n.group] {
+            assert_eq!(ctl.apply(Intent::SetFeed { node, feed: Feed::None }), Err(invalid("only an effect has a feed")), "{node:?}");
+        }
+        // (The master is a node of the graph and not of the model, so it is not found, as it is for every intent.)
+        for node in [NodeId(9_999), NodeId::MASTER] {
+            assert_eq!(ctl.apply(Intent::SetFeed { node, feed: Feed::None }), Err(IntentError::NotFound(node)));
+        }
+        assert_eq!(sent(&engine), Vec::<String>::new());
+        assert_eq!((ctl.rev, ctl.dirty), (0, false));
+    }
+
+    #[test]
+    fn a_feed_is_not_given_back_when_the_audio_would_go_round_and_nothing_changes() {
+        let (engine, mut ctl, n) = sends();
+        // Lane 0's delay sends back to its filter, which is before it: a loop through the link between them, so that the link is cut first.
+        assert!(draw(&mut ctl, out(n.fx[1]), into(n.fx[0]), None).unwrap_err().to_string().contains("go round"));
+        ctl.apply(Intent::SetFeed { node: n.fx[1], feed: Feed::None }).unwrap();
+        draw(&mut ctl, out(n.fx[1]), into(n.fx[0]), None).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+        // Given back, the link would close the loop.
+        let error = ctl.apply(Intent::SetFeed { node: n.fx[1], feed: Feed::Chain }).unwrap_err();
+        assert!(error.to_string().contains("go round"), "{error}");
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.rev, ctl.model.instruments[0].effects[1].fed), (rev, false));
+        // Cutting a link is not looked at, and a link that no cable goes round is given back.
+        ctl.apply(Intent::SetFeed { node: n.fx[0], feed: Feed::None }).unwrap();
+        ctl.apply(Intent::SetFeed { node: n.fx[0], feed: Feed::Chain }).unwrap();
+        assert!(ctl.model.instruments[0].effects[0].fed);
+    }
+
+    #[test]
+    fn the_link_into_a_bus_effect_is_not_given_back_where_the_audio_would_go_round_either() {
+        let (engine, mut ctl, n) = sends();
+        // Lane 0 is in the group: what the bus effect puts out, sent into lane 0's delay, goes round through the link into the bus effect.
+        assert!(draw(&mut ctl, out(n.bus), into(n.fx[1]), None).unwrap_err().to_string().contains("go round"));
+        ctl.apply(Intent::SetFeed { node: n.bus, feed: Feed::None }).unwrap();
+        draw(&mut ctl, out(n.bus), into(n.fx[1]), None).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+        let error = ctl.apply(Intent::SetFeed { node: n.bus, feed: Feed::Chain }).unwrap_err();
+        assert!(error.to_string().contains("go round"), "{error}");
+        assert!(sent(&engine).is_empty());
+        assert_eq!((ctl.rev, ctl.model.groups[0].effects[0].fed), (rev, false));
+    }
+
+    #[test]
+    fn a_cable_that_would_make_the_audio_go_round_through_a_chain_link_is_drawn_once_the_link_is_cut() {
+        let (engine, mut ctl, n) = sends();
+        assert!(draw(&mut ctl, out(n.fx[1]), into(n.fx[0]), None).is_err());
+        ctl.apply(Intent::SetFeed { node: n.fx[1], feed: Feed::None }).unwrap();
+        sent(&engine);
+        draw(&mut ctl, out(n.fx[1]), into(n.fx[0]), None).unwrap();
+        assert_eq!(ctl.model.cables.len(), 1);
+        assert_eq!(sent(&engine).len(), 1);
+    }
+
+    #[test]
+    fn a_feed_that_is_set_to_what_it_is_changes_nothing_that_is_heard() {
+        let (engine, mut ctl, n) = sends();
+        ctl.apply(Intent::SetFeed { node: n.fx[0], feed: Feed::Chain }).unwrap();
+        assert!(ctl.model.instruments[0].effects[0].fed);
+        assert_eq!(sent(&engine), [format!("SetEffectFeed node={} fed=true", n.fx[0].0)], "(the audio thread takes it as nothing to change)");
+    }
+
+    #[test]
+    fn what_has_its_feed_cut_is_what_a_session_saves() {
+        let (_engine, mut ctl, n) = sends();
+        ctl.apply(Intent::SetFeed { node: n.fx[1], feed: Feed::None }).unwrap();
+        ctl.apply(Intent::SetFeed { node: n.bus, feed: Feed::None }).unwrap();
+        let saved = |ctl: &Controller| {
+            let (instruments, groups, cables, sources) = crate::app::save::to_save(&ctl.model);
+            crate::session::to_toml(&instruments, &groups, &cables, &sources, None, None, None).unwrap()
+        };
+        let text = saved(&ctl);
+        assert_eq!(text.matches("feed = \"none\"").count(), 2, "{text}");
+        let again = load(&text).model;
+        assert_eq!(again.instruments[0].effects.iter().map(|fx| fx.fed).collect::<Vec<_>>(), [true, false]);
+        assert_eq!((again.instruments[1].effects[0].fed, again.groups[0].effects[0].fed), (true, false));
+        ctl.apply(Intent::SetFeed { node: n.fx[1], feed: Feed::Chain }).unwrap();
+        ctl.apply(Intent::SetFeed { node: n.bus, feed: Feed::Chain }).unwrap();
+        assert!(!saved(&ctl).contains("feed"));
     }
 
     fn place(ctl: &mut Controller, node: NodeId, x: f32, y: f32) -> Result<Applied, IntentError> {

@@ -368,6 +368,8 @@ pub type RackCables = Vec<(ModulatorLocation, usize, Vec<(ModTargetKind, f32)>)>
 pub struct LaneFacts {
     pub node: NodeId,
     pub effect_nodes: Vec<NodeId>,
+    /// The effects whose feed is cut, in the order of the chain.
+    pub cut_feeds: Vec<NodeId>,
     pub group: Option<usize>,
     pub range: Option<(u8, u8)>,
     pub transpose: i8,
@@ -407,6 +409,8 @@ pub struct Facts {
 pub struct GroupFacts {
     pub node: NodeId,
     pub effect_nodes: Vec<NodeId>,
+    /// The bus effects whose feed is cut, in the order of the bus.
+    pub cut_feeds: Vec<NodeId>,
     pub effects: Vec<String>,
     pub modulators: usize,
     pub volume: f32,
@@ -2397,6 +2401,14 @@ pub enum GraphCommand {
         group: usize,
         route: Route,
     },
+    /// Cut (`fed: false`) or give back the link into the effect `node` from the stage before it in its chain (step 86: the lane's instrument, a bus's sum, or the effect before it), so
+    /// that an effect whose feed is cut is fed by the audio cables that end at it and by nothing else. The effect is found by its id, in a lane's chain or in a group's bus, and the cut goes
+    /// where the effect goes (a move, a swap of lanes, undo of a removal of the lane), and is forgotten when the effect is taken out. Changed at once, as a way out is, and a feed that is given back is not
+    /// if the audio would go round with the cables there are (logged). An id that no effect has is nothing to cut.
+    SetEffectFeed {
+        node: NodeId,
+        fed: bool,
+    },
     /// Set a group's output volume (applied to the member sum, before its FX).
     SetGroupVolume {
         group: usize,
@@ -3399,6 +3411,8 @@ struct InstrumentLane {
     mix_values: Vec<f64>,
     /// The ids that the model gave the effects, one for each mix (not for each plugin: a lane that gave up its plugins, `KeptLane::take_plugins`, keeps the mixes and the ids).
     effect_nodes: Vec<NodeId>,
+    /// The effects whose feed is cut (`GraphCommand::SetEffectFeed`), by id and not by place, so that the cut goes where the effect goes: the plan has no link into them from the stage before.
+    cut_feeds: Vec<NodeId>,
     /// The ping-pong buffers of the chain as one piece (`process`, which only test builds have: the plan's nodes have the buffers of its pool).
     #[cfg(test)]
     buf_a: Vec<Vec<f32>>,
@@ -3474,6 +3488,7 @@ impl InstrumentLane {
             effects: Vec::new(),
             mix_values: Vec::new(),
             effect_nodes: Vec::new(),
+            cut_feeds: Vec::new(),
             #[cfg(test)]
             buf_a: Vec::new(),
             #[cfg(test)]
@@ -3870,6 +3885,8 @@ struct Group {
     mix_values: Vec<f64>,
     /// The ids that the model gave the bus effects, one for each mix (see `InstrumentLane::effect_nodes`).
     effect_nodes: Vec<NodeId>,
+    /// The bus effects whose feed is cut (see `InstrumentLane::cut_feeds`).
+    cut_feeds: Vec<NodeId>,
     /// Output gain applied to the member sum, before the group effects.
     volume: f32,
     /// Stereo balance pan for the group bus output: -1 = left, 0 = center,
@@ -3919,6 +3936,7 @@ impl Group {
             effects: Vec::new(),
             mix_values: Vec::new(),
             effect_nodes: Vec::new(),
+            cut_feeds: Vec::new(),
             volume: 1.0,
             pan: 0.0,
             modulators: Vec::new(),
@@ -4231,6 +4249,7 @@ impl AudioGraph {
             .map(|lane| LaneFacts {
                 node: lane.node,
                 effect_nodes: lane.effect_nodes.clone(),
+                cut_feeds: lane.effect_nodes.iter().copied().filter(|node| lane.cut_feeds.contains(node)).collect(),
                 group: lane.group,
                 range: lane.range,
                 transpose: lane.transpose,
@@ -4271,6 +4290,7 @@ impl AudioGraph {
             .map(|group| GroupFacts {
                 node: group.node,
                 effect_nodes: group.effect_nodes.clone(),
+                cut_feeds: group.effect_nodes.iter().copied().filter(|node| group.cut_feeds.contains(node)).collect(),
                 effects: group.effects.iter().map(|effect| effect.name().to_string()).collect(),
                 modulators: group.modulators.len(),
                 volume: group.volume,
@@ -4469,7 +4489,8 @@ impl AudioGraph {
                         if index < lane.effects.len() {
                             let old = lane.effects.remove(index);
                             lane.mix_values.remove(index);
-                            lane.effect_nodes.remove(index);
+                            let node = lane.effect_nodes.remove(index);
+                            lane.cut_feeds.retain(|cut| *cut != node);
                             // Drop/shift modulator target slots for this effect.
                             fixup_slots_after_remove(&mut lane.modulators, index);
                             Some(old)
@@ -4881,6 +4902,7 @@ impl AudioGraph {
                         }
                     }
                 }
+                GraphCommand::SetEffectFeed { node, fed } => self.set_effect_feed(node, fed),
                 GraphCommand::SetGroupVolume { group, value } => {
                     if let Some(g) = self.groups.get_mut(group) {
                         g.volume = value;
@@ -4926,7 +4948,8 @@ impl AudioGraph {
                     let old = self.groups.get_mut(group).and_then(|g| {
                         if index < g.effects.len() {
                             g.mix_values.remove(index);
-                            g.effect_nodes.remove(index);
+                            let node = g.effect_nodes.remove(index);
+                            g.cut_feeds.retain(|cut| *cut != node);
                             let removed = g.effects.remove(index);
                             // Drop/shift group-mod targets that pointed at it.
                             fixup_group_bus_after_remove(&mut g.modulators, index);
@@ -5497,6 +5520,41 @@ impl AudioGraph {
 
     fn get_instrument_mut(&mut self, inst: usize) -> Option<&mut InstrumentLane> {
         self.instruments.get_mut(inst)
+    }
+
+    /// Cut or give back the link into the effect `node` (`GraphCommand::SetEffectFeed`). The effect is found by its id in the lanes' chains and then in the groups' buses, and the cut is the
+    /// effect's: a list of ids, so that it goes where the effect goes. A feed that is given back is not if the audio would go round with the cables there are (the cables were drawn into a
+    /// wiring that had the link cut, and the link that is made again may close a loop with them): it is cut again, with a log line, as a way out is. Cutting one cannot close a loop.
+    fn set_effect_feed(&mut self, node: NodeId, fed: bool) {
+        let cut = match self.instruments.iter_mut().find(|lane| lane.effect_nodes.contains(&node)) {
+            Some(lane) => &mut lane.cut_feeds,
+            None => match self.groups.iter_mut().find(|group| group.effect_nodes.contains(&node)) {
+                Some(group) => &mut group.cut_feeds,
+                None => {
+                    log::warn!("effect {}: it is not in a lane or a bus, so its feed is not changed", node.0);
+                    return;
+                }
+            },
+        };
+        let was_cut = cut.contains(&node);
+        if was_cut == !fed {
+            return;
+        }
+        if fed {
+            cut.retain(|other| *other != node);
+        } else {
+            cut.push(node);
+        }
+        if fed {
+            if let Some(problem) = self.schedule.route_problem(&self.instruments, &self.groups, self.num_channels) {
+                log::warn!("effect {}: its feed is not given back: the audio would go round ({problem})", node.0);
+                if let Some(lane) = self.instruments.iter_mut().find(|lane| lane.effect_nodes.contains(&node)) {
+                    lane.cut_feeds.push(node);
+                } else if let Some(group) = self.groups.iter_mut().find(|group| group.effect_nodes.contains(&node)) {
+                    group.cut_feeds.push(node);
+                }
+            }
+        }
     }
 
     /// The modulator `index` of a lane's rack or of a group's, if it is there.
@@ -7323,6 +7381,257 @@ mod tests {
         cmd_tx.send(GraphCommand::SetGroupRoute { group: 0, route: Route::None }).unwrap();
         draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 0.5);
         draw(&cmd_tx, 2, CableFrom::Group(group_node(0)), CableTo::Master, 0.25);
+        assert_eq!(allocations_while_processing(&mut graph, &[note_on(60)], 16), 0, "the audio thread asked the allocator for memory");
+    }
+
+    // -- the feed of an effect: the link into it from the stage before it in its chain (step 86, docs/web-ui.md D86) --
+
+    /// Cut (`fed: false`) or give back the link into the effect `node`.
+    fn feed(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, node: NodeId, fed: bool) {
+        cmd_tx.send(GraphCommand::SetEffectFeed { node, fed }).unwrap();
+    }
+
+    #[test]
+    fn an_effect_whose_feed_is_cut_gets_nothing_from_the_stage_before_it_and_gets_it_again_when_it_is_given_back() {
+        // Lane 0 plays 0.25 into an effect that doubles it; lane 1 plays 0.5.
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 1.0), "0.25 doubled, and the 0.5 of the other lane: {:?}", out[0][0]);
+        feed(&cmd_tx, fx, false);
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.5), "the effect is given nothing, a doubled silence: only the other lane's 0.5 is heard: {:?}", out[0][0]);
+        assert_eq!(graph.lanes()[0].cut_feeds, [fx], "the engine says which feeds are cut");
+        feed(&cmd_tx, fx, true);
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 1.0), "given back, it is fed as it was: {:?}", out[0][0]);
+        assert!(graph.lanes()[0].cut_feeds.is_empty());
+    }
+
+    #[test]
+    fn a_feed_that_is_cut_twice_is_cut_once_and_one_that_is_given_back_when_it_is_there_changes_nothing() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        feed(&cmd_tx, fx, true);
+        feed(&cmd_tx, fx, false);
+        feed(&cmd_tx, fx, false);
+        blocks_of(&mut graph, 2, &[note_on(60)]);
+        assert_eq!(graph.lanes()[0].cut_feeds, [fx]);
+        assert_eq!(graph.instruments[0].cut_feeds, [fx], "the audio thread's own list has the effect once, whatever the cuts that were sent: it does not grow (a push on the audio thread may allocate)");
+        feed(&cmd_tx, fx, true);
+        blocks_of(&mut graph, 2, &[]);
+        assert!(graph.lanes()[0].cut_feeds.is_empty(), "one give-back is enough");
+        // An effect that the engine does not have is nothing to cut.
+        feed(&cmd_tx, NodeId(9999), false);
+        blocks_of(&mut graph, 2, &[]);
+        assert!(graph.lanes()[0].cut_feeds.is_empty() && graph.lanes()[1].cut_feeds.is_empty());
+    }
+
+    #[test]
+    fn an_effect_whose_feed_is_cut_is_fed_by_its_cables_and_by_nothing_else() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        feed(&cmd_tx, fx, false);
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        // The sender's 0.5 goes into the effect and is doubled, and the sender's own 0.5 is in the mix too; the lane's own 0.25 does not go into its effect.
+        assert!(out.iter().flatten().all(|&s| s == 1.5), "{:?}", out[0][0]);
+        // With the feed back the effect has both: (0.25 + 0.5) doubled, and the sender's 0.5.
+        feed(&cmd_tx, fx, true);
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 2.0), "{:?}", out[0][0]);
+    }
+
+    #[test]
+    fn a_cut_in_the_middle_of_a_chain_leaves_what_comes_after_it_running_on_what_it_is_given() {
+        // The lane plays 0.25 through an effect that doubles and then one that adds 8.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        let double = effect_of(&cmd_tx, 0, 0, Box::new(ScaleEffect(2.0)));
+        let add = effect_of(&cmd_tx, 0, 1, Box::new(OffsetEffect(8.0)));
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 8.5), "{:?}", out[0][0]);
+        feed(&cmd_tx, add, false);
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 8.0), "the effect that adds is fed nothing and its 8 is there, and the doubled sound goes nowhere: {:?}", out[0][0]);
+        feed(&cmd_tx, add, true);
+        feed(&cmd_tx, double, false);
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 8.0), "the first is fed nothing, and what it makes (nothing) goes on to the second: {:?}", out[0][0]);
+    }
+
+    #[test]
+    fn the_cut_goes_with_the_effect_when_it_is_moved_and_is_not_left_at_its_place() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        let double = effect_of(&cmd_tx, 0, 0, Box::new(ScaleEffect(2.0)));
+        effect_of(&cmd_tx, 0, 1, Box::new(OffsetEffect(8.0)));
+        feed(&cmd_tx, double, false);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 8.0), "the doubling effect is fed nothing and what it makes goes on to the one that adds: {:?}", out[0][0]);
+        // The doubling effect goes after the one that adds, and is the one that is not fed still: the one that adds is fed the lane's sound (and its result goes nowhere, the link
+        // between them is the doubling effect's own), and the doubling effect gets nothing.
+        cmd_tx.send(GraphCommand::ReorderEffect { inst: 0, from: 0, to: 1 }).unwrap();
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.0), "{:?}", out[0][0]);
+        assert_eq!(graph.lanes()[0].cut_feeds, [double]);
+    }
+
+    #[test]
+    fn the_cut_is_forgotten_when_the_effect_is_taken_out_and_an_effect_that_is_put_in_under_its_id_is_fed() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(ScaleEffect(2.0)));
+        feed(&cmd_tx, fx, false);
+        blocks_of(&mut graph, 2, &[note_on(60)]);
+        cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0, keep: None }).unwrap();
+        blocks_of(&mut graph, 1, &[]);
+        assert!(graph.lanes()[0].cut_feeds.is_empty(), "an effect that is gone has no cut");
+        // (What the controller does for an effect that undo puts back: the very plugin, under the very id, and the cut again if the model says so.)
+        effect_of(&cmd_tx, 0, 0, Box::new(ScaleEffect(2.0)));
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.5), "{:?}", out[0][0]);
+    }
+
+    #[test]
+    fn a_feed_that_would_close_a_loop_is_not_given_back_and_one_that_would_not_is() {
+        // Two effects in a chain and a cable from the second back to the first: a loop, unless the second is not fed by the first.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        let first = effect_of(&cmd_tx, 0, 0, Box::new(ScaleEffect(2.0)));
+        let second = effect_of(&cmd_tx, 0, 1, Box::new(ScaleEffect(3.0)));
+        feed(&cmd_tx, second, false);
+        draw(&cmd_tx, 1, CableFrom::Effect(second), CableTo::Effect(first), 1.0);
+        blocks_of(&mut graph, 2, &[note_on(60)]);
+        assert_eq!(graph.audio_cables().len(), 1, "no loop while the second is not fed by the first");
+        feed(&cmd_tx, second, true);
+        blocks_of(&mut graph, 2, &[]);
+        assert_eq!(graph.lanes()[0].cut_feeds, [second], "the audio would go round: the feed is not given back");
+        // Without the cable it is no loop.
+        cmd_tx.send(GraphCommand::RemoveCable { id: EdgeId(1) }).unwrap();
+        blocks_of(&mut graph, 2, &[]);
+        feed(&cmd_tx, second, true);
+        blocks_of(&mut graph, 2, &[]);
+        assert!(graph.lanes()[0].cut_feeds.is_empty());
+    }
+
+    #[test]
+    fn a_cable_that_would_close_a_loop_with_a_link_that_is_there_is_drawn_once_the_link_is_cut() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        let first = effect_of(&cmd_tx, 0, 0, Box::new(ScaleEffect(2.0)));
+        let second = effect_of(&cmd_tx, 0, 1, Box::new(ScaleEffect(3.0)));
+        draw(&cmd_tx, 1, CableFrom::Effect(second), CableTo::Effect(first), 1.0);
+        blocks_of(&mut graph, 2, &[note_on(60)]);
+        assert!(graph.audio_cables().is_empty(), "the second is fed by the first: a cable back would go round");
+        feed(&cmd_tx, second, false);
+        draw(&cmd_tx, 1, CableFrom::Effect(second), CableTo::Effect(first), 1.0);
+        blocks_of(&mut graph, 2, &[]);
+        assert_eq!(graph.audio_cables().len(), 1);
+    }
+
+    #[test]
+    fn a_bus_effect_whose_feed_is_cut_gets_nothing_from_the_members_and_is_fed_by_its_cables() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[1].group = Some(0);
+        let bus = bus_effect_node(0, 0);
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(2.0)), mix: 1.0, node: bus }).unwrap();
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 1.25), "the 0.25 of the lane in no group and the bus's 0.5 doubled: {:?}", out[0][0]);
+        feed(&cmd_tx, bus, false);
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.25), "the bus effect is fed nothing: {:?}", out[0][0]);
+        assert_eq!(graph.groups()[0].cut_feeds, [bus]);
+        // The lane that is in no group sends to the bus effect: it is doubled there.
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(0)), CableTo::Effect(bus), 1.0);
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.25 + 0.5), "{:?}", out[0][0]);
+        feed(&cmd_tx, bus, true);
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.25 + 2.0 * (0.5 + 0.25)), "the member's 0.5 and the cable's 0.25, doubled, and the lane's own 0.25: {:?}", out[0][0]);
+        assert!(graph.groups()[0].cut_feeds.is_empty());
+    }
+
+    #[test]
+    fn a_bus_effect_whose_feed_is_cut_twice_is_cut_once_and_one_whose_give_back_would_close_a_loop_stays_cut() {
+        // Two effects on a bus, and a cable from the second back to the first: a loop, unless the second is not fed by the first.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[0].group = Some(0);
+        let (first, second) = (bus_effect_node(0, 0), bus_effect_node(0, 1));
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(2.0)), mix: 1.0, node: first }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: Box::new(ScaleEffect(3.0)), mix: 1.0, node: second }).unwrap();
+        feed(&cmd_tx, second, false);
+        feed(&cmd_tx, second, false);
+        draw(&cmd_tx, 1, CableFrom::Effect(second), CableTo::Effect(first), 1.0);
+        blocks_of(&mut graph, 2, &[note_on(60)]);
+        assert_eq!(graph.audio_cables().len(), 1, "no loop while the second is not fed by the first");
+        assert_eq!(graph.groups[0].cut_feeds, [second], "the bus's own list has the effect once, whatever the cuts that were sent");
+        feed(&cmd_tx, second, true);
+        blocks_of(&mut graph, 2, &[]);
+        assert_eq!(graph.groups[0].cut_feeds, [second], "the audio would go round: the feed is not given back, and the bus effect is cut still");
+        // Without the cable it is no loop.
+        cmd_tx.send(GraphCommand::RemoveCable { id: EdgeId(1) }).unwrap();
+        blocks_of(&mut graph, 2, &[]);
+        feed(&cmd_tx, second, true);
+        blocks_of(&mut graph, 2, &[]);
+        assert!(graph.groups[0].cut_feeds.is_empty());
+    }
+
+    #[test]
+    fn the_cut_of_a_bus_effect_is_forgotten_when_it_is_taken_out_and_one_put_in_under_its_id_is_fed() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[0].group = Some(0);
+        let bus = bus_effect_node(0, 0);
+        let put_in = |cmd_tx: &crossbeam_channel::Sender<GraphCommand>| {
+            cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(2.0)), mix: 1.0, node: bus }).unwrap();
+        };
+        put_in(&cmd_tx);
+        feed(&cmd_tx, bus, false);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.0), "the bus effect is fed nothing: {:?}", out[0][0]);
+        cmd_tx.send(GraphCommand::RemoveGroupEffect { group: 0, index: 0, keep: None }).unwrap();
+        blocks_of(&mut graph, 1, &[]);
+        assert!(graph.groups[0].cut_feeds.is_empty(), "an effect that is gone has no cut");
+        // (What the controller does for an effect that undo puts back: the very plugin, under the very id.)
+        put_in(&cmd_tx);
+        let out = blocks_of(&mut graph, 3, &[]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.5), "the member's 0.25, doubled by a bus effect that is fed: {:?}", out[0][0]);
+    }
+
+    #[test]
+    fn a_lane_and_a_group_that_are_taken_out_and_put_back_have_the_cuts_of_their_feeds_still() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        let fx = effect_of(&cmd_tx, 1, 0, Box::new(ScaleEffect(2.0)));
+        feed(&cmd_tx, fx, false);
+        blocks_of(&mut graph, 1, &[]);
+        let (lane, cables) = take_lane_out(&mut graph, &cmd_tx, 1);
+        put_lane_back(&mut graph, &cmd_tx, 1, lane, cables);
+        assert_eq!(graph.lanes()[1].cut_feeds, [fx]);
+        let out = blocks_of(&mut graph, 3, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.25), "the lane's effect is fed nothing, and so the lane puts out nothing: {:?}", out[0][0]);
+        // The same for the lanes that change places.
+        cmd_tx.send(GraphCommand::SwapInstruments { inst_a: 0, inst_b: 1 }).unwrap();
+        graph.drain_commands();
+        assert_eq!((graph.lanes()[0].cut_feeds.clone(), graph.lanes()[1].cut_feeds.clone()), (vec![fx], vec![]));
+    }
+
+    #[test]
+    fn a_session_with_a_feed_cut_asks_the_allocator_for_nothing_once_it_is_running() {
+        let (mut graph, cmd_tx, fx) = a_lane_that_has_a_doubling_effect_and_a_lane_that_sends();
+        graph.groups.push(Group::new(group_node(0)));
+        graph.instruments[1].group = Some(0);
+        cmd_tx
+            .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(ScaleEffect(2.0)), mix: 1.0, node: bus_effect_node(0, 0) })
+            .unwrap();
+        feed(&cmd_tx, fx, false);
+        feed(&cmd_tx, bus_effect_node(0, 0), false);
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 0.5);
         assert_eq!(allocations_while_processing(&mut graph, &[note_on(60)], 16), 0, "the audio thread asked the allocator for memory");
     }
 
@@ -15356,7 +15665,7 @@ mod tests {
         graph.drain_commands();
         let after = graph.lanes();
         // Each lane is the other one: everything but the place its pattern player knows it by.
-        let moved = |lane: &LaneFacts, index: usize| LaneFacts { pattern_index: index, ..LaneFacts { node: lane.node, effect_nodes: lane.effect_nodes.clone(), group: lane.group, range: lane.range, transpose: lane.transpose, volume: lane.volume, muted: lane.muted, solo: lane.solo, has_instrument: lane.has_instrument, effects: lane.effects, modulators: lane.modulators, pattern_index: 0 } };
+        let moved = |lane: &LaneFacts, index: usize| LaneFacts { pattern_index: index, ..LaneFacts { node: lane.node, effect_nodes: lane.effect_nodes.clone(), cut_feeds: lane.cut_feeds.clone(), group: lane.group, range: lane.range, transpose: lane.transpose, volume: lane.volume, muted: lane.muted, solo: lane.solo, has_instrument: lane.has_instrument, effects: lane.effects, modulators: lane.modulators, pattern_index: 0 } };
         assert_eq!(after[0], moved(&before[1], 0));
         assert_eq!(after[1], moved(&before[0], 1));
         assert_eq!((after[0].volume, after[0].modulators, after[0].has_instrument), (1.5, 3, false));
@@ -15394,6 +15703,7 @@ mod tests {
             [LaneFacts {
                 node: lanes[0].node,
                 effect_nodes: vec![lanes[0].effect_nodes[0]],
+                cut_feeds: vec![],
                 group: None,
                 range: Some((36, 60)),
                 transpose: 1,

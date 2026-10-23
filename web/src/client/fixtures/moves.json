@@ -3598,6 +3598,7 @@
           "volume": 1.0
         },
         {
+          "feed": "chain",
           "id": 1,
           "kind": "effect",
           "mix": 1.0,
@@ -3671,6 +3672,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 2,
           "kind": "effect",
           "mix": 1.0,
@@ -3833,6 +3835,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 3,
           "kind": "effect",
           "mix": 1.0,
@@ -3906,6 +3909,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 4,
           "kind": "effect",
           "mix": 1.0,
@@ -4427,6 +4431,7 @@
           "volume": 1.0
         },
         {
+          "feed": "chain",
           "id": 6,
           "kind": "effect",
           "mix": 1.0,
@@ -4500,6 +4505,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 7,
           "kind": "effect",
           "mix": 1.0,
@@ -4662,6 +4668,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 8,
           "kind": "effect",
           "mix": 1.0,
@@ -4735,6 +4742,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 9,
           "kind": "effect",
           "mix": 1.0,
@@ -5256,6 +5264,7 @@
           "volume": 1.0
         },
         {
+          "feed": "chain",
           "id": 12,
           "kind": "effect",
           "mix": 1.0,
@@ -5329,6 +5338,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 13,
           "kind": "effect",
           "mix": 1.0,
@@ -5491,6 +5501,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 14,
           "kind": "effect",
           "mix": 1.0,

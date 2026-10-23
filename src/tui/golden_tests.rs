@@ -6969,6 +6969,95 @@ fn w_is_for_the_chain_and_the_patch_tab_and_a_way_out_that_a_file_cuts_is_in_the
     assert_eq!(h.s.ctl.model.instruments.iter().map(|lane| lane.route).collect::<Vec<_>>(), [Route::None, Route::Out]);
 }
 
+// ---------------------------------------------------------------------------
+// The feed of an effect: the link into it from the stage before it (step 86)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn f_cuts_and_gives_back_the_feed_of_the_effect_that_the_cursor_is_on_and_the_tree_says_so() {
+    let mut h = Harness::new(scene_two_effects());
+    let (filter, reverb) = (h.s.ctl.model.instruments[0].effects[0].node.0, h.s.ctl.model.instruments[0].effects[1].node.0);
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Char('f'));
+    assert_eq!(h.commands(), [format!("SetEffectFeed node={filter} fed=false")]);
+    assert_eq!(h.s.ctl.model.instruments[0].effects.iter().map(|fx| fx.fed).collect::<Vec<_>>(), [false, true]);
+    // The tree says it at the end of the effect's line, as it says a lane's way out is cut; the other effect has nothing.
+    assert!(h.tree().iter().any(|label| label.contains("fx Filter") && label.ends_with("  [no in]")), "{:?}", h.tree());
+    assert!(h.tree().iter().filter(|label| label.contains("[no in]")).count() == 1, "{:?}", h.tree());
+    // The key toggles: pressed again it gives the feed back.
+    h.press(KeyCode::Char('f'));
+    assert_eq!(h.commands(), [format!("SetEffectFeed node={filter} fed=true")]);
+    assert!(h.tree().iter().all(|label| !label.contains("[no in]")), "{:?}", h.tree());
+    // The second effect is its own: its feed is the one that is cut, and the first is not touched.
+    h.goto(TreeAddress::Effect { inst: 0, index: 1 }).press(KeyCode::Char('f'));
+    assert_eq!(h.commands(), [format!("SetEffectFeed node={reverb} fed=false")]);
+    assert!(h.tree().iter().any(|label| label.contains("fx Reverb") && label.ends_with("  [no in]")), "{:?}", h.tree());
+}
+
+#[test]
+fn f_cuts_the_feed_of_a_bus_effect_and_the_line_says_so_after_what_says_it_is_the_bus() {
+    let mut h = Harness::new(scene_group());
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Char('f'));
+    let bus = h.s.ctl.model.groups[0].effects[0].node.0;
+    assert_eq!(h.commands(), [format!("SetEffectFeed node={bus} fed=false")]);
+    assert!(h.tree().iter().any(|label| label.contains("fx Reverb") && label.ends_with("(bus)  [no in]")), "{:?}", h.tree());
+    h.press(KeyCode::Char('f'));
+    assert_eq!(h.commands(), [format!("SetEffectFeed node={bus} fed=true")]);
+    assert!(h.tree().iter().all(|label| !label.contains("[no in]")), "{:?}", h.tree());
+}
+
+#[test]
+fn f_is_for_an_effect_of_the_chain_only_and_a_feed_that_a_file_cuts_is_in_the_tree() {
+    let mut h = Harness::new(
+        [
+            "[[group]]\nname = \"Pad\"\n[[group.effect]]\nplugin = \"builtin:reverb\"\nfeed = \"none\"\n",
+            "[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = \"none\"\n[[instrument.modulator]]\n",
+            "[[instrument]]\nplugin = \"builtin:osc\"\n",
+        ]
+        .concat(),
+    );
+    assert!(h.tree().iter().filter(|label| label.contains("[no in]")).count() == 2, "{:?}", h.tree());
+    // A lane, a group, a modulator are no effects: they have no feed, and the key asks for nothing.
+    for address in [TreeAddress::Group(0), TreeAddress::Instrument(0), TreeAddress::Modulator { inst: 0, index: 0 }, TreeAddress::Instrument(1)] {
+        h.goto(address).press(KeyCode::Char('f'));
+        assert_eq!(h.commands(), Vec::<String>::new(), "{address:?}");
+    }
+    // Not in the parameter pane, and not on the other tabs.
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 }).press(KeyCode::Enter).press(KeyCode::Char('f'));
+    assert_eq!(h.commands(), Vec::<String>::new());
+    h.press(KeyCode::Esc);
+    for tab in ['2', '3', '4', '5'] {
+        h.press(KeyCode::Char(tab)).press(KeyCode::Char('f'));
+        assert_eq!(h.commands(), Vec::<String>::new(), "tab {tab}");
+    }
+    assert_eq!((h.s.ctl.model.instruments[0].effects[0].fed, h.s.ctl.model.groups[0].effects[0].fed), (false, false));
+}
+
+#[test]
+fn f_is_a_step_of_the_history_and_a_feed_that_would_make_the_audio_go_round_is_not_given_back() {
+    let mut h = Harness::new(scene_two_effects());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 }).press(KeyCode::Char('f'));
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("cut the input of Filter"));
+    h.commands();
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(h.commands(), [format!("SetEffectFeed node={} fed=true", h.s.ctl.model.instruments[0].effects[0].node.0)]);
+    assert!(h.s.ctl.model.instruments[0].effects[0].fed);
+    // The reverb sent back to the filter before it is a loop through the link between them; with the reverb's feed cut it is none, and the key does not give the feed back.
+    h.goto(TreeAddress::Effect { inst: 0, index: 1 }).press(KeyCode::Char('f'));
+    let (filter, reverb) = (h.s.ctl.model.instruments[0].effects[0].node, h.s.ctl.model.instruments[0].effects[1].node);
+    let drawn = h.s.ctl.apply(Intent::AddCable {
+        from: Endpoint { node: reverb, port: Port::AudioOut },
+        to: Endpoint { node: filter, port: Port::AudioIn },
+        gain: None,
+    });
+    assert!(drawn.is_ok(), "{drawn:?}");
+    h.commands();
+    h.press(KeyCode::Char('f'));
+    assert_eq!(h.commands(), Vec::<String>::new(), "refused: the audio would go round");
+    assert!(!h.s.ctl.model.instruments[0].effects[1].fed);
+}
+
 #[test]
 fn m_and_s_are_for_the_chain_and_not_for_the_parameter_pane() {
     let mut h = Harness::new(scene_group());

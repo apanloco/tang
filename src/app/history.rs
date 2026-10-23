@@ -21,7 +21,7 @@ use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, Mod
 use crate::app::journal::{Journal, lane_words};
 use crate::app::model::{EdgeId, Made, NodeId, NodePath, PluginSlot};
 use crate::piano_filter::PianoMode;
-use crate::session::Route;
+use crate::session::{Feed, Route};
 
 /// How long after one change of a thing the next change of it may come and still be the same step.
 pub const SAME_STEP: Duration = Duration::from_millis(1000);
@@ -338,6 +338,16 @@ impl Controller {
     }
 
     /// What a lane or a group is called in the words of a step of its way out, and which way out it has: none for a node that is neither.
+    /// The name of the effect `node` (of a lane's chain or of a group's bus) and whether the link into it from the stage before it is there, as `SetFeed` says it. None for a node that is no effect.
+    fn effect_feed(&self, node: NodeId) -> Option<(String, Feed)> {
+        let slot = match self.model.locate(node)? {
+            NodePath::Effect { inst, index } => &self.model.instruments[inst].effects[index],
+            NodePath::GroupEffect { group, index } => &self.model.groups[group].effects[index],
+            _ => return None,
+        };
+        Some((slot.name.clone(), if slot.fed { Feed::Chain } else { Feed::None }))
+    }
+
     fn lane_or_group_route(&self, node: NodeId) -> Option<(String, Route)> {
         match self.model.locate(node)? {
             NodePath::Instrument(inst) => {
@@ -415,6 +425,14 @@ impl Controller {
                 Some((name, was)) if was != *route => {
                     let label = if *route == Route::None { format!("cut the way out of {name}") } else { format!("give {name} its way out") };
                     step(label, Intent::SetRoute { node: *node, route: was }, None)
+                }
+                _ => Plan::Nothing,
+            },
+            // (As a way out is: what is not an effect is refused, and what is as it is asked to be changes nothing: no step is kept for either.)
+            Intent::SetFeed { node, feed } => match self.effect_feed(*node) {
+                Some((name, was)) if was != *feed => {
+                    let label = if *feed == Feed::None { format!("cut the input of {name}") } else { format!("give {name} its input back") };
+                    step(label, Intent::SetFeed { node: *node, feed: was }, None)
                 }
                 _ => Plan::Nothing,
             },
@@ -676,7 +694,7 @@ mod tests {
     use crate::app::intent::{Applied, Event, IntentError, ModulatorKind, PatternField};
     use crate::app::model::{Made, ModSourceSlot, NodePath, SessionModel, SourceKind, SourceNode};
     use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load, wire};
-    use crate::session::Route;
+    use crate::session::{Feed, Route};
     use crate::plugin::chain::{CableFrom, CableTo};
     use crate::session::NodeUi;
 
@@ -1472,6 +1490,103 @@ rate = 3.0
         ctl.undo().unwrap();
         assert_eq!(ctl.model.instruments[0].route, Route::None, "the lane is handed back whole");
         assert_eq!(ctl.model.instruments[0].node, instrument);
+    }
+
+    #[test]
+    fn cutting_and_giving_back_a_feed_are_steps_in_the_words_of_the_effect_that_undo_puts_back_in_the_model_and_the_engine() {
+        let (engine, mut ctl, clock) = controller();
+        let (reverb, filter, bus) = (node(&ctl, NodePath::Effect { inst: 0, index: 0 }), node(&ctl, NodePath::Effect { inst: 0, index: 1 }), node(&ctl, NodePath::GroupEffect { group: 0, index: 0 }));
+        let step = |ctl: &mut Controller, intent: Intent| {
+            clock.advance(Duration::from_secs(5));
+            ctl.apply(intent).unwrap();
+        };
+        step(&mut ctl, Intent::SetFeed { node: reverb, feed: Feed::None });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("cut the input of Reverb"));
+        step(&mut ctl, Intent::SetFeed { node: bus, feed: Feed::None });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("cut the input of Filter"));
+        step(&mut ctl, Intent::SetFeed { node: reverb, feed: Feed::Chain });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("give Reverb its input back"));
+        step(&mut ctl, Intent::SetFeed { node: filter, feed: Feed::None });
+        sent(&engine);
+
+        // Undo puts each back as it was, in the model and in the engine, the last first.
+        ctl.undo().unwrap();
+        assert!(ctl.model.instruments[0].effects[1].fed);
+        assert_eq!(redo_label(&ctl).as_deref(), Some("cut the input of Filter"));
+        ctl.undo().unwrap();
+        assert!(!ctl.model.instruments[0].effects[0].fed, "the first effect's feed is cut again, as it was before it was given back");
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        assert!(ctl.model.instruments[0].effects.iter().all(|fx| fx.fed) && ctl.model.groups[0].effects[0].fed);
+        assert_eq!(
+            sent(&engine),
+            [
+                format!("SetEffectFeed node={} fed=true", filter.0),
+                format!("SetEffectFeed node={} fed=false", reverb.0),
+                format!("SetEffectFeed node={} fed=true", bus.0),
+                format!("SetEffectFeed node={} fed=true", reverb.0),
+            ]
+        );
+        ctl.redo().unwrap();
+        assert!(!ctl.model.instruments[0].effects[0].fed, "the first step again");
+        assert_eq!(sent(&engine), [format!("SetEffectFeed node={} fed=false", reverb.0)]);
+    }
+
+    #[test]
+    fn a_feed_that_is_as_it_is_asked_to_be_or_that_is_refused_keeps_no_step_and_what_could_be_redone_is_still_to_redo() {
+        let (_engine, mut ctl, _clock) = controller();
+        let (instrument, reverb) = (lane(&ctl), node(&ctl, NodePath::Effect { inst: 0, index: 0 }));
+        ctl.apply(Intent::SetFeed { node: reverb, feed: Feed::None }).unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(redo_label(&ctl).as_deref(), Some("cut the input of Reverb"));
+        // The feed that the effect has is not a change: it keeps no step, and does not end what could be redone.
+        ctl.apply(Intent::SetFeed { node: reverb, feed: Feed::Chain }).unwrap();
+        assert_eq!(undo_label(&ctl), None);
+        assert_eq!(redo_label(&ctl).as_deref(), Some("cut the input of Reverb"));
+        // Nor does a feed of what is not an effect.
+        assert!(ctl.apply(Intent::SetFeed { node: instrument, feed: Feed::None }).is_err());
+        assert!(ctl.apply(Intent::SetFeed { node: NodeId::MASTER, feed: Feed::None }).is_err());
+        assert_eq!(undo_label(&ctl), None);
+        assert_eq!(redo_label(&ctl).as_deref(), Some("cut the input of Reverb"));
+    }
+
+    #[test]
+    fn an_effect_whose_feed_is_cut_that_is_taken_out_comes_back_by_undo_with_its_feed_cut_and_the_engine_is_told_so() {
+        let (engine, mut ctl, _clock) = controller();
+        let (reverb, bus) = (node(&ctl, NodePath::Effect { inst: 0, index: 0 }), node(&ctl, NodePath::GroupEffect { group: 0, index: 0 }));
+        ctl.apply(Intent::SetFeed { node: reverb, feed: Feed::None }).unwrap();
+        ctl.apply(Intent::SetFeed { node: bus, feed: Feed::None }).unwrap();
+        ctl.apply(Intent::RemoveNode { node: bus }).unwrap();
+        ctl.apply(Intent::RemoveNode { node: reverb }).unwrap();
+        sent(&engine);
+        // (The stub engine hands nothing back, so the plugins are loaded again: the cut goes after the plugin, by its node.)
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        assert_eq!((ctl.model.instruments[0].effects[0].node, ctl.model.instruments[0].effects[0].fed), (reverb, false));
+        assert_eq!((ctl.model.groups[0].effects[0].node, ctl.model.groups[0].effects[0].fed), (bus, false));
+        let commands = sent(&engine);
+        let at = |prefix: &str| commands.iter().position(|command| command.starts_with(prefix)).unwrap_or_else(|| panic!("{prefix} is among {commands:?}"));
+        assert_eq!(commands[at("InsertGroupEffect") + 1], format!("SetEffectFeed node={} fed=false", bus.0), "{commands:?}");
+        assert_eq!(commands[at("InsertEffect") + 1], format!("SetEffectFeed node={} fed=false", reverb.0), "{commands:?}");
+        // An effect that was fed comes back fed, and nothing is said of it.
+        ctl.apply(Intent::SetFeed { node: reverb, feed: Feed::Chain }).unwrap();
+        ctl.apply(Intent::RemoveNode { node: reverb }).unwrap();
+        sent(&engine);
+        ctl.undo().unwrap();
+        assert!(ctl.model.instruments[0].effects[0].fed);
+        assert!(!sent(&engine).iter().any(|command| command.starts_with("SetEffectFeed")));
+    }
+
+    #[test]
+    fn a_lane_that_has_an_effect_whose_feed_is_cut_that_is_taken_out_comes_back_by_undo_with_the_feed_still_cut() {
+        let (engine, mut ctl, _clock) = controller();
+        let (instrument, filter) = (lane(&ctl), node(&ctl, NodePath::Effect { inst: 0, index: 1 }));
+        ctl.apply(Intent::SetFeed { node: filter, feed: Feed::None }).unwrap();
+        ctl.apply(Intent::RemoveNode { node: instrument }).unwrap();
+        // (There is no audio thread to hand the lane back: reading what was sent answers for it. The audio thread's lane has its cut with it.)
+        sent(&engine);
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments[0].effects.iter().map(|fx| fx.fed).collect::<Vec<_>>(), [true, false]);
     }
 
     #[test]
@@ -5701,6 +5816,7 @@ size = 0.5
         let cable = |modulator: NodeId, node: NodeId, index: u32| Op::Do(Intent::AddModEdge { modulator, to: Endpoint { node, port: Port::Param { index } } });
         let put_in = |node: NodeId, group: Option<NodeId>| Op::Do(Intent::SetLaneGroup { node, group });
         let route = |node: NodeId, route: Route| Op::Do(Intent::SetRoute { node, route });
+        let feed = |node: NodeId, feed: Feed| Op::Do(Intent::SetFeed { node, feed });
 
         let mut scripts: Vec<(&str, Vec<Op>)> = vec![
             ("a parameter that was set is put back and set again", vec![set(detune, 3.0), undo(), redo(), undo(), undo(), redo(), redo()]),
@@ -6652,6 +6768,42 @@ size = 0.5
                     route(s.lane[0], Route::Out),
                     undo(),
                     undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                ],
+            ),
+            (
+                "the link into an effect that is cut is put back by undo and cut again by redo, in a lane's chain and on a bus; one that is as it is asked to be, and one into what is no effect, is no step; a link that is given back where the audio cables there are would make it go round is refused; and an effect that is cut is taken out, moved and put back with its link still cut",
+                SENDS,
+                vec![
+                    lock(),
+                    feed(s.fx[0], Feed::None),
+                    feed(s.bus, Feed::None),
+                    feed(s.fx[0], Feed::None),
+                    feed(s.fx[2], Feed::Chain),
+                    feed(s.lane[0], Feed::None),
+                    feed(s.group, Feed::None),
+                    feed(NodeId::MASTER, Feed::None),
+                    feed(NodeId(9_999), Feed::None),
+                    // Lane 0's delay sent back to its filter is a loop while the filter feeds the delay: refused; with the link into the delay cut it is drawn, and the link is not given back.
+                    draw_cable(s.fx[1], s.fx[0], None),
+                    feed(s.fx[1], Feed::None),
+                    draw_cable(s.fx[1], s.fx[0], Some(0.5)),
+                    feed(s.fx[1], Feed::Chain),
+                    Op::Do(Intent::RemoveNode { node: s.fx[0] }),
+                    undo(),
+                    Op::Do(Intent::MoveEffect { node: s.fx[0], index: 1 }),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: s.bus }),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: s.lane[0] }),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
                     redo(),
                     redo(),
                     redo(),

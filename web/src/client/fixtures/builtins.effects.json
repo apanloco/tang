@@ -1,5 +1,6 @@
 {
   "builtin:delay": {
+    "feed": "chain",
     "kind": "effect",
     "mix": 0.5,
     "name": "Delay",
@@ -120,6 +121,7 @@
     }
   },
   "builtin:drive": {
+    "feed": "chain",
     "kind": "effect",
     "mix": 1.0,
     "name": "Drive",
@@ -205,6 +207,7 @@
     }
   },
   "builtin:filter": {
+    "feed": "chain",
     "kind": "effect",
     "mix": 1.0,
     "name": "Filter",
@@ -276,6 +279,7 @@
     }
   },
   "builtin:reverb": {
+    "feed": "chain",
     "kind": "effect",
     "mix": 0.5,
     "name": "Reverb",

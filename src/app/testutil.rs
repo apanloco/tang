@@ -34,6 +34,7 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetGroupMute { group, muted } => format!("SetGroupMute group={group} muted={muted}"),
         C::SetGroupRoute { group, route } => format!("SetGroupRoute group={group} route={}", route.name()),
         C::SetLaneRoute { inst, route } => format!("SetLaneRoute inst={inst} route={}", route.name()),
+        C::SetEffectFeed { node, fed } => format!("SetEffectFeed node={} fed={fed}", node.0),
         C::SetGroupSolo { group, solo } => format!("SetGroupSolo group={group} solo={solo}"),
         C::SetGroupMix { group, index, value } => {
             format!("SetGroupMix group={group} fx={index} value={value:.3}")
@@ -1471,6 +1472,15 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
     if !routes.is_empty() {
         shape["routes"] = serde_json::json!(routes);
     }
+    // The effects whose feed is cut (the link into them from the stage before is not there): a line each, and no list at all when none is, so that the fixtures of the sessions that cut none are as they were.
+    let feeds: Vec<String> = list(&wire["graph"]["nodes"])
+        .iter()
+        .filter(|n| text(&n["kind"]) == "effect" && text(&n["feed"]) == "none")
+        .map(|n| format!("{} none", n["id"]))
+        .collect();
+    if !feeds.is_empty() {
+        shape["feeds"] = serde_json::json!(feeds);
+    }
     // The sources of notes, the cables of notes that have been drawn and the links of the lanes that have none: a line each, and no list at all for a session that has none, so that the fixtures of the
     // sessions that have no source are as they were.
     let sources: Vec<String> = list(&wire["graph"]["nodes"])
@@ -1522,6 +1532,7 @@ pub fn model_lanes(model: &SessionModel) -> Vec<LaneFacts> {
         .map(|(i, lane)| LaneFacts {
             node: lane.node,
             effect_nodes: lane.effects.iter().map(|effect| effect.node).collect(),
+            cut_feeds: lane.effects.iter().filter(|effect| !effect.fed).map(|effect| effect.node).collect(),
             group: lane.group,
             range: lane.range,
             transpose: lane.transpose,
@@ -1549,6 +1560,7 @@ pub fn model_groups(model: &SessionModel) -> Vec<GroupFacts> {
         .map(|group| GroupFacts {
             node: group.node,
             effect_nodes: group.effects.iter().map(|effect| effect.node).collect(),
+            cut_feeds: group.effects.iter().filter(|effect| !effect.fed).map(|effect| effect.node).collect(),
             effects: group.effects.iter().map(|effect| effect.name.clone()).collect(),
             modulators: group.modulators.len(),
             volume: group.volume,

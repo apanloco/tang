@@ -524,7 +524,7 @@ impl Controller {
                 }
             }
             Inverse::Effect { at, index, slot, kept: Kept::InHand(effect) } => {
-                let (mix, node) = (f64::from(slot.mix), slot.node);
+                let (mix, node, cut) = (f64::from(slot.mix), slot.node, !slot.fed);
                 // (The place it went to, which is the last for one past the end: the audio thread is told the same. A chain that is not there takes nothing, and
                 // the plugin is dropped here.)
                 match at {
@@ -536,6 +536,10 @@ impl Controller {
                         let Some(place) = self.model.insert_bus_effect_at(group, index, slot) else { return };
                         let _ = self.cmd_tx.send(GraphCommand::InsertGroupEffect { group, index: place, effect, mix, node });
                     }
+                }
+                // (The audio thread forgot the cut when the effect went: the effect comes back with the feed the model kept for it.)
+                if cut {
+                    let _ = self.cmd_tx.send(GraphCommand::SetEffectFeed { node, fed: false });
                 }
             }
             Inverse::Lane { index, lane, kept: Kept::InHand(kept) } => {

@@ -218,7 +218,7 @@ describe("the modulators that drive a parameter of a lane that is in a group", (
   const plugin: Plugin = { id: "builtin:filter", format: "Built-in", isInstrument: false, params: [], presets: [], currentPreset: null, pinned: [] };
   const group: Node = { id: 1, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" };
   const lane: Node = { id: 2, parent: 1, name: "Oscillator", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, route: "out", pattern: null };
-  const filter: Node = { id: 3, parent: 2, name: "Filter", kind: "effect", plugin, mix: 1 };
+  const filter: Node = { id: 3, parent: 2, name: "Filter", kind: "effect", plugin, mix: 1, feed: "chain" };
   const groupLfo: Node = { id: 4, parent: 1, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
   const laneEnvelope: Node = { id: 5, parent: 2, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 } };
   const laneLfo: Node = { id: 6, parent: 2, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 2, retrigger: false, fade: 0, sync: 0 } };
@@ -269,7 +269,7 @@ describe("the modulators that drive a parameter of a lane that is in a group", (
 
   test("are those of the group, all of them, when only the group's drive it: they add up, as they do for a lane's, and a bus effect has no others", () => {
     const secondLfo: Node = { id: 8, parent: 1, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "triangle", rate: 3, retrigger: false, fade: 0, sync: 0 } };
-    const bus: Node = { id: 9, parent: 1, name: "Reverb", kind: "effect", plugin, mix: 0.5 };
+    const bus: Node = { id: 9, parent: 1, name: "Reverb", kind: "effect", plugin, mix: 0.5, feed: "chain" };
     const toBus = (from: number, amount: number, id: number): Edge => ({
       kind: "modulation",
       id,

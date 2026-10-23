@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::graph::{Endpoint, NoteRange, PatternInfo, SourceInfo};
 use crate::app::model::{EdgeId, MAX_FADE, ModSourceSlot, NodeId, SYNC_DIVISIONS};
 use crate::plugin::chain::{MAX_STEPS, MidiBindSource};
-use crate::session::{NodeUi, Route};
+use crate::session::{Feed, NodeUi, Route};
 
 /// What a front-end asks of the controller, naming the node it concerns.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,6 +145,12 @@ pub enum Intent {
     /// way. The wiring changes at once, as a lane's group does, and the intent is told as a snapshot (the links of the graph change). Saved with the session (`route = "none"`). Refused,
     /// with nothing changed, for a node that is neither a lane nor a group, and for a way out that is given back where the audio would go round, by the cables there are.
     SetRoute { node: NodeId, route: Route },
+    /// Cut or give back the link into an effect from the stage before it in its chain (step 86: the page's × on a link of a chain and its button on the effect's node, the TUI's `f`): `node`
+    /// is the node of the effect, a lane's or a group's bus. An effect is fed by the stage before it (the lane's instrument, the bus's sum or the effect before it: `chain`, which every
+    /// effect has to begin with) and, cut (`none`), by the audio cables that end at it and by nothing else, so that a link of a chain is taken apart as a cable is. The wiring changes
+    /// at once, as a way out does, and the intent is told as a snapshot (the links of the graph change). Saved with the session (`feed = "none"` on the effect). Refused, with nothing
+    /// changed, for a node that is not an effect, and for a feed that is given back where the audio would go round, by the cables there are.
+    SetFeed { node: NodeId, feed: Feed },
     /// Set the scale of the piano (the Piano tab's): `scale` is a root and a kind of scale as the session file
     /// says it, `C major` or `F# dorian`, where the root may be a sharp or a flat, and the name of the kind
     /// short or long, in any case. The piano colours the notes of the scale, and drops the others when it is
@@ -795,6 +801,8 @@ mod tests {
             (Intent::SetSolo { node: NodeId(4), solo: false }, json!({"type": "setSolo", "node": 4, "solo": false})),
             (Intent::SetRoute { node: NodeId(4), route: Route::None }, json!({"type": "setRoute", "node": 4, "route": "none"})),
             (Intent::SetRoute { node: NodeId(2), route: Route::Out }, json!({"type": "setRoute", "node": 2, "route": "out"})),
+            (Intent::SetFeed { node: NodeId(7), feed: Feed::None }, json!({"type": "setFeed", "node": 7, "feed": "none"})),
+            (Intent::SetFeed { node: NodeId(3), feed: Feed::Chain }, json!({"type": "setFeed", "node": 3, "feed": "chain"})),
             (Intent::SetScale { scale: "F# dorian".to_string() }, json!({"type": "setScale", "scale": "F# dorian"})),
             (Intent::SetLocked { locked: true }, json!({"type": "setLocked", "locked": true})),
             (Intent::SetBpm { bpm: 96.5 }, json!({"type": "setBpm", "bpm": 96.5})),

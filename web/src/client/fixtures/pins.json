@@ -1653,6 +1653,7 @@
           "volume": 1.0
         },
         {
+          "feed": "chain",
           "id": 1,
           "kind": "effect",
           "mix": 1.0,
@@ -2085,6 +2086,7 @@
           "volume": 1.0
         },
         {
+          "feed": "chain",
           "id": 3,
           "kind": "effect",
           "mix": 1.0,

@@ -4,7 +4,7 @@
 // program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Event, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Snapshot, StampedEvent } from "../protocol";
+import type { CatalogEntry, Event, Feed, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Snapshot, StampedEvent } from "../protocol";
 import { isLink } from "./cables";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
@@ -191,6 +191,8 @@ export interface Shape {
   sends?: string[];
   /** The lanes and groups whose way out is cut, a line each (`id none`); none at all when none is, as the controller's fixtures write it. */
   routes?: string[];
+  /** The effects whose feed is cut (the link into them from the stage before is not there), a line each (`id none`); none at all when none is, as the controller's fixtures write it. */
+  feeds?: string[];
   /** The sources of notes, a line each (`id keys` or `id device Name`); none at all for a session that has none, as the controller's fixtures write it. */
   sources?: string[];
   /** The cables of notes that have been drawn from a source to a lane, a line each (`#id from>to`); none at all for a session that has none. */
@@ -209,13 +211,14 @@ const portKey = (port: Port): string => `${port.type}${"index" in port ? String(
  * What a session comes to, as the fixtures write it (`shape_of` in `app/testutil.rs`, by the same rules): a line for each node (its id, its
  * parent, its name), each link of the audio path (the node it leaves, the node it goes to, its kind), each cable (its id, the node it leaves
  * and the one it goes to, the port, its depth), each audio cable that has been drawn between two places (its id, the nodes, its level: `sends`, a list only when there are some), each lane
- * and group whose way out is cut (`routes`, likewise) and each
+ * and group whose way out is cut (`routes`, likewise), each effect whose feed is cut (`feeds`, likewise) and each
  * entry of the two lists of the layout of the telemetry (the slot, the node, the port, the kind); the fingerprint of the layout is not part of it.
  */
 export function shapeOf(snapshot: Snapshot): Shape {
   const { nodes, edges } = snapshot.graph;
   const sends = edges.flatMap((e) => (e.kind === "cable" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} @${String(e.gain)}`] : []));
   const routes = nodes.flatMap((n) => ((n.kind === "instrument" || n.kind === "group") && n.route === "none" ? [`${String(n.id)} none`] : []));
+  const feeds = nodes.flatMap((n) => (n.kind === "effect" && n.feed === "none" ? [`${String(n.id)} none`] : []));
   const sources = nodes.flatMap((n) => (n.kind === "source" ? [n.source.type === "keys" ? `${String(n.id)} keys` : `${String(n.id)} device ${n.source.name}`] : []));
   const notes = edges.flatMap((e) => (e.kind === "events" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)}`] : []));
   const hears = edges.flatMap((e) => (e.kind === "hears" ? [`${String(e.from.node)}>${String(e.to.node)}`] : []));
@@ -233,6 +236,7 @@ export function shapeOf(snapshot: Snapshot): Shape {
     cables: edges.flatMap((e) => (e.kind === "modulation" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} ${portKey(e.to.port)} @${String(e.amount)}`] : [])),
     ...(sends.length > 0 ? { sends } : {}),
     ...(routes.length > 0 ? { routes } : {}),
+    ...(feeds.length > 0 ? { feeds } : {}),
     ...(sources.length > 0 ? { sources } : {}),
     ...(notes.length > 0 ? { notes } : {}),
     ...(hears.length > 0 ? { hears } : {}),
@@ -247,10 +251,10 @@ export const builtinCatalog = builtins as CatalogEntry[];
 
 /**
  * What the controller makes of each built-in effect that is added to a lane or a group, by the plugin's id: the node's name,
- * the plugin with the parameters it has when it is new, and the mix it starts at; the ids are the mock's to hand out. Written
+ * the plugin with the parameters it has when it is new, the mix it starts at and its feed (`chain`: the stage before it feeds it); the ids are the mock's to hand out. Written
  * by Rust (`the_web_clients_fixture_of_the_builtin_effects_is_current`).
  */
-export const builtinEffects = builtinEffectNodes as unknown as Record<string, { name: string; kind: "effect"; plugin: Plugin; mix: number }>;
+export const builtinEffects = builtinEffectNodes as unknown as Record<string, { name: string; kind: "effect"; plugin: Plugin; mix: number; feed: Feed }>;
 
 /**
  * What the controller makes of each built-in instrument that is added in a lane of its own, by the plugin's id: the node's

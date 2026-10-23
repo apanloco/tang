@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::model::{EdgeId, FieldTarget, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, SourceKind};
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
-use crate::session::{NodeUi, Route};
+use crate::session::{Feed, NodeUi, Route};
 
 /// A session as a front-end draws it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -65,8 +65,9 @@ pub enum NodeKind {
     /// the key range it answers to, its host-side output volume, whether it is muted or soloed, where its end goes (`route`: to its group's bus or the mix, or nowhere but its
     /// audio cables) and its pattern (null while it has none).
     Instrument { plugin: Option<Plugin>, range: Option<NoteRange>, transpose: i8, volume: f32, muted: bool, solo: bool, route: Route, pattern: Option<PatternInfo> },
-    /// An effect in a lane's chain or in a group's bus chain, with its dry/wet mix.
-    Effect { plugin: Plugin, mix: f32 },
+    /// An effect in a lane's chain or in a group's bus chain, with its dry/wet mix and whether the stage before it feeds it (`feed`: `chain`, or `none` once the link into it is cut, when
+    /// it is fed by the audio cables that end at it and by nothing else).
+    Effect { plugin: Plugin, mix: f32, feed: Feed },
     /// A modulator, lane-scoped or group-scoped. What it drives are its modulation
     /// edges.
     Modulator { source: ModulatorSource },
@@ -382,7 +383,7 @@ impl SessionModel {
             nodes.extend(group.effects.iter().map(|fx| effect_node(fx, group.node)));
             nodes.extend(group.modulators.iter().map(|m| modulator_node(m, group.node)));
             // Out of the group, through its bus effects, to the master (unless its way out is cut: then the chain ends at its last effect).
-            audio_chain(&mut edges, group.node, group.effects.iter().map(|fx| fx.node), (group.route == Route::Out).then_some((NodeId::MASTER, EdgeKind::Audio)));
+            audio_chain(&mut edges, group.node, group.effects.iter().map(|fx| (fx.node, fx.fed)), (group.route == Route::Out).then_some((NodeId::MASTER, EdgeKind::Audio)));
         }
 
         for lane in &self.instruments {
@@ -412,7 +413,7 @@ impl SessionModel {
                 Some(group) => (group.node, EdgeKind::Member),
                 None => (NodeId::MASTER, EdgeKind::Audio),
             };
-            audio_chain(&mut edges, lane.node, lane.effects.iter().map(|fx| fx.node), (lane.route == Route::Out).then_some(sink));
+            audio_chain(&mut edges, lane.node, lane.effects.iter().map(|fx| (fx.node, fx.fed)), (lane.route == Route::Out).then_some(sink));
         }
 
         nodes.push(Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master });
@@ -540,15 +541,18 @@ impl SessionModel {
 }
 
 /// The edges of a serial audio chain: out of `first`, in and out of each of
-/// `through`, and into the node of `sink`, if there is one, by a link of the kind that it says (a chain whose way out is cut has none).
-fn audio_chain(edges: &mut Vec<Edge>, first: NodeId, through: impl Iterator<Item = NodeId>, sink: Option<(NodeId, EdgeKind)>) {
+/// `through` (an effect, and whether the stage before it feeds it), and into the node of `sink`, if there is one, by a link of the kind that it says (a chain whose way out is cut has none).
+/// The link into an effect that is not fed is not there, and the chain goes on from the effect all the same.
+fn audio_chain(edges: &mut Vec<Edge>, first: NodeId, through: impl Iterator<Item = (NodeId, bool)>, sink: Option<(NodeId, EdgeKind)>) {
     let mut from = first;
-    for node in through {
-        edges.push(Edge {
-            from: Endpoint { node: from, port: Port::AudioOut },
-            to: Endpoint { node, port: Port::AudioIn },
-            kind: EdgeKind::Audio,
-        });
+    for (node, fed) in through {
+        if fed {
+            edges.push(Edge {
+                from: Endpoint { node: from, port: Port::AudioOut },
+                to: Endpoint { node, port: Port::AudioIn },
+                kind: EdgeKind::Audio,
+            });
+        }
         from = node;
     }
     if let Some((sink, last)) = sink {
@@ -561,7 +565,8 @@ fn audio_chain(edges: &mut Vec<Edge>, first: NodeId, through: impl Iterator<Item
 }
 
 fn effect_node(slot: &PluginSlot, parent: NodeId) -> Node {
-    Node { id: slot.node, parent: Some(parent), name: slot.name.clone(), ui: None, kind: NodeKind::Effect { plugin: plugin(slot), mix: slot.mix } }
+    let feed = if slot.fed { Feed::Chain } else { Feed::None };
+    Node { id: slot.node, parent: Some(parent), name: slot.name.clone(), ui: None, kind: NodeKind::Effect { plugin: plugin(slot), mix: slot.mix, feed } }
 }
 
 fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
@@ -973,8 +978,8 @@ mod tests {
         );
         assert_eq!((node(&graph, filter).parent, node(&graph, reverb).parent), (Some(osc), Some(osc)));
         assert_eq!((node(&graph, filter).name.as_str(), node(&graph, reverb).name.as_str()), ("Filter", "Reverb"));
-        let NodeKind::Effect { plugin, mix } = &node(&graph, reverb).kind else { panic!() };
-        assert_eq!((plugin.id.as_str(), *mix, plugin.is_instrument), ("builtin:reverb", 0.25, false));
+        let NodeKind::Effect { plugin, mix, feed } = &node(&graph, reverb).kind else { panic!() };
+        assert_eq!((plugin.id.as_str(), *mix, plugin.is_instrument, *feed), ("builtin:reverb", 0.25, false, Feed::Chain));
         assert!(!plugin.presets.is_empty(), "the reverb's presets come along");
     }
 
@@ -1086,6 +1091,49 @@ plugin = "builtin:osc"
             ]
         );
         assert_eq!(model.instruments[2].node, l2);
+    }
+
+    #[test]
+    fn an_effect_says_whether_the_stage_before_it_feeds_it_and_no_link_goes_into_one_that_is_not_fed() {
+        let model = load(
+            "[[group]]\n[[group.effect]]\nplugin = \"builtin:reverb\"\nfeed = \"none\"\n[[group.effect]]\nplugin = \"builtin:filter\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument.effect]]\nplugin = \"builtin:delay\"\nfeed = \"none\"\n[[instrument.effect]]\nplugin = \"builtin:drive\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = \"none\"\n",
+        )
+        .model;
+        let graph = model.graph();
+        let (group, bus) = (model.groups[0].node, [model.groups[0].effects[0].node, model.groups[0].effects[1].node]);
+        let (lane0, fx) = (model.instruments[0].node, [model.instruments[0].effects[0].node, model.instruments[0].effects[1].node, model.instruments[0].effects[2].node]);
+        let (lane1, solo_fx) = (model.instruments[1].node, model.instruments[1].effects[0].node);
+        // (No link goes into an effect that is not fed, and the chain goes on from it: the next effect is fed by it, and the end of the chain is where it was.)
+        assert_eq!(
+            graph.edges,
+            [
+                audio(out(bus[0]), into(bus[1])),
+                audio(out(bus[1]), into(NodeId::MASTER)),
+                audio(out(lane0), into(fx[0])),
+                audio(out(fx[1]), into(fx[2])),
+                member(out(fx[2]), into(group)),
+                audio(out(solo_fx), into(NodeId::MASTER)),
+            ]
+        );
+        let feed = |id: NodeId| match &node(&graph, id).kind {
+            NodeKind::Effect { feed, .. } => *feed,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(bus.map(feed), [Feed::None, Feed::Chain]);
+        assert_eq!(fx.map(feed), [Feed::Chain, Feed::None, Feed::Chain]);
+        assert_eq!(feed(solo_fx), Feed::None);
+        assert_eq!((node(&graph, lane1).parent, node(&graph, solo_fx).parent), (None, Some(lane1)));
+    }
+
+    #[test]
+    fn the_last_effect_of_a_chain_that_is_not_fed_still_ends_the_chain_and_a_chain_whose_way_out_is_cut_has_no_link_out() {
+        let model = load("[[instrument]]\nplugin = \"builtin:osc\"\nroute = \"none\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = \"none\"\n[[instrument.effect]]\nplugin = \"builtin:delay\"\nfeed = \"none\"\n[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument.effect]]\nplugin = \"builtin:delay\"\nfeed = \"none\"\n").model;
+        let graph = model.graph();
+        let (a, b) = (model.instruments[1].effects[0].node, model.instruments[1].effects[1].node);
+        // Lane 0 has every link cut, and no way out: nothing at all leaves it. Lane 1's delay is fed by nothing and ends the chain.
+        assert_eq!(graph.edges, [audio(out(model.instruments[1].node), into(a)), audio(out(b), into(NodeId::MASTER))]);
     }
 
     #[test]
@@ -1853,6 +1901,7 @@ depth = 0.2
                     current_preset: None,
                 },
                 mix: 0.5,
+                feed: Feed::Chain,
             },
         };
         assert_eq!(
@@ -1875,6 +1924,7 @@ depth = 0.2
                     "pinned": [2],
                 },
                 "mix": 0.5,
+                "feed": "chain",
             })
         );
 
@@ -1976,6 +2026,11 @@ depth = 0.2
             serde_json::to_value(NodeKind::Group { volume: 1.0, pan: 0.0, muted: false, solo: true, route: Route::Out }).unwrap(),
             json!({"kind": "group", "volume": 1.0, "pan": 0.0, "muted": false, "solo": true, "route": "out"})
         );
+        // An effect says whether the link into it is there, in the word that the file uses.
+        let model = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = \"none\"\n").model;
+        let graph = model.graph();
+        let wire: Vec<serde_json::Value> = model.instruments[0].effects.iter().map(|fx| serde_json::to_value(&node(&graph, fx.node).kind).unwrap()).collect();
+        assert_eq!((wire[0]["kind"].clone(), wire[0]["feed"].clone(), wire[1]["feed"].clone()), (json!("effect"), json!("chain"), json!("none")));
     }
 
     #[test]

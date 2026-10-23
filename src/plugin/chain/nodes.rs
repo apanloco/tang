@@ -475,6 +475,9 @@ const CUT: u64 = 12 << 32;
 /// The latency, in frames, of the instrument of the lane that came before it in the list, and of the effect that did.
 const HEAD_LATENCY: u64 = 13 << 32;
 const FX_LATENCY: u64 = 14 << 32;
+/// The effect that came before it in the list has its feed cut (step 86: the plan has no link into it from the stage before it). An effect that is fed has no entry, so that a session
+/// that cuts none has the shape it had.
+const CUT_FEED: u64 = 15 << 32;
 const NO_GROUP: u64 = u32::MAX as u64;
 
 impl Shape {
@@ -500,6 +503,9 @@ impl Shape {
             }
             for (index, effect) in lane.effect_nodes.iter().enumerate() {
                 self.list.push(EFFECT | u64::from(effect.0));
+                if lane.cut_feeds.contains(effect) {
+                    self.list.push(CUT_FEED);
+                }
                 if let Some(frames) = lane.effects.get(index).map(|plugin| latency_of(plugin.as_ref())).filter(|&frames| compensates && frames > 0) {
                     self.list.push(FX_LATENCY | u64::from(frames));
                 }
@@ -512,6 +518,9 @@ impl Shape {
             }
             for (index, effect) in group.effect_nodes.iter().enumerate() {
                 self.list.push(EFFECT | u64::from(effect.0));
+                if group.cut_feeds.contains(effect) {
+                    self.list.push(CUT_FEED);
+                }
                 if let Some(frames) = group.effects.get(index).map(|plugin| latency_of(plugin.as_ref())).filter(|&frames| compensates && frames > 0) {
                     self.list.push(FX_LATENCY | u64::from(frames));
                 }
@@ -562,6 +571,8 @@ pub(crate) struct LaneWiring {
     pub node: NodeId,
     pub group: Option<usize>,
     pub effects: Vec<NodeId>,
+    /// The effects (of `effects`) that the stage before them does not feed: the plan has no link into them from it (`Feed::None`), only their cables.
+    pub cut: Vec<NodeId>,
     /// Whether the lane's end goes anywhere: to the bus of its group, or to the mix (`Route::Out`), or nowhere but its cables (`Route::None`).
     pub route: Route,
 }
@@ -571,6 +582,8 @@ pub(crate) struct LaneWiring {
 pub(crate) struct GroupWiring {
     pub node: NodeId,
     pub effects: Vec<NodeId>,
+    /// The bus effects that the stage before them does not feed (see `LaneWiring::cut`).
+    pub cut: Vec<NodeId>,
     /// Whether the group's end goes to the mix (`Route::Out`) or nowhere but its cables (`Route::None`).
     pub route: Route,
 }
@@ -578,8 +591,8 @@ pub(crate) struct GroupWiring {
 /// The wiring of the lanes and the groups as the engine has them.
 fn wiring_of(lanes: &[InstrumentLane], groups: &[Group]) -> (Vec<LaneWiring>, Vec<GroupWiring>) {
     (
-        lanes.iter().map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effect_nodes.clone(), route: lane.route }).collect(),
-        groups.iter().map(|group| GroupWiring { node: group.node, effects: group.effect_nodes.clone(), route: group.route }).collect(),
+        lanes.iter().map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effect_nodes.clone(), cut: lane.cut_feeds.clone(), route: lane.route }).collect(),
+        groups.iter().map(|group| GroupWiring { node: group.node, effects: group.effect_nodes.clone(), cut: group.cut_feeds.clone(), route: group.route }).collect(),
     )
 }
 
@@ -655,7 +668,10 @@ fn build_patch(patch: &mut Patch<Stage>, lanes: &[LaneWiring], groups: &[GroupWi
     for lane in lanes {
         let mut from = Stage::Head(lane.node);
         for effect in &lane.effects {
-            patch.connect(Port::new(from, 0), Port::new(Stage::Fx(*effect), 0));
+            // (An effect whose feed is cut has no link into it from the stage before: what it is given is what its cables carry, and nothing else. The chain goes on from it all the same.)
+            if !lane.cut.contains(effect) {
+                patch.connect(Port::new(from, 0), Port::new(Stage::Fx(*effect), 0));
+            }
             from = Stage::Fx(*effect);
         }
         patch.connect(Port::new(from, 0), Port::new(Stage::Tail(lane.node), 0));
@@ -668,7 +684,9 @@ fn build_patch(patch: &mut Patch<Stage>, lanes: &[LaneWiring], groups: &[GroupWi
     for group in groups {
         let mut from = Stage::Head(group.node);
         for effect in &group.effects {
-            patch.connect(Port::new(from, 0), Port::new(Stage::Fx(*effect), 0));
+            if !group.cut.contains(effect) {
+                patch.connect(Port::new(from, 0), Port::new(Stage::Fx(*effect), 0));
+            }
             from = Stage::Fx(*effect);
         }
         patch.connect(Port::new(from, 0), Port::new(Stage::Tail(group.node), 0));
@@ -1500,6 +1518,101 @@ mod tests {
         lanes[0].route = Route::Out;
         schedule.refresh(&lanes, &groups, 2, 64);
         assert_eq!(schedule.compiles, made + 3, "given back");
+    }
+
+    /// Every link that the chains and the ways out make (no audio cables), `(from, to)`, in the order they are drawn: what `build_patch` connects.
+    fn links(lanes: &[InstrumentLane], groups: &[Group]) -> Vec<(String, String)> {
+        let (lane_wiring, group_wiring) = wiring_of(lanes, groups);
+        let mut patch = Patch::new();
+        build_patch(&mut patch, &lane_wiring, &group_wiring, std::iter::empty(), 2);
+        patch.cables().iter().map(|cable| (name(cable.from.node, lanes, groups), name(cable.to.node, lanes, groups))).collect()
+    }
+
+    #[test]
+    fn an_effect_whose_feed_is_cut_has_no_link_into_it_and_the_chain_goes_on_from_it() {
+        let (mut lanes, mut groups) = (lanes(1), groups(1));
+        with_effects(&mut lanes[0], 3);
+        with_bus_effects(&mut groups[0], 2);
+        lanes[0].group = Some(0);
+        let all = pairs(&[
+            ("lane 0 head", "lane 0 fx 0"),
+            ("lane 0 fx 0", "lane 0 fx 1"),
+            ("lane 0 fx 1", "lane 0 fx 2"),
+            ("lane 0 fx 2", "lane 0 tail"),
+            ("lane 0 tail", "group 0 head"),
+            ("group 0 head", "group 0 fx 0"),
+            ("group 0 fx 0", "group 0 fx 1"),
+            ("group 0 fx 1", "group 0 tail"),
+            ("group 0 tail", "mix"),
+        ]);
+        assert_eq!(links(&lanes, &groups), all);
+        // The middle effect of the lane is not fed by the first: the link into it is gone, and the one out of it is not.
+        let cut = lanes[0].effect_nodes[1];
+        lanes[0].cut_feeds.push(cut);
+        let without = |gone: &[(&str, &str)]| all.iter().filter(|link| !gone.iter().any(|(a, b)| (link.0.as_str(), link.1.as_str()) == (*a, *b))).cloned().collect::<Vec<_>>();
+        assert_eq!(links(&lanes, &groups), without(&[("lane 0 fx 0", "lane 0 fx 1")]));
+        // The first effect has the instrument before it, and a bus effect the sum of the bus.
+        let (first, bus) = (lanes[0].effect_nodes[0], groups[0].effect_nodes[0]);
+        lanes[0].cut_feeds.push(first);
+        groups[0].cut_feeds.push(bus);
+        assert_eq!(links(&lanes, &groups), without(&[("lane 0 fx 0", "lane 0 fx 1"), ("lane 0 head", "lane 0 fx 0"), ("group 0 head", "group 0 fx 0")]));
+        // The link out of the end of a chain (into the tail, and the tail's way out) is not an effect's feed: cutting the last effect's feed leaves them.
+        lanes[0].cut_feeds = vec![lanes[0].effect_nodes[2]];
+        groups[0].cut_feeds.clear();
+        assert_eq!(links(&lanes, &groups), without(&[("lane 0 fx 1", "lane 0 fx 2")]));
+    }
+
+    #[test]
+    fn the_plan_is_made_again_when_a_feed_is_cut_or_given_back_and_not_when_it_is_set_to_what_it_is() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (lanes(1), groups(1));
+        with_effects(&mut lanes[0], 2);
+        with_bus_effects(&mut groups[0], 1);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        let made = schedule.compiles;
+        let (fx, bus) = (lanes[0].effect_nodes[1], groups[0].effect_nodes[0]);
+        lanes[0].cut_feeds.clear();
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made, "the feeds that there are");
+        lanes[0].cut_feeds.push(fx);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 1, "a lane's effect whose feed is cut");
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 1, "the same");
+        groups[0].cut_feeds.push(bus);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 2, "a bus effect's");
+        lanes[0].cut_feeds.clear();
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 3, "given back");
+        // A cut that is on another effect is another wiring.
+        let first = lanes[0].effect_nodes[0];
+        lanes[0].cut_feeds.push(first);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 4, "the first effect's feed cut, and the bus effect's as well");
+        groups[0].cut_feeds.clear();
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 5, "the bus effect's given back");
+        lanes[0].cut_feeds = vec![fx];
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.compiles, made + 6, "the cut on the second effect and not the first is another wiring");
+    }
+
+    #[test]
+    fn what_a_chain_link_that_is_cut_would_have_closed_a_loop_with_is_not_one() {
+        // An effect that sends back to the effect before it in its own chain is a loop; with the link between them cut it is not.
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (lanes(1), groups(1));
+        with_effects(&mut lanes[0], 2);
+        let (first, second) = (lanes[0].effect_nodes[0], lanes[0].effect_nodes[1]);
+        draw(&mut schedule, 1, CableFrom::Effect(second), CableTo::Effect(first), &lanes, &groups);
+        assert!(schedule.cable_ids().is_empty(), "the loop is not drawn");
+        lanes[0].cut_feeds.push(second);
+        draw(&mut schedule, 1, CableFrom::Effect(second), CableTo::Effect(first), &lanes, &groups);
+        assert_eq!(schedule.cable_ids(), [EdgeId(1)], "no loop: the second is not fed by the first");
+        schedule.refresh(&lanes, &groups, 2, 64);
+        // (The second effect has nothing before it, so it runs first of the chain, and the first, which only the cable feeds, runs after it, with its output going nowhere.)
+        assert_eq!(order(&schedule, &lanes, &groups), ["lane 0 head", "lane 0 fx 1", "lane 0 tail", "cable 1", "lane 0 fx 0", "group 0 head", "group 0 tail", "mix"]);
     }
 
     #[test]

@@ -249,9 +249,23 @@ impl SessionModel {
         (
             self.instruments
                 .iter()
-                .map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effects.iter().map(|effect| effect.node).collect(), route: lane.route })
+                .map(|lane| LaneWiring {
+                    node: lane.node,
+                    group: lane.group,
+                    effects: lane.effects.iter().map(|effect| effect.node).collect(),
+                    cut: lane.effects.iter().filter(|effect| !effect.fed).map(|effect| effect.node).collect(),
+                    route: lane.route,
+                })
                 .collect(),
-            self.groups.iter().map(|group| GroupWiring { node: group.node, effects: group.effects.iter().map(|effect| effect.node).collect(), route: group.route }).collect(),
+            self.groups
+                .iter()
+                .map(|group| GroupWiring {
+                    node: group.node,
+                    effects: group.effects.iter().map(|effect| effect.node).collect(),
+                    cut: group.effects.iter().filter(|effect| !effect.fed).map(|effect| effect.node).collect(),
+                    route: group.route,
+                })
+                .collect(),
         )
     }
 
@@ -280,6 +294,22 @@ impl SessionModel {
             NodePath::Instrument(inst) => lanes.get_mut(inst)?.route = route,
             NodePath::Group(group) => groups.get_mut(group)?.route = route,
             _ => return None,
+        }
+        self.wiring_loop(&lanes, &groups)
+    }
+
+    /// Why the audio would go round if the link into the effect `node` (of a lane's chain or of a group's bus) from the stage before it were there (`fed`) or not, with the cables there are:
+    /// the reason, or None if it would not (or if `node` is no effect). Nothing is changed. Only a link that is there can close a loop: one that is not is on no path.
+    pub fn loop_if_feed_is(&self, node: NodeId, fed: bool) -> Option<String> {
+        let (mut lanes, mut groups) = self.wiring();
+        let cut = match self.locate(node)? {
+            NodePath::Effect { inst, .. } => &mut lanes.get_mut(inst)?.cut,
+            NodePath::GroupEffect { group, .. } => &mut groups.get_mut(group)?.cut,
+            _ => return None,
+        };
+        cut.retain(|other| *other != node);
+        if !fed {
+            cut.push(node);
         }
         self.wiring_loop(&lanes, &groups)
     }
@@ -1336,6 +1366,10 @@ pub struct PluginSlot {
     /// Effect dry/wet mix (1.0 = full wet). Only meaningful for effect slots;
     /// instrument slots leave this at 1.0 and don't read it.
     pub mix: f32,
+    /// Whether the link into an effect from the stage before it in its chain is there (step 86): `true` for the way a chain is wired by itself, `false` once it is cut (`SetFeed`), when
+    /// the effect is fed by the audio cables that end at it and by nothing else. Only meaningful for an effect or a bus effect; an instrument has nothing before it and leaves this `true`.
+    /// A session file keeps it as `feed = "none"`; the engine has it by the effect's node (`GraphCommand::SetEffectFeed`), so it goes where its effect goes.
+    pub fed: bool,
     /// The parameters (`ParamSlot::index`) a front-end shows as knobs on the plugin's node, in the order they were pinned; none pinned
     /// is the first few (`docs/web-ui.md` §4.4). The engine and the TUI do not use it; a session file keeps it as `pinned`, by name.
     pub pinned: Vec<u32>,
@@ -3325,6 +3359,29 @@ plugin = "builtin:drive"
         model.insert_audio_cable(cable(2, CableFrom::Effect(lane_fx), CableTo::Effect(second)));
         assert!(model.loop_if_effect_goes_to(second, 0).is_some());
         assert!(model.loop_if_effect_goes_to(first, 1).is_some());
+    }
+
+    #[test]
+    fn a_link_into_an_effect_is_not_given_back_where_the_audio_would_go_round_and_cutting_one_is_no_loop() {
+        let (mut model, n) = the_sends();
+        // The link into lane 0's delay and the one into the group's bus effect are cut, and a cable goes from the delay back to the filter before it and one from the bus effect into the delay
+        // (lane 0 is in the group): each is a loop only through the link that is cut.
+        model.instruments[0].effects[1].fed = false;
+        model.groups[0].effects[0].fed = false;
+        model.insert_audio_cable(cable(1, CableFrom::Effect(n.fx[1]), CableTo::Effect(n.fx[0])));
+        model.insert_audio_cable(cable(2, CableFrom::Effect(n.bus), CableTo::Effect(n.fx[1])));
+        assert!(model.loop_if_feed_is(n.fx[1], true).is_some(), "given back, the delay's link would close the loop through the cable to the filter");
+        assert!(model.loop_if_feed_is(n.bus, true).is_some(), "given back, the bus effect's link would close the loop through the cable into lane 0's delay");
+        // Cutting a link that is cut is no loop (it is looked at as cut, and not as if the link were there).
+        assert_eq!(model.loop_if_feed_is(n.fx[1], false), None);
+        assert_eq!(model.loop_if_feed_is(n.bus, false), None);
+        // The links that are there are as they are, and the wiring has the cuts that the model says, a lane's and a bus's: neither cable is a loop.
+        assert_eq!(model.loop_if_feed_is(n.fx[0], true), None);
+        assert_eq!(model.loop_if_feed_is(n.fx[2], true), None);
+        // What is no effect, and what is not there, has no link to give back.
+        for node in [n.lane[0], n.group, NodeId::MASTER, NodeId(900)] {
+            assert_eq!(model.loop_if_feed_is(node, true), None, "{node:?}");
+        }
     }
 
     #[test]

@@ -36,7 +36,7 @@ describe("what is heard", () => {
 
   test("says it of lanes and groups, and of nothing else", () => {
     const { graph } = graphOf(0);
-    const effect: Node = { id: 30, parent: 20, name: "Reverb", kind: "effect", plugin: { id: "builtin:reverb", format: "Built-in", isInstrument: false, params: [], presets: [], currentPreset: null, pinned: [] }, mix: 1 };
+    const effect: Node = { id: 30, parent: 20, name: "Reverb", kind: "effect", plugin: { id: "builtin:reverb", format: "Built-in", isInstrument: false, params: [], presets: [], currentPreset: null, pinned: [] }, mix: 1, feed: "chain" };
     const heard = audibleOf({ ...graph, nodes: [...graph.nodes, effect] });
     expect([...heard.keys()].sort()).toEqual([10, 11, 20, 21, 22, 23]);
   });

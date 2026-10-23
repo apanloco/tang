@@ -13,6 +13,8 @@ import type {
   EdgeId,
   Endpoint,
   Event,
+  Feed,
+  Graph,
   Intent,
   LayoutEntry,
   ModulatorField,
@@ -53,7 +55,7 @@ import { parseScale } from "./scales";
 import { stepsOutput, stepsPlace } from "./steps";
 import { rateAt } from "./tempo";
 import { fractionOf, isLog, valueAt } from "./travel";
-import { cableEnds, cableLoops, effectLoops, laneLoops, linksOf, routeLoops } from "./wiring";
+import { cableEnds, cableLoops, effectLoops, feedLoops, laneLoops, linksOf, routeLoops } from "./wiring";
 
 export interface MockOptions {
   /** The session it serves; the tracer by default. */
@@ -446,33 +448,30 @@ function removeEdgeOutcome(snapshot: Snapshot, edge: EdgeId): Outcome {
 }
 
 /**
+ * The edges of a graph, with the links of the audio path made again from its nodes (`linksOf`, which lists them as the controller's graph does: the groups' chains, then the lanes', and no link
+ * into an effect whose feed is cut), where the graph lists them, before the cables and the rest.
+ */
+const relinked = (graph: Graph): Edge[] => [...linksOf(graph.nodes), ...graph.edges.filter((e) => !isLink(e))];
+
+/**
  * An effect (or a bus effect) taken out of the session, as the controller does it (`remove_effect`): the cables that drive
  * its parameters go first, a lane's and a group's, with what drove the depth of any of them (what they were driving goes with
- * the plugin: nothing is given back), and the audio path closes up: the link into it and the link out of it are one, from
- * where the first came to where the second goes, of the second's kind (the link that ends a member lane's chain goes into
- * its group).
+ * the plugin: nothing is given back), and the audio path closes up (`relinked`): the effect after it is fed by the stage that fed it, or by
+ * nothing if its own link is cut, and the link that ends a member lane's chain goes into its group.
  */
 function removeEffectOutcome(snapshot: Snapshot, effect: Node): Outcome {
   const touching = snapshot.graph.edges.filter(isModulation).filter((e) => e.to.node === effect.id).map((e) => e.id);
   const taken = without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set([effect.id]));
-  const { edges } = taken.graph;
-  const into = edges.findIndex((e) => isLink(e) && e.to.node === effect.id && e.to.port.type === "audioIn");
-  const out = edges.findIndex((e) => isLink(e) && e.from.node === effect.id && e.from.port.type === "audioOut");
-  const incoming = edges[into];
-  const outgoing = edges[out];
-  if (!incoming || !isLink(incoming) || !outgoing || !isLink(outgoing)) return invalid("that has no audio path to close up");
-  const joined: Edge = { from: incoming.from, to: outgoing.to, kind: outgoing.kind };
-  const closed = edges.flatMap((e, i) => (i === into ? [joined] : i === out ? [] : [e]));
-  return { restructured: { ...taken, graph: { ...taken.graph, edges: closed } } };
+  return { restructured: { ...taken, graph: { ...taken.graph, edges: relinked(taken.graph) } } };
 }
 
 /**
  * An effect (a lane's or a bus's) moved to place `index` of its chain, as the controller does it (`Controller::move_effect`,
  * `move_bus_effect`): the effects between its old place and its new one move one place the other way, and the audio path goes through
  * them in the new order. The graph lists the nodes of a lane, or of a group's bus, together (the lane or the group, its effects, its
- * modulators), so the effects change places among themselves, in the places they take in the list; the links of the chain stay where
- * they are in the list of edges, from the lane or the group through the effects in their new order to where the chain ended (a member
- * lane's chain ends in its group, a bus's and an ungrouped lane's in the master). The cables and the layout of the telemetry are what
+ * modulators), so the effects change places among themselves, in the places they take in the list; the links of the chain are made again
+ * from the nodes in their new order (`relinked`: a member lane's chain ends in its group, a bus's and an ungrouped lane's in the master, and an
+ * effect whose feed is cut has no link into it wherever it is: the cut is the effect's own). The cables and the layout of the telemetry are what
  * they were: they name the plugins by their nodes, which are the same. Refused for what is no effect, a place the chain has not, and
  * the place the effect is at.
  */
@@ -480,41 +479,21 @@ function moveEffectOutcome(snapshot: Snapshot, node: NodeId, index: number): Out
   const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
   if (!found) return noNode(node);
   if (found.kind !== "effect") return invalid("only an effect can be moved");
-  const { nodes, edges } = snapshot.graph;
+  const { nodes } = snapshot.graph;
   const chain = nodes.filter((n) => n.kind === "effect" && n.parent === found.parent);
   if (!Number.isInteger(index) || index < 0 || index >= chain.length) return invalid(`the chain has no place ${String(index)}`);
   const from = chain.indexOf(found);
   if (index === from) return invalid("that effect is at that place already");
   if (effectLoops(snapshot.graph, node, index)) return invalid("moving that effect there would make the audio go round, by the cables there are");
-  const owner = nodes.find((n) => n.id === found.parent);
   const moved = [...chain];
   moved.splice(from, 1);
   moved.splice(index, 0, found);
 
-  // The links of the chain, from the owner through the effects to where it ends: where they are in the list, and what the last one is.
-  const joined = new Set<NodeId>([...(owner ? [owner.id] : []), ...chain.map((n) => n.id)]);
-  const slots = edges.flatMap((e, i) => (isLink(e) && joined.has(e.from.node) ? [i] : []));
-  const out = edges[slots.at(-1) ?? -1];
-  if (!owner || slots.length !== chain.length + 1 || !out || !isLink(out)) return invalid("that has no audio path to reorder");
-  const path = [owner.id, ...moved.map((n) => n.id)];
-  const links = path.map((leaves, i): Edge => {
-    const next = path[i + 1];
-    const from = { node: leaves, port: { type: "audioOut" } } as const;
-    return next === undefined ? { from, to: out.to, kind: out.kind } : { from, to: { node: next, port: { type: "audioIn" } }, kind: "audio" };
-  });
-
   const inChain = new Set(chain);
   let nextNode = 0;
-  let nextLink = 0;
-  return {
-    restructured: {
-      ...snapshot,
-      graph: {
-        nodes: nodes.map((n) => (inChain.has(n) ? (moved[nextNode++] ?? n) : n)),
-        edges: edges.map((e, i) => (slots.includes(i) ? (links[nextLink++] ?? e) : e)),
-      },
-    },
-  };
+  const reordered = nodes.map((n) => (inChain.has(n) ? (moved[nextNode++] ?? n) : n));
+  const graph: Graph = { nodes: reordered, edges: snapshot.graph.edges };
+  return { restructured: { ...snapshot, graph: { nodes: reordered, edges: relinked(graph) } } };
 }
 
 /**
@@ -665,8 +644,9 @@ function modulateOutcome(snapshot: Snapshot, to: Edge["to"], kind: ModulatorKind
  * An effect put at the end of the chain of a lane or a group, as the controller does it (`Controller::add_effect`): the plugin
  * has to be one the catalog names (the mock's, `catalog`), not an instrument, and one the mock can make a node of (the built-ins:
  * the controller's own nodes, as a fixture). The graph lists the nodes of a lane, or of a group's bus, together (the lane or the group, its
- * effects, its modulators), so the effect goes after the last effect it has; and the audio path goes through it: the link that
- * led out of the chain (to the master, or, for a lane in a group, to the group) leaves from it now.
+ * effects, its modulators), so the effect goes after the last effect it has; and the audio path goes through it (`relinked`): the link that
+ * led out of the chain (to the master, or, for a lane in a group, to the group) leaves from it now, and a link comes into it from the stage that was last (it
+ * is fed: `chain`).
  */
 function addEffectOutcome(snapshot: Snapshot, parent: NodeId, plugin: string, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
   const owner = snapshot.graph.nodes.find((n) => n.id === parent && n.kind !== "master");
@@ -682,18 +662,9 @@ function addEffectOutcome(snapshot: Snapshot, parent: NodeId, plugin: string, co
   const lastEffect = nodes.findLastIndex((n) => n.parent === parent && n.kind === "effect");
   const end = lastEffect >= 0 ? nodes[lastEffect] : owner;
   const at = nodes.indexOf(end ?? owner) + 1;
-  const added: Node = { id: counters.node(), parent, name: made.name, kind: "effect", plugin: made.plugin, mix: made.mix };
-  const out = edges.findIndex((e) => isLink(e) && e.from.node === (end ?? owner).id && e.from.port.type === "audioOut");
-  const leaving = edges[out];
-  if (!leaving || !isLink(leaving)) return invalid("that has no audio path to put an effect in");
-  const into: Edge = { from: leaving.from, to: { node: added.id, port: { type: "audioIn" } }, kind: "audio" };
-  const onwards: Edge = { from: { node: added.id, port: { type: "audioOut" } }, to: leaving.to, kind: leaving.kind };
-  return {
-    restructured: {
-      ...snapshot,
-      graph: { nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)], edges: [...edges.slice(0, out), into, onwards, ...edges.slice(out + 1)] },
-    },
-  };
+  const added: Node = { id: counters.node(), parent, name: made.name, kind: "effect", plugin: made.plugin, mix: made.mix, feed: made.feed };
+  const grown: Graph = { nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)], edges };
+  return { restructured: { ...snapshot, graph: { nodes: grown.nodes, edges: relinked(grown) } } };
 }
 
 /**
@@ -930,6 +901,20 @@ function setRouteOutcome(snapshot: Snapshot, node: NodeId, route: Route): Outcom
 }
 
 /**
+ * The link into an effect cut or given back, as the controller does it (`set_feed_intent`): the node has to be an effect of a lane's chain or of a group's bus (the master is no node of the model, as far as the
+ * controller goes), and a link that is given back is refused where the audio would go round with the cables there are. The links of the audio path are then the graph's for the nodes as they are
+ * (`linksOf`: no link goes into an effect that is not fed, and the chain goes on from it).
+ */
+function setFeedOutcome(snapshot: Snapshot, node: NodeId, feed: Feed): Outcome {
+  const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
+  if (!found) return noNode(node);
+  if (found.kind !== "effect") return invalid("only an effect has a feed");
+  if (feed === "chain" && feedLoops(snapshot.graph, node, feed)) return invalid("giving that effect its input back would make the audio go round, by the cables there are");
+  const nodes = snapshot.graph.nodes.map((n) => (n.id === node && n.kind === "effect" ? { ...n, feed } : n));
+  return { restructured: { ...snapshot, graph: { nodes, edges: [...linksOf(nodes), ...snapshot.graph.edges.filter((e) => !isLink(e))] } } };
+}
+
+/**
  * A group added at the end, with the lanes in `members` put in it, as the controller does it (`add_group_intent`): every member is looked at
  * first, and one that is no lane refuses the whole. The graph lists the groups (each with its effects and modulators), then the lanes, then the
  * master, so the group goes before the first lane; its link to the master comes after the links of the groups there are, and its two meters in
@@ -1066,6 +1051,7 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "renameGroup") return renameGroupOutcome(snapshot, intent.node, intent.name);
   if (intent.type === "setLaneGroup") return setLaneGroupOutcome(snapshot, intent.node, intent.group);
   if (intent.type === "setRoute") return setRouteOutcome(snapshot, intent.node, intent.route);
+  if (intent.type === "setFeed") return setFeedOutcome(snapshot, intent.node, intent.feed);
   if (intent.type === "addGroup") return addGroupOutcome(snapshot, intent.members, counters);
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
   if (intent.type === "addInstrument") return addInstrumentOutcome(snapshot, intent.plugin, counters, catalog);

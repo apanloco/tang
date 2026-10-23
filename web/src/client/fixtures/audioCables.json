@@ -6425,6 +6425,7 @@
           "volume": 1.0
         },
         {
+          "feed": "chain",
           "id": 1,
           "kind": "effect",
           "mix": 1.0,
@@ -6498,6 +6499,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 2,
           "kind": "effect",
           "mix": 1.0,
@@ -6660,6 +6662,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 3,
           "kind": "effect",
           "mix": 1.0,
@@ -7127,6 +7130,7 @@
           "volume": 1.0
         },
         {
+          "feed": "chain",
           "id": 5,
           "kind": "effect",
           "mix": 1.0,
@@ -7200,6 +7204,7 @@
           }
         },
         {
+          "feed": "chain",
           "id": 6,
           "kind": "effect",
           "mix": 1.0,
@@ -7681,6 +7686,7 @@
           "volume": 1.0
         },
         {
+          "feed": "chain",
           "id": 9,
           "kind": "effect",
           "mix": 1.0,

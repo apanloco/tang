@@ -334,6 +334,12 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       const words = laneOrGroupWords(node);
       return step(intent.route === "none" ? `cut the way out of ${words}` : `give ${words} its way out`, { type: "setRoute", node: intent.node, route: node.route }, null);
     }
+    // (As a way out is: what is no effect is refused, and a feed that is as it is asked to be changes nothing.)
+    case "setFeed": {
+      const node = nodeOf(intent.node);
+      if (node?.kind !== "effect" || node.feed === intent.feed) return "nothing";
+      return step(intent.feed === "none" ? `cut the input of ${node.name}` : `give ${node.name} its input back`, { type: "setFeed", node: intent.node, feed: node.feed }, null);
+    }
     case "setNodeUi": {
       const node = nodeOf(intent.node);
       if (!node) return "nothing";

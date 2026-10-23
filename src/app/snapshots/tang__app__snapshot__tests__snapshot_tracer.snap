@@ -401,6 +401,7 @@ expression: tracer_json()
         "volume": 0.1
       },
       {
+        "feed": "chain",
         "id": 1,
         "kind": "effect",
         "mix": 1.0,

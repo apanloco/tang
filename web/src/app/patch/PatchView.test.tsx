@@ -1844,7 +1844,7 @@ describe("the patch while it plays", () => {
     expect(view.container.querySelectorAll(".react-flow__node")).toHaveLength(4);
     const bigger: Snapshot = structuredClone(tracerSnapshot);
     bigger.rev = 1;
-    bigger.graph.nodes.splice(2, 0, { id: 88, parent: 0, name: "Second filter", kind: "effect", plugin: structuredClone(filterPlugin), mix: 1 });
+    bigger.graph.nodes.splice(2, 0, { id: 88, parent: 0, name: "Second filter", kind: "effect", plugin: structuredClone(filterPlugin), mix: 1, feed: "chain" });
     act(() => {
       client.store.setState({ snapshot: bigger });
     });

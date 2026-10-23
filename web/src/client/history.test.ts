@@ -680,6 +680,36 @@ describe("what taking the instrument out of a lane is to the history", () => {
   });
 });
 
+describe("what cutting and giving back the link into an effect is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
+  const effects = snapshot.graph.nodes.flatMap((n) => (n.kind === "effect" ? [n] : []));
+  const feed = (node: number, how: "none" | "chain"): Intent => ({ type: "setFeed", node, feed: how });
+  const cutIn = (...cut: number[]): Snapshot => ({ ...snapshot, graph: { ...snapshot.graph, nodes: snapshot.graph.nodes.map((n) => (n.kind === "effect" && cut.includes(n.id) ? { ...n, feed: "none" as const } : n)) } });
+
+  test("is a step in the words of the effect, that puts back the feed that it found, and is never merged with the one before it", () => {
+    expect(effects.length).toBeGreaterThanOrEqual(2);
+    for (const effect of effects) {
+      const cut = plan(feed(effect.id, "none"));
+      expect(cut).toEqual({ step: stepOf(`cut the input of ${effect.name}`, feed(effect.id, "chain"), feed(effect.id, "none"), null, 7) });
+      const back = plan(feed(effect.id, "chain"), cutIn(effect.id));
+      expect(back).toEqual({ step: stepOf(`give ${effect.name} its input back`, feed(effect.id, "none"), feed(effect.id, "chain"), null, 7) });
+    }
+  });
+
+  test("is no step for a feed that is as it is asked to be, a node that is no effect or one that is not there, which are no change or refused", () => {
+    const [effect] = effects;
+    const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument");
+    const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!effect || !lane || !group) throw new Error("the fixture has an effect, a lane and a group");
+    expect(plan(feed(effect.id, "chain"))).toBe("nothing");
+    expect(plan(feed(effect.id, "none"), cutIn(effect.id))).toBe("nothing");
+    expect(plan(feed(lane.id, "none"))).toBe("nothing");
+    expect(plan(feed(group.id, "none"))).toBe("nothing");
+    expect(plan(feed(9_999, "none"))).toBe("nothing");
+  });
+});
+
 describe("what a removal of a group is to the history", () => {
   const snapshot = historyFixture.snapshot;
   const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
@@ -1296,6 +1326,8 @@ function run(snapshot: Snapshot, rows: readonly HistoryRow[]): string[] {
         if (JSON.stringify(shape.sends ?? []) !== JSON.stringify(row.shape.sends ?? [])) wrong.push(`${what}: the audio cables are ${JSON.stringify(shape.sends ?? [])}, not ${JSON.stringify(row.shape.sends ?? [])}`);
         // (The lanes and groups whose way out is cut: likewise a list only for a session that has some.)
         if (JSON.stringify(shape.routes ?? []) !== JSON.stringify(row.shape.routes ?? [])) wrong.push(`${what}: the ways out that are cut are ${JSON.stringify(shape.routes ?? [])}, not ${JSON.stringify(row.shape.routes ?? [])}`);
+        // (The effects whose feed is cut: likewise.)
+        if (JSON.stringify(shape.feeds ?? []) !== JSON.stringify(row.shape.feeds ?? [])) wrong.push(`${what}: the feeds that are cut are ${JSON.stringify(shape.feeds ?? [])}, not ${JSON.stringify(row.shape.feeds ?? [])}`);
         // (The sources of notes, the cables of notes and the links of the lanes that hear every source: likewise.)
         for (const list of ["sources", "notes", "hears", "order"] as const) {
           if (JSON.stringify(shape[list] ?? []) !== JSON.stringify(row.shape[list] ?? [])) wrong.push(`${what}: ${list} are ${JSON.stringify(shape[list] ?? [])}, not ${JSON.stringify(row.shape[list] ?? [])}`);
@@ -1325,6 +1357,7 @@ describe("the mock engine's history", () => {
       "setNodeUi",
       "setPinned",
       "renameGroup",
+      "setFeed",
       "setScale",
       "setLocked",
       "moveEffect",
@@ -1349,6 +1382,8 @@ describe("the mock engine's history", () => {
     const refusals = new Set(rows.flatMap((row) => ("error" in row ? [row.error] : [])));
     expect(refusals).toContain("there is nothing to undo");
     expect(refusals).toContain("there is nothing to redo");
+    expect(refusals).toContain("only an effect has a feed");
+    expect(refusals).toContain("giving that effect its input back would make the audio go round, by the cables there are");
     expect(refusals).toContain("the lane has no instrument to take out");
     expect(refusals).toContain("an instrument is taken out of a lane");
   });

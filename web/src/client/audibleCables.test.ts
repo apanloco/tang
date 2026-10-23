@@ -39,8 +39,8 @@ function graphOf(flags: number, cables: boolean | readonly Edge[] = true): Graph
       const group = audibleCablesFixture.lanes[place];
       return { id, parent: group === null || group === undefined ? null : (GROUPS[group] ?? null), name: "Oscillator", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, route: "out", pattern: null, ...bits(2 + place) };
     }),
-    ...LANE_EFFECTS.map((id, place): Node => ({ id, parent: LANES[place] ?? null, name: "Offset", kind: "effect", plugin, mix: 1 })),
-    ...BUS_EFFECTS.map((id, place): Node => ({ id, parent: GROUPS[place] ?? null, name: "Offset", kind: "effect", plugin, mix: 1 })),
+    ...LANE_EFFECTS.map((id, place): Node => ({ id, parent: LANES[place] ?? null, name: "Offset", kind: "effect", plugin, mix: 1, feed: "chain" })),
+    ...BUS_EFFECTS.map((id, place): Node => ({ id, parent: GROUPS[place] ?? null, name: "Offset", kind: "effect", plugin, mix: 1, feed: "chain" })),
   ];
   const edges: Edge[] =
     typeof cables === "boolean"

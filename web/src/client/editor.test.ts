@@ -721,6 +721,70 @@ describe("cutting and giving back the way out of a lane or a group", () => {
   });
 });
 
+describe("cutting and giving back the link into an effect", () => {
+  const feedOf = (client: Client, node: number) => {
+    const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+    return found?.kind === "effect" ? found.feed : "no effect";
+  };
+  /** The links of the audio path that end at `node`, and that start at it. */
+  const linksInto = (client: Client, node: number): number => client.state.snapshot?.graph.edges.filter((e) => (e.kind === "audio" || e.kind === "member") && e.to.node === node).length ?? 0;
+  const linksFrom = (client: Client, node: number): number => client.state.snapshot?.graph.edges.filter((e) => (e.kind === "audio" || e.kind === "member") && e.from.node === node).length ?? 0;
+
+  test("resolves true when the effect has the feed, which the session shows with the links of the audio path, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(feedOf(client, filter.id)).toBe("chain");
+    expect([linksInto(client, filter.id), linksFrom(client, filter.id)]).toEqual([1, 1]);
+    expect(await editor.setFeed(filter.id, "none")).toBe(true);
+    expect(feedOf(client, filter.id)).toBe("none");
+    expect([linksInto(client, filter.id), linksFrom(client, filter.id)], "the link into the filter is gone, and the one out of it is not").toEqual([0, 1]);
+    expect(await editor.setFeed(filter.id, "chain")).toBe(true);
+    expect(feedOf(client, filter.id)).toBe("chain");
+    expect(client.state.snapshot?.graph, "the feed given back is the graph that there was").toEqual(tracerSnapshot.graph);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused for a node that is no effect: it resolves false, and the page says what it could not do and why, in words of the effect's own", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.setFeed(oscillator.id, "none")).toBe(false);
+    expect(await editor.setFeed(lfo.id, "chain")).toBe(false);
+    expect(await editor.setFeed(MASTER, "none")).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not cut the input of Oscillator: only an effect has a feed",
+      "Could not give LFO its input back: only an effect has a feed",
+      "Could not cut the input of Master: there is no node 4294967295",
+    ]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("is refused where the link would be given back to make the audio go round, by the cables there are, and the page says so", async () => {
+    const { client, notices, editor } = await open();
+    const delay = await editor.addEffect(oscillator.id, "builtin:delay");
+    expect(delay).not.toBeNull();
+    if (delay === null) return;
+    // The delay is after the filter: a cable back into the filter closes a loop through the link between them, unless the delay is not fed by it.
+    expect(await editor.addAudioCable(delay, filter.id)).toBe(false);
+    expect(await editor.setFeed(delay, "none")).toBe(true);
+    expect(await editor.addAudioCable(delay, filter.id)).toBe(true);
+    expect(await editor.setFeed(delay, "chain")).toBe(false);
+    expect(feedOf(client, delay)).toBe("none");
+    expect(said(notices)).toEqual([
+      "Could not draw an audio cable from Delay to Filter: that cable would make the audio go round: it would feed what it comes from",
+      "Could not give Delay its input back: giving that effect its input back would make the audio go round, by the cables there are",
+    ]);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.setFeed(filter.id, "none")).toBe(false);
+    expect(said(notices)).toEqual(["Could not cut the input of Filter: Not connected to the server."]);
+  });
+
+  test("has the words that a request that is refused with nothing more known of it has", () => {
+    expect(refusal({ type: "setFeed", node: filter.id, feed: "none" }, new Error("only an effect has a feed"))).toBe("Could not cut or give back the link into an effect: only an effect has a feed");
+  });
+});
+
 describe("moving a node", () => {
   const placeOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.ui;
 

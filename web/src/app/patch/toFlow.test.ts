@@ -64,7 +64,7 @@ const instrumentOf = (id: NodeId, withPlugin: Plugin | null, parent: NodeId | nu
 
 const instrument = (id: NodeId, count = 3, parent: NodeId | null = null): Node => instrumentOf(id, plugin(count), parent);
 
-const effect = (id: NodeId, parent: NodeId, count = 3): Node => ({ id, parent, name: `Effect ${String(id)}`, kind: "effect", plugin: plugin(count, "builtin:filter"), mix: 1 });
+const effect = (id: NodeId, parent: NodeId, count = 3): Node => ({ id, parent, name: `Effect ${String(id)}`, kind: "effect", plugin: plugin(count, "builtin:filter"), mix: 1, feed: "chain" });
 
 const modulator = (id: NodeId, parent: NodeId): Node => ({
   id,

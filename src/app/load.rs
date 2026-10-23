@@ -18,7 +18,7 @@ use crate::app::model::{
     sync_from_name, sync_name, tempo_of_patterns,
 };
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo, GraphCommand, ModulatorLocation};
-use crate::session::{NodeUi, Route};
+use crate::session::{Feed, NodeUi, Route};
 use crate::telemetry::SlotAllocator;
 use crate::{plugin, session};
 
@@ -160,6 +160,7 @@ fn plugin_slot(
         presets,
         current_preset,
         mix,
+        fed: true,
         pinned: Vec::new(),
     }
 }
@@ -259,6 +260,10 @@ pub fn load_session(
                     node: effect_node,
                 },
             )?;
+            // (The engine starts every effect with its feed, so only what a file cuts is sent. The cables come last, so a link that is cut is cut before a cable that needs it so is drawn.)
+            if effect_config.feed == Feed::None {
+                send(cmd_tx, GraphCommand::SetEffectFeed { node: effect_node, fed: false })?;
+            }
             apply_overrides(&mut params, &effect_config.params, |info, value| {
                 let _ = cmd_tx.send(GraphCommand::SetGroupParameter {
                     group: g_idx,
@@ -280,6 +285,7 @@ pub fn load_session(
                 effect_config.mix as f32,
             );
             slot.pin_names(&effect_config.pinned);
+            slot.fed = effect_config.feed.is_fed();
             group_effects.push(slot);
             group_bus_params.push(params.for_targets());
         }
@@ -456,6 +462,9 @@ pub fn load_session(
                     node: effect_node,
                 },
             )?;
+            if effect_config.feed == Feed::None {
+                send(cmd_tx, GraphCommand::SetEffectFeed { node: effect_node, fed: false })?;
+            }
 
             // Send parameter overrides for this effect (slot = fx_idx + 1).
             // They start from the post-preset baseline.
@@ -494,6 +503,7 @@ pub fn load_session(
                 effect_config.mix as f32,
             );
             slot.pin_names(&effect_config.pinned);
+            slot.fed = effect_config.feed.is_fed();
             effects.push(slot);
         }
 
@@ -2059,6 +2069,70 @@ depth = 0.2
         let sent: Vec<&str> = run.commands.iter().map(String::as_str).filter(|c| c.contains("Route") || c.starts_with("AddCable")).collect();
         assert_eq!(sent.len(), 2, "{sent:?}");
         assert!(sent[0].starts_with("SetLaneRoute") && sent[1].starts_with("AddCable"), "{sent:?}");
+    }
+
+    #[test]
+    fn an_effect_whose_feed_a_file_cuts_is_so_in_the_model_and_the_engine_and_the_others_are_not() {
+        let run = load(
+            "[[group]]\n[[group.effect]]\nplugin = \"builtin:reverb\"\n[[group.effect]]\nplugin = \"builtin:filter\"\nfeed = \"none\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = \"none\"\n[[instrument.effect]]\nplugin = \"builtin:delay\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n",
+        );
+        let lanes: Vec<Vec<bool>> = run.model.instruments.iter().map(|lane| lane.effects.iter().map(|effect| effect.fed).collect()).collect();
+        assert_eq!(lanes, [vec![false, true], vec![true]]);
+        assert_eq!(run.model.groups[0].effects.iter().map(|effect| effect.fed).collect::<Vec<_>>(), [true, false]);
+        // (The engine starts every effect with its feed, so only what a file cuts is sent, by the effect's node, after the effect is put in.)
+        let cut = |lane: usize, fx: usize| run.model.instruments[lane].effects[fx].node.0;
+        let bus_cut = run.model.groups[0].effects[1].node.0;
+        let sent: Vec<&str> = run.commands.iter().map(String::as_str).filter(|c| c.contains("Feed") || c.starts_with("InsertGroupEffect") || c.starts_with("InsertEffect")).collect();
+        assert_eq!(
+            sent,
+            [
+                "InsertGroupEffect group=0 index=0 plugin=Reverb mix=1.000".to_string(),
+                "InsertGroupEffect group=0 index=1 plugin=Filter mix=1.000".to_string(),
+                format!("SetEffectFeed node={bus_cut} fed=false"),
+                "InsertEffect inst=0 index=0 plugin=Filter mix=1.000".to_string(),
+                format!("SetEffectFeed node={} fed=false", cut(0, 0)),
+                "InsertEffect inst=0 index=1 plugin=Delay mix=1.000".to_string(),
+                "InsertEffect inst=1 index=0 plugin=Filter mix=1.000".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cable_that_would_make_the_audio_go_round_only_through_a_chain_link_that_is_cut_is_loaded_when_it_is_cut_and_refused_when_it_is_not() {
+        // An effect that sends back to the one before it in its own chain.
+        let text = |feed: &str| {
+            format!(
+                "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument.effect]]\nplugin = \"builtin:delay\"\n{feed}\n\
+                 [[cable]]\nfrom = \"instrument[0].effect[1]\"\nto = \"instrument[0].effect[0]\"\n"
+            )
+        };
+        let error = try_load(&text("")).expect_err("a loop is not loaded").to_string();
+        assert!(error.contains("cable[0]") && error.contains("go round"), "{error}");
+        let run = load(&text("feed = \"none\""));
+        assert_eq!(run.model.cables.len(), 1);
+        assert!(!run.model.instruments[0].effects[1].fed);
+        // The cut is sent before the cable, which the engine would refuse otherwise.
+        let sent: Vec<&str> = run.commands.iter().map(String::as_str).filter(|c| c.contains("Feed") || c.starts_with("AddCable")).collect();
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert!(sent[0].starts_with("SetEffectFeed") && sent[1].starts_with("AddCable"), "{sent:?}");
+    }
+
+    #[test]
+    fn a_cable_that_would_make_the_audio_go_round_only_through_a_link_into_a_bus_effect_that_is_cut_is_loaded_when_it_is_cut_and_refused_when_it_is_not() {
+        // A bus effect that sends back into the lane that is in the group.
+        let text = |feed: &str| {
+            format!(
+                "[[group]]\n[[group.effect]]\nplugin = \"builtin:reverb\"\n{feed}\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n\
+                 [[cable]]\nfrom = \"group[0].effect[0]\"\nto = \"instrument[0].effect[0]\"\n"
+            )
+        };
+        let error = try_load(&text("")).expect_err("a loop is not loaded").to_string();
+        assert!(error.contains("cable[0]") && error.contains("go round"), "{error}");
+        let run = load(&text("feed = \"none\""));
+        assert_eq!(run.model.cables.len(), 1);
+        assert!(!run.model.groups[0].effects[0].fed);
     }
 
     #[test]

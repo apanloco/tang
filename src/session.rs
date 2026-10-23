@@ -40,6 +40,38 @@ impl Route {
     }
 }
 
+/// The feed of an effect (step 86, `docs/web-ui.md`): whether the link into it from the stage before it in its chain (the lane's instrument, a bus's sum, or the effect before it) is there.
+/// `Chain` is the way a chain is wired by itself. `None` cuts the link, so that the effect is fed by the audio cables that end at it (`[[cable]]`) and by nothing else: the chain
+/// is a template and its links can be taken apart. In the file it is `feed = "none"` on the table of the effect, and `chain`, which is what it is without, is not written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "lowercase")]
+pub enum Feed {
+    #[default]
+    Chain,
+    None,
+}
+
+impl Feed {
+    /// The word that the file and the page use for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Feed::Chain => "chain",
+            Feed::None => "none",
+        }
+    }
+
+    /// The feed that a word names, exactly as `name` writes it.
+    pub fn parse(text: &str) -> Option<Feed> {
+        [Feed::Chain, Feed::None].into_iter().find(|feed| feed.name() == text)
+    }
+
+    /// Whether the link is there (`Chain`).
+    pub fn is_fed(self) -> bool {
+        self == Feed::Chain
+    }
+}
+
 /// Where a front-end draws a node, in the pixels of its canvas. The engine and the TUI do not use it, and it is kept when
 /// a session is saved: `ui = { x = 80, y = 120 }` on the node's table, the master's in a top-level `[ui]` table.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -473,6 +505,12 @@ pub struct EffectConfig {
     /// Where the effect is drawn.
     #[serde(default, deserialize_with = "lenient_ui")]
     pub ui: Option<NodeUi>,
+    /// The word that the file says for the feed (`feed = "none"`), as it was read: `parse` turns it into `feed`, and refuses a word that is not one with the place of the table.
+    #[serde(default, rename = "feed")]
+    feed_word: Option<String>,
+    /// Whether the link into the effect from the stage before it is there (`Feed::None` cuts it).
+    #[serde(skip)]
+    pub feed: Feed,
 }
 
 fn default_mix() -> f64 {
@@ -755,12 +793,30 @@ fn route_of(word: Option<String>, place: &str) -> anyhow::Result<Route> {
     }
 }
 
+/// The feed that the effects of a table say, resolved into each (`chain` for an effect that says none), or the reason that a word is not one, with the place of the effect: an effect that is
+/// fed by nothing is silent, so a word that is not a feed is not read as the way a chain is wired by itself, and the session is not loaded.
+fn resolve_feeds(effects: &mut [EffectConfig], owner: &str) -> anyhow::Result<()> {
+    for (at, effect) in effects.iter_mut().enumerate() {
+        effect.feed = match effect.feed_word.take() {
+            None => Feed::Chain,
+            Some(word) => Feed::parse(&word).ok_or_else(|| anyhow::anyhow!("{owner}.effect[{at}].feed is \"{word}\": a feed is \"chain\" or \"none\""))?,
+        };
+    }
+    Ok(())
+}
+
 /// Parse session TOML text (the body of `load`, usable without a file).
 pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
     reject_non_finite(&content.parse::<toml::Table>()?)?;
-    let raw: SessionRaw = toml::from_str(content)?;
+    let mut raw: SessionRaw = toml::from_str(content)?;
     reject_backwards_lfos(&raw)?;
     reject_bad_steps(&raw)?;
+    for (at, group) in raw.groups.iter_mut().enumerate() {
+        resolve_feeds(&mut group.effects, &format!("group[{at}]"))?;
+    }
+    for (at, slot) in raw.instruments.iter_mut().enumerate() {
+        resolve_feeds(&mut slot.effects, &format!("instrument[{at}]"))?;
+    }
     let groups: Vec<GroupConfig> = raw
         .groups
         .into_iter()
@@ -1157,6 +1213,8 @@ pub struct SaveInstrument {
 pub struct SaveEffect {
     pub plugin: String,
     pub mix: f32,
+    /// Whether the link into the effect from the stage before it is there (written only when it is cut).
+    pub feed: Feed,
     pub preset: Option<String>,
     pub params: Vec<(String, f32)>,
     /// The parameters a front-end shows as knobs on the node, by name, in order.
@@ -1268,6 +1326,10 @@ struct GroupOut {
 
 fn is_out(route: &Route) -> bool {
     *route == Route::Out
+}
+
+fn is_chain(feed: &Feed) -> bool {
+    *feed == Feed::Chain
 }
 
 fn is_default_volume_f32(v: &f32) -> bool {
@@ -1453,6 +1515,9 @@ struct EffectOut {
     plugin: String,
     #[serde(skip_serializing_if = "is_default_mix_f32", serialize_with = "f32_clean")]
     mix: f32,
+    /// Only written when it is `none`.
+    #[serde(skip_serializing_if = "is_chain")]
+    feed: Feed,
     #[serde(skip_serializing_if = "Option::is_none")]
     preset: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1634,6 +1699,7 @@ fn effect_to_out(fx: &SaveEffect) -> EffectOut {
     EffectOut {
         plugin: fx.plugin.clone(),
         mix: fx.mix,
+        feed: fx.feed,
         preset: fx.preset.clone(),
         pinned: fx.pinned.clone(),
         params: fx.params.iter().map(|(k, v)| (k.clone(), clean_f64(*v))).collect(),
@@ -2387,6 +2453,65 @@ mod tests {
     }
 
     #[test]
+    fn a_feed_is_read_from_the_effects_of_a_lane_and_of_a_bus_and_is_chain_when_a_file_has_none() {
+        let config = parse(
+            "[[group]]\n[[group.effect]]\nplugin = \"builtin:reverb\"\nfeed = \"none\"\n[[group.effect]]\nplugin = \"builtin:reverb\"\nfeed = \"chain\"\n[[group.effect]]\nplugin = \"builtin:reverb\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = \"none\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.groups[0].effects.iter().map(|effect| effect.feed).collect::<Vec<_>>(), [Feed::None, Feed::Chain, Feed::Chain]);
+        assert_eq!(config.instruments[0].effects.iter().map(|effect| effect.feed).collect::<Vec<_>>(), [Feed::Chain, Feed::None]);
+    }
+
+    #[test]
+    fn a_feed_that_is_not_one_refuses_the_session_and_says_where() {
+        // (An effect that is fed by nothing is silent, so a word that is nearly "none" is not read as "chain": the session is not loaded.)
+        for (text, place) in [
+            ("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = \"off\"\n", "instrument[0].effect[0].feed"),
+            (
+                "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = \"None\"\n",
+                "instrument[1].effect[1].feed",
+            ),
+            ("[[group]]\n[[group]]\n[[group.effect]]\nplugin = \"builtin:reverb\"\nfeed = \"cut\"\n[[instrument]]\nplugin = \"builtin:osc\"\n", "group[1].effect[0].feed"),
+        ] {
+            let error = parse(text).err().unwrap_or_else(|| panic!("{text} loads")).to_string();
+            assert!(error.contains(place) && error.contains("\"chain\" or \"none\""), "{error}");
+        }
+        // A feed that is not a word at all is the parser's to refuse.
+        assert!(parse("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = 1\n").is_err());
+    }
+
+    #[test]
+    fn a_feed_is_written_by_to_toml_only_when_it_is_none_and_read_back_on_the_effect_it_belongs_to() {
+        let mut lane = placed_lane(None);
+        lane.effects = vec![SaveEffect { feed: Feed::None, ..bare_effect("builtin:filter") }, bare_effect("builtin:delay"), SaveEffect { feed: Feed::None, ..bare_effect("builtin:drive") }];
+        let group = SaveGroup {
+            name: None,
+            volume: 1.0,
+            pan: 0.0,
+            muted: false,
+            solo: false,
+            route: Route::Out,
+            effects: vec![bare_effect("builtin:reverb"), SaveEffect { feed: Feed::None, ..bare_effect("builtin:filter") }],
+            modulators: vec![],
+            ui: None,
+        };
+        let text = to_toml(&[lane], &[group], &[], &Default::default(), None, None, None).unwrap();
+        let config = parse(&text).unwrap();
+        assert_eq!(config.instruments[0].effects.iter().map(|effect| effect.feed).collect::<Vec<_>>(), [Feed::None, Feed::Chain, Feed::None], "{text}");
+        assert_eq!(config.groups[0].effects.iter().map(|effect| effect.feed).collect::<Vec<_>>(), [Feed::Chain, Feed::None]);
+        assert_eq!(text.matches("feed = \"none\"").count(), 3, "{text}");
+        assert_eq!(text.matches("feed").count(), 3, "nothing that is the way a chain always was is written: {text}");
+    }
+
+    #[test]
+    fn a_feed_is_named_as_the_file_names_it() {
+        assert_eq!((Feed::Chain.name(), Feed::None.name()), ("chain", "none"));
+        assert_eq!((Feed::parse("chain"), Feed::parse("none"), Feed::parse("None"), Feed::parse("")), (Some(Feed::Chain), Some(Feed::None), None, None));
+        assert_eq!((Feed::default(), Feed::Chain.is_fed(), Feed::None.is_fed()), (Feed::Chain, true, false));
+    }
+
+    #[test]
     fn a_word_that_looks_like_a_number_that_is_not_one_is_only_a_word() {
         let config = parse("[[instrument]]\nplugin = \"builtin:osc\"\npreset = \"nan\"\nvolume = 1e2\n").unwrap();
         assert_eq!(config.instruments[0].instrument.as_ref().map(|i| (i.preset.as_deref(), i.volume)), Some((Some("nan"), 100.0)));
@@ -2505,6 +2630,7 @@ range = "C4-C8"
                     pinned: vec![],
                     plugin: "builtin:sine".into(),
                     mix: 0.5,
+                    feed: Feed::Chain,
                     preset: None,
                     params: vec![],
                     ui: None,
@@ -2575,6 +2701,7 @@ range = "C4-C8"
                 pinned: vec![],
                 plugin: "builtin:reverb".into(),
                 mix: 0.4,
+                feed: Feed::Chain,
                 preset: Some("Arcadia Dream Hall".into()),
                 params: vec![],
                 ui: None,
@@ -2837,6 +2964,7 @@ range = "C4-C8"
                 pinned: vec![],
                 plugin: "builtin:filter".into(),
                 mix: 1.0,
+                feed: Feed::Chain,
                 preset: None,
                 params: vec![],
                 ui: None,
@@ -2896,6 +3024,7 @@ range = "C4-C8"
                 pinned: vec![],
                 plugin: "builtin:reverb".into(),
                 mix: 1.0,
+                feed: Feed::Chain,
                 preset: None,
                 params: vec![],
                 ui: None,
@@ -2961,6 +3090,7 @@ range = "C4-C8"
                 pinned: vec![],
                 plugin: "builtin:filter".into(),
                 mix: 1.0,
+                feed: Feed::Chain,
                 preset: None,
                 params: vec![],
                 ui: None,
@@ -3152,7 +3282,7 @@ plugin = "builtin:osc"
 
     /// An effect with nothing set, for the tests of what is written for one thing.
     fn bare_effect(plugin: &str) -> SaveEffect {
-        SaveEffect { plugin: plugin.into(), mix: 1.0, preset: None, params: vec![], pinned: vec![], ui: None }
+        SaveEffect { plugin: plugin.into(), mix: 1.0, feed: Feed::Chain, preset: None, params: vec![], pinned: vec![], ui: None }
     }
 
     /// A lane with an effect and a modulator, each with this position, for the tests of what is written.
@@ -3165,7 +3295,7 @@ plugin = "builtin:osc"
             group: None,
             modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui }],
             instrument: Some(SaveInstrument { pinned: vec![], plugin: "builtin:osc".into(), volume: 1.0, preset: None, params: vec![], pitch_bend_range: 2.0, remap: HashMap::new() }),
-            effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:filter".into(), mix: 1.0, preset: None, params: vec![], ui }],
+            effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:filter".into(), mix: 1.0, feed: Feed::Chain, preset: None, params: vec![], ui }],
             pattern: None,
             ui,
             route: Route::Out,
@@ -3181,7 +3311,7 @@ plugin = "builtin:osc"
             name: None,
             volume: 1.0,
             pan: 0.0,
-            effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:reverb".into(), mix: 1.0, preset: None, params: vec![], ui: at(1100.0, 40.0) }],
+            effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:reverb".into(), mix: 1.0, feed: Feed::Chain, preset: None, params: vec![], ui: at(1100.0, 40.0) }],
             modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: at(800.0, -120.5) }],
             ui: at(800.0, 40.0),
             route: Route::Out,

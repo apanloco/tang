@@ -65,7 +65,7 @@ export function stressSnapshot(size: StressSize = { lanes: LANES, lfosPerLane: L
       route: "out",
       pattern: null,
     });
-    nodes.push({ id: effect, parent: instrument, name: `Filter ${String(lane + 1)}`, kind: "effect", plugin: structuredClone(filter), mix: 1 });
+    nodes.push({ id: effect, parent: instrument, name: `Filter ${String(lane + 1)}`, kind: "effect", plugin: structuredClone(filter), mix: 1, feed: "chain" });
     edges.push({ kind: "audio", from: { node: instrument, port: { type: "audioOut" } }, to: { node: effect, port: { type: "audioIn" } } });
     edges.push({ kind: "audio", from: { node: effect, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } } });
     meter(instrument, "audioOut");
