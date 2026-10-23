@@ -42,11 +42,13 @@ mock("an effect that is added from the bar stands by itself: a module with the l
   await expect(page.getByRole("button", { name: /^Choose an instrument for / })).toHaveCount(0);
   await expect(reverb.getByRole("button", { name: "Mute Reverb" })).toBeVisible();
   await expect(reverb.getByRole("button", { name: "Solo Reverb" })).toBeVisible();
-  await expect(reverb.getByRole("button", { name: "Cut the way out of Reverb" })).toHaveText("→ Master");
+  // A module that stands by itself sends nowhere until a cable says where (step 88): its way out is cut when it is made.
+  await expect(reverb.getByRole("button", { name: "Cut the way out of Reverb" })).toHaveText("no out");
+  await expect(reverb.getByRole("button", { name: "Cut the way out of Reverb" })).toHaveAttribute("aria-pressed", "true");
   await expect(reverb.getByRole("button", { name: "Add a modulator to Reverb" })).toBeVisible();
-  // It has no input from a chain, since nothing is before it: no button for it, and the link out of it goes to the master.
+  // It has no input from a chain, since nothing is before it: no button for it, and no link out of it to the master.
   await expect(reverb.getByRole("button", { name: "Cut the input of Reverb" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Disconnect Reverb → Master" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Disconnect Reverb → Master" })).toHaveCount(0);
   // The nodes that were there are where they were on the canvas, and the module is below them, clear of them.
   const after = await flowBoxes(page);
   for (const box of before) expect(after.find((found) => found.name === box.name), box.name).toEqual(box);
@@ -138,12 +140,19 @@ test("an effect that stands by itself in the real program is fed by a cable only
   await expect(page.getByRole("button", { name: "Cut the way out of Oscillator", exact: true })).toHaveText("no out");
   await silentAt(page, "a lane with no way out, and a reverb that is fed nothing");
 
-  // A cable from the instrument to the reverb: it is heard through the reverb, and only through it.
+  // A cable from the instrument to the reverb: the reverb is fed, and is silent still, since a module that no cable leaves sends nowhere (its way out was cut when it was made).
   await drag(page, audioOut(node(page, "Oscillator")), audioIn(node(page, "Reverb")));
+  await expect(sends(page)).toHaveCount(1);
+  await silentAt(page, "a reverb that is fed by a cable and has no cable out");
+
+  // A cable from the reverb to the master is the link that its lane's cut way out would be (step 88: every link is a cable): it gives the way out back and makes no cable of its own, and the sound is heard through the
+  // reverb, and only through it.
+  await drag(page, audioOut(node(page, "Reverb")), audioIn(node(page, "Master")));
+  await expect(node(page, "Reverb").getByRole("button", { name: "Cut the way out of Reverb" })).toHaveText("→ Master");
   await expect(sends(page)).toHaveCount(1);
   await heardAt(page, "the lane through its cable to the reverb that stands by itself");
 
-  // The file has the lane that holds the reverb, with no instrument, and the cable to it.
+  // The file has the lane that holds the reverb, with no instrument, and the cable to it, and no cable from it (its way out is given: nothing is written).
   const file = await saved();
   const lanes = file.split("[[instrument]]").slice(1);
   expect(lanes).toHaveLength(2);
@@ -151,6 +160,8 @@ test("an effect that stands by itself in the real program is fed by a cable only
   expect(lanes[0]).toContain('route = "none"');
   expect(lanes[1]).not.toContain("builtin:osc");
   expect(lanes[1]).toContain('plugin = "builtin:reverb"');
+  expect(lanes[1]).not.toContain("route");
+  expect(file.split("[[cable]]")).toHaveLength(2);
   expect(file).toMatch(/\[\[cable\]\]\nfrom = "instrument\[0\]"\nto = "instrument\[1\]\.effect\[0\]"\n/);
 
   // The cable is taken out, and the reverb is fed nothing again: silent. The reverb's "×" takes it out with its lane, the file has one lane again, and Undo puts the effect back as it was.

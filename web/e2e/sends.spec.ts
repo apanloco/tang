@@ -20,10 +20,10 @@ mock("an audio cable is dragged from an output to an input that takes it: the in
   const [oscillator, filter, master] = [node(page, "Oscillator"), node(page, "Filter"), node(page, "Master")];
   await drag(page, audioOut(oscillator), audioIn(master), false);
 
-  // While it is dragged: it is audio, the inputs that take it (the filter's, beside the link of the chain, and the master's) say so, and the line is the colour of the cable, plain.
+  // While it is dragged: it is audio, the input that takes it (the master's: the filter's has the link of the chain, which is a cable that is there already) says so, and the line is the colour of the cable, plain.
   await expect(page.getByTestId("patch")).toHaveAttribute("data-connecting", "audio");
-  await expect(page.locator(".tang-port--audio.tang-port--takes")).toHaveCount(2);
-  await expect(audioIn(filter)).toHaveClass(/tang-port--takes/);
+  await expect(page.locator(".tang-port--audio.tang-port--takes")).toHaveCount(1);
+  await expect(audioIn(filter)).not.toHaveClass(/tang-port--takes/);
   await expect(audioIn(master)).toHaveClass(/tang-port--takes/);
   await expect(page.locator(".react-flow__connection-path")).toHaveCSS("stroke", "rgb(242, 153, 74)");
   await expect(page.locator(".react-flow__connection-path")).toHaveCSS("stroke-dasharray", "none");
@@ -58,10 +58,11 @@ mock("a cable that is let go where nothing takes it is not drawn: on the canvas,
   await expect(sends(page)).toHaveCount(0);
   await expect(page.getByTestId("patch")).not.toHaveAttribute("data-connecting");
   await expect(page.locator(".tang-notice")).toHaveCount(0);
-  // From the filter's output: only the mix takes it (the filter's own input, where the audio would go round, does not), and let go on the filter's own input nothing is drawn.
+  // From the filter's output: nothing takes it (the mix has the link of the chain, which is a cable that is there already, and the filter's own input is where the audio would go round), and let go on the
+  // filter's own input nothing is drawn.
   await drag(page, audioOut(filter), audioIn(filter), false);
-  await expect(page.locator(".tang-port--audio.tang-port--takes")).toHaveCount(1);
-  await expect(audioIn(node(page, "Master"))).toHaveClass(/tang-port--takes/);
+  await expect(page.locator(".tang-port--audio.tang-port--takes")).toHaveCount(0);
+  await expect(audioIn(node(page, "Master"))).not.toHaveClass(/tang-port--takes/);
   await expect(audioIn(filter)).not.toHaveClass(/tang-port--takes/);
   await page.mouse.up();
   await expect(sends(page)).toHaveCount(0);
@@ -71,20 +72,24 @@ mock("a cable that is let go where nothing takes it is not drawn: on the canvas,
 
 mock("an audio cable can be drawn and its level turned from the keyboard, and taken out, with the focus on the button that sends from the node, where the next one is drawn from", async ({ page }) => {
   await open(page);
+  // (The oscillator's filter is the link of its chain, which is a cable that is there already and is not offered: a reverb at the end of the chain is a place beside the master.)
+  await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
+  await page.getByRole("menuitem", { name: "Reverb" }).click();
+  await expect(node(page, "Reverb")).toBeVisible();
   const menu = page.getByRole("button", { name: "Send audio from Oscillator" });
   await menu.focus();
   await page.keyboard.press("Enter");
   // The places that take audio from the oscillator, under what each is, the first with the focus.
-  await expect(page.getByRole("menu", { name: "Send audio from Oscillator" }).getByRole("group")).toHaveText(["EffectsFilter", "MixMaster"]);
-  await expect(page.getByRole("menuitem", { name: "Filter" })).toBeFocused();
+  await expect(page.getByRole("menu", { name: "Send audio from Oscillator" }).getByRole("group")).toHaveText(["EffectsReverb", "MixMaster"]);
+  await expect(page.getByRole("menuitem", { name: "Reverb" })).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await expect(sends(page)).toHaveCount(1);
   await expect(level(page)).toHaveValue("1");
   await expect(menu).toBeFocused();
-  // The menu no longer has the master, and has the filter still.
+  // The menu no longer has the master, and has the reverb still.
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("menu", { name: "Send audio from Oscillator" }).getByRole("menuitem")).toHaveText(["Filter"]);
+  await expect(page.getByRole("menu", { name: "Send audio from Oscillator" }).getByRole("menuitem")).toHaveText(["Reverb"]);
   await page.keyboard.press("Escape");
 
   // The level, by the keys of a slider: a hundredth a press, and the end of its travel is twice.

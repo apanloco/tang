@@ -140,7 +140,7 @@ mock("the history has the input in the words of the controller's: cut, and given
   await expect(links(page)).toHaveCount(1);
 });
 
-test("the input of an effect is cut in the real program: the lane is silent at the master, a cable from its instrument to the effect is heard through it and only through it, the file keeps the cut and the cable, and undo gives the link back", async ({ page, own }) => {
+test("the input of an effect is cut in the real program: the lane is silent at the master, a cable drawn between the two ends gives the link back and makes no cable, another lane's instrument feeds the filter by a cable on its own, the file keeps the cut and the cable, and undo gives the link back", async ({ page, own }) => {
   // (A good many waits for silence, each the better part of a second.)
   test.slow();
   await page.setViewportSize({ width: 1600, height: 1000 });
@@ -162,17 +162,37 @@ test("the input of an effect is cut in the real program: the lane is silent at t
   await expect(links(page)).toHaveCount(1);
   await silentAt(page, "a filter that is fed nothing");
 
-  // A cable drawn from the instrument to the filter is the way that it is fed by now, and the key is heard again, through the filter.
+  // A cable drawn from the instrument to the filter is the link that was cut (step 88: every link is a cable): it gives the link back and makes no cable of its own, the key is heard again, and the file has no word of a feed.
   await showAll(page);
   await drag(page, audioOut(node(page, "Oscillator")), audioIn(node(page, "Filter")));
+  await expect(input(page, "Filter")).toContainText("←");
+  await expect(links(page)).toHaveCount(2);
+  await expect(sends(page)).toHaveCount(0);
+  await heardAt(page, "the lane, given its input back by a cable");
+  const given = await saved();
+  expect(given).not.toContain("feed");
+  expect(given).not.toContain("[[cable]]");
+  // It is a step of the history in the words of the link, and undo cuts the input again.
+  await page.getByRole("button", { name: "Undo give Filter its input back", exact: true }).click();
+  await expect(input(page, "Filter")).toHaveText("no in");
+  await silentAt(page, "the filter, with the input that a cable gave back cut by undo");
+
+  // A second lane's oscillator, with no way out of its own, is drawn to the filter: the filter is fed by that cable, and the key is heard through the filter and only through it.
+  await page.getByRole("button", { name: "Add an instrument" }).click();
+  await page.getByRole("menuitem", { name: "Oscillator" }).click();
+  await expect(node(page, "Oscillator 2")).toBeVisible();
+  await page.getByRole("button", { name: "Cut the way out of Oscillator 2", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Cut the way out of Oscillator 2", exact: true })).toHaveText("no out");
+  await showAll(page);
+  await drag(page, audioOut(node(page, "Oscillator 2")), audioIn(node(page, "Filter")));
   await expect(sends(page)).toHaveCount(1);
-  await heardAt(page, "the lane through its cable");
+  await heardAt(page, "the second lane through its cable");
   const cut = await saved();
   expect(cut).toMatch(/\[\[instrument\.effect\]\]\nplugin = "builtin:filter"\nfeed = "none"\n/);
-  expect(cut).toMatch(/\[\[cable\]\]\nfrom = "instrument\[0\]"\nto = "instrument\[0\]\.effect\[0\]"\n/);
+  expect(cut).toMatch(/\[\[cable\]\]\nfrom = "instrument\[1\]"\nto = "instrument\[0\]\.effect\[0\]"\n/);
 
   // The cable is taken out, and the filter is fed by nothing again; given its input back, the key is heard, and the file has no word of a feed.
-  await page.getByRole("button", { name: "Remove cable Oscillator → Filter" }).click();
+  await page.getByRole("button", { name: "Remove cable Oscillator 2 → Filter" }).click();
   await expect(sends(page)).toHaveCount(0);
   await silentAt(page, "a filter that is fed nothing, with no cable");
   await input(page, "Filter").click();
