@@ -906,8 +906,8 @@ parameters, its modulators' rates and stages, the depths of their cables), which
 value the user set again, unless a cable of the lane's own still drives it. The cables to the
 effects after a removed one are told their new slots (a group's, their new bus indices). A
 session keeps at least one lane: the last one is not taken out. `d` on an instrument that has
-a plugin empties it (`clear_instrument`: the cables that drove the plugin's parameters go first, and so does the
-lane's note remap, which the audio thread drops with the plugin) and a second `d` takes the lane out.
+a plugin takes the instrument out of its lane (the intent `ClearInstrument`, a step of the history: the cables that drove the plugin's parameters go first, and so does the
+lane's note remap, which the audio thread drops with the plugin; the lane stays, empty, with its effects, which go on running, its modulators and the rest) and a second `d` takes the lane out.
 
 **Limitation:** a modulator envelope shapes *parameters*, not voices — it
 cannot make a note ring past the instrument's own release. Once the plugin
@@ -1401,7 +1401,7 @@ numeric `params` values (the index into the label list).
 | `x` | Set the dry/wet mix of the selected effect or group bus effect (host-side blend, opens value popup) |
 | `g` | Assign the selected instrument to a submix group (new / existing / ungroup, opens popup) |
 | `p` | Open the preset selector for the selected instrument or effect (only if its plugin has presets) |
-| `d` | Delete selected instrument/effect/modulator/pattern/group/group-effect/group-modulator (no confirmation; deleting a group ungroups its members) |
+| `d` | Delete selected instrument/effect/modulator/pattern/group/group-effect/group-modulator (no confirmation; deleting a group ungroups its members; on an instrument that has a plugin it takes the plugin out and leaves the lane, empty, with its effects and modulators: `ClearInstrument`, a step of the history; a second `d` takes the lane out) |
 | `t` | Add modulation target (when a lane **or** group modulator is selected, opens the target selector; a group modulator's selector lists every member instrument's params, the group's bus effects, and sibling group modulators) |
 | `Enter` | Focus parameter list / open value editor on selected parameter |
 | `Esc` | Back to chain focus / close popup |
@@ -1834,7 +1834,8 @@ group's bus: see `Controller::add_effect`), `AddInstrument { plugin }` (a lane a
 the session, full range and in no group, with an instrument of the catalog in it: see
 `Controller::add_instrument_lane`), `ReplaceInstrument { node, plugin }` (the instrument of
 the lane `node`, or an empty lane's, replaced by one of the catalog; the cables that drove
-the old plugin's parameters are taken out: see `Controller::put_instrument`), `MoveEffect { node, index }`
+the old plugin's parameters are taken out: see `Controller::put_instrument`), `ClearInstrument { node }` (the instrument of the lane `node` taken out, the lane staying with its effects,
+its modulators, its pattern and the rest; the cables that drove the plugin's parameters are taken out, and the plugin is handed to the history's channel: see `Controller::clear_instrument`), `MoveEffect { node, index }`
 (an effect of a lane's chain or of a group's bus put at place `index` of its chain, 0 being the first: the effects
 between move one place the other way, the audio path goes through them in the new order and every cable stays
 on the plugin it drove; refused for a node that is no effect, a place the chain has not and the place the
@@ -1864,14 +1865,14 @@ makes; the pane is drawn (`modulator_pane`) and the value popup opened
 (`modulator_edit_state`) from it too, so a row's label, range and default are in one
 place in the TUI; the Type row, which turns an LFO into an envelope, is still the TUI's
 own edit). Step 33 moved the TUI's structure edits that have intents onto them: its plugin selector (`AddEffect`,
-`ReplaceInstrument`), `d` (`RemoveNode`), `n` (`AddInstrument`), `g` (`AddGroup`, `SetLaneGroup`), Shift+Up and Shift+Down on an effect
+`ReplaceInstrument`), `d` (`RemoveNode`, and `ClearInstrument` for an instrument that has a plugin), `n` (`AddInstrument`), `g` (`AddGroup`, `SetLaneGroup`), Shift+Up and Shift+Down on an effect
 (`MoveEffect`), `m`, `l` and `t` (`Modulate` for a new modulator and its cable, `AddModEdge` for a modulator that is there, `AddModulator` and
 `SetEdgeDepth`; the target that a popup lists is a positional kind, which `SessionModel::endpoint_of` turns into the node and port that
 `AddModEdge` and `Modulate` name) all go through `State::apply`, as the browser's requests
 go through the controller, so that they are in the history, and `Controller::remove_effect`, `move_effect`, `remove_lane` and the others are
 the intents' own (`SessionModel::remove_effect` / `move_effect` and the bus's keep the modulator targets of the lane and of its group
 pointing at the same plugins, as the audio thread does). What the TUI still edits itself, for want of an intent: the order of the lanes
-(`Controller::swap_lanes`, which forgets the history), the Type row and emptying a lane (`Controller::clear_instrument`, which does too). (The pattern was one of them until
+(`Controller::swap_lanes`, which forgets the history) and the Type row. (The pattern was one of them until
 step 50: `r`, `d` and `Ctrl+R` on a pattern and the rows of its pane ask `SetRecording`, `ClearPattern` and `SetPatternField` now, which are no step of the history.)
 
 **Undo and redo** (`src/app/history.rs`, `src/app/journal.rs`, `docs/web-ui.md` §5, D35 to D37). The controller keeps a history of what a person did: a
@@ -1945,7 +1946,7 @@ journal). An instrument that another replaces (`ReplaceInstrument`) is taken out
 keeps the plugin, after the cables that drove it, each written down as a cable. Undo gets the plugin first (`recover_plugin`, told what the place asks of a plugin: an instrument has audio outputs, an effect has the chain's; one
 that did not come, or that the history let go of, is loaded again with its preset and the values the user set), and then swaps it back in (`SwapInstrument`, with the remapper made again from the model) before the cables come
 back, or empties the lane (`ClearInstrument`) if it had none, and refuses a lane that is gone or is no lane any more. The words are `change the instrument to Oscillator` (by the catalog's name for the new one), or `put
-Oscillator in a lane` for a lane that was empty; redo replaces it again, loading the new instrument from the catalog. A preset that is loaded (`LoadPreset`) stays in the plugin and overwrites what it had, so what it overwrote is
+Oscillator in a lane` for a lane that was empty; redo replaces it again, loading the new instrument from the catalog. **Taking the instrument out of a lane** (`ClearInstrument`, step 85) is the same record read the other way: `Controller::clear_instrument` takes out the cables that drove the plugin (each written down), asks the audio thread to hand the plugin to a channel of its own (`ClearInstrument { keep }`) and writes down `Inverse::Instrument` with the model's plugin, the note remap and the pitch bend range and what keeps the plugin; undo gets the plugin and swaps it back in (`SwapInstrument`) before the cables come back, and redo takes it out again. The words are `take Oscillator out of its lane`. A preset that is loaded (`LoadPreset`) stays in the plugin and overwrites what it had, so what it overwrote is
 written down before the model is given the preset's values (`Inverse::Preset`: the preset the plugin had, and the rows that the preset changes or that the user set over what they had, with their baselines,
 `rows_a_preset_changes`: the preset that is loaded again would put its own over the user's); undo has the audio thread load the preset it had again, if the plugin has one by that name (a name that a session file gave and the
 plugin has not is kept as the name), gives each row its value and its baseline in the model and sends the values (`SetParameter`, which centres the cables that drive them), and refuses a plugin that is gone, a bus effect's
@@ -1967,7 +1968,7 @@ id is in use (`cable 7 is there already`). What cannot be undone yet
 (a group made of a lane that is in another (the lane leaves it, and the cables
 of that group to it go), a lane put in a group or out of one that its old group drives, a `RemoveEdge` of cables that drive each other's depths,
 and `Controller::set_instrument` and `clear_instrument`
-for the TUI's `i` and `d`) empties the history, since a step from before it would be put back over what it changed; `Save` is no change. The TUI
+when no intent asks for them: the tests' own calls) empties the history, since a step from before it would be put back over what it changed; `Save` is no change. The TUI
 asks by intents for what has them (the plugin selector, `d`, `n`, `g`, Shift+Up and Shift+Down on an effect, `m`, `l` and `t`), so they are in the
 history; what has none is not (the Type row; the order of the lanes empties it) and the others do not empty it, and what is done to a pattern has intents and is no step (a
 pattern is not put back by undo: Open question 11 of `docs/web-ui.md`). What Undo and Redo would do is
@@ -2119,8 +2120,8 @@ when two lanes change places the cables are told the places the members have now
 same plugins. (Until the review of step 14 found it, `SwapInstruments` swapped only the
 instrument plugin while the model swapped the whole node, so that after any reorder, grouped
 or not, a lane's effects, modulators and volume were on different lanes in the engine and in
-the view.) Taking the instrument plugin out of a lane (`d` on it, `Controller::clear_instrument`)
-leaves the lane what else it has: its effects, modulators and volume. Putting an instrument in a lane
+the view.) Taking the instrument plugin out of a lane (`d` on it, the intent `ClearInstrument`: `Controller::clear_instrument`)
+leaves the lane what else it has: its effects (which go on running), modulators and volume. Putting an instrument in a lane
 (`i`, `Controller::put_instrument`: from the catalog only, one with an audio output, like an effect)
 replaces the one it has or fills an empty lane, under the lane's own node. Either way the cables that
 drove the old plugin's parameters, a lane's and a group's, are taken out first (`take_out`, with what
@@ -2531,17 +2532,17 @@ allocator's calls counted); `poll()` lets `Controller::poll` see what the engine
 `oracle::fingerprint` boils it down to two hashes and a few numbers (the peak, the rms, the rms of each eighth).
 
 The corpus is `src/oracle/sessions/*.toml` (the fifteen examples and the tracer scene as they were when the oracle was made, a copy, so that editing an example does not break
-it; and `cross`, `mix`, `solo` and `remap`, which the generator does not draw, and `sends`, `patched` and `routed`, which have audio cables and, in the last, ways out that are cut (the generator draws none of either: it would change the sessions of every seed); each is played with a chord, the wheel, the pedal and all sound off), `edited:cables` (a session whose cables are drawn, turned and taken out while it plays, a lane taken out and put back by Undo with its cables), `edited:routes` (the ways out of a lane and of a group cut and given back while it plays, a lane that is cut taken out and put back by Undo, a cable drawn that only a cut way out keeps from closing a loop), `edited:solos` (two cables drawn between a lane in a group and one outside it, and lanes and a group soloed and muted one after another, a lane taken out while it is soloed and put back by Undo: the law of what a cable carries, step 78), `edited:latency` (a drive put in a lane and on a bus, blended, a cable drawn from it and taken out, the drive taken out and put back, with Undo and Redo: the latency of step 80), `edited:sources` (the keys and a device that is never plugged in are put in as sources, and cables of notes are drawn and taken out while a chord, the pedal and held keys sound, with a lane that loses the keys while the pedal holds its chord and one that is left with the device while two keys are held, a source taken out and put back by Undo, a lane taken out with its cable of notes and put back by Undo: step 82; `performance_with_a_late_key` is its script) and 300 sessions that
+it; and `cross`, `mix`, `solo` and `remap`, which the generator does not draw, and `sends`, `patched` and `routed`, which have audio cables and, in the last, ways out that are cut (the generator draws none of either: it would change the sessions of every seed); each is played with a chord, the wheel, the pedal and all sound off), `edited:cables` (a session whose cables are drawn, turned and taken out while it plays, a lane taken out and put back by Undo with its cables), `edited:routes` (the ways out of a lane and of a group cut and given back while it plays, a lane that is cut taken out and put back by Undo, a cable drawn that only a cut way out keeps from closing a loop), `edited:solos` (two cables drawn between a lane in a group and one outside it, and lanes and a group soloed and muted one after another, a lane taken out while it is soloed and put back by Undo: the law of what a cable carries, step 78), `edited:latency` (a drive put in a lane and on a bus, blended, a cable drawn from it and taken out, the drive taken out and put back, with Undo and Redo: the latency of step 80), `edited:sources` (the keys and a device that is never plugged in are put in as sources, and cables of notes are drawn and taken out while a chord, the pedal and held keys sound, with a lane that loses the keys while the pedal holds its chord and one that is left with the device while two keys are held, a source taken out and put back by Undo, a lane taken out with its cable of notes and put back by Undo: step 82; `performance_with_a_late_key` is its script), `edited:instruments` (a cable from lane 0's instrument into lane 1's delay, the instruments of lane 1 and then of lane 0 taken out while a chord is held, Undo putting them back as the very plugins, the cable taken out and drawn again, lane 1 taken out while it has none and put back whole: step 85, the effects of a lane that has no instrument run) and 300 sessions that
 `oracle::generate` makes from a seed (xorshift64*, the same on every platform: one to four lanes, up to two groups, effects of the four built-in kinds, every kind of modulator with
 cables between them and to the group's members and bus, mutes, solos, ranges, transposes, remaps, patterns; a script of notes with MPE expression, controllers, a pedal, a key hit
-again, all notes off and all sound off; and four to ten edits), each at block sizes of 64, 256 and 1024 frames: 984 renders. 795 of the 900 generated renders are heard and 44
+again, all notes off and all sound off; and four to ten edits), each at block sizes of 64, 256 and 1024 frames: 987 renders. 795 of the 900 generated renders are heard and 44
 clip; of the 2,043 edits, 1,769 are applied, 238 skipped (nothing to aim at) and 36 refused (the tests say how many must be).
 
 **Edits** (`oracle::edits`): what a front-end asks of the controller while the session sounds, which a file cannot show (a fade is made when a mute *changes*; an effect that is
 moved takes its mix and the cables of its lane's modulators along; an Undo hands a node back). An `Edit` names a place that wraps round what there is when it is made (the lane
 is a place among the lanes), `resolve` makes the `Intent` that a front-end would send from the model as it is, and `make` carries it out through `Controller::apply`, so it is in
 the history: a parameter, a mix, a volume, a pan; mute and solo; an effect added, moved or taken out, a lane's or a bus's; a modulator, with its cable or without; a range; a lane
-in a group; a lane or a group added or taken out; a preset; the tempo; a source of notes put in or taken out and a cable of notes drawn or taken out (places among the sources, the lanes and the cables of notes); Undo and Redo.
+in a group; a lane or a group added or taken out; a preset; the tempo; a source of notes put in or taken out and a cable of notes drawn or taken out (places among the sources, the lanes and the cables of notes); the instrument of a lane taken out (`Edit::ClearInstrument`: skipped for a lane that has none, drawn by no generated session, which would change those of every seed); Undo and Redo.
 
 - **The engine is deterministic** (`a_scenario_renders_the_same_bits_twice`): a render is the same bits every time, in every process. It was not: the oscillator's voices were
   in a hash map that was walked in another order each run (fixed in `9c0eef4`), and the note remapper handed out its channels in a hash map's order (`51a9674`). A hash of the
@@ -2570,7 +2571,7 @@ in a group; a lane or a group added or taken out; a preset; the tempo; a source 
   was held to the loop, on every platform and with no file to be out of date: the always-on corpus in every run (`the_plan_gives_what_the_loop_it_replaced_gave_bit_for_bit`) and the whole corpus
   in the ignored test (`the_whole_corpus_is_the_same_under_the_plan_and_under_the_loop_it_replaced`). The loop has no audio cables and no ways out that are cut: the scenarios that have either (`Scenario::has_cables`, `has_cut_routes`) are not held to it. It has no latency compensation either (P3f), so the plan is held to it with the compensation off (`oracle::engine_uncompensated`: `AudioGraph::without_latency_compensation`, test builds), which keeps the plan's own machinery held for every session, the ones that have a drive too (210 of the 300 generated sessions have one); and the compensation is held apart: where nothing is late (`Scenario::has_latency`: a built-in drive in the file, or put in by an edit) the engine with it is bit for bit the engine without it (`where_nothing_has_latency_the_engine_is_what_it_is_without_the_compensation_bit_for_bit`, and the whole corpus in the ignored test), and where something is late and is added to what is not (`edited:latency`) it is heard.
 
-The tests that run every time render the sessions, the five that edit cables, ways out, solos, latency and sources and the first 24 generated ones at 256 frames (52 renders, 7 s in a debug build): the determinism, the fixtures, that no block
+The tests that run every time render the sessions, the six that edit cables, ways out, solos, latency, sources and instruments and the first 24 generated ones at 256 frames (53 renders, 7 s in a debug build): the determinism, the fixtures, that no block
 allocates, that every one of the 300 generated sessions loads, that the generator draws every feature that the table in `oracle::tests` lists (50 of them, each in at least about two
 fifths of the number it makes of it), that the sessions are heard, that the edits mostly apply and that an edit is made before the block that has its frame in it, and the tolerance;
 and the tests of the edits (what each makes of itself) and of the WAV header.
@@ -2635,7 +2636,7 @@ head takes the sum of its members, a sum input, and applies the volume; its tail
 of a chain are `single` inputs, each the buffer that the stage before made; a lane's tail is a cable to its group's head (to the mix if it has none, or if the group it names is not
 there) and a group's tail is a cable to the mix (unless the way out of the lane or the group is cut: `route`, see "The way out"), and ranks are the places (the lanes in order, then the groups, then the mix; every node of a lane has the lane's rank), so that the order
 of every sum is the order of the loop that the plan replaced: a group's bus is its members added in the order of their places, and the mix is the lanes that have no group and then the
-groups. A lane with no instrument runs none of its effects (they make silence, as before), and its tail still adds the click. An instrument is given a buffer for each of its outputs and
+groups. A lane with no instrument runs its effects all the same (step 85: what comes to the first of them is the silence that its head made and what the cables that end at it or after it bring, so that the effects that a lane keeps when its instrument is taken out go on working: a reverb's tail rings out, and what another lane sends into one of them is heard through it; before, `run_fx` returned at once: "nothing to work on", which was true before there were cables), and its tail still adds the click. An instrument is given a buffer for each of its outputs and
 no more (the old chain gave the chain's whole width to an instrument that had no effects and a volume of 1), writes into the first of the output's buffers, and, if it has more
 outputs than the chain has channels (Pianoteq has sixteen), into the lane's own `inst_buf` from which the first two go on. Two nodes with one id are a plan that does not compile (the
 kernel's `DuplicateNode`: logged, and an assertion in a debug build). The vectors are still addressed by place, so the plan is made with a list of where each stage is (`Place`, sorted
@@ -2682,7 +2683,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   `apply(Intent)` and receive `Event`s. The TUI is migrated onto it feature by
   feature, so no feature ever has two implementations. Built so far: `SetParam`,
   `SetGain`, `LoadPreset`, `SetModulatorField`, `SetSteps`, `SetEdgeDepth`, `SetRange`, `SetMute`, `SetSolo`, `RemoveEdge`,
-  `AddModulator`, `AddModEdge`, `Modulate`, `AddCable`, `AddSource`, `SetCableGain`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`,
+  `AddModulator`, `AddModEdge`, `Modulate`, `AddCable`, `AddSource`, `SetCableGain`, `AddEffect`, `AddInstrument`, `ReplaceInstrument`, `ClearInstrument`,
   `SetNodeUi`, `SetPinned`, `SetBpm`, `SetRecording`, `ClearPattern`, `SetPatternField`, `MoveEffect`, `AddGroup`, `SetLaneGroup`, `RenameGroup`, `RemoveNode` (a modulator, an effect, a lane
   or a group), `Save`, `SaveAs`, `Undo` and `Redo` (see "Session state"). Effects are
   added by `Controller::add_effect` / `add_bus_effect` (loaded here, from the plugin
@@ -2691,7 +2692,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   tells them; the mock engine's nodes for the built-in effects are a fixture Rust writes,
   `web/src/client/fixtures/builtins.effects.json`). Instruments are put in by
   `Controller::put_instrument` (a lane's, which the TUI's `i` asks) and `add_instrument_lane`
-  (a new lane), from the catalog only, which `ReplaceInstrument` and `AddInstrument` wrap
+  (a new lane), from the catalog only, which `ReplaceInstrument` and `AddInstrument` wrap (`ClearInstrument` takes one out again)
   (`builtins.instruments.json` is the mock engine's node for each built-in instrument).
   A preset is loaded by `LoadPreset` (the instrument of a lane, or an effect of a lane's chain; a
   bus effect is refused, since the audio thread's command addresses a lane's slot), which also
@@ -2925,6 +2926,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   Step 83 put them on the page (P4c; see "The page" under "Sources of notes and cables of notes"): the message `inputs` and the page's rule for which input a device stands for (`client/inputs.ts`, pinned by `fixtures/inputs.json`), the mock engine's sources and cables of notes (`client/noteWiring.ts`, pinned by `fixtures/sources.json`), the canvas's source nodes in a column of their own before the lanes, `NotesPort` on a source and on a lane, the cables
   of notes and the links by which a lane hears every source (`NotesEdge`, `HearsEdge`), the menus for the keyboard (`NotesMenus`), the bar's "+ Source" (`AddSource`), `Editor.addSource` and `addNotesCable`, and `e2e/sources.spec.ts`.
   Step 84 gave the link that every lane has by itself, the grey one from the end of its chain to its group or the master, the button that disconnects it (see "The way out (`route`)"): a × at its middle that cuts the way out, in `AudioEdge`.
+  Step 85 let the × of a lane take the instrument out alone (`RemoveLaneOrGroupMenu` in `app/patch/nodes.tsx`): the menu of a lane that has an instrument is "Keep Oscillator 1", "Remove Oscillator 1 only: its 4 effects and 2 modulators stay in the lane" (the intent `ClearInstrument`, `Editor.clearInstrument`: the lane stays on the canvas as `(empty)`, with its effects, modulators and the rest, and the focus goes to its button that puts an instrument in) and "Remove the lane of Oscillator 1 for good: …" (the lane's removal, as before; not for the only lane of a session, which has the first two); a lane that has none is offered the removal of the lane only. `removalOf` says whether a lane has an instrument (`Removal.instrument`); the mock engine does what the controller does (`clearInstrumentOutcome`, the history's words `take Oscillator out of its lane`), pinned by five scripts of `history.json`.
   What the controller
   clamps to (the ranges, what a new modulator starts as, whether a setting is turned by distances or by ratios, the order of the waveforms) is
   generated into `web/src/protocol/generated/constants.ts` with the types and read by the mock
@@ -3030,11 +3032,11 @@ if there is more than one (every intent makes one event today).
 TODO: undo of what moves between groups: a group made of a lane that is in another and a lane put in a group or out of one whose modulators drive it (the cables of the group that has it go) empty
 the history until their steps exist (`Plan::Barrier` in `src/app/history.rs`, `planOf` in `web/src/client/history.ts`).
 TODO: the TUI's edits that have no intent (the Type row) are not in the history, and do not empty it; the order of the lanes with
-Shift+Up / Shift+Down on a lane and `Controller::clear_instrument` do (a step that took something out puts it back by the places it had).
+Shift+Up / Shift+Down on a lane does (a step that took something out puts it back by the places it had).
 TODO: a cable that a file has to a cable that is not there (`mod_depth = [0, 0]` to a modulator with no cable) is centred on something else after undo of the
 removal of its modulator than the loader gave it; it drives nothing, so it makes no difference to what is heard, and the tests leave it out.
 TODO: the "×" of a lane and of a group asks first, in words that say it goes "for good" (`RemoveLaneOrGroupMenu`), from when a removal could not be undone: both can be
-now; whether to keep the question is the user's to say, and the words are to be changed either way.
+now; whether to keep the question is the user's to say, and the words are to be changed either way. (For a lane that has an instrument it offers taking the instrument out alone first: step 85.)
 TODO: an all-notes-off for a lane that comes back by undo (and for the members of a group that does, and for an instrument that is swapped in or out): a note that was held when it was taken out stays held in a plugin that
 was not sent the note-off. (The panic, `Ctrl+P` or the page's button, ends such a note by hand.)
 TODO: the controller's layout of the telemetry lists a cable by the place of its modulator in the rack, and the mock engine's lists one that is drawn after

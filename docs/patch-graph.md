@@ -548,7 +548,7 @@ the new one grows under today's structure until it equals it, and is then taken 
     `Strip` (the metronome's click, the fade of a mute or a solo, the meter, the learned controls); a group is `Bus` (the volume) → `Fx(i)` → `Strip` (pan, taps, fade, meter). The node
     bodies are the old code cut at the seams that it already has, as free functions over the parts, so that they are what moves when the data does; the old monolithic `process` stays
     as `process_legacy`'s (test builds) and is what `agree` holds the nodes to, until the first cable is drawn. A lane with no instrument runs none of its effects, as today (they
-    make silence). **The kernel learns one thing:** an input that takes one cable can be *the cable's buffer* (`PortSpec::single`: no sum, no zeroing, no feed), so that a chain of
+    make silence; *step 85 changed it: they run, on the silence of the head and on what cables bring them, so that they can stay in a lane whose instrument is taken out*). **The kernel learns one thing:** an input that takes one cable can be *the cable's buffer* (`PortSpec::single`: no sum, no zeroing, no feed), so that a chain of
     nodes costs what the old chain did and gives its bits exactly (the old chain does not make `0.0 + -0.0` of anything between its stages; the sum at a group's bus and at the mix
     stays a sum, since the old engine added into zeroed buffers there). An input that is `single` and has two cables is a sum, so P3b needs no other rule. The reference interpreter
     knows it, and the executor is held to it over the random patches.
