@@ -107,6 +107,14 @@ pub enum Intent {
     /// wet). Refused, with nothing changed, for a parent that is not a lane or a group, a plugin the catalog does
     /// not name, an instrument, one that does not load, and one whose outputs are not the chain's channels.
     AddEffect { parent: NodeId, plugin: String },
+    /// Add an effect that stands by itself (step 87, the page's "+ Effect"): `plugin` is as for `AddEffect`, and it goes in a lane of its own at the end of the session, a lane
+    /// that has no instrument, is full range, in no group and has a meter, so that what the effect is fed is what cables bring (the sound of an instrument is cabled to it, and
+    /// its own end goes to the mix, or where its way out is cut and a cable is drawn from it). What a front-end shows of the lane is the effect: the lane is its holder, and
+    /// the mute, the solo and the way out of the lane are the effect's. The two nodes, the lane's and then the effect's, are made in that order (what a redo gives back under
+    /// the ids they had). A step of the history, in the words of the button that adds an effect ("add Reverb"): undo takes the lane out with the effect in it. Refused, with
+    /// nothing changed, no lane made and no id used, for what `AddEffect` refuses of a plugin: one the catalog does not name, an instrument, one that does not load and one whose
+    /// outputs are not the chain's channels.
+    AddFreeEffect { plugin: String },
     /// Add a lane at the end with an instrument in it: `plugin` is the `id` of an entry of the catalog the server told, which has
     /// to be an instrument with an audio output; it is loaded by the server, which loads only what its own catalog names. The lane
     /// is full range, in no group, and has a meter of its own (and the master's meter hears it). Refused, with nothing changed and
@@ -778,6 +786,10 @@ mod tests {
             (
                 Intent::AddEffect { parent: NodeId(2), plugin: "builtin:filter".to_string() },
                 json!({"type": "addEffect", "parent": 2, "plugin": "builtin:filter"}),
+            ),
+            (
+                Intent::AddFreeEffect { plugin: "builtin:reverb".to_string() },
+                json!({"type": "addFreeEffect", "plugin": "builtin:reverb"}),
             ),
             (
                 Intent::AddInstrument { plugin: "builtin:osc".to_string() },

@@ -182,6 +182,7 @@ describe("what an add is to the history", () => {
   test("is named in the words a button has for it", () => {
     expect(labelOf({ type: "addEffect", parent: lane0, plugin: "builtin:reverb" })).toBe("add Reverb");
     expect(labelOf({ type: "addInstrument", plugin: "builtin:osc" })).toBe("add Oscillator as an instrument");
+    expect(labelOf({ type: "addFreeEffect", plugin: "builtin:reverb" })).toBe("add Reverb");
     expect(labelOf({ type: "addModulator", parent: lane0, kind: "lfo" })).toBe("add an LFO");
     expect(labelOf({ type: "addModulator", parent: lane0, kind: "envelope" })).toBe("add an envelope");
     expect(labelOf({ type: "addModulator", parent: lane0, kind: "midiLearn" })).toBe("add a MIDI control");
@@ -197,6 +198,7 @@ describe("what an add is to the history", () => {
   test("is no step for a plugin that the catalog does not name, which is refused", () => {
     expect(plan({ type: "addEffect", parent: lane0, plugin: "builtin:nothing" })).toBe("nothing");
     expect(plan({ type: "addInstrument", plugin: "builtin:nothing" })).toBe("nothing");
+    expect(plan({ type: "addFreeEffect", plugin: "builtin:nothing" })).toBe("nothing");
   });
 
   describe("of a modulate", () => {
@@ -529,12 +531,23 @@ describe("what a removal of a lane is to the history", () => {
     }
   });
 
-  test("is a step in the words of a lane that has no instrument", () => {
+  test("is a step in the words of what a lane that has no instrument holds: its one effect, a chain of effects, or nothing", () => {
     const [lane] = lanes;
     if (!lane) throw new Error("the fixture has a lane");
-    const nodes = snapshot.graph.nodes.map((n) => (n.id === lane.id && n.kind === "instrument" ? { ...n, name: "(empty)", plugin: null } : n));
-    const empty = { ...snapshot, graph: { ...snapshot.graph, nodes } };
-    expect(plan({ type: "removeNode", node: lane.id }, empty)).toEqual({ removed: { label: "remove an empty lane", intent: { type: "removeNode", node: lane.id }, at: 7 } });
+    const held = snapshot.graph.nodes.filter((n) => n.kind === "effect" && n.parent === lane.id);
+    expect(held.map((n) => n.name)).toEqual(["Reverb", "Filter"]);
+    /** The session with the lane emptied of its instrument, and only the effects `keep` of its own. */
+    const emptied = (keep: number): Snapshot => {
+      const gone = new Set(held.slice(keep).map((n) => n.id));
+      const nodes = snapshot.graph.nodes.flatMap((n) => (gone.has(n.id) ? [] : [n.id === lane.id && n.kind === "instrument" ? { ...n, name: "(empty)", plugin: null } : n]));
+      return { ...snapshot, graph: { ...snapshot.graph, nodes } };
+    };
+    const label = (keep: number): string => {
+      const made = plan({ type: "removeNode", node: lane.id }, emptied(keep));
+      if (typeof made === "string" || !("removed" in made)) throw new Error(`not a removal: ${JSON.stringify(made)}`);
+      return made.removed.label;
+    };
+    expect([label(0), label(1), label(2)]).toEqual(["remove an empty lane", "remove Reverb", "remove a chain of effects"]);
   });
 });
 
@@ -577,11 +590,20 @@ describe("what a mute or a solo is to the history", () => {
     expect(stepMade(plan({ type: "setSolo", node: lane.id, solo: false }, flagged)).undo).toEqual([{ type: "setSolo", node: lane.id, solo: true }]);
   });
 
-  test("is in the words of a lane that has no instrument", () => {
-    const nodes = snapshot.graph.nodes.map((n) => (n.id === lane.id && n.kind === "instrument" ? { ...n, name: "(empty)", plugin: null } : n));
-    const empty = { ...snapshot, graph: { ...snapshot.graph, nodes } };
-    expect(stepMade(plan({ type: "setMute", node: lane.id, muted: true }, empty)).label).toBe("mute an empty lane");
-    expect(stepMade(plan({ type: "setSolo", node: lane.id, solo: true }, empty)).label).toBe("solo an empty lane");
+  test("is in the words of what a lane that has no instrument holds: nothing, its one effect, or a chain of effects", () => {
+    const held = snapshot.graph.nodes.filter((n) => n.kind === "effect" && n.parent === lane.id);
+    /** The session with the lane emptied of its instrument, and only the first `keep` of its effects. */
+    const emptied = (keep: number): Snapshot => {
+      const gone = new Set(held.slice(keep).map((n) => n.id));
+      const nodes = snapshot.graph.nodes.flatMap((n) => (gone.has(n.id) ? [] : [n.id === lane.id && n.kind === "instrument" ? { ...n, name: "(empty)", plugin: null } : n]));
+      return { ...snapshot, graph: { ...snapshot.graph, nodes } };
+    };
+    expect(stepMade(plan({ type: "setMute", node: lane.id, muted: true }, emptied(0))).label).toBe("mute an empty lane");
+    expect(stepMade(plan({ type: "setSolo", node: lane.id, solo: true }, emptied(0))).label).toBe("solo an empty lane");
+    expect(stepMade(plan({ type: "setMute", node: lane.id, muted: true }, emptied(1))).label).toBe("mute Reverb");
+    expect(stepMade(plan({ type: "setSolo", node: lane.id, solo: true }, emptied(1))).label).toBe("solo Reverb");
+    expect(stepMade(plan({ type: "setMute", node: lane.id, muted: true }, emptied(2))).label).toBe("mute a chain of effects");
+    expect(stepMade(plan({ type: "setSolo", node: lane.id, solo: true }, emptied(2))).label).toBe("solo a chain of effects");
   });
 
   test("is no step when it changes nothing, or is refused", () => {
@@ -789,6 +811,21 @@ describe("what takes out what an add made", () => {
     expect(takesOut(snapshot, addEffect, { nodes: [lfo.id], edges: [cable.id] })).toBeNull();
   });
 
+  test("is the lane that an effect that stands by itself made, which holds the effect: the lane's node and then the effect's are what was made", () => {
+    const addFree: Intent = { type: "addFreeEffect", plugin: "builtin:reverb" };
+    const effect = snapshot.graph.nodes.find((n) => n.kind === "effect" && n.parent === lane0);
+    if (!effect) throw new Error("the fixture has an effect");
+    // (Lane 0 and its effect stand for the two nodes that were made: the lane is taken out, with its effect in it.)
+    expect(takesOut(snapshot, addFree, nodes(lane0, effect.id))).toEqual({ type: "removeNode", node: lane0 });
+    // Not what did not make a lane and an effect and no more, or whose first is no lane, or made a cable.
+    expect(takesOut(snapshot, addFree, nodes())).toBeNull();
+    expect(takesOut(snapshot, addFree, nodes(lane0))).toBeNull();
+    expect(takesOut(snapshot, addFree, nodes(lane0, effect.id, lfo.id))).toBeNull();
+    expect(takesOut(snapshot, addFree, nodes(effect.id, lane0))).toBeNull();
+    expect(takesOut(snapshot, addFree, nodes(9_999, effect.id))).toBeNull();
+    expect(takesOut(snapshot, addFree, { nodes: [lane0, effect.id], edges: [cable.id] })).toBeNull();
+  });
+
   test("is the node that a modulate made, which takes its cable out with it, if the node is there and it made one cable besides", () => {
     const modulate: Intent = { type: "modulate", to: { node: lane0, port: { type: "param", index: 1 } }, kind: "lfo", depth: null };
     expect(takesOut(snapshot, modulate, { nodes: [lfo.id], edges: [cable.id] })).toEqual({ type: "removeNode", node: lfo.id });
@@ -907,6 +944,23 @@ describe("the mock engine's undo of what is added", () => {
     server.apply({ type: "redo" });
     expect(graphOf(server)).toBe(added);
     expect(JSON.stringify(server.snapshot.telemetry.meters)).not.toBe(slots);
+  });
+
+  test("gives an effect that stands by itself a lane that has two meters of its own, and tells that the layout of the telemetry has changed, as the controller does", () => {
+    const server = fresh();
+    const before = server.snapshot.telemetry;
+    server.apply({ type: "addFreeEffect", plugin: "builtin:reverb" });
+    const after = server.snapshot.telemetry;
+    const lane = server.snapshot.graph.nodes.filter((n) => n.kind === "instrument").at(-1);
+    if (lane === undefined) throw new Error("the session has a lane");
+    expect(after.rev).toBe(before.rev + 1);
+    // What was there stays, and the meters of the new lane (a peak and a count of clips, in new slots) come after it.
+    expect(after.meters.slice(0, before.meters.length)).toEqual(before.meters);
+    const added = after.meters.slice(before.meters.length);
+    expect(added.map((entry) => [entry.node, entry.kind])).toEqual([[lane.id, "peak"], [lane.id, "clips"]]);
+    const used = new Set([...before.meters, ...before.modulation].map((entry) => entry.slot));
+    for (const entry of added) expect(used.has(entry.slot), String(entry.slot)).toBe(false);
+    expect(after.modulation).toEqual(before.modulation);
   });
 
   test("takes a group out with its lanes in none, and puts it back with them in it", () => {

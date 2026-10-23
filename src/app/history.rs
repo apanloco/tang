@@ -466,6 +466,8 @@ impl Controller {
             },
             // (The catalog names the plugin, or the intent is refused.)
             Intent::AddEffect { plugin, .. } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name}"))),
+            // (As an effect that goes in a chain: the words of the button that adds one. Undo takes the lane that holds it out with it.)
+            Intent::AddFreeEffect { plugin } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name}"))),
             Intent::AddInstrument { plugin } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name} as an instrument"))),
             Intent::AddModulator { kind, .. } => added(format!("add {}", kind.label())),
             Intent::AddModEdge { .. } => added("draw a cable".to_string()),
@@ -615,7 +617,7 @@ impl Controller {
         }
     }
 
-    /// The intent that takes out what `added`, an add that is carried out, made: the one node, or the one cable.
+    /// The intent that takes out what `added`, an add that is carried out, made: the one node, or the one cable (a free effect: its lane).
     fn takes_out(&self, added: &Intent, made: &Made) -> Option<Intent> {
         match (added, made.nodes.as_slice(), made.edges.as_slice()) {
             (Intent::AddModEdge { .. }, [], [edge]) if self.model.locate_edge(*edge).is_some() => Some(Intent::RemoveEdge { edge: *edge }),
@@ -625,6 +627,9 @@ impl Controller {
             // (The modulator is taken out with its cable, which is the one thing that was made besides it.)
             (Intent::Modulate { .. }, [node], [_]) if self.model.locate(*node).is_some() => Some(Intent::RemoveNode { node: *node }),
             (Intent::Modulate { .. }, ..) => None,
+            // (The lane is taken out with the effect in it: the two nodes that were made, the lane's first.)
+            (Intent::AddFreeEffect { .. }, [lane, _effect], []) if self.lane_place(*lane).is_some() => Some(Intent::RemoveNode { node: *lane }),
+            (Intent::AddFreeEffect { .. }, ..) => None,
             (_, [node], []) if self.model.locate(*node).is_some() => Some(Intent::RemoveNode { node: *node }),
             _ => None,
         }
@@ -1958,6 +1963,106 @@ rate = 3.0
     }
 
     #[test]
+    fn an_effect_that_stands_by_itself_is_a_lane_that_undo_takes_out_with_the_effect_in_it_and_redo_puts_back_under_the_ids_they_had() {
+        let (engine, mut ctl, clock) = controller_with_plugins();
+        let lanes = ctl.model.instruments.len();
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::AddFreeEffect { plugin: "builtin:reverb".to_string() }).unwrap();
+        let (lane, effect) = {
+            let added = ctl.model.instruments.last().unwrap();
+            (added.node, added.effects[0].node)
+        };
+        assert_eq!(ctl.last_made().nodes, [lane, effect], "the lane's node and then the effect's");
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("add Reverb"), None));
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::SetNodeUi { node: effect, ui: Some(NodeUi { x: 5.0, y: 6.0 }) }).unwrap();
+        sent(&engine);
+
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.instruments.len(), lanes);
+        assert_eq!((ctl.model.locate(lane), ctl.model.locate(effect)), (None, None), "the lane goes, with the effect in it");
+        assert_eq!(sent(&engine), [format!("RemoveInstrument inst={lanes} keep")]);
+        assert_eq!((undo_label(&ctl), redo_label(&ctl).as_deref()), (None, Some("add Reverb")));
+        ctl.redo().unwrap();
+        // (The step that moved the effect finds it under the id it had, or it would be refused and dropped.)
+        ctl.redo().unwrap();
+        let added = ctl.model.instruments.last().unwrap();
+        assert_eq!((added.node, added.effects[0].node), (lane, effect), "the lane and the effect come back under the ids they had");
+        assert!(added.instrument.is_none());
+        assert_eq!(ctl.model.ui.get(&effect).copied(), Some(NodeUi { x: 5.0, y: 6.0 }));
+        ctl.model.check_ids().unwrap();
+        for _ in 0..2 {
+            ctl.undo().unwrap();
+        }
+        assert_eq!(ctl.model.instruments.len(), lanes);
+    }
+
+    #[test]
+    fn a_lane_that_holds_effects_and_no_instrument_is_called_in_the_words_of_a_step_by_what_it_holds() {
+        let (_engine, mut ctl, clock) = controller_with_plugins();
+        ctl.apply(Intent::AddFreeEffect { plugin: "builtin:reverb".to_string() }).unwrap();
+        let lane = ctl.model.instruments.last().unwrap().node;
+        // One effect: its name, since the page shows the effect and not the lane that holds it.
+        for (intent, label) in [
+            (Intent::SetMute { node: lane, muted: true }, "mute Reverb"),
+            (Intent::SetSolo { node: lane, solo: true }, "solo Reverb"),
+            (Intent::SetRoute { node: lane, route: Route::None }, "cut the way out of Reverb"),
+            (Intent::SetRoute { node: lane, route: Route::Out }, "give Reverb its way out"),
+            (Intent::SetSolo { node: lane, solo: false }, "unsolo Reverb"),
+        ] {
+            clock.advance(Duration::from_secs(5));
+            ctl.apply(intent).unwrap();
+            assert_eq!(undo_label(&ctl).as_deref(), Some(label));
+        }
+        // More than one: a chain of effects. None at all is the empty lane that it always was.
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::AddEffect { parent: lane, plugin: "builtin:filter".to_string() }).unwrap();
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::SetMute { node: lane, muted: false }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("unmute a chain of effects"));
+        let lane1 = node(&ctl, NodePath::Instrument(1));
+        clock.advance(Duration::from_secs(5));
+        ctl.apply(Intent::ClearInstrument { node: lane1 }).unwrap();
+        ctl.apply(Intent::SetMute { node: lane1, muted: true }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("mute an empty lane"));
+    }
+
+    #[test]
+    fn a_free_effect_that_is_taken_out_with_its_lane_is_put_back_by_undo_whole_and_the_step_is_called_by_the_effect() {
+        // (Over an audio thread that is run: it is what hands the lane back.)
+        let (mut ctl, mut graph) = controller_over_an_audio_thread(SESSION);
+        ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+        let lanes = ctl.model.instruments.len();
+        ctl.apply(Intent::AddFreeEffect { plugin: "builtin:reverb".to_string() }).unwrap();
+        let (lane, effect) = {
+            let added = ctl.model.instruments.last().unwrap();
+            (added.node, added.effects[0].node)
+        };
+        ctl.apply(Intent::SetGain { node: effect, gain: Gain::Mix, value: 0.8 }).unwrap();
+        ctl.apply(Intent::SetMute { node: lane, muted: true }).unwrap();
+        graph.drain_commands();
+        let before = everything_as_it_is(&ctl, &graph);
+
+        ctl.apply(Intent::RemoveNode { node: lane }).unwrap();
+        graph.drain_commands();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove Reverb"));
+        assert_eq!(ctl.model.instruments.len(), lanes);
+
+        ctl.undo().unwrap();
+        graph.drain_commands();
+        assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, "the free effect, put back");
+        let back = ctl.model.instruments.last().unwrap();
+        assert_eq!((back.node, back.effects[0].node, back.muted), (lane, effect, true), "the lane is back whole, under its id, muted as it was");
+        assert!((back.effects[0].mix - 0.8).abs() < 1e-6, "with the mix it had");
+        assert_eq!(redo_label(&ctl).as_deref(), Some("remove Reverb"));
+        ctl.model.check_ids().unwrap();
+        ctl.redo().unwrap();
+        graph.drain_commands();
+        assert_eq!(ctl.model.instruments.len(), lanes);
+    }
+
+    #[test]
     fn a_group_that_was_added_with_lanes_that_were_in_none_is_taken_out_by_undo_and_comes_back_with_them() {
         let (_engine, mut ctl, clock) = controller_with_plugins();
         let lane1 = node(&ctl, NodePath::Instrument(1));
@@ -2453,6 +2558,16 @@ rate = 3.0
         // Nodes are not what an add of a node makes when it has made a cable.
         assert_eq!(ctl.takes_out(&add_effect, &cable(&[edge])), None);
         assert_eq!(ctl.takes_out(&add_effect, &Made { nodes: vec![lfo], edges: vec![edge] }), None);
+        // An effect that stands by itself made a lane and the effect in it, and it is the lane that is taken out: the first of the two nodes, when that is a lane that is there.
+        let add_free = Intent::AddFreeEffect { plugin: "builtin:reverb".to_string() };
+        assert_eq!(ctl.takes_out(&add_free, &nodes(&[lane0, lfo])), Some(Intent::RemoveNode { node: lane0 }));
+        // Not one node (the one node that is there is what an effect that goes in a chain makes, and this made two), not three, not a first that is no lane (a modulator is a node that is there) and not one that
+        // is not there, and not when a cable was made as well.
+        assert_eq!(ctl.takes_out(&add_free, &nodes(&[lane0])), None);
+        assert_eq!(ctl.takes_out(&add_free, &nodes(&[lane0, lfo, lfo])), None);
+        assert_eq!(ctl.takes_out(&add_free, &nodes(&[lfo, lane0])), None);
+        assert_eq!(ctl.takes_out(&add_free, &nodes(&[NodeId(9_999), lfo])), None);
+        assert_eq!(ctl.takes_out(&add_free, &Made { nodes: vec![lane0, lfo], edges: vec![edge] }), None);
     }
 
     #[test]
@@ -4445,13 +4560,21 @@ depth = 0.6
     }
 
     #[test]
-    fn a_lane_is_a_step_in_the_words_of_its_instrument_or_of_a_lane_that_has_none() {
+    fn a_lane_is_a_step_in_the_words_of_its_instrument_or_of_what_it_holds_when_it_has_none() {
         let (_engine, mut ctl, _clock) = controller_over(load(LANES).model);
-        let (first, empty) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Instrument(3)));
-        ctl.apply(Intent::RemoveNode { node: empty }).unwrap();
-        assert_eq!(undo_label(&ctl).as_deref(), Some("remove an empty lane"));
+        let (first, holder) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Instrument(3)));
+        // (The last lane has no instrument and a reverb, and is called by the reverb that it holds: step 87.)
+        assert_eq!(ctl.model.instruments[3].instrument.as_ref().map(|plugin| plugin.name.as_str()), None);
+        ctl.apply(Intent::RemoveNode { node: holder }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove Reverb"));
         ctl.apply(Intent::RemoveNode { node: first }).unwrap();
         assert_eq!(undo_label(&ctl).as_deref(), Some("remove the lane of Oscillator"));
+        // With the reverb taken out first, there is nothing in it to call it by.
+        let (_engine, mut ctl, _clock) = controller_over(load(LANES).model);
+        let (reverb, holder) = (node(&ctl, NodePath::Effect { inst: 3, index: 0 }), node(&ctl, NodePath::Instrument(3)));
+        ctl.apply(Intent::RemoveNode { node: reverb }).unwrap();
+        ctl.apply(Intent::RemoveNode { node: holder }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("remove an empty lane"));
     }
 
     #[test]
@@ -6117,6 +6240,35 @@ size = 0.5
                 undo(),
                 redo(),
                 redo(),
+                redo(),
+            ],
+        ));
+        // An effect that stands by itself is a lane with the effect in it (the lane's node, and then the effect's, are the next two ids): undo takes the lane out with it, and what is done to
+        // the lane, a mute and a way out cut, is in the words of what it holds, the effect, or a chain of effects when there is more than one.
+        scripts.push((
+            "an effect that stands by itself is a lane that undo takes out with the effect in it and redo puts back, and the lane is called by what it holds",
+            {
+                let mut script = vec![
+                    Op::Do(Intent::AddFreeEffect { plugin: "builtin:reverb".to_string() }),
+                    gain(fresh(1), Gain::Mix, 0.25),
+                    Op::Do(Intent::SetMute { node: fresh(0), muted: true }),
+                    route(fresh(0), Route::None),
+                    add_effect(fresh(0), "builtin:filter"),
+                    Op::Do(Intent::SetSolo { node: fresh(0), solo: true }),
+                ];
+                script.extend(n_of(6, undo));
+                script.extend(n_of(6, redo));
+                script
+            },
+        ));
+        scripts.push((
+            "an effect that stands by itself is refused for what an effect in a chain is, and a refusal leaves no step and uses no id",
+            vec![
+                Op::Do(Intent::AddFreeEffect { plugin: "builtin:osc".to_string() }),
+                Op::Do(Intent::AddFreeEffect { plugin: "clap:com.example.nothing".to_string() }),
+                Op::Do(Intent::AddFreeEffect { plugin: "builtin:filter".to_string() }),
+                undo(),
+                undo(),
                 redo(),
             ],
         ));

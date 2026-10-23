@@ -605,6 +605,22 @@ impl Controller {
         self.insert_effect(ChainAt::Bus(group), loaded, source)
     }
 
+    /// Add the plugin `source` as an effect that stands by itself (step 87): a lane of its own at the end, with no instrument, full range and in no group,
+    /// with the effect as the whole of its chain (`add_lane` and then `add_effect`). The node of the effect, which is the second that is made, the lane's the first.
+    /// Refused, with nothing changed, as `add_effect` refuses, and with no lane made and no id used.
+    pub fn add_free_effect(&mut self, source: &str) -> Result<NodeId, IntentError> {
+        let loaded = self.load_effect(source)?;
+        self.add_free_effect_loaded(loaded, source)
+    }
+
+    /// `add_free_effect` with the plugin loaded. What the chain cannot take is turned away before the lane is made, so that a plugin that is refused leaves
+    /// neither a lane nor a gap in the ids (`insert_effect` looks again: the check is the same).
+    fn add_free_effect_loaded(&mut self, loaded: Box<dyn Plugin>, source: &str) -> Result<NodeId, IntentError> {
+        outputs_fit_the_chain(loaded.name(), loaded.audio_output_count())?;
+        let inst = self.add_lane();
+        self.insert_effect(ChainAt::Lane(inst), loaded, source)
+    }
+
     /// The plugin `source` loaded to be an effect. The catalog has to name it and it must not be an instrument.
     fn load_effect(&mut self, source: &str) -> Result<Box<dyn Plugin>, IntentError> {
         self.load_from_catalog(source, false)
@@ -3683,6 +3699,42 @@ group = 1
         assert!(ctl.insert_effect(ChainAt::Bus(0), Box::new(testutil::MonoEffect), "test:mono").is_err());
         // (The audio thread would turn it away as well, and the model would be left with an effect that is not there.)
         assert!(sent(&engine).is_empty());
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    #[test]
+    fn an_effect_that_stands_by_itself_is_a_lane_of_its_own_that_has_the_effect_for_its_chain_and_no_instrument() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let lanes = ctl.model.instruments.len();
+        let effect = ctl.add_free_effect("builtin:filter").expect("a filter is added by itself");
+        assert_eq!(ctl.model.instruments.len(), lanes + 1);
+        let lane = ctl.model.instruments.last().unwrap();
+        assert!(lane.instrument.is_none());
+        assert_eq!((lane.range, lane.group, lane.volume, lane.transpose), (None, None, 1.0, 0));
+        assert_eq!(lane.effects.iter().map(|e| (e.node, e.name.as_str(), e.mix)).collect::<Vec<_>>(), [(effect, "Filter", 1.0)]);
+        // The lane's node is made first and the effect's next: what a redo gives back under the ids they had, in that order.
+        assert_eq!(effect.0, lane.node.0 + 1);
+        assert_eq!(sent(&engine), ["AddInstrument range=None".to_string(), format!("InsertEffect inst={lanes} index=0 plugin=Filter mix=1.000")]);
+        ctl.model.check_ids().unwrap();
+        // It goes at the end each time, in a lane of its own: two are two lanes, and not one chain.
+        ctl.add_free_effect("builtin:reverb").expect("and a reverb");
+        let chains: Vec<_> = ctl.model.instruments[lanes..].iter().map(|lane| lane.effects.len()).collect();
+        assert_eq!(chains, [1, 1]);
+    }
+
+    #[test]
+    fn an_effect_that_stands_by_itself_and_is_turned_away_leaves_no_lane_and_uses_no_id() {
+        let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
+        sent(&engine);
+        let untouched = load(testutil::CHAINS).model;
+        let error = ctl.add_free_effect_loaded(Box::new(testutil::MonoEffect), "test:mono").expect_err("one output").to_string();
+        assert!(error.contains("MonoEffect") && error.contains("1 audio output"), "{error}");
+        for what in ["builtin:osc", "./examples/plugin.clap", "clap:com.example.nothing"] {
+            assert!(ctl.add_free_effect(what).is_err(), "{what}");
+        }
+        assert!(sent(&engine).is_empty(), "no lane was made, on the audio thread or in the model");
+        // (The ids are part of what is compared: a lane that was made and taken out again, or an id that was handed out for the lane before the plugin was looked at, would show as a next id that is not the one there was.)
         testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
     }
 

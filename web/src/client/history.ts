@@ -159,7 +159,7 @@ export interface Removed {
 export type Plan = { step: Step } | { added: Added } | { removed: Removed } | "barrier" | "nothing";
 
 /**
- * The intent that takes out what `added`, an add that was carried out, made: the one node, or the one cable, as it is in `snapshot`; or null if it
+ * The intent that takes out what `added`, an add that was carried out, made: the one node, or the one cable (an effect that stands by itself: its lane), as it is in `snapshot`; or null if it
  * made something that cannot be named, or what it made is not there. As `takes_out` of the controller.
  */
 export function takesOut(snapshot: Snapshot, added: Intent, made: Made): Intent | null {
@@ -173,6 +173,12 @@ export function takesOut(snapshot: Snapshot, added: Intent, made: Made): Intent 
     const [edge, ...more] = made.edges;
     if (edge === undefined || more.length > 0 || made.nodes.length > 0) return null;
     return snapshot.graph.edges.some((e) => e.kind === "modulation" && e.id === edge) ? { type: "removeEdge", edge } : null;
+  }
+  // An effect that stands by itself makes the lane that holds it, and then the effect: it is the lane that is taken out, with the effect in it.
+  if (added.type === "addFreeEffect") {
+    const [lane, effect, ...rest] = made.nodes;
+    if (lane === undefined || effect === undefined || rest.length > 0 || made.edges.length > 0) return null;
+    return snapshot.graph.nodes.some((n) => n.id === lane && n.kind === "instrument") ? { type: "removeNode", node: lane } : null;
   }
   const [node, ...more] = made.nodes;
   if (node === undefined || more.length > 0) return null;
@@ -244,10 +250,16 @@ function fieldOf(node: Node, field: ModulatorField): number | undefined {
   return undefined;
 }
 
-/** What a lane or a group is called in the words of a step: "the lane of Oscillator", "an empty lane", or the group's name. As `lane_words` of the controller. */
-function laneOrGroupWords(node: Extract<Node, { kind: "instrument" | "group" }>): string {
+/**
+ * What a lane or a group is called in the words of a step: "the lane of Oscillator", the group's name, or, for a lane that has no instrument, what it holds: the name of its one effect, "a chain of effects" for more
+ * and "an empty lane" for none. As `lane_words` of the controller.
+ */
+function laneOrGroupWords(nodes: readonly Node[], node: Extract<Node, { kind: "instrument" | "group" }>): string {
   if (node.kind === "group") return node.name;
-  return node.plugin ? `the lane of ${node.name}` : "an empty lane";
+  if (node.plugin) return `the lane of ${node.name}`;
+  const [only, ...more] = nodes.filter((n) => n.kind === "effect" && n.parent === node.id);
+  if (only === undefined) return "an empty lane";
+  return more.length === 0 ? only.name : "a chain of effects";
 }
 
 /**
@@ -320,18 +332,18 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
     case "setMute": {
       const node = nodeOf(intent.node);
       if ((node?.kind !== "instrument" && node?.kind !== "group") || node.muted === intent.muted) return "nothing";
-      return step(`${intent.muted ? "mute" : "unmute"} ${laneOrGroupWords(node)}`, { type: "setMute", node: intent.node, muted: node.muted }, null);
+      return step(`${intent.muted ? "mute" : "unmute"} ${laneOrGroupWords(snapshot.graph.nodes, node)}`, { type: "setMute", node: intent.node, muted: node.muted }, null);
     }
     case "setSolo": {
       const node = nodeOf(intent.node);
       if ((node?.kind !== "instrument" && node?.kind !== "group") || node.solo === intent.solo) return "nothing";
-      return step(`${intent.solo ? "solo" : "unsolo"} ${laneOrGroupWords(node)}`, { type: "setSolo", node: intent.node, solo: node.solo }, null);
+      return step(`${intent.solo ? "solo" : "unsolo"} ${laneOrGroupWords(snapshot.graph.nodes, node)}`, { type: "setSolo", node: intent.node, solo: node.solo }, null);
     }
     // (As a mute is: what is neither a lane nor a group is refused, and a way out that is as it is asked to be changes nothing.)
     case "setRoute": {
       const node = nodeOf(intent.node);
       if ((node?.kind !== "instrument" && node?.kind !== "group") || node.route === intent.route) return "nothing";
-      const words = laneOrGroupWords(node);
+      const words = laneOrGroupWords(snapshot.graph.nodes, node);
       return step(intent.route === "none" ? `cut the way out of ${words}` : `give ${words} its way out`, { type: "setRoute", node: intent.node, route: node.route }, null);
     }
     // (As a way out is: what is no effect is refused, and a feed that is as it is asked to be changes nothing.)
@@ -380,6 +392,11 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       const name = catalogName(intent.plugin);
       return name === undefined ? "nothing" : added(`add ${name} as an instrument`);
     }
+    // (As an effect that goes in a chain: the words of the button that adds one. Undo takes the lane that holds it out with it.)
+    case "addFreeEffect": {
+      const name = catalogName(intent.plugin);
+      return name === undefined ? "nothing" : added(`add ${name}`);
+    }
     case "addModulator":
       return added(`add ${MODULATOR_LABELS[intent.kind]}`);
     case "addModEdge":
@@ -425,7 +442,7 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       // comes back with them, at its place among the lanes and in its group (the controller's `Inverse::Lane`). None of those cables is on a cycle of cables that drive each other's
       // depths: a cable drives one thing, and those of its group drive a place in the lane, so the ones that drive their depths are a tree of drivers. (A lane with no instrument
       // is "an empty lane".)
-      if (node?.kind === "instrument") return { removed: { label: `remove ${laneOrGroupWords(node)}`, intent, at: now } };
+      if (node?.kind === "instrument") return { removed: { label: `remove ${laneOrGroupWords(snapshot.graph.nodes, node)}`, intent, at: now } };
       // A source of notes goes with the cables of notes that start at it, and comes back with them, at its place among the sources (the controller's `Inverse::Source`), in the words of the button that
       // adds one: the keys, or the device by its name (what the node is called).
       if (node?.kind === "source") return { removed: { label: `remove ${node.name}`, intent, at: now } };
@@ -437,7 +454,7 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
         const parentOf = new Map(nodes.map((n) => [n.id, n.parent]));
         const own = edges.flatMap((e) => (isModulation(e) && parentOf.get(e.from.node) === node.id ? [e.id] : []));
         if (drivesRoundToItself(edges, cablesThatGo(edges, own))) return "barrier";
-        return { removed: { label: `remove ${laneOrGroupWords(node)}`, intent, at: now } };
+        return { removed: { label: `remove ${laneOrGroupWords(snapshot.graph.nodes, node)}`, intent, at: now } };
       }
       if (node?.kind !== "modulator") return node ? "barrier" : "nothing";
       // The cables that go with it: its own, those that drive its settings and those that drive the depth of any of them (`removeNodeOutcome`).

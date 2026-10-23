@@ -185,9 +185,15 @@ fn plugins_of(lane: &InstrumentNode) -> usize {
     usize::from(lane.instrument.is_some()) + lane.effects.len()
 }
 
-/// What a lane is called in the words of a button and of a refusal: "the lane of Oscillator", or "an empty lane" if it has no instrument.
+/// What a lane is called in the words of a button and of a refusal: "the lane of Oscillator"; with no instrument (step 87) what it holds, "Reverb" for the one effect
+/// that stands by itself in it and "a chain of effects" for more, and "an empty lane" if it holds nothing.
 pub(super) fn lane_words(lane: &InstrumentNode) -> String {
-    lane.instrument.as_ref().map_or_else(|| "an empty lane".to_string(), |instrument| format!("the lane of {}", instrument.name))
+    match (&lane.instrument, lane.effects.as_slice()) {
+        (Some(instrument), _) => format!("the lane of {}", instrument.name),
+        (None, []) => "an empty lane".to_string(),
+        (None, [effect]) => effect.name.clone(),
+        (None, _) => "a chain of effects".to_string(),
+    }
 }
 
 /// A cable as the audio thread is told of it when it goes in, centred on `base_value`.

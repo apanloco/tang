@@ -668,6 +668,39 @@ function addEffectOutcome(snapshot: Snapshot, parent: NodeId, plugin: string, co
 }
 
 /**
+ * An effect that stands by itself, as the controller adds one (`Controller::add_free_effect`): a lane of its own at the end of the session, with no instrument (`(empty)`, no plugin), full range and in no group,
+ * and the effect as the whole of its chain. The plugin is looked at first, as an effect that goes in a chain is (a plugin that is refused leaves no lane and uses no id), and then the lane's node is made, and the effect's
+ * (a redo gives the ids back in that order). The graph lists the lanes with their effects, and the master last, so both go before the master; the audio path is made again from the nodes (`relinked`: the
+ * lane to its effect, the effect to the master, after the links of the lanes there were); and the layout of the telemetry gets the lane's two meters, a peak and a clip count, after those of the lanes there are.
+ */
+function addFreeEffectOutcome(snapshot: Snapshot, plugin: string, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
+  const entry = catalog.find((e) => e.id === plugin);
+  if (!entry) return invalid(`${plugin} is not a plugin that is installed`);
+  if (entry.isInstrument) return invalid(`${entry.name} is an instrument, not an effect`);
+  const made = builtinEffects[plugin];
+  if (!made) return invalid(`${entry.name} could not be loaded`);
+  const { nodes, edges } = snapshot.graph;
+  const master = nodes.find((n) => n.kind === "master");
+  if (!master) return invalid("the session has no master to hear a lane");
+
+  const lane: Node = { id: counters.node(), parent: null, name: "(empty)", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, route: "out", pattern: null };
+  const effect: Node = { id: counters.node(), parent: lane.id, name: made.name, kind: "effect", plugin: made.plugin, mix: made.mix, feed: made.feed };
+  const atNode = nodes.indexOf(master);
+  const grown: Graph = { nodes: [...nodes.slice(0, atNode), lane, effect, ...nodes.slice(atNode)], edges };
+  const meters: LayoutEntry[] = [
+    { slot: counters.slot(), node: lane.id, port: { type: "audioOut" }, kind: "peak" },
+    { slot: counters.slot(), node: lane.id, port: { type: "audioOut" }, kind: "clips" },
+  ];
+  return {
+    restructured: {
+      ...snapshot,
+      graph: { nodes: grown.nodes, edges: relinked(grown) },
+      telemetry: { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, meters: [...snapshot.telemetry.meters, ...meters] },
+    },
+  };
+}
+
+/**
  * The instrument `plugin` as the controller makes a node of it (`load_from_catalog`): the plugin has to be one the catalog names
  * (the mock's, `catalog`), an instrument and not an effect, and one the mock can make a node of (the built-ins: the controller's
  * own nodes, as a fixture); or why not.
@@ -1054,6 +1087,7 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "setFeed") return setFeedOutcome(snapshot, intent.node, intent.feed);
   if (intent.type === "addGroup") return addGroupOutcome(snapshot, intent.members, counters);
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
+  if (intent.type === "addFreeEffect") return addFreeEffectOutcome(snapshot, intent.plugin, counters, catalog);
   if (intent.type === "addInstrument") return addInstrumentOutcome(snapshot, intent.plugin, counters, catalog);
   if (intent.type === "replaceInstrument") return replaceInstrumentOutcome(snapshot, intent.node, intent.plugin, catalog);
   if (intent.type === "clearInstrument") return clearInstrumentOutcome(snapshot, intent.node);

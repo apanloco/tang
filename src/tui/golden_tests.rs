@@ -633,6 +633,43 @@ fn popup_effect_selector_while_scanning() {
 }
 
 #[test]
+fn popup_free_effect_selector_while_scanning() {
+    // `N`: the effect picker for an effect that stands by itself, mid-scan, with the built-in catalog already in: it lists the effects and has a title of its own.
+    let mut h = Harness::new(scene_split());
+    h.start_scan();
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    h.press(KeyCode::Char('N'));
+    assert_golden("popup_free_effect_selector_while_scanning", &mut h);
+}
+
+#[test]
+fn capital_n_belongs_to_the_session_tab_and_opens_nothing_on_the_others() {
+    for tab in ['2', '3', '4', '5'] {
+        let mut h = Harness::new(scene_split());
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        h.press(KeyCode::Char(tab)).press(KeyCode::Char('N'));
+        assert!(h.s.selector.is_none(), "tab {tab}");
+        assert_eq!(h.commands(), Vec::<String>::new(), "tab {tab}");
+    }
+}
+
+#[test]
+fn popup_free_effect_selector_when_the_scan_is_done_has_the_title_of_its_own_and_no_word_of_a_scan() {
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    h.press(KeyCode::Char('N'));
+    let frame = h.dump();
+    assert!(frame.contains("Select Free Effect"), "{frame}");
+    assert!(!frame.contains("scanning"), "{frame}");
+}
+
+#[test]
+fn the_help_tab_lists_the_key_that_adds_an_effect_that_stands_by_itself() {
+    let h = Harness::new(scene_split());
+    assert!(h.s.help_lines.iter().any(|line| line.trim_start().starts_with("N ") && line.contains("Add an effect that stands by itself")), "{:?}", h.s.help_lines);
+}
+
+#[test]
 fn popup_group_target_selector() {
     // `t` on a group modulator: member params, member modulators, bus effects
     // and sibling modulators, each labelled by owner.
@@ -1746,6 +1783,44 @@ fn adding_a_group_effect_from_the_selector() {
     h.press(KeyCode::Char('a')).type_chars("filter").press(KeyCode::Enter);
     assert_eq!(h.commands(), ["InsertGroupEffect group=0 index=1 plugin=Filter mix=1.000"]);
     assert!(h.tree().contains(&"  fx Filter  [Built-in]  (bus)"));
+}
+
+#[test]
+fn capital_n_adds_an_effect_that_stands_by_itself_in_a_lane_of_its_own() {
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    let lanes = h.s.ctl.model.instruments.len();
+    h.press(KeyCode::Char('N'));
+    // The selector lists the effects and no instrument, wherever the cursor is, and nothing is made until one is chosen.
+    let selector = h.s.selector.as_ref().expect("the selector is open");
+    assert_eq!(selector.mode, SelectorMode::FreeEffect);
+    assert!(!selector.items.is_empty() && selector.items.iter().all(|item| item.cells[0] != "Oscillator"));
+    assert_eq!(h.commands(), Vec::<String>::new());
+    h.type_chars("filter").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["AddInstrument range=None", "InsertEffect inst=2 index=0 plugin=Filter mix=1.000"]);
+    assert!(h.s.selector.is_none());
+    // A lane that has no instrument and the effect for its chain, at the end of the session.
+    assert_eq!(h.s.ctl.model.instruments.len(), lanes + 1);
+    let lane = &h.s.ctl.model.instruments[lanes];
+    assert!(lane.instrument.is_none());
+    assert_eq!(lane.effects.iter().map(|effect| effect.name.as_str()).collect::<Vec<_>>(), ["Filter"]);
+    let tree = h.tree();
+    let at = tree.iter().position(|line| line.contains("(empty)")).expect("the lane is in the tree, with no instrument");
+    assert!(tree[at + 1].contains("fx Filter"), "{tree:#?}");
+}
+
+#[test]
+fn capital_n_is_for_the_chain_and_the_selector_is_shut_by_escape_with_nothing_made() {
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    let lanes = h.s.ctl.model.instruments.len();
+    // (Not in a field of the parameters, where a capital is text.)
+    h.press(KeyCode::Char('N')).press(KeyCode::Esc);
+    assert!(h.s.selector.is_none());
+    assert_eq!(h.commands(), Vec::<String>::new());
+    assert_eq!(h.s.ctl.model.instruments.len(), lanes);
+    h.press(KeyCode::Enter).press(KeyCode::Char('N'));
+    assert!(h.s.selector.is_none(), "with the focus in the parameters the key is not the chain's");
 }
 
 #[test]
@@ -6185,6 +6260,23 @@ mod undo_and_redo {
         assert!(h.s.ctl.model.instruments[0].effects.is_empty());
         ctrl_y(&mut h);
         assert_eq!(h.commands(), ["InsertEffect inst=0 index=0 plugin=Reverb mix=0.500"]);
+        assert!(h.tree().iter().any(|line| line.contains("fx Reverb")), "{:#?}", h.tree());
+    }
+
+    #[test]
+    fn an_effect_that_stands_by_itself_is_a_step_that_ctrl_z_takes_out_with_its_lane_and_ctrl_y_puts_back() {
+        let mut h = Harness::new(scene_split());
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        let lanes = h.s.ctl.model.instruments.len();
+        h.press(KeyCode::Char('N')).type_chars("reverb").press(KeyCode::Enter);
+        assert_eq!(h.commands(), ["AddInstrument range=None", "InsertEffect inst=2 index=0 plugin=Reverb mix=0.500"]);
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add Reverb"));
+        ctrl_z(&mut h);
+        assert_eq!(h.commands(), ["RemoveInstrument inst=2 keep"]);
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes);
+        assert!(h.tree().iter().all(|line| !line.contains("(empty)")), "{:#?}", h.tree());
+        ctrl_y(&mut h);
+        assert_eq!(h.commands(), ["AddInstrument range=None", "InsertEffect inst=2 index=0 plugin=Reverb mix=0.500"]);
         assert!(h.tree().iter().any(|line| line.contains("fx Reverb")), "{:#?}", h.tree());
     }
 

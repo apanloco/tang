@@ -253,6 +253,52 @@ describe("adding an effect", () => {
   });
 });
 
+describe("adding an effect that stands by itself", () => {
+  test("resolves with the node of the effect it made, which is the only one of a lane of its own that has no instrument, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    const id = await editor.addFreeEffect("builtin:reverb");
+    // (The lane's node is made first, and the effect's next.)
+    expect(id).toBe(4);
+    const nodes = client.state.snapshot?.graph.nodes ?? [];
+    expect(nodes.find((n) => n.id === 3)).toMatchObject({ kind: "instrument", parent: null, name: "(empty)", plugin: null, range: null, pattern: null, muted: false, solo: false, route: "out" });
+    expect(nodes.find((n) => n.id === id)).toMatchObject({ kind: "effect", parent: 3, name: "Reverb", mix: 0.5 });
+    expect(said(notices)).toEqual([]);
+    // The next goes in a lane of its own again: two nodes more.
+    expect(await editor.addFreeEffect("builtin:filter")).toBe(6);
+    expect(client.state.snapshot?.graph.nodes.find((n) => n.id === 5)).toMatchObject({ kind: "instrument", plugin: null });
+  });
+
+  test("takes the effect that is new to the session, which is its own, when another front-end added one just before", async () => {
+    const { server, editor } = await open();
+    server.apply({ type: "addFreeEffect", plugin: "builtin:filter" });
+    const id = await editor.addFreeEffect("builtin:reverb");
+    expect(id).toBe(6);
+    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "effect" && n.parent !== oscillator.id).map((n) => [n.id, n.name])).toEqual([[4, "Filter"], [6, "Reverb"]]);
+  });
+
+  test("is refused for a plugin that is not installed or is an instrument: it resolves with null, the page says what it could not do and why, and nothing is made", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.addFreeEffect("./examples/plugin.clap")).toBeNull();
+    expect(await editor.addFreeEffect("builtin:osc")).toBeNull();
+    expect(said(notices)).toEqual([
+      "Could not add ./examples/plugin.clap as an effect of its own: ./examples/plugin.clap is not a plugin that is installed",
+      "Could not add Oscillator as an effect of its own: Oscillator is an instrument, not an effect",
+    ]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.addFreeEffect("builtin:reverb")).toBeNull();
+    expect(said(notices)).toEqual(["Could not add Reverb as an effect of its own: Not connected to the server."]);
+  });
+
+  test("has the words that a request that is refused with nothing more known of it has", () => {
+    expect(refusal({ type: "addFreeEffect", plugin: "builtin:reverb" }, new Error("Reverb is not a plugin that is installed"))).toBe("Could not add an effect of its own: Reverb is not a plugin that is installed");
+  });
+});
+
 describe("adding an instrument", () => {
   test("resolves with the node of the lane it made, which is in the session then, and says nothing", async () => {
     const { client, notices, editor } = await open();
@@ -1225,6 +1271,13 @@ describe("showing what was added", () => {
     const lane = await editor.addInstrument("builtin:osc");
     expect(shown).toEqual([lfo, effect, lane]);
     expect(shown).toEqual([3, 4, 5]);
+  });
+
+  test("is asked for the effect that stands by itself, and not for the lane that holds it, which has no card on the canvas", async () => {
+    const { editor, shown } = await open();
+    const effect = await editor.addFreeEffect("builtin:reverb");
+    expect(shown).toEqual([effect]);
+    expect(shown).toEqual([4]);
   });
 
   test("is not asked for what was refused, nor for what was not added but changed or taken out, nor for a cable", async () => {

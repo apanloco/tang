@@ -48,6 +48,7 @@ const DOING: Record<Intent["type"], string> = {
   addSource: "add a source of notes",
   setCableGain: "change the level of an audio cable",
   addEffect: "add an effect",
+  addFreeEffect: "add an effect of its own",
   addInstrument: "add an instrument",
   replaceInstrument: "change the instrument of a lane",
   clearInstrument: "take an instrument out of its lane",
@@ -127,6 +128,18 @@ export class Editor {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
     if (!(await this.#attempt(`add ${this.#pluginName(plugin)} to ${this.#name(parent)}`, { type: "addEffect", parent, plugin }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "effect" && node.parent === parent && !before.has(node.id));
+    return this.#shown(added?.at(-1)?.id);
+  }
+
+  /**
+   * Add the plugin `plugin` (the `id` of an entry of the catalog the server told) as an effect that stands by itself: a lane of its own at the end of the session that holds it and has no instrument, so that
+   * what the effect is fed is what cables bring. Resolves with the id of the effect it made (the lane is the effect's holder, and the canvas draws no card for it), which the canvas is asked to show, or with null
+   * if it was refused (the page says why). As for `addModulator`: the node is the last effect the session did not have before.
+   */
+  async addFreeEffect(plugin: string): Promise<NodeId | null> {
+    const before = new Set(this.#graph?.nodes.map((node) => node.id));
+    if (!(await this.#attempt(`add ${this.#pluginName(plugin)} as an effect of its own`, { type: "addFreeEffect", plugin }))) return null;
+    const added = this.#graph?.nodes.filter((node) => node.kind === "effect" && !before.has(node.id));
     return this.#shown(added?.at(-1)?.id);
   }
 

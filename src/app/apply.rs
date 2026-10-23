@@ -100,6 +100,7 @@ impl Controller {
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
             Intent::MoveEffect { node, index } => self.move_effect_intent(node, index)?,
             Intent::AddEffect { parent, plugin } => self.add_effect_intent(parent, &plugin)?,
+            Intent::AddFreeEffect { plugin } => self.add_free_effect_intent(&plugin)?,
             Intent::AddInstrument { plugin } => self.add_instrument_intent(&plugin)?,
             Intent::ReplaceInstrument { node, plugin } => self.replace_instrument_intent(node, &plugin)?,
             Intent::ClearInstrument { node } => self.clear_instrument_intent(node)?,
@@ -834,6 +835,11 @@ impl Controller {
             NodePath::Group(group) => self.add_bus_effect(group, plugin)?,
             _ => return Err(invalid("an effect goes in a lane or in a group")),
         };
+        Ok(Done::Restructured)
+    }
+
+    fn add_free_effect_intent(&mut self, plugin: &str) -> Result<Done, IntentError> {
+        self.add_free_effect(plugin)?;
         Ok(Done::Restructured)
     }
 
@@ -5984,6 +5990,101 @@ type = "midi"
             assert_eq!(add_effect(&mut ctl, parent, plugin), Err(error), "{what}");
         }
         assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
+        assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    // -- AddFreeEffect --
+
+    fn add_free_effect(ctl: &mut Controller, plugin: &str) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::AddFreeEffect { plugin: plugin.to_string() })
+    }
+
+    #[test]
+    fn add_free_effect_adds_a_lane_of_its_own_that_holds_the_effect_in_the_model_and_the_engine() {
+        let (engine, mut ctl) = controller_with_builtins();
+        sent(&engine);
+        let applied = add_free_effect(&mut ctl, "builtin:filter").unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(sent(&engine), ["AddInstrument range=None", "InsertEffect inst=2 index=0 plugin=Filter mix=1.000"]);
+        assert_eq!(ctl.model.instruments.len(), 3);
+        let lane = &ctl.model.instruments[2];
+        assert!(lane.instrument.is_none());
+        assert_eq!((lane.range, lane.group, lane.volume, lane.route), (None, None, 1.0, Route::Out));
+        let chain: Vec<_> = lane.effects.iter().map(|e| (e.name.as_str(), e.mix, e.fed)).collect();
+        assert_eq!(chain, [("Filter", 1.0, true)], "fed by the chain, as every effect is to begin with");
+        assert_eq!(lane.effects[0].node.0, lane.node.0 + 1, "the lane's node, and then the effect's");
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+        // It is an effect like any other: a node that a client names, whose parameters the intents reach.
+        let fx = ctl.model.instruments[2].effects[0].node;
+        assert_eq!(ctl.model.locate(fx), Some(NodePath::Effect { inst: 2, index: 0 }));
+        let (cutoff, _) = param(&ctl, NodePath::Effect { inst: 2, index: 0 }, "cutoff");
+        ctl.apply(Intent::SetParam { node: fx, param: cutoff, value: 0.25 }).unwrap();
+        assert_eq!(sent(&engine), ["SetParameter inst=2 slot=1 param=0 value=0.250"]);
+    }
+
+    #[test]
+    fn the_graph_after_adding_a_free_effect_has_an_empty_lane_and_the_effect_after_it_and_both_in_the_audio_path_to_the_master() {
+        use crate::app::graph::EdgeKind;
+        use crate::app::layout::SlotKind;
+        let (_engine, mut ctl) = controller_with_builtins();
+        let before = ctl.model.graph();
+        add_free_effect(&mut ctl, "builtin:filter").unwrap();
+        let (lane, fx) = (ctl.model.instruments[2].node, ctl.model.instruments[2].effects[0].node);
+        let graph = ctl.model.graph();
+        let head = graph.nodes.iter().find(|n| n.id == lane).unwrap();
+        assert_eq!((head.parent, head.name.as_str()), (None, "(empty)"));
+        assert!(matches!(&head.kind, NodeKind::Instrument { plugin: None, range: None, .. }), "{head:?}");
+        let filter = graph.nodes.iter().find(|n| n.id == fx).unwrap();
+        assert_eq!((filter.parent, filter.name.as_str()), (Some(lane), "Filter"));
+        // The audio goes from the lane to its effect and from the effect to the master, after the links that the lanes there were have.
+        let audio = |graph: &crate::app::graph::Graph| -> Vec<(NodeId, NodeId)> {
+            graph.edges.iter().filter(|e| !matches!(e.kind, EdgeKind::Modulation { .. })).map(|e| (e.from.node, e.to.node)).collect()
+        };
+        let (before_audio, audio) = (audio(&before), audio(&graph));
+        assert_eq!(audio.len(), before_audio.len() + 2);
+        assert_eq!(audio[audio.len() - 2..], [(lane, fx), (fx, NodeId::MASTER)]);
+        // The lane has a meter of its own in the layout, after the others.
+        let meters = ctl.model.telemetry_layout().meters;
+        let mine: Vec<_> = meters.iter().filter(|m| m.node == lane).map(|m| (m.port, m.kind)).collect();
+        assert_eq!(mine, [(Port::AudioOut, SlotKind::Peak), (Port::AudioOut, SlotKind::Clips)]);
+        assert_eq!(meters[meters.len() - 2].node, lane, "the last two entries are the new lane's");
+    }
+
+    #[test]
+    fn a_cable_can_be_drawn_into_a_free_effect_and_out_of_it_as_soon_as_it_has_been_added() {
+        let (engine, mut ctl) = controller_with_builtins();
+        let lane0 = lane(&ctl);
+        add_free_effect(&mut ctl, "builtin:filter").unwrap();
+        let (holder, fx) = (ctl.model.instruments[2].node, ctl.model.instruments[2].effects[0].node);
+        sent(&engine);
+        // The instrument of lane 0 into the filter, and the filter to the mix: a free effect is fed by cables.
+        draw(&mut ctl, out(lane0), into(fx), None).unwrap();
+        draw(&mut ctl, out(fx), into(NodeId::MASTER), Some(0.5)).unwrap();
+        assert_eq!(sent(&engine).len(), 2);
+        assert_eq!(ctl.model.cables.iter().map(|c| (c.from, c.to)).collect::<Vec<_>>(), [(CableFrom::Instrument(lane0), CableTo::Effect(fx)), (CableFrom::Effect(fx), CableTo::Master)]);
+        // With the lane's way out cut, the filter is heard through its cable only: the lane is the effect's holder, and its way out is the effect's.
+        ctl.apply(Intent::SetRoute { node: holder, route: Route::None }).unwrap();
+        assert_eq!(ctl.model.instruments[2].route, Route::None);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_free_effect_refuses_what_it_cannot_do_and_changes_nothing() {
+        let (engine, mut ctl) = controller_with_builtins();
+        sent(&engine);
+        let untouched = load(SESSION).model;
+        let cases = [
+            ("an instrument", "builtin:osc", invalid("Oscillator is an instrument, not an effect")),
+            ("a path", "./examples/plugin.clap", invalid("./examples/plugin.clap is not a plugin that is installed")),
+            ("an id the catalog does not have", "clap:com.example.nothing", invalid("clap:com.example.nothing is not a plugin that is installed")),
+        ];
+        for (what, plugin, error) in cases {
+            assert_eq!(add_free_effect(&mut ctl, plugin), Err(error), "{what}");
+        }
+        assert!(sent(&engine).is_empty(), "nothing reached the audio thread, and no lane was made");
         assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
         testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
     }

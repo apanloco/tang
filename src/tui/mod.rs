@@ -255,6 +255,8 @@ fn patch_action_items() -> Vec<(&'static str, &'static str)> {
 enum SelectorMode {
     Instrument,
     Effect,
+    /// Add an effect that stands by itself, in a lane of its own (step 87).
+    FreeEffect,
     /// Add an effect to a group's bus chain.
     GroupEffect(usize),
 }
@@ -834,7 +836,7 @@ impl State {
             .enumerate()
             .filter(|(_, e)| match mode {
                 SelectorMode::Instrument => e.is_instrument,
-                SelectorMode::Effect | SelectorMode::GroupEffect(_) => !e.is_instrument,
+                SelectorMode::Effect | SelectorMode::FreeEffect | SelectorMode::GroupEffect(_) => !e.is_instrument,
             })
             .map(|(i, e)| {
                 let fmt = format_from_id(&e.id);
@@ -910,6 +912,7 @@ impl State {
                 let Some(lane) = self.ctl.model.instruments.get(inst) else { return };
                 Intent::AddEffect { parent: lane.node, plugin: source }
             }
+            SelectorMode::FreeEffect => Intent::AddFreeEffect { plugin: source },
             SelectorMode::GroupEffect(group) => {
                 let Some(bus) = self.ctl.model.groups.get(group) else { return };
                 Intent::AddEffect { parent: bus.node, plugin: source }
@@ -2559,6 +2562,14 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
+        // 'N' — add an effect that stands by itself (step 87): the selector lists the
+        // effects, and the one that is chosen goes in a lane of its own that has no
+        // instrument (`AddFreeEffect`, a step of the history), where cables bring what
+        // it is fed. Wherever the cursor is.
+        KeyCode::Char('N') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            s.open_selector(SelectorMode::FreeEffect);
+        }
+
         // 'R' — set the key range of the selected instrument, or rename the
         // selected group (range doesn't apply to groups).
         KeyCode::Char('R') if s.active_tab == TAB_SESSION && !s.focus_params => {
@@ -3937,6 +3948,8 @@ fn render_selector_popup(
         (SelectorMode::Instrument, true) => " Select Instrument (scanning…) ",
         (SelectorMode::Effect, false) => " Select Effect ",
         (SelectorMode::Effect, true) => " Select Effect (scanning…) ",
+        (SelectorMode::FreeEffect, false) => " Select Free Effect ",
+        (SelectorMode::FreeEffect, true) => " Select Free Effect (scanning…) ",
         (SelectorMode::GroupEffect(_), false) => " Select Group Effect ",
         (SelectorMode::GroupEffect(_), true) => " Select Group Effect (scanning…) ",
     };
@@ -4759,6 +4772,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  w          Cut / give back the way out of the lane or group (it is heard only through its audio cables)".into(),
         "  f          Cut / give back the link into the effect (it is fed by its audio cables and by nothing else)".into(),
         "  a          Add effect after selected".into(),
+        "  N          Add an effect that stands by itself (in a lane of its own; cables feed it)".into(),
         "  d          Delete selected".into(),
         "  m          Add modulator (lane rack; group rack on a group node)".into(),
         "  g          Assign instrument to a group (submix bus)".into(),
