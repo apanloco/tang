@@ -167,24 +167,28 @@ describe("the way out of a lane or a group", () => {
   });
 });
 
-// The link that is a way out (the end of a lane's chain, or of a group's, to the group or the master) is the one link of the audio path that can be cut, and it has the button that does it, at its middle,
-// as every cable that a person can take out has: the same as the button in the cell, which is the one that gives it back.
+// The link that is a way out (the end of a lane's chain, or of a group's, to the group or the master) has a button that cuts it, at its middle, as every cable that a person can take out has: the same as
+// the button in the cell, which is the one that gives it back. (The links into the effects of a chain have a button too, which cuts the input of the effect: `Feed.test.tsx`.)
 
 /** The button on the link of a way out, by the words of the link (`Filter → Master`). */
 const disconnect = (words: string) => screen.findByRole("button", { name: `Disconnect ${words}` });
 
+/** The buttons on the links that are a way out: the ones that go into a group or the master. */
+const waysOut = () => screen.getAllByRole("button", { name: /^Disconnect .* → (Master|Group \d+)$/ });
+
 describe("the link of a way out", () => {
-  test("has a button that disconnects it, and no other link of the audio path has one: the links inside a chain are the template's", async () => {
-    // (The tracer's lane: its instrument goes to its filter, which is a link inside the chain, and the filter goes to the master, which is the way out.)
+  test("has a button that disconnects it, and so has every link into an effect, which cuts the input of the effect and not the way out", async () => {
+    // (The tracer's lane: its instrument goes to its filter, which is a link into an effect, and the filter goes to the master, which is the way out.)
     await rig(<PatchView />);
     expect(await disconnect("Filter → Master")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: /^Disconnect / })).toHaveLength(1);
+    expect(waysOut()).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^Disconnect / })).toHaveLength(2);
   });
 
   test("is on the link of every lane and every group, an empty lane too, from the end of the chain: the last effect, or the instrument if the lane has none", async () => {
     await rig(<PatchView />, { snapshot: reachFixture.snapshot });
     await disconnect("(empty) → Master");
-    expect(screen.getAllByRole("button", { name: /^Disconnect / }).map((button) => button.getAttribute("aria-label"))).toEqual([
+    expect(waysOut().map((button) => button.getAttribute("aria-label"))).toEqual([
       "Disconnect Filter 1 → Master",
       "Disconnect Reverb 1 → Master",
       "Disconnect Filter 2 → Group 1",
@@ -198,7 +202,7 @@ describe("the link of a way out", () => {
   test("is not on a link that is not there: a way out that is cut has no link, and so no button, and has it again when it is given back", async () => {
     await rig(<PatchView />, { snapshot: cutAt(tracerSnapshot, oscillator.id) });
     await wayOut();
-    expect(screen.queryByRole("button", { name: /^Disconnect / })).toBeNull();
+    expect(screen.queryAllByRole("button", { name: /^Disconnect .* → (Master|Group \d+)$/ })).toHaveLength(0);
     fireEvent.click(await wayOut());
     expect(await disconnect("Filter → Master")).toBeTruthy();
   });
@@ -207,7 +211,7 @@ describe("the link of a way out", () => {
     const { requests } = await rig(<PatchView />);
     fireEvent.click(await disconnect("Filter → Master"));
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: /^Disconnect / })).toBeNull();
+      expect(screen.queryAllByRole("button", { name: /^Disconnect .* → (Master|Group \d+)$/ })).toHaveLength(0);
     });
     // (The lane, not the filter that its chain ends in: a link is the way out of the lane, whatever node it starts at.)
     expect(requests().map((request) => request.intent)).toEqual([{ type: "setRoute", node: oscillator.id, route: "none" }]);

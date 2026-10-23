@@ -1626,20 +1626,36 @@ describe("the cables on the canvas", () => {
     expect(into && [into.type, into.sourceHandle, into.targetHandle]).toEqual(["audio", "audioOut", "audioIn"]);
   });
 
-  test("say whose way out a link is, and what it joins, where it goes from the end of a lane's chain or a group's to a group or the master, and say nothing of the links inside a chain", () => {
+  test("say whose way out a link is, and what it joins, where it goes from the end of a lane's chain or a group's to a group or the master, and which effect a link inside a chain is the feed of", () => {
     const flow = toFlow(grouped);
     const data = (id: string) => flow.edges.find((edge) => edge.id === id)?.data;
-    // The group's bus: its effect (11) goes on to the master, which is the group's way out; the group's own link to its effect is inside the chain.
-    expect(data("audio:10>11")).toEqual({});
+    // The group's bus: its effect (11) goes on to the master, which is the group's way out; the group's own link to its effect is the feed of that effect.
+    expect(data("audio:10>11")).toEqual({ feedOf: 11, label: "Group 10 → Effect 11" });
     expect(data(`audio:11>${String(MASTER)}`)).toEqual({ wayOut: 10, label: "Effect 11 → Master" });
-    // A lane in the group: from the end of its chain (the effect) to the group's bus, or from the instrument itself where the lane has no effect.
-    expect(data("audio:1>2")).toEqual({});
+    // A lane in the group: from the end of its chain (the effect) to the group's bus, or from the instrument itself where the lane has no effect; the link into its effect is that effect's feed.
+    expect(data("audio:1>2")).toEqual({ feedOf: 2, label: "Instrument 1 → Effect 2" });
     expect(data("audio:2>10")).toEqual({ wayOut: 1, label: "Effect 2 → Group 10" });
     expect(data("audio:3>10")).toEqual({ wayOut: 3, label: "Instrument 3 → Group 10" });
-    // A lane in no group: the last of its two effects goes to the master.
-    expect(data("audio:4>5")).toEqual({});
-    expect(data("audio:5>6")).toEqual({});
+    // A lane in no group: the last of its two effects goes to the master; the link into each of them is its feed, from the instrument or from the effect before.
+    expect(data("audio:4>5")).toEqual({ feedOf: 5, label: "Instrument 4 → Effect 5" });
+    expect(data("audio:5>6")).toEqual({ feedOf: 6, label: "Effect 5 → Effect 6" });
     expect(data(`audio:6>${String(MASTER)}`)).toEqual({ wayOut: 4, label: "Effect 6 → Master" });
+  });
+
+  test("say the feed of the effect that a link goes into, and not a way out, and of no link that goes into a group or the master or comes from a cable", () => {
+    // No link into an effect that is not fed: the effect that has none is the feed of nothing, and the link out of it is as it was.
+    const cut: Graph = {
+      nodes: grouped.nodes.map((n) => (n.id === 5 && n.kind === "effect" ? { ...n, feed: "none" as const } : n)),
+      edges: grouped.edges.filter((edge) => !(edge.from.node === 4 && edge.to.node === 5)),
+    };
+    const flow = toFlow(cut);
+    expect(flow.edges.some((edge) => edge.id === "audio:4>5")).toBe(false);
+    expect(flow.edges.find((edge) => edge.id === "audio:5>6")?.data).toEqual({ feedOf: 6, label: "Effect 5 → Effect 6" });
+    // Every link of the audio path is one or the other, or neither: a link into an effect is a feed, into a group or the master a way out.
+    for (const edge of toFlow(grouped).edges.filter((e) => e.type === "audio")) {
+      const into = grouped.nodes.find((n) => String(n.id) === edge.target)?.kind;
+      expect([edge.id, "feedOf" in (edge.data ?? {}), "wayOut" in (edge.data ?? {})]).toEqual([edge.id, into === "effect", into === "group" || into === "master"]);
+    }
   });
 
   test("say whose way out a lane's only link is when it has no effects: the lane's own", () => {

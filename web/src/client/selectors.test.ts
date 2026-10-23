@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, audioCablesFixture, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { audibleAt, cableDepthOf, cableGainOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, sameWayOut, stepsOf, wayOutOf } from "./selectors";
+import { audibleAt, cableDepthOf, cableGainOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, inputOf, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameInput, sameParamList, sameRemoval, sameStages, sameWayOut, stepsOf, wayOutOf } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -754,6 +754,73 @@ describe("the way out of a lane or a group", () => {
     expect(sameWayOut(undefined, undefined)).toBe(true);
     expect(sameWayOut(a, undefined)).toBe(false);
     expect(sameWayOut(undefined, a)).toBe(false);
+  });
+});
+
+describe("the input of an effect", () => {
+  const sends = stateOf(audioCablesFixture.snapshot);
+  /** `snapshot` with the feed of the effect `id` cut. */
+  const cut = (snapshot: Snapshot, id: number): ClientState => {
+    const copy = structuredClone(snapshot);
+    const node = copy.graph.nodes.find((n) => n.id === id);
+    if (node?.kind !== "effect") throw new Error("no effect");
+    node.feed = "none";
+    return stateOf(copy);
+  };
+
+  test("is fed by the stage before it in its chain, by the name that the canvas gives it: the lane's instrument for the first effect, the effect before it for the others, the group for the first of a bus", () => {
+    // The tracer: Oscillator's chain is its filter.
+    expect(inputOf(state, filter.id)).toEqual({ cut: false, from: "Oscillator" });
+    // The fixture: group 0 ("Pad") has Filter 1, Reverb 2 and Delay 3 on its bus; lane 4 has Filter 5 and Delay 6; lane 8 has Drive 9 (the canvas numbers the nodes that are called alike).
+    expect(inputOf(sends, 1)).toEqual({ cut: false, from: "Pad" });
+    expect(inputOf(sends, 2)).toEqual({ cut: false, from: "Filter 1" });
+    expect(inputOf(sends, 3)).toEqual({ cut: false, from: "Reverb" });
+    expect(inputOf(sends, 5)).toEqual({ cut: false, from: "Oscillator 1" });
+    expect(inputOf(sends, 6)).toEqual({ cut: false, from: "Filter 2" });
+    expect(inputOf(sends, 9)).toEqual({ cut: false, from: "Oscillator 2" });
+  });
+
+  test("is cut for the effect whose feed is none, and for that one only: the stage that would feed it is the same", () => {
+    expect(inputOf(cut(tracerSnapshot, filter.id), filter.id)).toEqual({ cut: true, from: "Oscillator" });
+    expect(inputOf(cut(audioCablesFixture.snapshot, 2), 2)).toEqual({ cut: true, from: "Filter 1" });
+    expect(inputOf(cut(audioCablesFixture.snapshot, 2), 3)).toEqual({ cut: false, from: "Reverb" });
+    expect(inputOf(cut(audioCablesFixture.snapshot, 2), 1)).toEqual({ cut: false, from: "Pad" });
+    // (The stage before is the stage before whether or not its own link is cut.)
+    expect(inputOf(cut(audioCablesFixture.snapshot, 5), 6)).toEqual({ cut: false, from: "Filter 2" });
+  });
+
+  test("is fed by a lane that has no instrument by the name that the canvas gives such a lane", () => {
+    const copy = structuredClone(tracerSnapshot);
+    const lane = copy.graph.nodes.find((n) => n.id === oscillator.id);
+    if (lane?.kind !== "instrument") throw new Error("no lane");
+    lane.plugin = null;
+    lane.name = "(empty)";
+    expect(inputOf(stateOf(copy), filter.id)).toEqual({ cut: false, from: "(empty)" });
+  });
+
+  test("is fed by \"the chain\" when the stage before it is not there: an effect whose lane or group is not in the graph", () => {
+    const copy = structuredClone(tracerSnapshot);
+    const orphan = copy.graph.nodes.find((n) => n.id === filter.id);
+    if (orphan?.kind !== "effect") throw new Error("no effect");
+    orphan.parent = 777;
+    expect(inputOf(stateOf(copy), filter.id)).toEqual({ cut: false, from: "the chain" });
+  });
+
+  test("is none for what is no effect: a lane, a modulator, the master, a node that is not there, and before there is a session", () => {
+    for (const node of [oscillator.id, lfo.id, MASTER, 424242]) expect(inputOf(state, node), `node ${String(node)}`).toBeUndefined();
+    expect(inputOf(stateOf(null), filter.id)).toBeUndefined();
+  });
+
+  test("is the same input when both say the same, and not otherwise", () => {
+    const a = inputOf(state, filter.id);
+    const b = inputOf(state, filter.id);
+    expect(a).not.toBe(b);
+    expect(sameInput(a, b)).toBe(true);
+    expect(sameInput(a, inputOf(cut(tracerSnapshot, filter.id), filter.id))).toBe(false);
+    expect(sameInput(inputOf(sends, 2), inputOf(sends, 3))).toBe(false); // the same flag, and another stage before it
+    expect(sameInput(undefined, undefined)).toBe(true);
+    expect(sameInput(a, undefined)).toBe(false);
+    expect(sameInput(undefined, a)).toBe(false);
   });
 });
 

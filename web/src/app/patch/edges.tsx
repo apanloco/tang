@@ -11,7 +11,7 @@ import { useClientState, useEditor } from "../ClientProvider";
 import { focusWhenPossible } from "../focus";
 import { useCableLight } from "./cableLight";
 import { cableRoute } from "./cableRoute";
-import { CableDepthControl, CableLevelControl, drivesId, wayOutId } from "./controls";
+import { CableDepthControl, CableLevelControl, drivesId, feedId, wayOutId } from "./controls";
 import { cableWidth, sendWidth } from "./describe";
 import { notesToId } from "./NotesMenus";
 import { sendId } from "./SendMenu";
@@ -42,20 +42,46 @@ function DisconnectButton({ node, label }: { node: NodeId; label: string }) {
 }
 
 /**
- * A link of the audio path, the way that the audio goes by itself: plain and grey. The end of a lane's chain, or of a group's, which goes to the group's bus or the master, is its way out, and has the
- * button at its middle that disconnects it; the links inside a chain (an instrument to its first effect, an effect to the next) are the template's and have none.
+ * The button on a link into an effect (an instrument to its first effect, an effect to the next, a group to the first of its bus), which cuts it (the controller's `SetFeed`, as the button in the effect's header
+ * does, which gives it back). The effect is then fed by the cables that end at it and by nothing else, and the chain goes on from it; the focus goes to that button, since the link, and this one, are gone.
+ */
+function DisconnectFeedButton({ node, label }: { node: NodeId; label: string }) {
+  const editor = useEditor();
+  return (
+    <button
+      type="button"
+      className="tang-depth__remove"
+      aria-label={`Disconnect ${label}`}
+      title={`Disconnect ${label}: cut the link, to feed the effect only by its cables (the button in the effect's header gives it back)`}
+      onClick={() => {
+        // (If it is refused the page says so: `Editor` puts the reason among the notices, and the focus stays on the button.)
+        void editor.setFeed(node, "none").then((cut) => {
+          if (cut) focusWhenPossible(feedId(node));
+        });
+      }}
+    >
+      ×
+    </button>
+  );
+}
+
+/**
+ * A link of the audio path, the way that the audio goes by itself: plain and grey. Every link has the button at its middle that disconnects it, as a cable has: the end of a lane's chain, or of a group's, which goes
+ * to the group's bus or the master, is its way out and the button cuts that; a link into an effect (an instrument to its first effect, an effect to the next) is that effect's input and the button cuts that.
  */
 export function AudioEdge(props: EdgeProps<PatchEdge>) {
   const [path, labelX, labelY] = getBezierPath(props);
   const owner = props.data?.wayOut;
+  const fed = props.data?.feedOf;
+  const label = props.data?.label ?? "a link";
   return (
     <>
       <BaseEdge id={props.id} path={path} className="tang-cable tang-cable--audio" />
-      {owner === undefined ? null : (
+      {owner === undefined && fed === undefined ? null : (
         // (In the layer over the canvas that the cables' controls are in, at the middle of the link.)
         <EdgeLabelRenderer>
           <div className="tang-depth-anchor nodrag nopan nowheel" style={{ transform: `translate(-50%, -50%) translate(${String(labelX)}px, ${String(labelY)}px)` }}>
-            <DisconnectButton node={owner} label={props.data?.label ?? "a link"} />
+            {owner !== undefined ? <DisconnectButton node={owner} label={label} /> : fed !== undefined ? <DisconnectFeedButton node={fed} label={label} /> : null}
           </div>
         </EdgeLabelRenderer>
       )}

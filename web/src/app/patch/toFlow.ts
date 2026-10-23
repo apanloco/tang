@@ -118,6 +118,8 @@ export interface PatchEdgeData extends Record<string, unknown> {
   label?: string;
   /** The lane or the group whose way out the link is, on a link of the audio path that is one (the end of its chain): the node that the button on the link cuts the way out of. */
   wayOut?: NodeId;
+  /** The effect that a link of the audio path goes into, on a link that is one (a link of a chain: the stage before an effect feeding it): the node that the button on the link cuts the feed of. */
+  feedOf?: NodeId;
 }
 
 export type PatchEdge = FlowEdge<PatchEdgeData, PatchEdgeKind>;
@@ -695,9 +697,12 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
       // (The link that the graph derives for a lane that no cable of notes ends at, which hears every source: nothing is drawn or taken out by it. The lowest of the cables, over the links of the audio path.)
       edges.push({ ...common, id: `hears:${String(edge.from.node)}>${String(edge.to.node)}`, type: "hears", data: {}, zIndex: 1 });
     } else {
-      // (A link of the audio path, derived. The end of a chain is the way out of its lane or group: it says whose, for the button that cuts it. The links inside a chain are the template's: nothing to cut.)
+      // (A link of the audio path, derived. The end of a chain is the way out of its lane or group: it says whose, for the button that cuts it. A link into an effect is the feed of that effect, which the
+      // button on it cuts as well: it says whose. A chain is a row of links that can each be taken apart.)
       const owner = ownerOfWayOut(edge, nodesById);
-      edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: owner === undefined ? {} : { wayOut: owner, label: cableWords(graph, names, edge) } });
+      const fed = nodesById.get(edge.to.node)?.kind === "effect" ? edge.to.node : undefined;
+      const label = cableWords(graph, names, edge);
+      edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: owner !== undefined ? { wayOut: owner, label } : fed !== undefined ? { feedOf: fed, label } : {} });
     }
   }
   return { nodes, edges, places, arranged };

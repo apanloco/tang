@@ -11,7 +11,7 @@ import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { rateAt } from "../../client/tempo";
-import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices, sameWayOut, stepsOf, wayOutOf } from "../../client/selectors";
+import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, inputOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices, sameInput, sameWayOut, stepsOf, wayOutOf } from "../../client/selectors";
 import { CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, SYNC_DIVISIONS, SYNC_FREE, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
@@ -419,6 +419,40 @@ function WayOutButton({ node, name }: { node: NodeId; name: string }) {
       }}
     >
       {way.cut ? "no out" : `→ ${way.to}`}
+    </button>
+  );
+}
+
+/** The `id` of the button of the input of the effect `node`, which the focus goes to when the link into it is disconnected. */
+export const feedId = (node: NodeId): string => `feed-${String(node)}`;
+
+/**
+ * The input of an effect, a button on the badge's line of its header (the controller's `SetFeed`): it says where the effect is fed from (`← Oscillator`: the stage before it in its chain) and, when that
+ * link is cut, that there is none (`no in`: the effect is then fed by the cables that end at it and by nothing else). Pressed, it is cut; the link into the effect has the same button, which cuts it, and this
+ * one gives it back. A press asks for the other way and the button shows what the session has: it is not changed before the answer is in, and a refusal (a link that is given back where the audio would go
+ * round, by the cables there are) is said among the notices. A node that is no effect has none, and nothing is drawn for it.
+ */
+export function FeedButton({ node, name }: { node: NodeId; name: string }) {
+  const editor = useEditor();
+  const input = useClientSelection((state) => inputOf(state, node), sameInput);
+  if (input === undefined) return null;
+  return (
+    <button
+      type="button"
+      id={feedId(node)}
+      className="tang-feed nodrag nopan"
+      aria-label={`Cut the input of ${name}`}
+      aria-pressed={input.cut}
+      title={
+        input.cut
+          ? `${name} has no input from its chain and is fed only by its cables: give it its input back, from ${input.from}`
+          : `${name} is fed by ${input.from}: cut its input, to feed it only by cables`
+      }
+      onClick={() => {
+        void editor.setFeed(node, input.cut ? "chain" : "none");
+      }}
+    >
+      {input.cut ? "no in" : `← ${input.from}`}
     </button>
   );
 }

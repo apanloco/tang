@@ -155,6 +155,32 @@ export function sameWayOut(a: WayOut | undefined, b: WayOut | undefined): boolea
   return a.cut === b.cut && a.to === b.to;
 }
 
+/** What feeds an effect, and whether that link is cut. */
+export interface Input {
+  /** The link into the effect from the stage before it is cut (`feed = "none"`): it is fed by the audio cables that end at it and by nothing else. */
+  cut: boolean;
+  /** The stage that feeds it when the link is there: what comes before it in its chain, by the name the canvas gives it (the lane's instrument, the effect before it, or the group whose bus it is on). */
+  from: string;
+}
+
+/** The input of an effect, of a lane's chain or of a group's bus; undefined if the node is no effect. */
+export function inputOf(state: ClientState, id: NodeId): Input | undefined {
+  const graph = state.snapshot?.graph;
+  const found = graph?.nodes.find((node) => node.id === id);
+  if (graph === undefined || found?.kind !== "effect") return undefined;
+  // (The effects of a chain are the nodes whose parent is the lane or the group, in the order of the graph: the stage before is the one before in that list, or the lane or the group itself.)
+  const chain = graph.nodes.filter((node) => node.kind === "effect" && node.parent === found.parent);
+  const before = chain[chain.indexOf(found) - 1] ?? graph.nodes.find((node) => node.id === found.parent);
+  return { cut: found.feed === "none", from: before === undefined ? "the chain" : (displayNames(graph).get(before.id) ?? before.name) };
+}
+
+/** Whether two answers of `inputOf` say the same. */
+export function sameInput(a: Input | undefined, b: Input | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.cut === b.cut && a.from === b.from;
+}
+
 /**
  * Whether what a node puts out can be heard at the master, by the mute and solo of the session and by what cables carry (`audibleOf`, `ownAudibleOf`): a lane's instrument by what the lane
  * is heard for by itself (a lane that is heard only for what is sent to it by a cable has none of its own sound in its chain), a group's bus, and an effect's by the lane or group whose chain
