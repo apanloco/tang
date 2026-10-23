@@ -89,8 +89,8 @@ mock("the link from the end of a lane's chain to the master has a button on it t
   await open(page);
   const disconnect = page.getByRole("button", { name: "Disconnect Filter → Master" });
   await expect(disconnect).toBeVisible();
-  // (Only the end of the chain has one: the link from the instrument to the filter is inside the chain.)
-  await expect(page.getByRole("button", { name: /^Disconnect / })).toHaveCount(1);
+  // (The link from the instrument to the filter has one too, which cuts the filter's input and not the way out: `feeds.spec.ts`.)
+  await expect(page.getByRole("button", { name: /^Disconnect .* → Master$/ })).toHaveCount(1);
   // It is on the link, in the middle of it, as the buttons of the cables that a person draws are.
   expect(await distanceFromLink(disconnect, links(page).last())).toBeLessThan(4);
   const before = await nodeBoxes(page);
@@ -99,7 +99,7 @@ mock("the link from the end of a lane's chain to the master has a button on it t
   await expect(wayOut(page, "Oscillator")).toHaveText("no out");
   await expect(wayOut(page, "Oscillator")).toBeFocused();
   await expect(links(page)).toHaveCount(1);
-  await expect(page.getByRole("button", { name: /^Disconnect / })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Disconnect .* → Master$/ })).toHaveCount(0);
   expect(await nodeBoxes(page)).toEqual(before);
 
   await page.getByRole("button", { name: /^Undo/ }).click();
