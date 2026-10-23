@@ -696,6 +696,31 @@ the new one grows under today's structure until it equals it, and is then taken 
     (`CLAUDE.md`, "MIDI routing", says plainly that they cannot), and MIDI out.
 - **P5, control.** Parameters as ports, modulators as nodes (the racks become layout), math nodes, the transport. *To try:* one LFO on two lanes, the quantizer
   on a cable, LFOs in phase with the beat.
+  **Cut, 2026-10-23 (P4c and step 87 were done, and you said "lets move to P5" and, about the links of the audio path, "I dont think we should have the "no master" tracking per instrument/fx. if it
+  has a cable (or more cables) it sends to those and if there is no cable than thats ok."; written here first so that it survives a restart; the steps after the first are cut again when they start, with
+  what the code then says):**
+  - **P5.0 (step 88), every link is a cable and none is tracked.** What a lane or a group links by itself (an instrument to its first effect, an effect to the next, the end of a chain to its group's bus
+    or the mix, a group's own link to the mix) is drawn as a cable like the others, amber, with the × that takes it out, and is drawn again by dragging a cable between the same two ports. The
+    buttons that said where a node's audio goes (`→ Master`, `no out`, `← Oscillator`, `no in`) are gone: a node sends where its cables go and nowhere if it has none, which is not a state of the node.
+    An effect that stands by itself is added with no cable at all (a bare module, which cables go into and out of). *What it is and what it is not:* the links are still the template's (the model has
+    `route` and `feed`, the file has them, and the plan makes the links from them), so the cable that the page draws for one is a *view* of it: it has no id and no level of its own (a send has
+    both), and `AddCable` between the two ends of a link that is cut gives the link back (the controller turns it into `SetRoute` or `SetFeed`, which are the steps of the history it has always been)
+    while between the two ends of one that is there it is refused (`there is a cable between those two already`). The engine, the file and the oracle are as they were; only `AddFreeEffect` changes what
+    it makes (a lane whose way out is cut). **P5c makes the links cables with ids and levels, in the engine and the file, when the lane goes** (below): until then a lane's own links cannot be turned down, and cutting
+    one is at once and not over a buffer (a click while a note rings). *Built in two parts.* **88a is built (2026-10-23: the controller's rule `link_or_cable`, the free effect made bare, the terminal's Patch tab with
+    the links as `●` crosspoints, and the page's logic and mock engine; `CLAUDE.md`, "Links are cables")**; **88b, the page's picture, is not** (the buttons `→ Master`, `no out`, `← Oscillator` and `no in`, and the grey links
+    with their ×, cut and give back a link by the intents of before until 88b draws every link as an amber cable with a × that takes it out).
+  - **P5a, targets by id in the model** (nothing to see, the same bits). A modulation target names the node and the port that it drives (`NodeId` and a parameter's index, a modulator's setting, the depth of a
+    cable by its id) and not a place in a rack (a chain slot, a member's ordinal in a group, a sibling's index, a cable's place): the 20 functions that the model has to keep those places in step
+    (`shift_*`, `fixup_*`, `adjust_*`, 304 lines) go with their tests, and the controller turns ids into the places that the audio thread's commands still name, as `endpoint_of` turns them back.
+  - **P5b, control cables of the engine by id, and modulators that are not in a lane** (the same bits for every session the oracle has, a new scenario for what is new). The audio thread's targets name
+    nodes too, found by the places that the plan makes (the 31 functions of `chain.rs` go); a modulator is a node of a session list, with the notes that it hears named (a lane's, a group's members',
+    every source's), and drives any parameter of the session, any setting of any modulator and the depth of any cable. *To try:* one LFO on two lanes.
+  - **P5c, the lane and the group dissolve** (the file and the model). The model has nodes and cables and no lane: the way out and the chain are cables with ids and levels (the flags `route` and `feed`
+    go, the engine's `cut_feeds` and `Route` too, the lane's tail is a strip that cables go out of), the file is a netlist with the sugar lowered when it is loaded and raised when it is saved
+    (§11.5), and a cable that is taken out or drawn is over a buffer, not at once. Group membership goes with the scope of modulators (P5b): a bus is a node with fan-in.
+  - **P5d, math nodes and the transport.** Scale and offset, multiply, slew, sample and hold, quantize to a scale (the oscillator's `quantize` as a node that goes on any cable), min and max,
+    switch, random; a transport (tempo, beat and bar, start and stop) that tempo-synced things lock to. *To try:* the quantizer on a cable, LFOs in phase with the beat.
 - **P6, modules and voices.** Modules and a library of them; the `Patch` node on the kernel (the kernels of `docs/track-b.md` §7, B0, first).
 - **P7, scale.** Skipping silence and tails, the multicore executor, the DSP meter on every node (and the sandbox, if you want it).
 
