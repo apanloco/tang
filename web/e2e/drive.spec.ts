@@ -52,9 +52,9 @@ test("a drive from the page starts fully wet at its own values, has four presets
   await expect(gain).toHaveAttribute("aria-valuenow", "0");
   await page.keyboard.down("z");
   // (The meter's silence is -60 dB. Read 0.2 s after the key it said -51 dB and at 0.4 s -60: it holds something from the first moments of the note, probably from before the level
-  // was in the audio thread, and lets go of it. It is read when it has.)
-  await page.waitForTimeout(1200);
-  expect(await level(), "a level of nothing is silence, with a note held").toBeLessThan(-59);
+  // was in the audio thread, and lets go of it. It is waited for until it has, and not read after a fixed time: the meter falls by the frames that the page is given, and a machine that is
+  // loaded delays them (it read -58.6 dB after 1.2 s in one run of the suite, with the rest of the machine busy).)
+  await expect.poll(level, { message: "a level of nothing is silence, with a note held" }).toBeLessThan(-59);
   await page.keyboard.up("z");
   await gain.focus();
   await page.keyboard.press("End");
