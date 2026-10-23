@@ -284,19 +284,27 @@ function removalWords(removal: Removal): string {
   return parts.length > 0 ? `: ${parts.join(", and ")}` : "";
 }
 
+/** What stays in a lane when its instrument is taken out of it, in words: its effects and its modulators, or that it is left empty. */
+function keptWords(removal: Removal): string {
+  const stays = [removal.effects > 0 ? counted(removal.effects, "effect") : null, removal.modulators > 0 ? counted(removal.modulators, "modulator") : null].filter((part) => part !== null);
+  return stays.length > 0 ? `: its ${stays.join(" and ")} stay${removal.effects + removal.modulators === 1 ? "s" : ""} in the lane` : ": the lane stays, empty";
+}
+
 /**
- * The button of a lane or a group that takes it out of the session, for good: there is no undo, so it opens a menu that asks, first for keeping
- * (where the focus starts), and then for removing it with the words of what goes with it and what stays. Nothing for the only lane of a session (a
- * session keeps a lane) and for any other node. The focus goes to the button of the bar that adds a lane or a group, which is what is left to do.
+ * The button of a lane or a group that takes it out of the session: a menu that asks, first for keeping (where the focus starts), and then for removing it with the words of what goes with it
+ * and what stays. A lane that has an instrument is asked for twice over: for taking the instrument out alone, which leaves the lane with its effects, its modulators and the rest (an empty lane,
+ * which the focus goes to the button that puts an instrument in), and for taking the lane out, for good, with all of it, which is what goes to the button of the bar that adds a lane. The only lane
+ * of a session cannot be taken out (a session keeps a lane), but its instrument can; and nothing for any other node.
  */
 function RemoveLaneOrGroupMenu({ node }: { node: NodeId }) {
   const editor = useEditor();
   const removal = useClientSelection((state) => removalOf(state, node), sameRemoval);
-  if (!removal || removal.last) return null;
+  if (!removal || (removal.last && !removal.instrument)) return null;
   const what = removal.kind === "lane" ? `the lane of ${removal.name}` : removal.name;
-  const items: MenuItem<"keep" | "remove">[] = [
+  const items: MenuItem<"keep" | "instrument" | "remove">[] = [
     { id: "keep", label: `Keep ${removal.name}` },
-    { id: "remove", label: `Remove ${what} for good${removalWords(removal)}` },
+    ...(removal.instrument ? [{ id: "instrument" as const, label: `Remove ${removal.name} only${keptWords(removal)}` }] : []),
+    ...(removal.last ? [] : [{ id: "remove" as const, label: `Remove ${what} for good${removalWords(removal)}` }]),
   ];
   return (
     <MenuButton
@@ -305,8 +313,14 @@ function RemoveLaneOrGroupMenu({ node }: { node: NodeId }) {
       className="tang-node__remove-menu"
       items={items}
       onChoose={(choice) => {
-        if (choice !== "remove") return;
+        if (choice === "keep") return;
         // (If it is refused the page says so: `Editor` puts the reason among the notices.)
+        if (choice === "instrument") {
+          void editor.clearInstrument(node).then((cleared) => {
+            if (cleared) focusWhenPossible(changeInstrumentId(node));
+          });
+          return;
+        }
         void editor.removeNode(node).then((removed) => {
           if (removed) focusWhenPossible(removal.kind === "lane" ? "add-instrument" : "add-group");
         });

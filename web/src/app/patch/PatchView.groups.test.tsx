@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 // Groups, from the page: every lane says which group it is in and puts itself in another (or in a new one), a group is given a name, and a lane
-// or a group is taken out, after the page has asked a person whether to, since there is no undo.
+// or a group is taken out, after the page has asked a person whether to (a lane that has an instrument can have the instrument taken out alone).
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test } from "vitest";
 
-import { MASTER, groupsFixture } from "../../client/fixtures";
+import { MASTER, groupsFixture, tracerSnapshot } from "../../client/fixtures";
 import { NoticeBoard } from "../../ui/NoticeBoard";
 import { useNotices } from "../ClientProvider";
 import { rig } from "../testing";
@@ -303,9 +303,28 @@ describe("taking a lane or a group out", () => {
     }
     expect(within(await nodeOf(MASTER)).queryByRole("button", { name: /^Remove / })).toBeNull();
     cleanup();
-    // (The tracer, which has one lane: a session keeps a lane.)
+    // (The tracer, which has one lane: a session keeps a lane, so that it cannot be taken out, but its instrument can: the menu offers that and not the lane's removal.)
     await rig(<PatchView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Remove the lane of Oscillator" }));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Keep Oscillator", "Remove Oscillator only: its 1 effect and 1 modulator stay in the lane"]);
+    cleanup();
+    // A lane that has no instrument, and is the only one, has nothing to be taken out of it and cannot be taken out: no button.
+    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "instrument" ? { ...node, name: "(empty)", plugin: null } : node));
+    await rig(<PatchView />, { snapshot: { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } } });
+    await screen.findByRole("button", { name: "Choose an instrument for (empty)" });
     expect(screen.queryByRole("button", { name: /^Remove the lane of / })).toBeNull();
+  });
+
+  test("is offered on a lane that has no instrument when there is another lane, and takes the lane out and nothing less", async () => {
+    const nodes = groupsFixture.snapshot.graph.nodes.map((node) => (node.id === 9 && node.kind === "instrument" ? { ...node, name: "(empty)", plugin: null } : node));
+    const { requests } = await rig(<PatchView />, { snapshot: { ...groupsFixture.snapshot, graph: { ...groupsFixture.snapshot.graph, nodes } } });
+    // (The canvas numbers the three oscillators that are left, 1 to 3: the empty lane is called what it is.)
+    fireEvent.click(await removeButton(9, "Remove the lane of (empty)"));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Keep (empty)", "Remove the lane of (empty) for good"]);
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Remove the lane of \(empty\) for good/ }));
+    await waitFor(() => {
+      expect(requests().map((request) => request.intent)).toEqual([{ type: "removeNode", node: 9 }]);
+    });
   });
 
   test("asks whether to, in words that say what goes and what stays, and asks the server nothing until it is said", async () => {
@@ -320,13 +339,28 @@ describe("taking a lane or a group out", () => {
     expect(requests()).toEqual([]);
     fireEvent.keyDown(menu, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
-    // A lane says what goes with it; a group with nothing in it, nothing.
+    // A lane says what stays in it if its instrument alone is taken out, and what goes with it if it is taken out; a group with nothing in it, nothing.
     fireEvent.click(await removeButton(5, "Remove the lane of Oscillator 2"));
     expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
       "Keep Oscillator 2",
+      "Remove Oscillator 2 only: its 1 effect and 2 modulators stay in the lane",
       "Remove the lane of Oscillator 2 for good: its 1 effect and 2 modulators go with it",
     ]);
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    // One thing stays, or one effect and one modulator, or nothing.
+    for (const [id, name, only, whole] of [
+      [3, "Oscillator 1", "its 1 modulator stays in the lane", "its 1 modulator goes with it"],
+      [10, "Oscillator 4", "its 1 effect and 1 modulator stay in the lane", "its 1 effect and 1 modulator go with it"],
+      [9, "Oscillator 3", "the lane stays, empty", null],
+    ] as const) {
+      fireEvent.click(await removeButton(id, `Remove the lane of ${name}`));
+      expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent), name).toEqual([
+        `Keep ${name}`,
+        `Remove ${name} only: ${only}`,
+        `Remove the lane of ${name} for good${whole === null ? "" : `: ${whole}`}`,
+      ]);
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    }
     // One thing goes, and one lane stays.
     fireEvent.click(await removeButton(1, "Remove Group 2"));
     expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
@@ -379,6 +413,53 @@ describe("taking a lane or a group out", () => {
     });
     for (const gone of [6, 7, 8]) expect(screen.queryByTestId(`rf__node-${String(gone)}`), `node ${String(gone)}`).toBeNull();
     expect(screen.getAllByRole("combobox", { name: /^Group of / })).toHaveLength(3);
+  });
+
+  test("takes the instrument out of a lane alone when it is said to: the lane stays, empty, with its effect and its modulators, and nothing else on the canvas changes", async () => {
+    const { requests } = await rig(<PatchView />, session);
+    fireEvent.click(await removeButton(5, "Remove the lane of Oscillator 2"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator 2 only/ }));
+    await waitFor(() => {
+      expect(requests().map((request) => request.intent)).toEqual([{ type: "clearInstrument", node: 5 }]);
+    });
+    // The lane is on the canvas still, called what a lane that has no instrument is, with the button that puts one in; its filter and its two LFOs, and every other node, are there.
+    expect(await screen.findByRole("button", { name: "Choose an instrument for (empty)" })).toBeTruthy();
+    expect(within(await nodeOf(5)).getByRole("button", { name: "Choose an instrument for (empty)" })).toBeTruthy();
+    for (const stays of [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, MASTER]) expect(screen.getByTestId(`rf__node-${String(stays)}`), `node ${String(stays)}`).toBeTruthy();
+    expect(screen.getAllByRole("combobox", { name: /^Group of / })).toHaveLength(4);
+    // Taking out what is left of it is the lane's removal, which says what goes with it: the lane has no instrument now.
+    fireEvent.click(await removeButton(5, "Remove the lane of (empty)"));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Keep (empty)", "Remove the lane of (empty) for good: its 1 effect and 2 modulators go with it"]);
+  });
+
+  test("takes the instrument out of the only lane of a session and leaves the lane", async () => {
+    const { requests } = await rig(<PatchView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Remove the lane of Oscillator" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator only/ }));
+    await waitFor(() => {
+      expect(requests().map((request) => request.intent)).toEqual([{ type: "clearInstrument", node: 0 }]);
+    });
+    expect(await screen.findByRole("button", { name: "Choose an instrument for (empty)" })).toBeTruthy();
+    // The lane is the only one and has no instrument: nothing is left to take out of it, and it is not taken out.
+    expect(screen.queryByRole("button", { name: /^Remove the lane of / })).toBeNull();
+  });
+
+  test("says why when the instrument could not be taken out of a lane, and the lane is as it was", async () => {
+    const { server, client } = await rig(
+      <>
+        <PatchView />
+        <Notices />
+      </>,
+      session,
+    );
+    fireEvent.click(await removeButton(5, "Remove the lane of Oscillator 2"));
+    server.drop();
+    await waitFor(() => {
+      expect(client.state.status).not.toBe("open");
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator 2 only/ }));
+    expect(await screen.findByText("Could not take Oscillator 2 out of its lane: Not connected to the server.")).toBeTruthy();
+    expect(within(await nodeOf(5)).getByRole("button", { name: "Change the instrument of Oscillator 2" })).toBeTruthy();
   });
 
   test("says why when it could not be taken out", async () => {

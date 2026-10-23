@@ -214,6 +214,45 @@ describe("the page", () => {
     });
   });
 
+  test("gives the focus to the button that puts an instrument in when the instrument of a lane is taken out alone, and the lane stays", async () => {
+    page({ snapshot: groupsFixture.snapshot });
+    fireEvent.click(await screen.findByRole("button", { name: "Remove the lane of Oscillator 2" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator 2 only/ }));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Choose an instrument for (empty)" }));
+    });
+    // (Its effect is still on the canvas, and the lane's own way out: it is a lane that has no sound of its own.)
+    expect(screen.getByRole("button", { name: "Cut the way out of (empty)" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Remove Filter" })).toHaveLength(1);
+  });
+
+  test("puts the instrument back by Undo, in the words of what was done, and takes it out again by Redo", async () => {
+    page({ snapshot: groupsFixture.snapshot });
+    fireEvent.click(await screen.findByRole("button", { name: "Remove the lane of Oscillator 2" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator 2 only/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Undo take Oscillator out of its lane" }));
+    expect(await screen.findByRole("button", { name: "Change the instrument of Oscillator 2" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Choose an instrument for (empty)" })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Redo take Oscillator out of its lane" }));
+    expect(await screen.findByRole("button", { name: "Choose an instrument for (empty)" })).toBeTruthy();
+  });
+
+  test("does not give the focus to the button that puts an instrument in when the instrument could not be taken out", async () => {
+    const { server } = page({ snapshot: groupsFixture.snapshot }, { reconnectDelay: () => 60_000 });
+    await screen.findByText("Connected");
+    fireEvent.click(await screen.findByRole("button", { name: "Remove the lane of Oscillator 2" }));
+    server.drop();
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).not.toBe("Connected");
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator 2 only/ }));
+    expect(await screen.findByText("Could not take Oscillator 2 out of its lane: Not connected to the server.")).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Change the instrument of Oscillator 2" }));
+  });
+
   test("does not give the focus to the button that adds a group when the group could not be taken out", async () => {
     const { server } = page({ snapshot: groupsFixture.snapshot }, { reconnectDelay: () => 60_000 });
     await screen.findByText("Connected");

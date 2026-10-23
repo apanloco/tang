@@ -204,6 +204,8 @@ export interface Removal {
   kind: "lane" | "group";
   /** What the node is called on the canvas. */
   name: string;
+  /** For a lane: whether it has an instrument, which can be taken out alone, the lane staying with its effects and modulators. (False for a group and for a lane that has none.) */
+  instrument: boolean;
   /** The effects of the lane's chain, or of the group's bus: they go with it. */
   effects: number;
   /** Its modulators: they go with it. */
@@ -223,6 +225,7 @@ export function removalOf(state: ClientState, id: NodeId): Removal | undefined {
   return {
     kind: found.kind === "group" ? "group" : "lane",
     name: displayNames(graph).get(id) ?? found.name,
+    instrument: found.kind === "instrument" && found.plugin !== null,
     effects: children.filter((node) => node.kind === "effect").length,
     modulators: children.filter((node) => node.kind === "modulator").length,
     lanes: children.filter((node) => node.kind === "instrument").length,
@@ -234,7 +237,7 @@ export function removalOf(state: ClientState, id: NodeId): Removal | undefined {
 export function sameRemoval(a: Removal | undefined, b: Removal | undefined): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
-  return a.kind === b.kind && a.name === b.name && a.effects === b.effects && a.modulators === b.modulators && a.lanes === b.lanes && a.last === b.last;
+  return a.kind === b.kind && a.name === b.name && a.instrument === b.instrument && a.effects === b.effects && a.modulators === b.modulators && a.lanes === b.lanes && a.last === b.last;
 }
 
 /** The value of a host-side gain of a node, if the node has that gain (`withGain` in reducers.ts is the other way round). */
