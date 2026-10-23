@@ -5,6 +5,7 @@ import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, Patt
 import type { ClientState } from "./connection";
 import type { Stages } from "./envelope";
 import { audibleOf, ownAudibleOf } from "./audible";
+import { holdersOf } from "./holders";
 import { displayNames } from "./names";
 import { shownParams } from "./pinning";
 
@@ -170,6 +171,8 @@ export function inputOf(state: ClientState, id: NodeId): Input | undefined {
   if (graph === undefined || found?.kind !== "effect") return undefined;
   // (The effects of a chain are the nodes whose parent is the lane or the group, in the order of the graph: the stage before is the one before in that list, or the lane or the group itself.)
   const chain = graph.nodes.filter((node) => node.kind === "effect" && node.parent === found.parent);
+  // (The first effect of a lane that only holds effects has no stage before it that is drawn: the lane has no card, and no sound.)
+  if (found.parent !== null && chain.indexOf(found) === 0 && holdersOf(graph).has(found.parent)) return undefined;
   const before = chain[chain.indexOf(found) - 1] ?? graph.nodes.find((node) => node.id === found.parent);
   return { cut: found.feed === "none", from: before === undefined ? "the chain" : (displayNames(graph).get(before.id) ?? before.name) };
 }

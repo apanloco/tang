@@ -1,6 +1,7 @@
 // What the nodes of a session are called, wherever a person reads it: on the canvas, in what a screen
 // reader says of a control, in what the page says of a cable or of what it could not do.
 import type { EdgeId, Endpoint, Graph, NodeId, Port } from "../protocol";
+import { holdersOf } from "./holders";
 
 /**
  * What each node is called on the canvas. The server names a node by what it is (a plugin's name, a
@@ -9,14 +10,19 @@ import type { EdgeId, Endpoint, Graph, NodeId, Port } from "../protocol";
  * `Rate` is which. A name that more than one node has is numbered, from 1, in the order of the graph;
  * a node that is alone with its name keeps it, and a number that would make a name that such a node has
  * (two LFOs, and a plugin called "LFO 1") is skipped, so that no two nodes are called the same.
+ * The one exception is a lane that only holds effects (`holdersOf`), which the canvas does not draw: it is called
+ * by the first of its effects, as what is said of the lane as a whole ("Mute Reverb") is said by that effect's
+ * module, and it takes no number of its own and leaves none out.
  */
 export function displayNames(graph: Graph): Map<NodeId, string> {
+  const holders = holdersOf(graph);
+  const drawn = graph.nodes.filter((node) => !holders.has(node.id));
   const shared = new Map<string, number>();
-  for (const node of graph.nodes) shared.set(node.name, (shared.get(node.name) ?? 0) + 1);
-  const kept = new Set(graph.nodes.filter((node) => shared.get(node.name) === 1).map((node) => node.name));
+  for (const node of drawn) shared.set(node.name, (shared.get(node.name) ?? 0) + 1);
+  const kept = new Set(drawn.filter((node) => shared.get(node.name) === 1).map((node) => node.name));
   const last = new Map<string, number>();
-  return new Map(
-    graph.nodes.map((node) => {
+  const names = new Map(
+    drawn.map((node): [NodeId, string] => {
       if ((shared.get(node.name) ?? 0) < 2) return [node.id, node.name];
       let number = last.get(node.name) ?? 0;
       let name: string;
@@ -26,6 +32,12 @@ export function displayNames(graph: Graph): Map<NodeId, string> {
       } while (kept.has(name));
       last.set(node.name, number);
       return [node.id, name];
+    }),
+  );
+  return new Map(
+    graph.nodes.map((node): [NodeId, string] => {
+      const face = holders.get(node.id)?.[0];
+      return [node.id, names.get(face?.id ?? node.id) ?? node.name];
     }),
   );
 }

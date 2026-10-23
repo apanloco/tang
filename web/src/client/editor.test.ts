@@ -550,7 +550,8 @@ describe("taking the instrument out of a lane", () => {
     expect(said(notices)).toEqual([
       "Could not take Filter out of its lane: an instrument is taken out of a lane",
       "Could not take Master out of its lane: there is no node 4294967295",
-      "Could not take (empty) out of its lane: the lane has no instrument to take out",
+      // (The lane has nothing but its filter and its LFO now, so the canvas draws no card for it and calls it by its filter.)
+      "Could not take Filter out of its lane: the lane has no instrument to take out",
     ]);
   });
 

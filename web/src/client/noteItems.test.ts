@@ -116,4 +116,16 @@ describe("the lanes that a source can send notes to", () => {
   test("are none for a node that is no source: a lane, an effect, the mix, or no node", () => {
     for (const node of [2, 3, 4, 0, MASTER, 77]) expect(noteToItems(wired, node), String(node)).toEqual([]);
   });
+
+  test("are not those that only hold effects: the canvas draws no card for such a lane, and has nothing to show a cable of notes to it by", () => {
+    const filter = wired.nodes.find((node) => node.id === 3);
+    if (filter?.kind !== "effect") throw new Error("the session has a filter in lane 2");
+    // (Lane 6 holds a filter now, and nothing else: it is the filter that is on the canvas.)
+    const holding: Graph = { nodes: [...wired.nodes, { ...filter, id: 90, parent: 6 }], edges: wired.edges };
+    expect(noteToItems(holding, 7)).toEqual([{ id: "2", label: "Oscillator 1" }]);
+    expect(noteToItems(holding, 8)).toEqual([
+      { id: "2", label: "Oscillator 1" },
+      { id: "5", label: "Oscillator 2" },
+    ]);
+  });
 });

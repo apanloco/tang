@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import { ConnectionStatus } from "../ui/ConnectionStatus";
 import { NoticeBoard } from "../ui/NoticeBoard";
+import { AddFreeEffectMenu } from "./AddFreeEffect";
 import { AddGroupButton } from "./AddGroup";
 import { AddInstrumentMenu } from "./AddInstrument";
 import { AddSourceMenu } from "./AddSource";
@@ -55,6 +56,7 @@ export function App({ engine }: { engine: EngineKind }) {
         <ConnectionStatus status={status} />
         <SessionBar />
         <AddInstrumentMenu />
+        <AddFreeEffectMenu />
         <AddSourceMenu />
         <AddGroupButton />
         <span className="tang-app__keys" title={KEYS_HINT}>

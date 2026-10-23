@@ -7,6 +7,7 @@ import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "r
 import type { ReactNode } from "react";
 
 import { effectItems, instrumentItems } from "../../client/catalog";
+import { holdersOf } from "../../client/holders";
 import { inputsStoodFor } from "../../client/inputs";
 import { slotReader } from "../../client/readers";
 import { audibleAt, chainPlaceOf, envelopeStagesOf, nodeById, paramCountOf, presetsOf, removalOf, sameChainPlace, sameRemoval, sameStages } from "../../client/selectors";
@@ -298,6 +299,7 @@ function keptWords(removal: Removal): string {
  */
 function RemoveLaneOrGroupMenu({ node }: { node: NodeId }) {
   const editor = useEditor();
+  const client = useClient();
   const removal = useClientSelection((state) => removalOf(state, node), sameRemoval);
   if (!removal || (removal.last && !removal.instrument)) return null;
   const what = removal.kind === "lane" ? `the lane of ${removal.name}` : removal.name;
@@ -317,7 +319,10 @@ function RemoveLaneOrGroupMenu({ node }: { node: NodeId }) {
         // (If it is refused the page says so: `Editor` puts the reason among the notices.)
         if (choice === "instrument") {
           void editor.clearInstrument(node).then((cleared) => {
-            if (cleared) focusWhenPossible(changeInstrumentId(node));
+            if (!cleared) return;
+            // (A lane that has nothing left but effects has no card, and its effects stand by themselves: the focus goes to the bar, where an instrument is added.)
+            const graph = client.state.snapshot?.graph;
+            focusWhenPossible(graph !== undefined && !holdersOf(graph).has(node) ? changeInstrumentId(node) : "add-instrument");
           });
           return;
         }
@@ -396,7 +401,14 @@ function useUnheard(node: NodeId): string {
   return useClientState((state) => audibleAt(state, node) === false) ? " tang-node--unheard" : "";
 }
 
-/** An instrument or an effect: its plugin's name and format, the parameters it shows, and its own gain; a lane's keys, group, mute and solo as well. */
+/** The `id` of the button in the bar that adds an effect that stands by itself, which the focus goes to when one is taken out (`app/AddFreeEffect.tsx`). */
+export const ADD_FREE_EFFECT_ID = "add-free-effect";
+
+/**
+ * An instrument or an effect: its plugin's name and format, the parameters it shows, and its own gain; a lane's keys, group, mute and solo as well. An effect in a lane that only holds effects
+ * (`data.heldIn`: the lane has no card, and an effect that stands by itself is one) stands for the lane too: the first of them has the cell of the lane's mute, solo and way out and the "+" that adds
+ * a modulator to it, and its "×" takes the lane out with it when it is on its own there (the only effect, and no modulator in the lane).
+ */
 export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const effect = type === "effect";
   // (A lane that has no instrument has no sound to look at.)
@@ -404,6 +416,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   // (Where an effect is: the lane or group whose chain it is in, which the focus goes back to when it is taken out.)
   const parent = useClientState((state) => (effect ? (nodeById(state, data.node)?.parent ?? null) : null));
   const unheard = useUnheard(data.node);
+  const held = data.heldIn;
   return (
     <div className={`tang-node tang-node--${type}${unheard}`}>
       {/* (An effect takes audio in; a lane takes notes in, from the sources.) */}
@@ -425,7 +438,8 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
             <PresetMenu node={data.node} name={data.name} />
             <ParamsButton node={data.node} name={data.name} />
             <ScopeButton node={data.node} name={data.name} />
-            <RemoveNodeButton node={data.node} name={data.name} focusTo={parent !== null ? addEffectId(parent) : null} />
+            {held?.first ? <AddModulatorMenu node={held.lane} name={data.name} /> : null}
+            <RemoveNodeButton node={held?.alone ? held.lane : data.node} name={data.name} focusTo={held ? ADD_FREE_EFFECT_ID : parent !== null ? addEffectId(parent) : null} />
           </span>
         ) : (
           <span className="tang-node__actions">
@@ -446,7 +460,8 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         <GainCell node={data.node} gain={effect ? "mix" : "volume"} />
         <RangeCell node={data.node} name={data.name} />
         <GroupCell node={data.node} name={data.name} />
-        <MuteSoloCell node={data.node} name={data.name} />
+        {/* (An effect that stands by itself has the cell of the lane that holds it, which has no card to have it on: the first of them does.) */}
+        <MuteSoloCell node={held?.first ? held.lane : data.node} name={data.name} />
       </div>
       {/* (A node that is no lane has no pattern: the cell draws nothing for it.) */}
       <PatternCell node={data.node} name={data.name} />

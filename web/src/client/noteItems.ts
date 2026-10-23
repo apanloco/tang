@@ -2,6 +2,7 @@
 // of a menu (docs/patch-graph.md §11.6, P4c).
 import type { Graph, Node, NodeId, SourceInfo } from "../protocol";
 import type { MenuItem } from "../ui/MenuButton";
+import { holdersOf } from "./holders";
 import { inputsStoodFor } from "./inputs";
 import { displayNames } from "./names";
 import { noteTakers } from "./noteWiring";
@@ -48,11 +49,15 @@ export function noteFromItems(graph: Graph, lane: NodeId): MenuItem[] {
   );
 }
 
-/** The lanes that a cable of notes from the source `source` can still be drawn to (`noteTakers`), in the order of the graph. None for a node that is no source. */
+/**
+ * The lanes that a cable of notes from the source `source` can still be drawn to (`noteTakers`), in the order of the graph. None for a node that is no source. The lanes that only hold effects
+ * (`holdersOf`) are left out: the canvas draws no card for them, and a cable of notes would bring the card back for a lane that was never seen.
+ */
 export function noteToItems(graph: Graph, source: NodeId): MenuItem[] {
   const takers = noteTakers(graph, source);
+  const holders = holdersOf(graph);
   return itemsOf(
     graph,
-    graph.nodes.filter((node) => takers.includes(node.id)),
+    graph.nodes.filter((node) => takers.includes(node.id) && !holders.has(node.id)),
   );
 }

@@ -4,7 +4,8 @@
 // modulators above the strip, over the plugin each one drives (and a modulator that drives
 // the settings of another above that one), the groups to the right of the lanes that feed
 // them, the master at the end, and the sources of notes in a column of their own before the lanes (level with the middle of
-// them, as the master is with the middle of the lanes and the groups). That is where a node is unless the
+// them, as the master is with the middle of the lanes and the groups). A lane that only holds effects (`holdersOf`: an effect that stands by itself is one) has no card: its strip is its effects, from the
+// first column, and the lane's cell (mute, solo, way out) is on the first of them. That is where a node is unless the
 // session says otherwise: a node that has been moved has a place (`Node.ui`, kept in the
 // session file, §4.4), and is drawn there; the layout of the others does not leave room for it,
 // but a node that the layout would put on one that was placed (or too near it) is moved clear of it (`clearOfPlaced`).
@@ -16,6 +17,7 @@
 // the nodes again does.
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
+import { holdersOf } from "../../client/holders";
 import { cableWords, displayNames, endLabel } from "../../client/names";
 import { knobsOf } from "../../client/pinning";
 import { drivablesOf } from "../../client/reach";
@@ -87,6 +89,18 @@ export interface PatchNodeData extends Record<string, unknown> {
   scope: boolean;
   /** For a source of notes: what it is (the keys, or a device by the name it stands for); nothing for the other nodes. */
   source: SourceInfo | null;
+  /** For an effect in a lane that only holds effects (the canvas draws no card for such a lane): which lane, and what the module has of the lane; nothing for the other nodes. */
+  heldIn: HeldIn | null;
+}
+
+/** What the module of an effect has of the lane that holds it, a lane the canvas draws no card for (`holdersOf`). */
+export interface HeldIn {
+  /** The lane that holds it: the node that the mute, the solo, the way out and the removal of the effect are of. */
+  lane: NodeId;
+  /** Whether it is the first of the lane's effects, which has what the card said of the lane as a whole: the mute, the solo and the way out, and the "+" that adds a modulator to the lane. */
+  first: boolean;
+  /** Whether it is on its own in the lane (its only effect, and the lane has no modulator): taking it out takes the lane out with it, and a lane that keeps modulators is not taken out with it. */
+  alone: boolean;
 }
 
 /**
@@ -201,13 +215,16 @@ function drivenSettings(graph: Graph): Map<NodeId, SettingHandle[]> {
   return new Map([...driven].map(([node, settings]) => [node, SETTING_HANDLES.filter((handle) => settings.has(handle))]));
 }
 
-/** How many controls a node shows: its parameters, and its own gain (a volume or a mix; a lane's keys, its group and its mute and solo too) or a group's three. */
-export function controlCount(node: Node, knobs: number): number {
+/**
+ * How many controls a node shows: its parameters, and its own gain (a volume or a mix; a lane's keys, its group and its mute and solo too) or a group's three. `carriesLane` is whether an effect has
+ * the cell of the lane that holds it (the mute, the solo and the way out of a lane the canvas draws no card for): one control more; it is nothing to the other nodes.
+ */
+export function controlCount(node: Node, knobs: number, carriesLane = false): number {
   switch (node.kind) {
     case "instrument":
       return knobs + 4;
     case "effect":
-      return knobs + 1;
+      return knobs + 1 + (carriesLane ? 1 : 0);
     case "group":
       return 3;
     default:
@@ -226,8 +243,9 @@ export function canScope(node: Node): boolean {
 /**
  * How tall a node is, as the layout assumes it (the components' styles keep to it). `cables` is how many a modulator lists (`CableRow`); it is nothing to the other nodes.
  * `scope` is whether an instrument, an effect or a group shows its scope, which it is taller by (`NODE_SCOPE_HEIGHT`); it is nothing to a modulator, and to the master.
+ * `carriesLane` is whether an effect has the cell of the lane that holds it (`controlCount`): it is nothing to the other nodes.
  */
-export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false): number {
+export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false, carriesLane = false): number {
   switch (node.kind) {
     case "modulator": {
       const listed = cables > 0 ? CABLES_GAP + cables * CABLE_ROW_HEIGHT : 0;
@@ -240,7 +258,7 @@ export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false)
     case "source":
       return SOURCE_HEIGHT;
     default: {
-      const rows = Math.max(1, Math.ceil(controlCount(node, knobs) / CONTROLS_PER_ROW));
+      const rows = Math.max(1, Math.ceil(controlCount(node, knobs, carriesLane) / CONTROLS_PER_ROW));
       return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING + (node.kind === "instrument" ? PATTERN_HEIGHT : 0) + (scope ? NODE_SCOPE_HEIGHT : 0);
     }
   }
@@ -250,7 +268,7 @@ export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false)
 interface Strip {
   /** The node the strip is of: an instrument or a group. */
   head: Node;
-  /** The nodes in the row, the head first. */
+  /** The nodes in the row, the head first (a lane that only holds effects has no card on the canvas: its row is its effects). */
   row: Node[];
   /** The rows of modulators above the strip's row, the nearest first (`tiersOf`). */
   tiers: Node[][];
@@ -258,10 +276,13 @@ interface Strip {
   columns: Map<Node, number>;
 }
 
-/** A strip of the instrument or group `head`: its nodes, and the modulators that belong to it. */
-function stripOf(graph: Graph, head: Node): Strip {
+/**
+ * A strip of the instrument or group `head`: its nodes, and the modulators that belong to it. A lane that only holds effects has no card (`drawn` is false): its row is its effects, from the first
+ * column, and its modulators are above them as for any lane.
+ */
+function stripOf(graph: Graph, head: Node, drawn = true): Strip {
   const children = graph.nodes.filter((node) => node.parent === head.id);
-  const row = [head, ...children.filter((node) => node.kind === "effect")];
+  const row = [...(drawn ? [head] : []), ...children.filter((node) => node.kind === "effect")];
   const tiers = tiersOf(graph, children.filter((node) => node.kind === "modulator"));
   return { head, row, tiers, columns: modulatorColumns(graph, row, tiers) };
 }
@@ -334,8 +355,8 @@ function modulatorColumns(graph: Graph, row: readonly Node[], tiers: readonly No
   return placed;
 }
 
-/** Where each node of the graph goes on the canvas, as tall as `heightOfNode` says each is. */
-function layout(graph: Graph, heightOfNode: (node: Node) => number): Map<NodeId, { x: number; y: number }> {
+/** Where each node of the graph goes on the canvas, as tall as `heightOfNode` says each is. The lanes that only hold effects (`holders`) have a strip and no card: nothing is placed for them. */
+function layout(graph: Graph, heightOfNode: (node: Node) => number, holders: ReadonlyMap<NodeId, readonly Node[]>): Map<NodeId, { x: number; y: number }> {
   const placed = new Map<NodeId, { x: number; y: number }>();
   const place = (node: Node, column: number, y: number): void => {
     placed.set(node.id, { x: column * COLUMN, y });
@@ -361,7 +382,7 @@ function layout(graph: Graph, heightOfNode: (node: Node) => number): Map<NodeId,
   };
 
   // One strip for each instrument, from the top: modulators above, the row below them.
-  const lanes = graph.nodes.filter((node) => node.kind === "instrument").map((lane) => stripOf(graph, lane));
+  const lanes = graph.nodes.filter((node) => node.kind === "instrument").map((lane) => stripOf(graph, lane, !holders.has(lane.id)));
   const rowTops = new Map<NodeId, number>();
   let y = 0;
   for (const lane of lanes) {
@@ -399,10 +420,10 @@ function layout(graph: Graph, heightOfNode: (node: Node) => number): Map<NodeId,
     sourceTop += heightOfNode(source) + ROW_GAP;
   }
 
-  // Whatever the layout did not reach (a node whose parent is not there) goes in a row below.
+  // Whatever the layout did not reach (a node whose parent is not there) goes in a row below (a lane that only holds effects has no card to place).
   let stray = 0;
   for (const node of graph.nodes) {
-    if (placed.has(node.id)) continue;
+    if (placed.has(node.id) || holders.has(node.id)) continue;
     place(node, stray, Math.max(y, groupsBottom));
     stray += 1;
   }
@@ -464,9 +485,16 @@ function slotsOf(graph: Graph, fresh: ReadonlyMap<NodeId, Position>): Map<NodeId
  * (a lane has grown past them) go along to it and stay at the height they were at. The others are where the layout puts them now, moved down or up as far as the strip they are
  * of has moved from where the layout would put it (an effect added to a lane that is not where the layout would have it any more is added level with the lane, and not level
  * with where the lane would be; what is in a group's strip, when the group has gone along to another column, goes along to it, at the group's height). A strip is moved
- * in height only: its row is in the column that the layout gives it. `kept` is the nodes that stay exactly where they were.
+ * in height only: its row is in the column that the layout gives it. `kept` is the nodes that stay exactly where they were. A lane that only holds effects has no card, and its strip goes by
+ * its first effect (`anchors`: the lane by the first of its effects), as the others go by their cards.
  */
-function carryOver(graph: Graph, fresh: ReadonlyMap<NodeId, Position>, slots: ReadonlyMap<NodeId, string>, remembered: Places): { positions: Map<NodeId, Position>; kept: Set<NodeId> } {
+function carryOver(
+  graph: Graph,
+  fresh: ReadonlyMap<NodeId, Position>,
+  slots: ReadonlyMap<NodeId, string>,
+  remembered: Places,
+  anchors: ReadonlyMap<NodeId, NodeId>,
+): { positions: Map<NodeId, Position>; kept: Set<NodeId> } {
   const positions = new Map<NodeId, Position>();
   const kept = new Set<NodeId>();
   for (const node of graph.nodes) {
@@ -487,8 +515,10 @@ function carryOver(graph: Graph, fresh: ReadonlyMap<NodeId, Position>, slots: Re
   for (const node of graph.nodes.filter(isChild)) {
     if (node.ui || kept.has(node.id)) continue;
     const at = fresh.get(node.id) ?? ORIGIN;
-    const where = node.parent !== null ? positions.get(node.parent) : undefined;
-    const would = node.parent !== null ? fresh.get(node.parent) : undefined;
+    // (What the strip goes by: its card, or for a lane that has none its first effect, which is where the strip's row is.)
+    const anchor = node.parent !== null ? (anchors.get(node.parent) ?? node.parent) : null;
+    const where = anchor !== null ? positions.get(anchor) : undefined;
+    const would = anchor !== null ? fresh.get(anchor) : undefined;
     positions.set(node.id, where && would ? { x: at.x, y: at.y + where.y - would.y } : at);
   }
   return { positions, kept };
@@ -624,9 +654,15 @@ const NO_SCOPES: ReadonlySet<NodeId> = new Set();
  * The nodes of the session on the canvas, and the cables between them. `remembered` is the places of the last layout (`Flow.places`): a node stays where it was while it is in
  * the slot it was put for, so that what is drawn or added or taken out does not rearrange the canvas; without it every node goes where the layout puts it. `scopes` are the
  * nodes that the viewer shows a scope in (a scope is not part of the session): those of them that have a signal are taller by it, and room is made for it as for a knob that is
- * pinned.
+ * pinned. A lane that only holds effects (`holdersOf`) has no card on the canvas: it is laid out, remembered and drawn without it and without the links at it, and its first effect has
+ * what the card said of the lane (`heldIn`).
  */
 export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, scopes: ReadonlySet<NodeId> = NO_SCOPES): Flow {
+  const holders = holdersOf(graph);
+  // (What is said of a node, its name and the words of a cable, is read from the whole graph: the effects of a held lane are called what they are called with the lane in it.)
+  const shown: Graph = holders.size === 0 ? graph : { nodes: graph.nodes.filter((node) => !holders.has(node.id)), edges: graph.edges.filter((edge) => !holders.has(edge.from.node) && !holders.has(edge.to.node)) };
+  const carriers = new Set([...holders.values()].flatMap(([first]) => (first ? [first.id] : [])));
+  const anchors = new Map([...holders].flatMap(([lane, [first]]) => (first ? [[lane, first.id] as const] : [])));
   const names = displayNames(graph);
   const modulated = modulatedParams(graph);
   const settingsDriven = drivenSettings(graph);
@@ -639,26 +675,32 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
   const knobCounts = new Map([...knobs].map(([id, params]) => [id, params.length]));
   const cableCounts = new Map(graph.nodes.map((node) => [node.id, node.kind === "modulator" ? (listed.get(node.id)?.length ?? 0) : 0]));
   const withScope = new Set(graph.nodes.filter((node) => scopes.has(node.id) && canScope(node)).map((node) => node.id));
-  const heightOf = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0, withScope.has(node.id));
-  const fresh = layout(graph, heightOf);
-  const slots = slotsOf(graph, fresh);
+  const heightOf = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0, withScope.has(node.id), carriers.has(node.id));
+  const fresh = layout(graph, heightOf, holders);
+  const slots = slotsOf(shown, fresh);
   // Where a layout that remembers nothing puts the nodes, to say whether these are arranged.
   const arrangedAt = new Map(fresh);
-  clearOfPlaced(graph, arrangedAt, heightOf);
-  const { positions, kept } = carryOver(graph, fresh, slots, remembered);
-  clearOfKept(graph, positions, kept, heightOf);
-  makeRoom(graph, positions, heightOf);
-  clearOfPlaced(graph, positions, heightOf);
-  const arranged = graph.nodes.every((node) => {
+  clearOfPlaced(shown, arrangedAt, heightOf);
+  const { positions, kept } = carryOver(shown, fresh, slots, remembered, anchors);
+  clearOfKept(shown, positions, kept, heightOf);
+  makeRoom(shown, positions, heightOf);
+  clearOfPlaced(shown, positions, heightOf);
+  const arranged = shown.nodes.every((node) => {
     const at = positions.get(node.id) ?? ORIGIN;
     const would = arrangedAt.get(node.id) ?? ORIGIN;
     return node.ui !== undefined || (at.x === would.x && at.y === would.y);
   });
   const places = new Map<NodeId, Remembered>(
-    graph.nodes.flatMap((node) => (node.ui ? [] : [[node.id, { ...(positions.get(node.id) ?? ORIGIN), slot: slots.get(node.id) ?? node.kind }] as const])),
+    shown.nodes.flatMap((node) => (node.ui ? [] : [[node.id, { ...(positions.get(node.id) ?? ORIGIN), slot: slots.get(node.id) ?? node.kind }] as const])),
   );
+  /** What the module of an effect has of the lane that holds it, if the canvas draws no card for that lane. */
+  const racks = new Set(graph.nodes.flatMap((node) => (node.kind === "modulator" && node.parent !== null ? [node.parent] : [])));
+  const heldIn = (node: Node): HeldIn | null => {
+    const held = node.kind === "effect" && node.parent !== null ? holders.get(node.parent) : undefined;
+    return held === undefined || node.parent === null ? null : { lane: node.parent, first: held[0]?.id === node.id, alone: held.length === 1 && !racks.has(node.parent) };
+  };
 
-  const nodes: PatchNode[] = graph.nodes.map((node) => ({
+  const nodes: PatchNode[] = shown.nodes.map((node) => ({
     id: String(node.id),
     type: node.kind,
     position: node.ui ? { x: node.ui.x, y: node.ui.y } : (positions.get(node.id) ?? { x: 0, y: 0 }),
@@ -676,6 +718,7 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
       cables: node.kind === "modulator" ? (listed.get(node.id) ?? []) : [],
       scope: withScope.has(node.id),
       source: node.kind === "source" ? node.source : null,
+      heldIn: heldIn(node),
     },
     draggable: true,
     deletable: false,
@@ -683,7 +726,7 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
 
   const edges: PatchEdge[] = [];
   const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
-  for (const edge of graph.edges) {
+  for (const edge of shown.edges) {
     const common = { source: String(edge.from.node), target: String(edge.to.node), sourceHandle: handleOf(edge.from.port), targetHandle: handleOf(edge.to.port), deletable: false };
     if (edge.kind === "modulation") {
       edges.push({ ...common, id: `mod:${String(edge.id)}`, type: "modulation", data: { cable: edge.id, modulator: edge.from.node, label: cableWords(graph, names, edge) }, zIndex: 10 });
@@ -758,6 +801,8 @@ function samePlace(x: NodeUi | undefined, y: NodeUi | undefined): boolean {
 function sameNodeStructure(x: Node, y: Node): boolean {
   if (x === y) return true;
   if (x.id !== y.id || x.kind !== y.kind || x.parent !== y.parent || x.name !== y.name || !samePlace(x.ui, y.ui)) return false;
+  // (Whether a lane has a key range or a pattern is part of it: with neither, and no instrument, a lane that has effects has no card on the canvas.)
+  if (x.kind === "instrument" && y.kind === "instrument" && ((x.range === null) !== (y.range === null) || (x.pattern === null) !== (y.pattern === null))) return false;
   if ((x.kind === "instrument" || x.kind === "effect") && (y.kind === "instrument" || y.kind === "effect")) {
     return samePluginStructure(x.plugin, y.plugin);
   }

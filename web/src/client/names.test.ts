@@ -56,6 +56,55 @@ describe("what the nodes are called", () => {
   });
 });
 
+describe("what a lane that only holds effects is called", () => {
+  const lane = (id: number, over: Partial<Extract<Node, { kind: "instrument" }>> = {}): Node => ({
+    id,
+    parent: null,
+    name: "(empty)",
+    kind: "instrument",
+    plugin: null,
+    range: null,
+    transpose: 0,
+    volume: 1,
+    muted: false,
+    solo: false,
+    route: "out",
+    pattern: null,
+    ...over,
+  });
+  const filter = (id: number, parent: number, name = "Filter"): Node => {
+    const found = tracerSnapshot.graph.nodes.find((node) => node.kind === "effect");
+    if (found?.kind !== "effect") throw new Error("the tracer has an effect");
+    return { ...found, id, parent, name };
+  };
+  const master = tracerSnapshot.graph.nodes.find((node) => node.kind === "master");
+  if (!master) throw new Error("the tracer has a master");
+
+  test("it is called by the first of its effects, with the number that effect has, and takes no number of its own", () => {
+    const graph: Graph = { nodes: [lane(1), filter(2, 1), filter(3, 1, "Reverb"), lane(4), filter(5, 4), master], edges: [] };
+    const names = displayNames(graph);
+    expect([1, 2, 3, 4, 5].map((id) => names.get(id))).toEqual(["Filter 1", "Filter 1", "Reverb", "Filter 2", "Filter 2"]);
+    // (The map lists the nodes in the order of the graph, whatever they are called.)
+    expect([...names.keys()]).toEqual([1, 2, 3, 4, 5, master.id]);
+  });
+
+  test("the lanes that are drawn are numbered without it: an empty lane is alone with its name when the others are holders", () => {
+    const graph: Graph = { nodes: [lane(1), filter(2, 1), lane(3), filter(4, 3), lane(5), master], edges: [] };
+    expect(displayNames(graph).get(5)).toBe("(empty)");
+    // A lane that has a key range is drawn: two of them are numbered, the holder is not one of them.
+    const drawn: Graph = { nodes: [lane(1), filter(2, 1), lane(3, { range: { low: 1, high: 2 } }), lane(5, { range: { low: 3, high: 4 } }), master], edges: [] };
+    const names = displayNames(drawn);
+    expect([3, 5].map((id) => names.get(id))).toEqual(["(empty) 1", "(empty) 2"]);
+  });
+
+  test("a lane that holds effects and is in a group is drawn, and called as the server calls it", () => {
+    const grouped = lane(1, { parent: 7 });
+    const group: Node = { id: 7, parent: null, name: "Pad", kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" };
+    const graph: Graph = { nodes: [group, grouped, filter(2, 1), master], edges: [] };
+    expect(displayNames(graph).get(1)).toBe("(empty)");
+  });
+});
+
 describe("what the ports a cable ends at are called", () => {
   const { graph } = tracerSnapshot;
   const filter = graph.nodes.find((node) => node.name === "Filter");

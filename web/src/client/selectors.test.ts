@@ -605,8 +605,16 @@ describe("what goes when a lane or a group is taken out", () => {
       ...tracerSnapshot,
       graph: { ...tracerSnapshot.graph, nodes: tracerSnapshot.graph.nodes.map((node) => (node.id === oscillator.id && node.kind === "instrument" ? { ...node, name: "(empty)", plugin: null } : node)) },
     });
-    // (The lane keeps what else it has: its filter and its LFO are still what goes with it.)
-    expect(removalOf(emptied, oscillator.id)).toEqual({ kind: "lane", name: "(empty)", instrument: false, effects: 1, modulators: 1, lanes: 0, last: true });
+    // (The lane keeps what else it has: its filter and its LFO are still what goes with it. It has nothing else that a card would show, so the canvas draws no card for it and it is called by its
+    // filter; with a key range it has a card, and is called as the server calls a lane that has no instrument.)
+    expect(removalOf(emptied, oscillator.id)).toEqual({ kind: "lane", name: "Filter", instrument: false, effects: 1, modulators: 1, lanes: 0, last: true });
+    const base = emptied.snapshot;
+    if (base === null) throw new Error("the session is there");
+    const keyed = stateOf({
+      ...base,
+      graph: { ...base.graph, nodes: base.graph.nodes.map((node) => (node.id === oscillator.id && node.kind === "instrument" ? { ...node, range: { low: 36, high: 60 } } : node)) },
+    });
+    expect(removalOf(keyed, oscillator.id)).toEqual({ kind: "lane", name: "(empty)", instrument: false, effects: 1, modulators: 1, lanes: 0, last: true });
     expect([0, 1, 2].map((group) => removalOf(groups, group)?.instrument)).toEqual([false, false, false]);
     expect([3, 5, 9, 10].map((lane) => removalOf(groups, lane)?.instrument)).toEqual([true, true, true, true]);
   });
@@ -795,6 +803,23 @@ describe("the input of an effect", () => {
     if (lane?.kind !== "instrument") throw new Error("no lane");
     lane.plugin = null;
     lane.name = "(empty)";
+    // (A lane that has a key range has a card, which feeds the first effect: one that has nothing but effects has none, below.)
+    lane.range = { low: 36, high: 60 };
+    expect(inputOf(stateOf(copy), filter.id)).toEqual({ cut: false, from: "(empty)" });
+  });
+
+  test("is none for the first effect of a lane that only holds effects, whose card the canvas does not draw, and the effect before it for the others", () => {
+    const copy = structuredClone(tracerSnapshot);
+    const lane = copy.graph.nodes.find((n) => n.id === oscillator.id);
+    const first = copy.graph.nodes.find((n) => n.id === filter.id);
+    if (lane?.kind !== "instrument" || first?.kind !== "effect") throw new Error("no lane and effect");
+    lane.plugin = null;
+    lane.name = "(empty)";
+    copy.graph.nodes.push({ ...first, id: 99 });
+    expect(inputOf(stateOf(copy), filter.id)).toBeUndefined();
+    expect(inputOf(stateOf(copy), 99)).toEqual({ cut: false, from: "Filter 1" });
+    // With a key range it is a lane that is drawn, and feeds its first effect.
+    lane.range = { low: 1, high: 2 };
     expect(inputOf(stateOf(copy), filter.id)).toEqual({ cut: false, from: "(empty)" });
   });
 

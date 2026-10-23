@@ -214,16 +214,27 @@ describe("the page", () => {
     });
   });
 
-  test("gives the focus to the button that puts an instrument in when the instrument of a lane is taken out alone, and the lane stays", async () => {
+  test("gives the focus to the button in the bar that adds an instrument when the instrument of a lane is taken out alone and nothing else of the lane has a card: its effect stands by itself then", async () => {
     page({ snapshot: groupsFixture.snapshot });
     fireEvent.click(await screen.findByRole("button", { name: "Remove the lane of Oscillator 2" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator 2 only/ }));
     await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add an instrument" }));
+    });
+    // (The lane has no card: its filter is on the canvas, with the way out of the lane, which is its own.)
+    expect(screen.queryByRole("button", { name: "Choose an instrument for (empty)" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Cut the way out of Filter" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Remove Filter" })).toHaveLength(1);
+  });
+
+  test("gives the focus to the button that puts an instrument in when the instrument of a lane that has a card is taken out alone, and the lane stays", async () => {
+    // (Lane 3 is in a group, which a card has the choice of: the lane keeps its card with no instrument, and the card is where an instrument is put in.)
+    page({ snapshot: groupsFixture.snapshot });
+    fireEvent.click(await screen.findByRole("button", { name: "Remove the lane of Oscillator 1" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator 1 only/ }));
+    await waitFor(() => {
       expect(document.activeElement).toBe(screen.getByRole("button", { name: "Choose an instrument for (empty)" }));
     });
-    // (Its effect is still on the canvas, and the lane's own way out: it is a lane that has no sound of its own.)
-    expect(screen.getByRole("button", { name: "Cut the way out of (empty)" })).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Remove Filter" })).toHaveLength(1);
   });
 
   test("puts the instrument back by Undo, in the words of what was done, and takes it out again by Redo", async () => {
@@ -232,9 +243,11 @@ describe("the page", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator 2 only/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Undo take Oscillator out of its lane" }));
     expect(await screen.findByRole("button", { name: "Change the instrument of Oscillator 2" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Choose an instrument for (empty)" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cut the way out of Filter" })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Redo take Oscillator out of its lane" }));
-    expect(await screen.findByRole("button", { name: "Choose an instrument for (empty)" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Cut the way out of Filter" })).toBeTruthy();
+    // (The lane has no card: the oscillators that are left are numbered without it, so that "Oscillator 2" is another lane's.)
+    expect(document.getElementById("change-instrument-5")).toBeNull();
   });
 
   test("does not give the focus to the button that puts an instrument in when the instrument could not be taken out", async () => {

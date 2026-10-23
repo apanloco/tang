@@ -72,7 +72,8 @@ describe("the button of a node that shows its scope", () => {
 
   test("is not on a lane that has no instrument, which has no signal to show, though an effect in the lane has one", async () => {
     const snapshot: Snapshot = structuredClone(tracerSnapshot);
-    for (const node of snapshot.graph.nodes) if (node.kind === "instrument") node.plugin = null;
+    // (A lane that has a key range has a card: one that has nothing but effects has none, and its effects stand by themselves.)
+    for (const node of snapshot.graph.nodes) if (node.kind === "instrument") Object.assign(node, { plugin: null, range: { low: 36, high: 60 } });
     await rig(<PatchView />, { snapshot });
     const lane = await nodeOf(oscillator.id);
     expect(within(lane).queryByRole("button", { name: /^Scope of / })).toBeNull();

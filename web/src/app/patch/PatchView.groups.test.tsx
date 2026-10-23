@@ -308,8 +308,9 @@ describe("taking a lane or a group out", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Remove the lane of Oscillator" }));
     expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Keep Oscillator", "Remove Oscillator only: its 1 effect and 1 modulator stay in the lane"]);
     cleanup();
-    // A lane that has no instrument, and is the only one, has nothing to be taken out of it and cannot be taken out: no button.
-    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "instrument" ? { ...node, name: "(empty)", plugin: null } : node));
+    // A lane that has no instrument, and is the only one, has nothing to be taken out of it and cannot be taken out: no button. (It has a key range, which is what has it a card: a lane that has nothing but
+    // effects has none, and its effects stand by themselves.)
+    const nodes = tracerSnapshot.graph.nodes.map((node) => (node.kind === "instrument" ? { ...node, name: "(empty)", plugin: null, range: { low: 36, high: 60 } } : node));
     await rig(<PatchView />, { snapshot: { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes } } });
     await screen.findByRole("button", { name: "Choose an instrument for (empty)" });
     expect(screen.queryByRole("button", { name: /^Remove the lane of / })).toBeNull();
@@ -415,33 +416,48 @@ describe("taking a lane or a group out", () => {
     expect(screen.getAllByRole("combobox", { name: /^Group of / })).toHaveLength(3);
   });
 
-  test("takes the instrument out of a lane alone when it is said to: the lane stays, empty, with its effect and its modulators, and nothing else on the canvas changes", async () => {
+  test("takes the instrument out of a lane alone when it is said to: the lane stays, with its effect and its modulators, which stand by themselves, and nothing else on the canvas changes", async () => {
     const { requests } = await rig(<PatchView />, session);
     fireEvent.click(await removeButton(5, "Remove the lane of Oscillator 2"));
     fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator 2 only/ }));
     await waitFor(() => {
       expect(requests().map((request) => request.intent)).toEqual([{ type: "clearInstrument", node: 5 }]);
     });
-    // The lane is on the canvas still, called what a lane that has no instrument is, with the button that puts one in; its filter and its two LFOs, and every other node, are there.
-    expect(await screen.findByRole("button", { name: "Choose an instrument for (empty)" })).toBeTruthy();
-    expect(within(await nodeOf(5)).getByRole("button", { name: "Choose an instrument for (empty)" })).toBeTruthy();
+    // The lane has nothing but its filter and its two LFOs now, and the canvas draws no card for it: the filter and the LFOs are on it, as every other node is, and the filter has what the lane's
+    // card had of the lane as a whole (it is the first of its effects).
+    await waitFor(() => {
+      expect(screen.queryByTestId("rf__node-5")).toBeNull();
+    });
+    expect(screen.queryByRole("button", { name: "Choose an instrument for (empty)" })).toBeNull();
     for (const stays of [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, MASTER]) expect(screen.getByTestId(`rf__node-${String(stays)}`), `node ${String(stays)}`).toBeTruthy();
-    expect(screen.getAllByRole("combobox", { name: /^Group of / })).toHaveLength(4);
-    // Taking out what is left of it is the lane's removal, which says what goes with it: the lane has no instrument now.
+    const filter = await nodeOf(6);
+    expect(within(filter).getByRole("button", { name: "Mute Filter" })).toBeTruthy();
+    expect(within(filter).getByRole("button", { name: "Add a modulator to Filter" })).toBeTruthy();
+    expect(screen.getAllByRole("combobox", { name: /^Group of / })).toHaveLength(3);
+    // (The lane has modulators, which the lane's removal would take with it: the filter's "×" takes the filter out, and the lane has its card again, empty, with the two LFOs.)
+    fireEvent.click(within(filter).getByRole("button", { name: "Remove Filter" }));
+    await waitFor(() => {
+      expect(requests().map((request) => request.intent).at(-1)).toEqual({ type: "removeNode", node: 6 });
+    });
+    expect(await screen.findByRole("button", { name: "Choose an instrument for (empty)" })).toBeTruthy();
     fireEvent.click(await removeButton(5, "Remove the lane of (empty)"));
-    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Keep (empty)", "Remove the lane of (empty) for good: its 1 effect and 2 modulators go with it"]);
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Keep (empty)", "Remove the lane of (empty) for good: its 2 modulators go with it"]);
   });
 
-  test("takes the instrument out of the only lane of a session and leaves the lane", async () => {
+  test("takes the instrument out of the only lane of a session and leaves the lane: its effect and its LFO stand by themselves, and the lane has no card", async () => {
     const { requests } = await rig(<PatchView />);
     fireEvent.click(await screen.findByRole("button", { name: "Remove the lane of Oscillator" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator only/ }));
     await waitFor(() => {
       expect(requests().map((request) => request.intent)).toEqual([{ type: "clearInstrument", node: 0 }]);
     });
-    expect(await screen.findByRole("button", { name: "Choose an instrument for (empty)" })).toBeTruthy();
-    // The lane is the only one and has no instrument: nothing is left to take out of it, and it is not taken out.
+    await waitFor(() => {
+      expect(screen.queryByTestId("rf__node-0")).toBeNull();
+    });
+    // The lane is the only one and has no instrument: nothing is left to take out of it, and it is not taken out. Its filter is the one that is on the canvas, with the lane's mute and solo.
     expect(screen.queryByRole("button", { name: /^Remove the lane of / })).toBeNull();
+    expect(within(await nodeOf(1)).getByRole("button", { name: "Solo Filter" })).toBeTruthy();
+    expect(await nodeOf(2)).toBeTruthy();
   });
 
   test("says why when the instrument could not be taken out of a lane, and the lane is as it was", async () => {

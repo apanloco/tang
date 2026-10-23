@@ -151,7 +151,7 @@ function rectangles(graph: Graph) {
   return flow.nodes.map((placed) => {
     const node = graph.nodes.find((candidate) => String(candidate.id) === placed.id);
     if (!node) throw new Error("a node of the canvas that the graph does not have");
-    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope) };
+    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope, placed.data.heldIn?.first === true) };
   });
 }
 
@@ -159,7 +159,7 @@ function rectangles(graph: Graph) {
 function overlapsIn(graph: Graph, flow: ReturnType<typeof toFlow>): string | null {
   const rects = flow.nodes.map((placed) => {
     const node = nodeOf(graph, Number(placed.id));
-    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope) };
+    return { id: node.id, left: placed.position.x, top: placed.position.y, right: placed.position.x + NODE_WIDTH, bottom: placed.position.y + nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope, placed.data.heldIn?.first === true) };
   });
   for (const [i, a] of rects.entries()) {
     for (const b of rects.slice(i + 1)) {
@@ -2073,6 +2073,19 @@ describe("whether two graphs are laid out the same", () => {
     expect(sameStructure(base, renamed)).toBe(false);
   });
 
+  test("they are not when a lane is given a key range or a pattern, or has them taken off: with neither, and no instrument, a lane that has effects has no card on the canvas", () => {
+    const pattern = { recording: false, enabled: true, looping: true, inKey: false, lengthBeats: 4, bpm: 120, notes: 3 };
+    const keyed = laneWith(holding, 1, { range: { low: 36, high: 60 } });
+    const patterned = laneWith(holding, 1, { pattern });
+    expect(sameStructure(holding, keyed)).toBe(false);
+    expect(sameStructure(keyed, holding)).toBe(false);
+    expect(sameStructure(holding, patterned)).toBe(false);
+    expect(sameStructure(patterned, holding)).toBe(false);
+    // (Which keys, and what the pattern is, are values: a lane that has some has its card.)
+    expect(sameStructure(keyed, laneWith(holding, 1, { range: { low: 1, high: 2 } }))).toBe(true);
+    expect(sameStructure(patterned, laneWith(holding, 1, { pattern: { ...pattern, notes: 9, enabled: false } }))).toBe(true);
+  });
+
   test("they are not when a node is of another kind, the rest being the same", () => {
     const left: Graph = { nodes: [group(5)], edges: [] };
     const right: Graph = { nodes: [{ id: 5, parent: null, name: "Group 5", kind: "master" }], edges: [] };
@@ -2162,5 +2175,191 @@ describe("whether two graphs are laid out the same", () => {
     expect(sameStructure(withEdges(hearsLink(40, 0)), withEdges(hearsLink(40, 0)))).toBe(true);
     expect(sameStructure(withEdges(hearsLink(40, 0)), withEdges(hearsLink(41, 0)))).toBe(false);
     expect(sameStructure(withEdges(hearsLink(40, 0)), withEdges(notesCable(90, 40, 0)))).toBe(false);
+  });
+});
+
+// -- A lane that only holds effects (step 87): the canvas draws no card for it, and the effects are modules that stand by themselves --
+
+/**
+ * A lane that has no instrument and holds a reverb and a filter (a modulator drives the filter), then a lane that has an instrument and an effect (as the server lists them), and a link by which each of
+ * them hears the source of notes.
+ */
+const holding: Graph = {
+  nodes: [keysSource(9), instrumentOf(1, null), effect(2, 1), effect(3, 1), modulator(4, 1), instrument(5, 4), effect(6, 5), master],
+  edges: [audio(1, 2), audio(2, 3), audio(3, MASTER), audio(5, 6), audio(6, MASTER), hearsLink(9, 1), hearsLink(9, 5), cable(0, 4, 3, 1)],
+};
+
+/** `graph` with the lane `id` given `over`. */
+function laneWith(graph: Graph, id: NodeId, over: Partial<Extract<Node, { kind: "instrument" }>>): Graph {
+  return { ...graph, nodes: graph.nodes.map((node) => (node.id === id && node.kind === "instrument" ? { ...node, ...over } : node)) };
+}
+
+describe("a lane that only holds effects", () => {
+  test("has no card on the canvas, and none of the links that are at it: what is drawn is its effects, and the way out of the end of its chain", () => {
+    const flow = toFlow(holding);
+    expect(flow.nodes.map((node) => node.id)).toEqual(["9", "2", "3", "4", "5", "6", String(MASTER)]);
+    expect(flow.edges.map((edge) => edge.id)).toEqual(["audio:2>3", `audio:3>${String(MASTER)}`, "audio:5>6", `audio:6>${String(MASTER)}`, "hears:9>5", "mod:0"]);
+    // (Nothing is left of the lane: not in the places the layout remembers either.)
+    expect([...flow.places.keys()].sort((a, b) => a - b)).toEqual([2, 3, 4, 5, 6, 9, MASTER]);
+  });
+
+  test("puts its effects in a row from the first column, where its card would have been, with the modulator over the effect it drives and the next lane below", () => {
+    const flow = toFlow(holding);
+    expect([2, 3].map((id) => at(flow, id).position.x)).toEqual([0, COLUMN]);
+    expect(at(flow, 2).position.y).toBe(at(flow, 3).position.y);
+    expect(at(flow, 4).position.x).toBe(COLUMN);
+    // The modulator's room above the row, then the row, as for any lane; and the next lane after the tallest of the row and the gap (the first effect has the lane's cell, which makes it taller).
+    const rowTop = tall(holding, 4) + CABLE_GAP;
+    expect(at(flow, 2).position.y).toBe(rowTop);
+    expect(at(flow, 4).position.y).toBe(0);
+    const tallest = Math.max(nodeHeight(nodeOf(holding, 2), at(flow, 2).data.knobs.length, 0, false, true), nodeHeight(nodeOf(holding, 3), at(flow, 3).data.knobs.length));
+    expect(at(flow, 5).position.y).toBe(rowTop + tallest + ROW_GAP);
+    expect(at(flow, 6).position.x).toBe(COLUMN);
+  });
+
+  test("says of each of its effects which lane holds it, whether it is the first, which has what the card said of the lane as a whole, and whether it is on its own there", () => {
+    const flow = toFlow(holding);
+    expect(at(flow, 2).data.heldIn).toEqual({ lane: 1, first: true, alone: false });
+    expect(at(flow, 3).data.heldIn).toEqual({ lane: 1, first: false, alone: false });
+    // (The effect of a lane that has an instrument, the modulator, the source and the master are held by nobody.)
+    for (const id of [4, 5, 6, 9, MASTER]) expect(at(flow, id).data.heldIn, String(id)).toBeNull();
+    // On its own: the only effect of its lane, and no modulator in the lane to be left behind when the lane goes with it.
+    const alone: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), master], edges: [audio(1, 2), audio(2, MASTER)] };
+    expect(at(toFlow(alone), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: true });
+    const driven: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), modulator(3, 1), master], edges: [audio(1, 2), audio(2, MASTER)] };
+    expect(at(toFlow(driven), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: false });
+    const chain: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), effect(3, 1), master], edges: [audio(1, 2), audio(2, 3), audio(3, MASTER)] };
+    expect([2, 3].map((id) => at(toFlow(chain), id).data.heldIn?.alone)).toEqual([false, false]);
+  });
+
+  test("makes the first of its effects as tall as the cell of the lane that it has makes it: one control more than an effect that is in a lane with a card", () => {
+    const node = nodeOf(holding, 2);
+    expect(controlCount(node, 3)).toBe(4);
+    expect(controlCount(node, 3, true)).toBe(5);
+    expect(nodeHeight(node, 3, 0, false, true)).toBeGreaterThan(nodeHeight(node, 3));
+    // (Where the controls still fit a row they take no more room.)
+    expect(nodeHeight(node, 2, 0, false, true)).toBe(nodeHeight(node, 2));
+    // It is what the lane's own node has of such cells, and no other kind of node has one.
+    expect(controlCount(nodeOf(holding, 5), 3, true)).toBe(controlCount(nodeOf(holding, 5), 3));
+    expect(nodeHeight(nodeOf(holding, 4), 0, 0, false, true)).toBe(nodeHeight(nodeOf(holding, 4), 0));
+  });
+
+  test("keeps the way out on the link at the end of its chain, which cuts it for the lane, and the link between its effects, which cuts the input of the second", () => {
+    const flow = toFlow(holding);
+    expect(flow.edges.find((edge) => edge.id === `audio:3>${String(MASTER)}`)?.data).toMatchObject({ wayOut: 1 });
+    expect(flow.edges.find((edge) => edge.id === "audio:2>3")?.data).toMatchObject({ feedOf: 3 });
+  });
+
+  test("has the card of a lane back as soon as the lane has something that the card shows: a key range, a pattern, a group, an instrument, a cable at it", () => {
+    const pattern = { recording: false, enabled: true, looping: true, inKey: false, lengthBeats: 4, bpm: 120, notes: 3 };
+    const cabled: Graph = { ...holding, edges: [...holding.edges, notesCable(70, 9, 1)] };
+    const sent: Graph = { ...holding, edges: [...holding.edges, { kind: "cable", id: 71, gain: 1, from: { node: 1, port: { type: "audioOut" } }, to: { node: 6, port: { type: "audioIn" } } }] };
+    const grouped: Graph = { ...holding, nodes: [group(10), ...laneWith(holding, 1, { parent: 10 }).nodes] };
+    for (const [what, graph] of [
+      ["a key range", laneWith(holding, 1, { range: { low: 36, high: 60 } })],
+      ["a pattern", laneWith(holding, 1, { pattern })],
+      ["a group", grouped],
+      ["an instrument", laneWith(holding, 1, { plugin: plugin(3) })],
+      ["a cable of notes", cabled],
+      ["an audio cable", sent],
+    ] as const) {
+      const flow = toFlow(graph);
+      expect(flow.nodes.some((node) => node.id === "1"), what).toBe(true);
+      expect(at(flow, 2).data.heldIn, what).toBeNull();
+      expect(flow.edges.some((edge) => edge.id === "audio:1>2"), what).toBe(true);
+    }
+    // With the card, the row is the lane and its effects, as it always was.
+    const flow = toFlow(laneWith(holding, 1, { range: { low: 36, high: 60 } }));
+    expect([1, 2, 3].map((id) => at(flow, id).position.x)).toEqual([0, COLUMN, 2 * COLUMN]);
+  });
+
+  test("is left where it is when another is added, as the other lanes are: the places that the layout remembers keep the effects of a lane that is held where they were", () => {
+    const first = toFlow(holding);
+    const grown: Graph = { nodes: [...holding.nodes.slice(0, -1), instrumentOf(20, null), effect(21, 20), master], edges: [...holding.edges, audio(20, 21), audio(21, MASTER)] };
+    const next = toFlow(grown, first.places);
+    for (const id of [2, 3, 4, 5, 6, 9]) expect(at(next, id).position, String(id)).toEqual(at(first, id).position);
+    // The new effect is a lane's row of its own below the others, in the first column.
+    expect(at(next, 21).position.x).toBe(0);
+    expect(at(next, 21).position.y).toBeGreaterThan(at(next, 6).position.y);
+    expect(overlapsIn(grown, next)).toBeNull();
+  });
+
+  test("has what is added to its strip put by the effect that stayed: a modulator goes above it, and the effects after the first go along with it", () => {
+    const bare: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), effect(3, 1), master], edges: [audio(1, 2), audio(2, 3), audio(3, MASTER)] };
+    const first = toFlow(bare);
+    // A modulator is added to the lane (the controller puts it after the others of the lane): the effects stay where they were, and the modulator is above the one it drives.
+    const driven: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), effect(3, 1), modulator(4, 1), master], edges: [...bare.edges, cable(0, 4, 3, 1)] };
+    const next = toFlow(driven, first.places);
+    expect(at(next, 2).position).toEqual(at(first, 2).position);
+    expect(at(next, 3).position).toEqual(at(first, 3).position);
+    expect(at(next, 4).position.x).toBe(COLUMN);
+    expect(at(next, 4).position.y + nodeHeight(nodeOf(driven, 4), 0, 1) + CABLE_GAP).toBeLessThanOrEqual(at(next, 3).position.y);
+    expect(overlapsIn(driven, next)).toBeNull();
+    // A modulator that drives nothing is over the first of the effects.
+    const idle: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), effect(3, 1), modulator(4, 1), master], edges: bare.edges };
+    const idleFlow = toFlow(idle, first.places);
+    expect(at(idleFlow, 4).position.x).toBe(0);
+    expect(at(idleFlow, 4).position.y).toBeLessThan(at(idleFlow, 2).position.y);
+    expect(overlapsIn(idle, idleFlow)).toBeNull();
+  });
+
+  test("takes no room for the card that it has not: the strip of a second lane that has none is the gap of a row below the first's, and the places that nothing has are nobody's obstacles", () => {
+    // (Effects with no knobs: a strip is as tall as its first effect, with the cell of the lane, and shorter than a card would make it.)
+    const two: Graph = { nodes: [instrumentOf(1, null), effect(2, 1, 0), instrumentOf(3, null), effect(4, 3, 0), master], edges: [audio(1, 2), audio(2, MASTER), audio(3, 4), audio(4, MASTER)] };
+    const flow = toFlow(two);
+    const first = nodeHeight(nodeOf(two, 2), 0, 0, false, true);
+    expect(at(flow, 2).position).toEqual({ x: 0, y: 0 });
+    expect(at(flow, 4).position).toEqual({ x: 0, y: first + ROW_GAP });
+    expect(overlapsIn(two, flow)).toBeNull();
+  });
+
+  test("is not in the way of the layout where its card was dragged to, before its instrument was taken out: that place is nobody's now", () => {
+    const dragged: Graph = { nodes: [{ ...instrumentOf(1, null), ui: { x: 0, y: 0 } }, effect(2, 1, 0), master], edges: [audio(1, 2), audio(2, MASTER)] };
+    const flow = toFlow(dragged);
+    // The effect is where the layout puts it, on the place that its card had, and the canvas is as arranged as it would be without the place.
+    expect(at(flow, 2).position).toEqual({ x: 0, y: 0 });
+    expect(flow.arranged).toBe(true);
+  });
+
+  test("is laid out again from the first column when the card of its lane goes, and back when it comes: the strips of the other lanes stay where they were", () => {
+    const withCard: Graph = { nodes: [instrument(1), effect(2, 1), effect(3, 1), instrument(4), effect(5, 4), master], edges: [audio(1, 2), audio(2, 3), audio(3, MASTER), audio(4, 5), audio(5, MASTER)] };
+    const first = toFlow(withCard);
+    expect([1, 2, 3].map((id) => at(first, id).position.x)).toEqual([0, COLUMN, 2 * COLUMN]);
+    // The instrument is taken out of lane 1 alone: the card goes, and the effects close up where it was.
+    const without = laneWith(withCard, 1, { plugin: null });
+    const next = toFlow(without, first.places);
+    expect([2, 3].map((id) => at(next, id).position.x)).toEqual([0, COLUMN]);
+    expect(at(next, 2).position.y).toBe(at(first, 2).position.y);
+    for (const id of [4, 5]) expect(at(next, id).position, String(id)).toEqual(at(first, id).position);
+    expect(overlapsIn(without, next)).toBeNull();
+    // Undo puts the instrument back: the card is first again and the effects after it, where they were.
+    const back = toFlow(withCard, next.places);
+    for (const id of [1, 2, 3, 4, 5]) expect(at(back, id).position, String(id)).toEqual(at(first, id).position);
+  });
+
+  test("is not among the nodes that the layout puts in a row below because it has no place for them: a node whose parent is not there is first in that row", () => {
+    const orphan: Graph = { nodes: [instrumentOf(1, null), effect(2, 1, 0), effect(3, 99, 0), master], edges: [] };
+    const flow = toFlow(orphan);
+    expect(at(flow, 3).position.x).toBe(0);
+    expect(at(flow, 3).position.y).toBeGreaterThan(at(flow, 2).position.y);
+  });
+
+  test("has a node that is added after it where the layout puts it, as the others are: a lane that is new goes below the strips that stayed, with no gap for a card that is not there", () => {
+    const first = toFlow(holding);
+    const grown: Graph = { nodes: [...holding.nodes.slice(0, -1), instrumentOf(20, null), effect(21, 20), master], edges: [...holding.edges, audio(20, 21), audio(21, MASTER)] };
+    expect(at(toFlow(grown, first.places), 21).position).toEqual(at(toFlow(grown), 21).position);
+  });
+
+  test("is told from a lane that has a card, in the order of the graph, when it is a lane that is in the middle of the others", () => {
+    // A held lane between two lanes that have instruments: the rows are in the order of the lanes, and the held one is one row, with the others' strips above and below it.
+    const graph: Graph = {
+      nodes: [instrument(1), instrumentOf(2, null), effect(3, 2), instrument(4), master],
+      edges: [audio(1, MASTER), audio(2, 3), audio(3, MASTER), audio(4, MASTER)],
+    };
+    const flow = toFlow(graph);
+    const rows = [1, 3, 4].map((id) => at(flow, id).position.y);
+    expect(rows[0]).toBeLessThan(rows[1] ?? 0);
+    expect(rows[1]).toBeLessThan(rows[2] ?? 0);
+    expect(overlapsIn(graph, flow)).toBeNull();
   });
 });
