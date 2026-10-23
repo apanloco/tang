@@ -41,7 +41,7 @@ use self::edits::{Counts, Edit};
 use crate::piano_filter::PianoFilter;
 use crate::plugin::chain::{AudioGraph, GraphCommand, MidiLearnedNotification, PatternNotification};
 use crate::plugin::{Plugin, Runtime};
-use crate::session::{self, Route};
+use crate::session::{self, Feed, Route};
 use crate::telemetry::{self, Telemetry};
 
 /// What an engine is built from: the ends of the channels that the controller talks to it by, and the cells it publishes in. `main` wires an `AudioGraph` with the same.
@@ -155,6 +155,11 @@ impl Scenario {
             || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::Route { route: Route::None, .. } | Edit::RouteGroup { route: Route::None, .. }))
     }
 
+    /// Whether an effect has the link into it cut, in its file or by its edits (step 86): the old loop has no such thing either (every effect is fed by the stage before it).
+    pub fn has_cut_feeds(&self) -> bool {
+        self.session.contains("feed = \"none\"") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::Feed { feed: Feed::None, .. }))
+    }
+
     /// Whether it has a plugin that is late (the built-in drive, in its file or put in by an edit). Where the paths that are added are not in step by the plugins' latencies, the engine is
     /// what the loop that the plan replaced is (P3f: the plan puts them in step, and the loop does not, so `agree` holds the two with the compensation off); where nothing is late the
     /// compensation changes nothing, bit for bit, and a scenario that has nothing late is held to that.
@@ -163,9 +168,9 @@ impl Scenario {
             || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddEffect { plugin, .. } | Edit::AddBusEffect { plugin, .. } if *plugin == "builtin:drive"))
     }
 
-    /// Whether the loop that the plan replaced can run it: it has no audio cables and no way out that is cut, which that loop is from before.
+    /// Whether the loop that the plan replaced can run it: it has no audio cables, no way out that is cut and no link of a chain that is cut, which that loop is from before.
     pub fn is_in_the_old_loop(&self) -> bool {
-        !self.has_cables() && !self.has_cut_routes()
+        !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds()
     }
 }
 
@@ -355,6 +360,29 @@ const INSTRUMENT_EDITS: [(u64, Edit); 11] = [
     (42_000, Edit::Undo),
 ];
 
+/// What is done to the links of the chains of `CABLED` while it plays (step 86): the feed of lane 0's filter is cut (lane 0 is silent, and so is the group's bus: the filter is given nothing), a
+/// cable from lane 0's instrument to the filter is drawn (it is heard through the filter by the cable alone), the feed of the reverb on the bus is cut (the sum of the bus does not reach it)
+/// and a cable from lane 1's delay brings sound in, the feed of lane 1's delay is cut too, lane 0's filter is given its feed back (the chain and the cable both go in) and Undo cuts it again,
+/// the filter is taken out while its feed is cut and put back by Undo (cut still), lane 0 is taken out with it and put back by Undo, a filter is added to lane 1 and the delay, which is not fed,
+/// is moved after it (its cut goes with it) and given its feed back. Each is made (`Counts` says so: none is skipped or refused). The places of the feeds are the effects of the session
+/// in order: lane 0's filter, lane 1's delay and the reverb on the bus (and, once it is added, lane 1's filter before the delay and the reverb).
+const FEED_EDITS: [(u64, Edit); 14] = [
+    (6_000, Edit::Feed { effect: 0, feed: Feed::None }),
+    (10_000, Edit::AddCable { from: 0, to: 0, gain: 0.5 }),
+    (14_000, Edit::Feed { effect: 2, feed: Feed::None }),
+    (18_000, Edit::AddCable { from: 3, to: 3, gain: 0.6 }),
+    (22_000, Edit::Feed { effect: 1, feed: Feed::None }),
+    (26_000, Edit::Feed { effect: 0, feed: Feed::Chain }),
+    (28_000, Edit::Undo),
+    (30_000, Edit::RemoveEffect { lane: 0, effect: 0 }),
+    (34_000, Edit::Undo),
+    (36_000, Edit::RemoveLane { lane: 0 }),
+    (38_000, Edit::Undo),
+    (40_000, Edit::AddEffect { lane: 1, plugin: "builtin:filter" }),
+    (42_000, Edit::MoveEffect { lane: 1, effect: 0, to: 1 }),
+    (46_000, Edit::Feed { effect: 2, feed: Feed::Chain }),
+];
+
 /// What the keys play into `edited:sources`: `performance`, and a key (E4) that is hit and let go of after the pedal is up, which a lane that has been given the keys again plays.
 fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     let mut events = performance();
@@ -364,7 +392,7 @@ fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     events
 }
 
-/// The scenarios that edit the cables, the ways out, the solos, the latency, the sources of notes and the instruments of a session while it plays.
+/// The scenarios that edit the cables, the ways out, the solos, the latency, the sources of notes, the instruments and the links of the chains of a session while it plays.
 pub fn edited() -> Vec<Scenario> {
     let scenario = |name: &str, edits: &[(u64, Edit)]| Scenario {
         id: format!("edited:{name}@{BLOCK}"),
@@ -376,7 +404,7 @@ pub fn edited() -> Vec<Scenario> {
         edits: edits.to_vec(),
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -865,7 +893,53 @@ mod tests {
     #[test]
     fn the_scenarios_that_have_cables_are_those_that_the_loop_the_plan_replaced_is_not_held_to() {
         let with: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cables()).map(|scenario| scenario.id.clone()).collect();
-        assert_eq!(with, ["session:patched@256", "session:routed@256", "session:sends@256", "edited:cables@256", "edited:routes@256", "edited:solos@256", "edited:latency@256", "edited:instruments@256"]);
+        assert_eq!(
+            with,
+            [
+                "session:patched@256",
+                "session:routed@256",
+                "session:sends@256",
+                "session:unfed@256",
+                "edited:cables@256",
+                "edited:routes@256",
+                "edited:solos@256",
+                "edited:latency@256",
+                "edited:instruments@256",
+                "edited:feeds@256"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_scenarios_that_cut_the_link_into_an_effect_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
+        let cut: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cut_feeds()).map(|scenario| scenario.id.clone()).collect();
+        assert_eq!(cut, ["session:unfed@256", "edited:feeds@256"]);
+        // (A cut that is given back is not a cut: only the edits that cut count, and a file that says `chain` has none.)
+        let given_back = Scenario { session: "[[instrument]]\nplugin = \"builtin:osc\"\n".to_string(), edits: vec![(1_000, Edit::Feed { effect: 0, feed: Feed::Chain })], ..sessions().remove(0) };
+        assert!(!given_back.has_cut_feeds() && given_back.is_in_the_old_loop());
+        assert!(Scenario { session: "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = \"none\"\n".to_string(), ..given_back.clone() }.has_cut_feeds());
+        assert!(Scenario { edits: vec![(1_000, Edit::Feed { effect: 0, feed: Feed::None })], ..given_back }.has_cut_feeds());
+    }
+
+    #[test]
+    fn a_link_of_a_chain_that_is_cut_is_heard_in_the_feeds_scenario_and_the_unfed_session_is_heard_through_its_cables() {
+        // Lane 0's filter is not fed (the first edit): its sound goes nowhere but by the cable that is drawn after, so the render is another from the block that has the edit on, and the
+        // same before it.
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:feeds")).expect("a scenario of the corpus");
+        let cut = render(&scenario, &engine);
+        let without = Scenario { edits: scenario.edits.iter().filter(|(_, edit)| !matches!(edit, Edit::Feed { .. })).cloned().collect(), ..scenario.clone() };
+        let plain = render(&without, &engine);
+        let first = cut.samples.iter().zip(&plain.samples).position(|(x, y)| x.to_bits() != y.to_bits()).expect("the cut is heard");
+        assert!(first / 2 >= 6_000 - 6_000 % BLOCK, "nothing is different before the block that has the first edit: the first frame that differs is {}", first / 2);
+        assert!(fingerprint(&cut).peak > 0.01 && fingerprint(&plain).peak > 0.01, "both are heard");
+        // The session that cuts the links (`unfed.toml`) is heard, and its lane 0 is heard through the cables and in no other way: with the cable that carries its delay to the reverb taken
+        // out, what is left is lane 1's sound alone, and the render is another.
+        let session = sessions().into_iter().find(|scenario| scenario.id.starts_with("session:unfed")).expect("a session of the corpus");
+        let with = render(&session, &engine);
+        let without = Scenario { session: session.session.replace("[[cable]]\nfrom = \"instrument[0].effect[1]\"\nto = \"group[0].effect[0]\"\ngain = 0.8\n", ""), ..session };
+        let alone = render(&without, &engine);
+        assert_ne!(with.samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>(), alone.samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>(), "lane 0 is heard through its reverb");
+        assert!(fingerprint(&with).peak > 0.01 && fingerprint(&alone).peak > 0.01, "both are heard");
     }
 
     #[test]

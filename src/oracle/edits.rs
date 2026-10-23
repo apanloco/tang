@@ -11,7 +11,7 @@ use crate::app::controller::Controller;
 use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
 use crate::app::intent::{Gain, Intent, ModulatorKind};
 use crate::app::model::{NodeId, ParamKind, PluginSlot};
-use crate::session::Route;
+use crate::session::{Feed, Route};
 
 /// A request that a front-end makes.
 #[derive(Clone, Debug, PartialEq)]
@@ -59,6 +59,8 @@ pub enum Edit {
     Route { lane: usize, route: Route },
     /// The way out of a group (a place among the groups) cut or given back.
     RouteGroup { group: usize, route: Route },
+    /// The link into an effect cut or given back: a place among the effects of the session (each lane's effects, then each group's bus effects), wrapped round the ones there are.
+    Feed { effect: usize, feed: Feed },
     /// The keys (none) or a device, by its name, put in the session as a source of notes.
     AddSource { device: Option<&'static str> },
     /// A cable of notes from a place among the sources to a place among the lanes, both wrapped round the ones there are.
@@ -243,6 +245,13 @@ impl Edit {
             }
             Edit::Route { lane: l, route } => Intent::SetRoute { node: lane(*l)?.node, route: *route },
             Edit::RouteGroup { group: g, route } => Intent::SetRoute { node: group(*g)?.node, route: *route },
+            Edit::Feed { effect, feed } => {
+                let effects: Vec<NodeId> = model.instruments.iter().flat_map(|lane| lane.effects.iter()).chain(model.groups.iter().flat_map(|group| group.effects.iter())).map(|effect| effect.node).collect();
+                if effects.is_empty() {
+                    return None;
+                }
+                Intent::SetFeed { node: effects[effect % effects.len()], feed: *feed }
+            }
             Edit::AddSource { device } => Intent::AddSource { source: device.map_or(SourceInfo::Keys, |name| SourceInfo::Device { name: name.to_string() }) },
             Edit::NotesCable { source, lane: l } => {
                 let sources = &model.sources;
@@ -342,6 +351,25 @@ plugin = "builtin:osc"
         // A session with no group has nothing for a group's way out to aim at.
         let mut none = controller("[[instrument]]\nplugin = \"builtin:osc\"\n");
         assert_eq!(Edit::RouteGroup { group: 0, route: Route::None }.make(&mut none), Outcome::Skipped);
+    }
+
+    #[test]
+    fn a_feed_is_the_feed_of_a_place_among_the_effects_of_the_lanes_and_then_of_the_buses_and_wraps_round_them() {
+        let mut ctl = controller("[[group]]\n[[group.effect]]\nplugin = \"builtin:reverb\"\n[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument.effect]]\nplugin = \"builtin:delay\"\n[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:drive\"\n");
+        let (filter, delay, drive, reverb) = (ctl.model.instruments[0].effects[0].node, ctl.model.instruments[0].effects[1].node, ctl.model.instruments[1].effects[0].node, ctl.model.groups[0].effects[0].node);
+        // The effects: lane 0's filter and delay, lane 1's drive, and then the reverb on the bus.
+        let at = |effect: usize, feed: Feed| Edit::Feed { effect, feed }.resolve(&ctl);
+        assert_eq!(at(0, Feed::None), Some(Intent::SetFeed { node: filter, feed: Feed::None }));
+        assert_eq!(at(1, Feed::Chain), Some(Intent::SetFeed { node: delay, feed: Feed::Chain }));
+        assert_eq!(at(2, Feed::None), Some(Intent::SetFeed { node: drive, feed: Feed::None }));
+        assert_eq!(at(3, Feed::None), Some(Intent::SetFeed { node: reverb, feed: Feed::None }));
+        assert_eq!(at(4, Feed::None), Some(Intent::SetFeed { node: filter, feed: Feed::None }), "4 is 0 of 4");
+        assert_eq!(at(5, Feed::None), Some(Intent::SetFeed { node: delay, feed: Feed::None }), "5 is 1 of 4");
+        assert_eq!(Edit::Feed { effect: 1, feed: Feed::None }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.instruments[0].effects.iter().map(|effect| effect.fed).collect::<Vec<_>>(), [true, false]);
+        // A session with no effect has nothing for a feed to aim at.
+        let mut none = controller("[[instrument]]\nplugin = \"builtin:osc\"\n");
+        assert_eq!(Edit::Feed { effect: 0, feed: Feed::None }.make(&mut none), Outcome::Skipped);
     }
 
     #[test]
