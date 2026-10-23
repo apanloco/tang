@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 
 import { expect, test as mock } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
-import { audioIn, audioOut, drag, node, nodeBoxes, open, sends } from "./canvas";
+import { audioIn, audioOut, centre, drag, node, nodeBoxes, open, sends, still } from "./canvas";
 import { test } from "./own";
 
 // The way out of a lane and of a group from the page (docs/patch-graph.md §11.6, P3c-2a): a button under the mute and the solo that says where the audio goes and, pressed, cuts it, so that the
@@ -66,6 +66,68 @@ mock("a lane in a group says that it goes to its group and a group that it goes 
   await expect(links(page)).toHaveCount(1);
 });
 
+/** How far the middle of `button` is from the link `link` (a path), in pixels: the least distance to a point along it. */
+async function distanceFromLink(button: Locator, link: Locator): Promise<number> {
+  const middle = await centre(button);
+  return link.evaluate((path: SVGPathElement, at) => {
+    const matrix = path.getScreenCTM();
+    if (!matrix) throw new Error("the link is not drawn");
+    const length = path.getTotalLength();
+    let least = Number.POSITIVE_INFINITY;
+    for (let i = 0; i <= 400; i += 1) {
+      const point = path.getPointAtLength((length * i) / 400);
+      const x = matrix.a * point.x + matrix.c * point.y + matrix.e;
+      const y = matrix.b * point.x + matrix.d * point.y + matrix.f;
+      least = Math.min(least, Math.hypot(x - at.x, y - at.y));
+    }
+    return least;
+  }, middle);
+}
+
+mock("the link from the end of a lane's chain to the master has a button on it that disconnects it: the way out is cut as the button in the cell cuts it, the focus goes to that button, and undo gives the link back", async ({ page }) => {
+  await open(page);
+  const disconnect = page.getByRole("button", { name: "Disconnect Filter → Master" });
+  await expect(disconnect).toBeVisible();
+  // (Only the end of the chain has one: the link from the instrument to the filter is inside the chain.)
+  await expect(page.getByRole("button", { name: /^Disconnect / })).toHaveCount(1);
+  // It is on the link, in the middle of it, as the buttons of the cables that a person draws are.
+  expect(await distanceFromLink(disconnect, links(page).last())).toBeLessThan(4);
+  const before = await nodeBoxes(page);
+
+  await disconnect.click();
+  await expect(wayOut(page, "Oscillator")).toHaveText("no out");
+  await expect(wayOut(page, "Oscillator")).toBeFocused();
+  await expect(links(page)).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /^Disconnect / })).toHaveCount(0);
+  expect(await nodeBoxes(page)).toEqual(before);
+
+  await page.getByRole("button", { name: /^Undo/ }).click();
+  await expect(wayOut(page, "Oscillator")).toHaveText("→ Master");
+  await expect(links(page)).toHaveCount(2);
+  await expect(disconnect).toBeVisible();
+});
+
+mock("a lane that is added has a link to the master, and a button on it that disconnects it: the lane goes nowhere, the other lane's link is as it was, and nothing moves", async ({ page }) => {
+  await open(page);
+  await page.getByRole("button", { name: "Add an instrument" }).click();
+  await page.getByRole("menu", { name: "Add an instrument" }).getByRole("menuitem", { name: "Oscillator" }).click();
+  await expect(node(page, "Oscillator 2")).toBeVisible();
+  await still(node(page, "Oscillator 2"));
+  // (The tracer's lane has a link from its instrument to its filter and one from the filter to the master; the new lane, which has no effect, has one from its instrument to the master.)
+  await expect(links(page)).toHaveCount(3);
+  const disconnect = page.getByRole("button", { name: "Disconnect Oscillator 2 → Master" });
+  await expect(disconnect).toBeVisible();
+  expect(await distanceFromLink(disconnect, links(page).last())).toBeLessThan(4);
+  const before = await nodeBoxes(page);
+
+  await disconnect.click();
+  await expect(wayOut(page, "Oscillator 2")).toHaveText("no out");
+  await expect(links(page)).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Disconnect Filter → Master" })).toBeVisible();
+  await expect(wayOut(page, "Oscillator 1")).toHaveText("→ Master");
+  expect(await nodeBoxes(page)).toEqual(before);
+});
+
 mock("the history has the way out in the words of the controller's: cut, and given back", async ({ page }) => {
   await open(page);
   const [undo, redo] = [page.getByRole("button", { name: /^Undo/ }), page.getByRole("button", { name: /^Redo/ })];
@@ -96,27 +158,33 @@ async function loudest(page: Page, ms: number): Promise<number> {
   return top;
 }
 
+/** The level of the master's meter now, in decibels (its floor is -60). */
+const masterLevel = async (page: Page): Promise<number> => Number(await page.getByRole("meter", { name: "Master level" }).getAttribute("aria-valuenow"));
+
+/** A key that is held, heard at the master, and let go of: the master is quiet again before the next thing is looked at. */
+async function heardAt(page: Page, what: string): Promise<void> {
+  await page.keyboard.down("z");
+  await expect.poll(() => masterLevel(page), { message: `${what} is heard` }).toBeGreaterThan(-50);
+  await page.keyboard.up("z");
+  await expect.poll(() => masterLevel(page), { message: "the master is quiet again" }).toBeLessThan(-50);
+}
+
+/** A key that is held and not heard, for the better part of a second. */
+async function silentAt(page: Page, what: string): Promise<void> {
+  await page.keyboard.down("z");
+  expect(await loudest(page, 800), `${what} is silent`).toBeLessThan(-50);
+  await page.keyboard.up("z");
+  await expect.poll(() => masterLevel(page), { message: "the master is quiet again" }).toBeLessThan(-50);
+}
+
 test("a lane whose way out is cut is silent at the master, and is heard through a cable that is drawn from it and only through that; the file keeps the way out, and undo gives it back", async ({ page, own }) => {
   // (A good many waits for silence, each the better part of a second.)
   test.slow();
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(own.url);
   await expect(page.getByRole("status")).toHaveText("Connected");
-  const master = async (): Promise<number> => Number(await page.getByRole("meter", { name: "Master level" }).getAttribute("aria-valuenow"));
-  /** A key that is held, heard at the master, and let go of: the master is quiet again before the next thing is looked at. */
-  const heard = async (what: string): Promise<void> => {
-    await page.keyboard.down("z");
-    await expect.poll(master, { message: `${what} is heard` }).toBeGreaterThan(-50);
-    await page.keyboard.up("z");
-    await expect.poll(master, { message: "the master is quiet again" }).toBeLessThan(-50);
-  };
-  /** A key that is held and not heard, for the better part of a second. */
-  const silent = async (what: string): Promise<void> => {
-    await page.keyboard.down("z");
-    expect(await loudest(page, 800), `${what} is silent`).toBeLessThan(-50);
-    await page.keyboard.up("z");
-    await expect.poll(master, { message: "the master is quiet again" }).toBeLessThan(-50);
-  };
+  const heard = (what: string): Promise<void> => heardAt(page, what);
+  const silent = (what: string): Promise<void> => silentAt(page, what);
   const button = wayOut(page, "Oscillator");
   const saved = async (): Promise<string> => {
     await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -170,4 +238,25 @@ test("a lane whose way out is cut is silent at the master, and is heard through 
   await expect(page.getByRole("status")).toHaveText("Connected");
   await expect(wayOut(page, "Oscillator")).toHaveText("no out");
   await expect(links(page)).toHaveCount(1);
+});
+
+test("the button on the link of a lane's way out cuts it in the real program: the lane is silent at the master, the file keeps the way out cut, undo gives it back and the key is heard again", async ({ page, own }) => {
+  test.slow();
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  await heardAt(page, "the lane");
+
+  await page.getByRole("button", { name: "Disconnect Filter → Master" }).click();
+  await expect(wayOut(page, "Oscillator")).toHaveText("no out");
+  await expect(links(page)).toHaveCount(1);
+  await silentAt(page, "a lane that is disconnected");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+  expect(readFileSync(own.file, "utf8")).toContain('route = "none"\n');
+
+  await page.getByRole("button", { name: "Undo cut the way out of the lane of Oscillator", exact: true }).click();
+  await expect(wayOut(page, "Oscillator")).toHaveText("→ Master");
+  await expect(page.getByRole("button", { name: "Disconnect Filter → Master" })).toBeVisible();
+  await heardAt(page, "the lane, with its way out given back by undo");
 });
