@@ -383,6 +383,29 @@ const FEED_EDITS: [(u64, Edit); 14] = [
     (46_000, Edit::Feed { effect: 2, feed: Feed::Chain }),
 ];
 
+/// What is done to an effect that stands by itself, on `CABLED` while it plays (step 87): a reverb is added in a lane of its own, which has no instrument (lane 2), lane 1's instrument is sent to it by a
+/// cable, the lane is muted and unmuted (what it puts out goes and comes back), its way out is cut and a cable from the reverb to the mix is drawn (it is heard through that cable alone), it is soloed
+/// and not (lane 1's sound is heard only for what the cable sends to the reverb), a filter is added after the reverb in the lane (a chain of two that no instrument feeds), the lane is taken out with its two
+/// effects and its two cables and put back whole by Undo, the filter is taken out by the Undo after it and put back by Redo, and taken out again by the last Undo. Each is made (`Counts` says so: none is
+/// skipped or refused). The places of the cables are those of the session as it is at the time: the starts are each lane's instrument and effects and then each group and its bus effects, so that 2 is lane 1's
+/// instrument and 5 the reverb of lane 2; the ends are each lane's effects, each group's bus and its effects, and the mix, so that 2 is the reverb of lane 2 and 5 the mix.
+const FREE_EDITS: [(u64, Edit); 14] = [
+    (6_000, Edit::AddFreeEffect { plugin: "builtin:reverb" }),
+    (10_000, Edit::AddCable { from: 2, to: 2, gain: 0.8 }),
+    (14_000, Edit::Mute { lane: 2, muted: true }),
+    (17_000, Edit::Mute { lane: 2, muted: false }),
+    (20_000, Edit::Route { lane: 2, route: Route::None }),
+    (22_000, Edit::AddCable { from: 5, to: 5, gain: 0.7 }),
+    (26_000, Edit::Solo { lane: 2, solo: true }),
+    (29_000, Edit::Solo { lane: 2, solo: false }),
+    (32_000, Edit::AddEffect { lane: 2, plugin: "builtin:filter" }),
+    (36_000, Edit::RemoveLane { lane: 2 }),
+    (39_000, Edit::Undo),
+    (41_000, Edit::Undo),
+    (43_000, Edit::Redo),
+    (45_000, Edit::Undo),
+];
+
 /// What the keys play into `edited:sources`: `performance`, and a key (E4) that is hit and let go of after the pedal is up, which a lane that has been given the keys again plays.
 fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     let mut events = performance();
@@ -392,7 +415,7 @@ fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     events
 }
 
-/// The scenarios that edit the cables, the ways out, the solos, the latency, the sources of notes, the instruments and the links of the chains of a session while it plays.
+/// The scenarios that edit the cables, the ways out, the solos, the latency, the sources of notes, the instruments, the links of the chains and an effect that stands by itself of a session while it plays.
 pub fn edited() -> Vec<Scenario> {
     let scenario = |name: &str, edits: &[(u64, Edit)]| Scenario {
         id: format!("edited:{name}@{BLOCK}"),
@@ -404,7 +427,7 @@ pub fn edited() -> Vec<Scenario> {
         edits: edits.to_vec(),
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -896,6 +919,7 @@ mod tests {
         assert_eq!(
             with,
             [
+                "session:free@256",
                 "session:patched@256",
                 "session:routed@256",
                 "session:sends@256",
@@ -905,7 +929,8 @@ mod tests {
                 "edited:solos@256",
                 "edited:latency@256",
                 "edited:instruments@256",
-                "edited:feeds@256"
+                "edited:feeds@256",
+                "edited:free@256"
             ]
         );
     }
@@ -943,9 +968,28 @@ mod tests {
     }
 
     #[test]
+    fn an_effect_that_stands_by_itself_puts_out_nothing_until_a_cable_feeds_it_and_is_heard_through_the_cable() {
+        // The session has an oscillator whose way out is cut and a reverb in a lane of its own that has no instrument, fed by a cable from the oscillator: it is heard, through the reverb alone. With
+        // the cable taken out the reverb is fed nothing, and the render is silence to the bit.
+        let session = sessions().into_iter().find(|scenario| scenario.id.starts_with("session:free")).expect("a session of the corpus");
+        let cable = "[[cable]]\nfrom = \"instrument[0]\"\nto = \"instrument[1].effect[0]\"\ngain = 0.8\n";
+        assert!(session.session.contains(cable));
+        let heard = render(&session, &engine);
+        assert!(fingerprint(&heard).peak > 0.01, "the oscillator is heard through the reverb");
+        let unfed = render(&Scenario { session: session.session.replace(cable, ""), ..session.clone() }, &engine);
+        assert!(unfed.samples.iter().all(|sample| *sample == 0.0), "a reverb that is fed nothing, in a lane that has no instrument, puts out nothing");
+        // The scenario adds a reverb of its own at 6,000 frames and draws the cable that feeds it at 10,000: nothing differs from the render without the edits before the block that has the cable.
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:free")).expect("a scenario of the corpus");
+        let fed = render(&scenario, &engine);
+        let plain = render(&Scenario { edits: Vec::new(), ..scenario }, &engine);
+        let first = fed.samples.iter().zip(&plain.samples).position(|(x, y)| x.to_bits() != y.to_bits()).expect("the cable is heard");
+        assert!(first / 2 >= 10_000 - 10_000 % BLOCK, "a reverb that stands by itself and is fed nothing changes nothing: the first frame that differs is {}", first / 2);
+    }
+
+    #[test]
     fn the_scenarios_that_cut_a_way_out_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
         let cut: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cut_routes()).map(|scenario| scenario.id.clone()).collect();
-        assert_eq!(cut, ["session:routed@256", "edited:routes@256"]);
+        assert_eq!(cut, ["session:free@256", "session:routed@256", "edited:routes@256", "edited:free@256"]);
         // (A scenario that has no cable and no cut is what the loop can run: there are many of them, and every generated session is one.)
         assert!(always_on().iter().filter(|scenario| scenario.is_in_the_old_loop()).count() > 20);
         assert!(always_on().iter().filter(|scenario| scenario.id.starts_with("generated:")).all(|scenario| scenario.is_in_the_old_loop()));

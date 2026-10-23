@@ -28,6 +28,8 @@ pub enum Edit {
     MuteGroup { group: usize, muted: bool },
     SoloGroup { group: usize, solo: bool },
     AddEffect { lane: usize, plugin: &'static str },
+    /// An effect that stands by itself (step 87): a lane of its own at the end, with no instrument, and the effect in it.
+    AddFreeEffect { plugin: &'static str },
     AddBusEffect { group: usize, plugin: &'static str },
     /// The effect at a place of a chain, put at another place of it.
     MoveEffect { lane: usize, effect: usize, to: usize },
@@ -169,6 +171,7 @@ impl Edit {
             Edit::MuteGroup { group: g, muted } => Intent::SetMute { node: group(*g)?.node, muted: *muted },
             Edit::SoloGroup { group: g, solo } => Intent::SetSolo { node: group(*g)?.node, solo: *solo },
             Edit::AddEffect { lane: l, plugin } => Intent::AddEffect { parent: lane(*l)?.node, plugin: (*plugin).to_string() },
+            Edit::AddFreeEffect { plugin } => Intent::AddFreeEffect { plugin: (*plugin).to_string() },
             Edit::AddBusEffect { group: g, plugin } => Intent::AddEffect { parent: group(*g)?.node, plugin: (*plugin).to_string() },
             Edit::MoveEffect { lane: l, effect, to } => {
                 let effects = &lane(*l)?.effects;
@@ -370,6 +373,23 @@ plugin = "builtin:osc"
         // A session with no effect has nothing for a feed to aim at.
         let mut none = controller("[[instrument]]\nplugin = \"builtin:osc\"\n");
         assert_eq!(Edit::Feed { effect: 0, feed: Feed::None }.make(&mut none), Outcome::Skipped);
+    }
+
+    #[test]
+    fn an_effect_that_stands_by_itself_is_added_by_the_intent_whatever_the_session_has_and_is_a_lane_of_its_own_with_no_instrument() {
+        let mut ctl = controller(TWO_LANES);
+        assert_eq!(Edit::AddFreeEffect { plugin: "builtin:delay" }.resolve(&ctl), Some(Intent::AddFreeEffect { plugin: "builtin:delay".to_string() }));
+        assert_eq!(Edit::AddFreeEffect { plugin: "builtin:delay" }.make(&mut ctl), Outcome::Applied);
+        let lane = ctl.model.instruments.last().unwrap();
+        assert_eq!(ctl.model.instruments.len(), 3);
+        assert!(lane.instrument.is_none());
+        assert_eq!(lane.effects.iter().map(|effect| effect.name.as_str()).collect::<Vec<_>>(), ["Delay"]);
+        // A plugin that is an instrument is refused, as a front-end's request would be.
+        assert_eq!(Edit::AddFreeEffect { plugin: "builtin:osc" }.make(&mut ctl), Outcome::Refused);
+        assert_eq!(ctl.model.instruments.len(), 3);
+        // (The new lane is a place among the lanes, like any: an edit that aims at one aims at it when it is the last.)
+        let holder = ctl.model.instruments[2].node;
+        assert_eq!(Edit::Mute { lane: 2, muted: true }.resolve(&ctl), Some(Intent::SetMute { node: holder, muted: true }));
     }
 
     #[test]
