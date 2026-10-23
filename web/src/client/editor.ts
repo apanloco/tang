@@ -50,6 +50,7 @@ const DOING: Record<Intent["type"], string> = {
   addEffect: "add an effect",
   addInstrument: "add an instrument",
   replaceInstrument: "change the instrument of a lane",
+  clearInstrument: "take an instrument out of its lane",
   setRange: "set the keys of a lane",
   setMute: "mute or unmute a lane or a group",
   setSolo: "solo or unsolo a lane or a group",
@@ -180,6 +181,14 @@ export class Editor {
    */
   replaceInstrument(node: NodeId, plugin: string): Promise<boolean> {
     return this.#attempt(`change the instrument of ${this.#name(node)} to ${this.#pluginName(plugin)}`, { type: "replaceInstrument", node, plugin });
+  }
+
+  /**
+   * Take the instrument out of the lane `node`: the lane stays, empty, with its effects, its modulators, its range, its volume and the rest, and the cables that drove the
+   * instrument's parameters go. True if it was done (the page says why if it was not).
+   */
+  clearInstrument(node: NodeId): Promise<boolean> {
+    return this.#attempt(`take ${this.#name(node)} out of its lane`, { type: "clearInstrument", node });
   }
 
   /**

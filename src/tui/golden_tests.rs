@@ -1376,7 +1376,7 @@ fn d_on_an_instrument_empties_it_and_leaves_the_lanes_effects_and_modulators() {
     let mut h = Harness::new(LANE_WITH_FILTER_AND_LFO_AND_A_PLAIN_ONE);
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Char('d'));
-    assert_eq!(h.commands(), ["ClearInstrument inst=0"]);
+    assert_eq!(h.commands(), ["ClearInstrument inst=0 keep"]);
     assert!(h.s.ctl.model.instruments[0].instrument.is_none());
     assert!(h.tree().iter().any(|line| line.contains("fx Filter")) && h.tree().iter().any(|line| line.contains("LFO")), "{:#?}", h.tree());
     // A second `d` removes the lane (that has no plugin now), with what it had.
@@ -1894,7 +1894,7 @@ fn deleting_a_group_member_drops_its_modulator_targets() {
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Char('d')).press(KeyCode::Char('d'));
     // (The group's cable to the member goes first, then the plugin, then the lane.)
-    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=0", "ClearInstrument inst=0", "RemoveInstrument inst=0 keep"]);
+    assert_eq!(h.commands(), ["RemoveGroupModTarget group=0 mod=0 target=0", "ClearInstrument inst=0 keep", "RemoveInstrument inst=0 keep"]);
     let lfo = &h.s.ctl.model.groups[0].modulators[0];
     assert_eq!(lfo.targets.len(), 1);
     assert_eq!(lfo.targets[0].param_name, "damping");
@@ -6418,17 +6418,30 @@ mod undo_and_redo {
     }
 
     #[test]
-    fn d_takes_a_node_out_and_forgets_the_history_as_the_browsers_remove_does() {
-        use crate::app::history::HistoryState;
-        // What nothing puts back yet, of each kind that the key takes out, in a scene that has one. (A modulator, an effect, a lane and a group are put back: tests of their own.)
-        let cases = [(scene_group().to_string(), TreeAddress::Instrument(0), "an instrument, which is emptied")];
-        for (scene, address, what) in cases {
-            let mut h = Harness::new(scene);
-            h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
-            assert!(h.s.ctl.history_state().undo.is_some(), "{what}: there is something to undo");
-            h.goto(address).press(KeyCode::Char('d'));
-            assert_eq!(h.s.ctl.history_state(), HistoryState { undo: None, redo: None }, "{what}");
-        }
+    fn d_takes_the_instrument_out_of_its_lane_as_a_step_that_ctrl_z_puts_back_with_its_cable_and_ctrl_y_takes_out_again() {
+        let mut h = Harness::new(scene_split());
+        // The first lane, with its instrument (its values among them) and the cable of its LFO to it, as they are: what an instrument that is put back has to leave as it was.
+        let shape = |h: &Harness| format!("{:?}", h.s.ctl.model.instruments[0]);
+        h.s.ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        h.s.ctl.model.instruments[0].instrument.as_mut().unwrap().params[2].value = 0.25; // volume, edited
+        let before = shape(&h);
+        h.commands();
+        h.goto(TreeAddress::Instrument(0)).press(KeyCode::Char('d'));
+        assert!(h.s.ctl.model.instruments[0].instrument.is_none(), "the lane is empty, and has the rest of what it had");
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("take Oscillator out of its lane"));
+        // (The cable of the LFO to the instrument goes first, and the instrument is asked for by a channel of its own: the history keeps it.)
+        assert_eq!(h.commands(), ["RemoveModTarget inst=0 mod=0 target=0", "ClearInstrument inst=0 keep"]);
+        ctrl_z(&mut h);
+        let commands = h.commands();
+        // (The audio thread, which the test has not, would have handed the instrument back: it is loaded again from the model, with the value that was set.)
+        assert_eq!(commands[0], "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false", "{commands:?}");
+        assert!(commands[1].starts_with("InsertModTarget inst=0 mod=0 target=0"), "the cable comes back after the instrument: {commands:?}");
+        assert_eq!(shape(&h), before, "the instrument is back, with the value that was set and the cable that drove it");
+        ctrl_y(&mut h);
+        assert!(h.s.ctl.model.instruments[0].instrument.is_none(), "taken out again");
+        h.commands();
+        ctrl_z(&mut h);
+        assert_eq!(shape(&h), before);
     }
 
     #[test]

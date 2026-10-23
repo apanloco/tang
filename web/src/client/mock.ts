@@ -768,6 +768,21 @@ function replaceInstrumentOutcome(snapshot: Snapshot, lane: NodeId, plugin: stri
 }
 
 /**
+ * The instrument taken out of a lane, as the controller does it (`Controller::clear_instrument`): the node stays, an empty lane called so (`(empty)`, no plugin), with what else the lane has
+ * (its effects, its modulators, its range, its volume and the rest). The cables that drove the old plugin's parameters go first, a lane's and a group's, with what drove the depth of any of them.
+ */
+function clearInstrumentOutcome(snapshot: Snapshot, lane: NodeId): Outcome {
+  const target = snapshot.graph.nodes.find((n) => n.id === lane && n.kind !== "master");
+  if (!target) return noNode(lane);
+  if (target.kind !== "instrument") return invalid("an instrument is taken out of a lane");
+  if (target.plugin === null) return invalid("the lane has no instrument to take out");
+  const touching = snapshot.graph.edges.filter(isModulation).filter((e) => e.to.node === lane).map((e) => e.id);
+  const taken = without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set());
+  const emptied: Node = { ...target, name: "(empty)", plugin: null };
+  return { restructured: { ...taken, graph: { ...taken.graph, nodes: taken.graph.nodes.map((n) => (n.id === lane ? emptied : n)) } } };
+}
+
+/**
  * A preset loaded into the plugin of `node`, as the controller does it (`load_preset`): the plugin has to be one of a lane (a bus
  * effect's cannot be loaded into: the audio thread addresses a preset by the lane's slot), and has the preset; the event says
  * the preset's name and the values the plugin has for its parameters after it. A built-in's are the controller's own (a fixture);
@@ -1055,6 +1070,7 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
   if (intent.type === "addInstrument") return addInstrumentOutcome(snapshot, intent.plugin, counters, catalog);
   if (intent.type === "replaceInstrument") return replaceInstrumentOutcome(snapshot, intent.node, intent.plugin, catalog);
+  if (intent.type === "clearInstrument") return clearInstrumentOutcome(snapshot, intent.node);
   if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
   if (intent.type === "addModulator") return addModulatorOutcome(snapshot, intent.parent, intent.kind, counters);

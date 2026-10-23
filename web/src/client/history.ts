@@ -450,6 +450,14 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       if (lane?.kind !== "instrument" || name === undefined) return "nothing";
       return { removed: { label: lane.plugin === null ? `put ${name} in a lane` : `change the instrument to ${name}`, intent, at: now } };
     }
+    case "clearInstrument": {
+      // The instrument of a lane goes with the cables that drive it, and those that drive the depth of any of them (a tree of drivers: none is on a cycle, as for an effect), and comes back with
+      // them (the controller's `Inverse::Instrument`). A step in the words of what was done, by the instrument's name: the lane stays. (A node that is no lane, and a lane that has no instrument,
+      // are refused.)
+      const lane = nodeOf(intent.node);
+      if (lane?.kind !== "instrument" || lane.plugin === null) return "nothing";
+      return { removed: { label: `take ${lane.name} out of its lane`, intent, at: now } };
+    }
     case "loadPreset": {
       // A preset that is loaded overwrites the values of the plugin and the preset it had: undo gives them back (the controller's `Inverse::Preset`). A step in the words of the
       // preset, by the name the plugin has for the id. A node that has no such plugin, a bus effect (which has no presets to load) and an id the plugin lacks are refused.

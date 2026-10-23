@@ -2297,9 +2297,12 @@ pub enum GraphCommand {
         inst: usize,
         range: Option<(u8, u8)>,
     },
-    /// Clear the instrument plugin from a lane (leaving it empty).
+    /// Clear the instrument plugin from a lane (leaving it empty: its effects, its modulators and the rest of it stay, and its effects go on running). The plugin that goes out is
+    /// handed to `keep` when there is one that has room and is listened to (the controller keeps it for the history, to put it back by a swap), and goes back by the return channel
+    /// otherwise (`hand_back`).
     ClearInstrument {
         inst: usize,
+        keep: Option<Sender<Box<dyn Plugin>>>,
     },
     /// Swap instruments (with their buffers and remappers) between two lanes.
     SwapInstruments {
@@ -4652,7 +4655,7 @@ impl AudioGraph {
                         lane.active_note_channels = [0; 16];
                     }
                 }
-                GraphCommand::ClearInstrument { inst } => {
+                GraphCommand::ClearInstrument { inst, keep } => {
                     let old = self
                         .get_instrument_mut(inst)
                         .and_then(|lane| {
@@ -4661,7 +4664,7 @@ impl AudioGraph {
                             lane.instrument.take()
                         });
                     if let Some(old) = old {
-                        let _ = self.return_tx.try_send(old);
+                        hand_back(&self.return_tx, keep, old);
                     }
                 }
                 GraphCommand::SwapInstruments {
@@ -6292,20 +6295,50 @@ mod tests {
     }
 
     #[test]
-    fn the_effects_of_a_lane_that_has_no_instrument_do_not_run_and_the_lane_makes_silence() {
+    fn the_effects_of_a_lane_that_has_no_instrument_run_all_the_same_and_a_lane_that_is_sent_nothing_makes_silence() {
         let blocks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         insert_effect(&cmd_tx, 0, Box::new(CountingEffect(blocks.clone())), 1.0);
         let mut out = make_output();
         graph.process(&[note_on(60)], &mut out).unwrap();
-        assert_eq!(blocks.load(std::sync::atomic::Ordering::Relaxed), 0, "no instrument: the effect has nothing to work on and does not run");
+        assert_eq!(blocks.load(std::sync::atomic::Ordering::Relaxed), 1, "no instrument: the effect has what is sent to it to work on, and runs, on silence if nothing is");
         assert!(out.iter().flatten().all(|&s| s == 0.0));
         // With an instrument it runs, a block each.
         swap_instrument(&cmd_tx, ConstInstrument::new(1.0));
         graph.process(&[note_on(60)], &mut out).unwrap();
         graph.process(&[], &mut out).unwrap();
-        assert_eq!(blocks.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(blocks.load(std::sync::atomic::Ordering::Relaxed), 3);
         assert!(out[0].iter().all(|&s| s == 1.0));
+    }
+
+    #[test]
+    fn what_another_lane_sends_to_an_effect_of_a_lane_that_has_no_instrument_is_heard_through_it() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        // Lane 0 has no instrument; its effect doubles what it is given.
+        let fx = effect_of(&cmd_tx, 0, 0, Box::new(ScaleEffect(2.0)));
+        // Nothing is sent to it: only the other lane's own 0.5 is heard.
+        let out = blocks_of(&mut graph, 2, &[note_on(60)]).pop().unwrap();
+        assert!(out.iter().flatten().all(|&s| s == 0.5));
+        // The other lane's instrument sends to it: the 0.5 of the lane, and the 0.5 that is sent, doubled by the effect of a lane that has no sound of its own.
+        draw(&cmd_tx, 1, CableFrom::Instrument(lane_node(1)), CableTo::Effect(fx), 1.0);
+        assert_eq!(steady_mix(&mut graph, 3), 0.5 + 1.0);
+    }
+
+    #[test]
+    fn the_effects_of_a_lane_go_on_running_when_its_instrument_is_cleared_and_what_they_hold_rings_out() {
+        let blocks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(1.0));
+        insert_effect(&cmd_tx, 0, Box::new(CountingEffect(blocks.clone())), 1.0);
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        assert!(out[0].iter().all(|&s| s == 1.0));
+        cmd_tx.send(GraphCommand::ClearInstrument { inst: 0, keep: None }).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!(blocks.load(std::sync::atomic::Ordering::Relaxed), 3, "a block each, with the instrument and without it");
+        assert!(out.iter().flatten().all(|&s| s == 0.0), "and a lane that has no sound of its own makes none");
     }
 
     #[test]
@@ -14431,6 +14464,70 @@ mod tests {
     }
 
     #[test]
+    fn an_instrument_that_is_cleared_is_handed_to_the_channel_that_asked_for_it_and_else_goes_the_usual_way() {
+        // With a channel that has room and is listened to, it goes there and not to the return channel.
+        let (mut graph, cmd_tx, return_rx) = lane_with_instrument();
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(GraphCommand::ClearInstrument { inst: 0, keep: Some(keep) }).unwrap();
+        graph.drain_commands();
+        assert!(return_rx.try_recv().is_err(), "it did not go the usual way");
+        assert_eq!(kept.try_recv().expect("it went to the channel that asked for it").get_parameter(0), Some(0.25), "the instrument that was in the lane");
+        assert!(graph.instruments[0].instrument.is_none() && graph.instruments[0].inst_buf.is_empty());
+        // With none, with one that nobody listens to and with one that is full, it goes by the return channel.
+        for what in ["no channel", "nobody listens", "a full channel"] {
+            let (mut graph, cmd_tx, return_rx) = lane_with_instrument();
+            // (Held to the end of the round: the channel is open, and full, for as long as it is.)
+            let mut holders = Vec::new();
+            let keep = match what {
+                "no channel" => None,
+                "nobody listens" => {
+                    let (keep, kept) = crossbeam_channel::bounded(1);
+                    drop(kept);
+                    Some(keep)
+                }
+                _ => {
+                    let (keep, kept) = crossbeam_channel::bounded(1);
+                    keep.send(Box::new(ParamTrackingInstrument { param_value: 0.9 }) as Box<dyn Plugin>).unwrap();
+                    holders.push(kept);
+                    Some(keep)
+                }
+            };
+            cmd_tx.send(GraphCommand::ClearInstrument { inst: 0, keep }).unwrap();
+            graph.drain_commands();
+            let mut old = return_rx.try_recv().unwrap_or_else(|_| panic!("{what}: it goes to the return channel"));
+            assert_eq!(old.get_parameter(0), Some(0.25), "{what}");
+            assert!(graph.instruments[0].instrument.is_none(), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_lane_that_has_no_instrument_to_clear_hands_nothing_back() {
+        let (mut graph, cmd_tx, return_rx) = make_graph(2);
+        let (keep, kept) = crossbeam_channel::bounded(1);
+        cmd_tx.send(GraphCommand::ClearInstrument { inst: 0, keep: Some(keep) }).unwrap();
+        // (And a lane that is not there changes nothing.)
+        cmd_tx.send(GraphCommand::ClearInstrument { inst: 7, keep: None }).unwrap();
+        graph.drain_commands();
+        assert!(kept.try_recv().is_err() && return_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_lane_that_has_its_instrument_cleared_has_no_note_remap_any_more() {
+        // The remap was made for the plugin that goes (the audio thread drops it with the plugin), and the next one is not to be bent by it.
+        let remap = make_remap(&[("G#4", "G4", 1.0)]);
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let instrument = ConstInstrument::new(0.75);
+        let inst_buf = (0..instrument.audio_output_count()).map(|_| Vec::new()).collect();
+        let remapper = Some(NoteRemapper::from_config(&remap, 2.0).unwrap());
+        cmd_tx.send(GraphCommand::SwapInstrument { inst: 0, instrument, inst_buf, remapper, keep: None }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.remappers(), [true], "the lane has the remap it was given");
+        cmd_tx.send(GraphCommand::ClearInstrument { inst: 0, keep: None }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.remappers(), [false]);
+    }
+
+    #[test]
     fn a_lane_that_had_no_instrument_hands_nothing_back_and_leaves_the_channel_empty() {
         let (mut graph, cmd_tx, return_rx) = make_graph(2);
         let (keep, kept) = crossbeam_channel::bounded(1);
@@ -15288,7 +15385,7 @@ mod tests {
         let (mut graph, cmd_tx, return_rx) = make_graph(2);
         shape_lane(&cmd_tx, 0, true, 1, 2, 0.5, Some((36, 60)));
         graph.drain_commands();
-        cmd_tx.send(GraphCommand::ClearInstrument { inst: 0 }).unwrap();
+        cmd_tx.send(GraphCommand::ClearInstrument { inst: 0, keep: None }).unwrap();
         graph.drain_commands();
         // What the model keeps (it only empties the instrument's slot): the effect, the modulators, the rest.
         let lanes = graph.lanes();

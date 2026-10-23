@@ -5,7 +5,7 @@ import { Client } from "./connection";
 import { MASTER, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import type { MockOptions } from "./mock";
-import { Editor } from "./editor";
+import { Editor, refusal } from "./editor";
 import { Notices } from "./notices";
 import { samePort } from "./reach";
 import { Reveals } from "./reveals";
@@ -475,6 +475,50 @@ describe("replacing an instrument", () => {
     client.stop();
     expect(await editor.replaceInstrument(oscillator.id, "builtin:osc")).toBe(false);
     expect(said(notices)).toEqual(["Could not change the instrument of Oscillator to Oscillator: Not connected to the server."]);
+  });
+});
+
+describe("taking the instrument out of a lane", () => {
+  const cables = (graph: { edges: Edge[] } | undefined): Edge[] => graph?.edges.filter((e) => e.kind === "modulation") ?? [];
+
+  test("resolves true when the lane has none, with its effect and its modulator and their cables, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.clearInstrument(oscillator.id)).toBe(true);
+    const graph = client.state.snapshot?.graph;
+    const lane = graph?.nodes.find((n) => n.id === oscillator.id);
+    expect(lane?.name).toBe("(empty)");
+    expect(lane?.kind === "instrument" ? lane.plugin : "no lane").toBeNull();
+    expect(graph?.nodes.map((n) => n.name).filter((name) => name !== "(empty)").sort()).toEqual(["Filter", "LFO", "Master"]);
+    expect(cables(graph), "the cables of the modulator are still on the effect").toEqual(cables(tracerSnapshot.graph));
+    expect(client.state.snapshot?.meta.dirty).toBe(true);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is refused for a lane that has none, a node that is no lane and one that is not there: it resolves false, and the page says what it could not do and why", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.clearInstrument(filter.id)).toBe(false);
+    expect(await editor.clearInstrument(MASTER)).toBe(false);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+    expect(await editor.clearInstrument(oscillator.id)).toBe(true);
+    expect(await editor.clearInstrument(oscillator.id)).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not take Filter out of its lane: an instrument is taken out of a lane",
+      "Could not take Master out of its lane: there is no node 4294967295",
+      "Could not take (empty) out of its lane: the lane has no instrument to take out",
+    ]);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.clearInstrument(oscillator.id)).toBe(false);
+    expect(said(notices)).toEqual(["Could not take Oscillator out of its lane: Not connected to the server."]);
+  });
+
+  test("has the words that a request that is refused with nothing more known of it has", () => {
+    expect(refusal({ type: "clearInstrument", node: oscillator.id }, new Error("the lane has no instrument to take out"))).toBe(
+      "Could not take an instrument out of its lane: the lane has no instrument to take out",
+    );
   });
 });
 

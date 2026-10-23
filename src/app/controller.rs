@@ -515,26 +515,31 @@ impl Controller {
         true
     }
 
-    /// Take the instrument plugin out of lane `inst`, which is left with what else it has: its effects, its
-    /// modulators, its volume and range. False, sending nothing, if there is no such lane or it has no plugin.
+    /// Take the instrument plugin out of lane `inst`, which is left with what else it has: its effects, its modulators, its volume and range. False, sending nothing, if there is no
+    /// such lane or it has no plugin. The intent `ClearInstrument` asks for it, and then the plugin that goes is handed by the audio thread to a channel of its own and written down
+    /// with the model's slot and the lane's note remap, which go with it (`Inverse::Instrument`, as when an instrument is replaced): undo swaps it back in, after the cables that drove it.
+    /// A call that no intent asks for (the tests') forgets the history instead, since what was set on the plugin is addressed by its parameters' places, which another plugin in the lane
+    /// would have.
     pub fn clear_instrument(&mut self, inst: usize) -> bool {
         let Some(lane) = self.model.instruments.get(inst) else { return false };
         if lane.instrument.is_none() {
             return false;
         }
-        // (No intent asks for this, and nothing puts the plugin back: what was set on it is addressed by its parameters' places,
-        // which another plugin in the lane would have.)
-        self.history.clear();
+        let lane_node = lane.node;
+        self.forget_the_history_unless_an_intent_asks();
         // The cables that drive the plugin's parameters go first: there is nothing for them to drive.
-        for edge in self.model.cables_into_plugin(lane.node) {
+        for edge in self.model.cables_into_plugin(lane_node) {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
+        let (keep, kept) = self.channel_for();
+        let _ = self.cmd_tx.send(GraphCommand::ClearInstrument { inst, keep });
         if let Some(lane) = self.model.instruments.get_mut(inst) {
-            lane.instrument = None;
+            let node = lane.node;
+            let before = lane.instrument.take().map(|old| Replaced { slot: old, remap: std::mem::take(&mut lane.remap), pitch_bend_range: lane.pitch_bend_range, kept });
             lane.forget_remap();
+            self.took_out(Inverse::Instrument { lane: node, before });
         }
-        let _ = self.cmd_tx.send(GraphCommand::ClearInstrument { inst });
         true
     }
 

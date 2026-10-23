@@ -653,6 +653,33 @@ describe("what putting an instrument in a lane is to the history", () => {
   });
 });
 
+describe("what taking the instrument out of a lane is to the history", () => {
+  const snapshot = historyFixture.snapshot;
+  const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
+  const lanes = snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n] : []));
+  const take = (node: number): Intent => ({ type: "clearInstrument", node });
+
+  test("is a step that is made when it is carried out, in the words of the lane that it is taken out of", () => {
+    expect(lanes.length).toBeGreaterThanOrEqual(2);
+    for (const lane of lanes) {
+      expect(lane.plugin).not.toBeNull();
+      expect(plan(take(lane.id))).toEqual({ removed: { label: `take ${lane.name} out of its lane`, intent: take(lane.id), at: 7 } });
+    }
+  });
+
+  test("is no step for a lane that has no instrument, a node that is no lane or one that is not there, which are refused", () => {
+    const [lane] = lanes;
+    const effect = snapshot.graph.nodes.find((n) => n.kind === "effect");
+    const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!lane || !effect || !group) throw new Error("the fixture has a lane, an effect and a group");
+    const nodes = snapshot.graph.nodes.map((n) => (n.id === lane.id && n.kind === "instrument" ? { ...n, name: "(empty)", plugin: null } : n));
+    expect(plan(take(lane.id), { ...snapshot, graph: { ...snapshot.graph, nodes } })).toBe("nothing");
+    expect(plan(take(effect.id))).toBe("nothing");
+    expect(plan(take(group.id))).toBe("nothing");
+    expect(plan(take(9_999))).toBe("nothing");
+  });
+});
+
 describe("what a removal of a group is to the history", () => {
   const snapshot = historyFixture.snapshot;
   const plan = (intent: Intent, from: Snapshot = snapshot): ReturnType<typeof planOf> => planOf(from, intent, 7, builtinCatalog);
@@ -1313,6 +1340,7 @@ describe("the mock engine's history", () => {
       "addGroup",
       "setLaneGroup",
       "replaceInstrument",
+      "clearInstrument",
       "loadPreset",
     ];
     const barriers: Intent["type"][] = ["addGroup", "setLaneGroup", "removeNode"];
@@ -1321,5 +1349,7 @@ describe("the mock engine's history", () => {
     const refusals = new Set(rows.flatMap((row) => ("error" in row ? [row.error] : [])));
     expect(refusals).toContain("there is nothing to undo");
     expect(refusals).toContain("there is nothing to redo");
+    expect(refusals).toContain("the lane has no instrument to take out");
+    expect(refusals).toContain("an instrument is taken out of a lane");
   });
 });

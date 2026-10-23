@@ -580,7 +580,7 @@ impl Controller {
                         let node = &mut self.model.instruments[inst];
                         node.instrument = None;
                         node.forget_remap();
-                        let _ = self.cmd_tx.send(GraphCommand::ClearInstrument { inst });
+                        let _ = self.cmd_tx.send(GraphCommand::ClearInstrument { inst, keep: None });
                     }
                     Some(_) => {}
                 }

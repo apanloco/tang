@@ -544,6 +544,16 @@ impl Controller {
                 // (A node that is no lane, or a plugin that the catalog does not name, is refused, and the plan is not looked at.)
                 _ => Plan::Nothing,
             },
+            // The instrument of a lane that is taken out goes with the cables that drove it, and comes back with them: the very plugin if the audio thread handed it back, and the
+            // lane's note remap (a step of the words "take Oscillator out of its lane"; the lane stays, with the rest of what it has). A node that is no lane, and a lane that has
+            // no instrument, are refused, and the plan is not looked at.
+            Intent::ClearInstrument { node } => match self.model.locate(*node) {
+                Some(NodePath::Instrument(inst)) => self.model.instruments[inst]
+                    .instrument
+                    .as_ref()
+                    .map_or(Plan::Nothing, |plugin| Plan::Removed { label: format!("take {} out of its lane", plugin.name), intent: intent.clone(), at: now }),
+                _ => Plan::Nothing,
+            },
             // A preset that is loaded overwrites the values of the plugin and the preset it had: undo has the preset loaded again and gives the values back (a step in the words of the
             // preset, by the name the plugin has for the id). A node that has no such plugin, a bus effect (which has no presets to load) and an id the plugin lacks are refused.
             Intent::LoadPreset { node, preset } => match self.model.locate(*node) {
@@ -2211,7 +2221,8 @@ rate = 3.0
 
     #[test]
     fn emptying_a_lane_of_its_instrument_forgets_the_history_as_putting_another_in_does_and_a_lane_with_none_changes_nothing() {
-        // (The TUI's `d` calls the controller's method: there is no intent for it, and what was set on the plugin is addressed by its parameters' places.)
+        // (A call of the controller's method that no intent asks for, as the tests make: what was set on the plugin is addressed by its parameters' places. The intent `ClearInstrument`
+        // is a step, below.)
         let (_engine, mut ctl, _clock) = controller();
         set_detune(&mut ctl, 1.0);
         assert!(ctl.clear_instrument(0));
@@ -5251,6 +5262,96 @@ plugin = "builtin:reverb"
     }
 
     #[test]
+    fn every_instrument_that_is_taken_out_of_its_lane_by_an_intent_is_put_back_by_undo_as_the_very_instrument_with_its_cables_and_its_note_remap_and_taken_out_again_by_redo() {
+        // (The third lane has no instrument: it is refused, below. Each is in a controller of its own, after a step of another kind, which taking the instrument out leaves in the history.)
+        for n in 0..2 {
+            let (mut ctl, mut graph) = controller_over_an_audio_thread(INSTRUMENTS);
+            ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+            let lane = node(&ctl, NodePath::Instrument(n));
+            let before = everything_as_it_is(&ctl, &graph);
+            ctl.apply(Intent::ClearInstrument { node: lane }).unwrap();
+            graph.drain_commands();
+            let taken = everything_as_it_is(&ctl, &graph);
+            let taken_facts = lane_facts(&graph);
+            assert!(ctl.model.instruments[n].instrument.is_none(), "lane {n}: the lane has none now");
+            assert_ne!(taken.0 .1, before.0 .1, "lane {n}: the file has no instrument in it");
+            assert_ne!(taken.2, before.2, "lane {n}: the audio thread has no instrument in it");
+            assert_eq!(undo_label(&ctl).as_deref(), Some("take Oscillator out of its lane"), "lane {n}");
+            // The instrument that was in the lane is back, as it was: the very plugin, the lane's note remap, the cables that drove it and what they were centred on.
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, &format!("lane {n} put back"));
+            assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("lock the piano to its scale"), Some("take Oscillator out of its lane")), "lane {n}");
+            ctl.model.check_ids().unwrap();
+            // Redone, it is taken out again: everything is as it was after the first time.
+            ctl.redo().unwrap();
+            graph.drain_commands();
+            let redone = everything_as_it_is(&ctl, &graph);
+            assert_same_modulators(&redone.0, &taken.0, &format!("lane {n} taken out again"));
+            assert_eq!(redone.1, taken.1, "lane {n} taken out again: the chains");
+            assert_eq!(lane_facts(&graph), taken_facts, "lane {n} taken out again: the lanes");
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_everything(&everything_as_it_is(&ctl, &graph), &before, &format!("lane {n} put back again"));
+        }
+    }
+
+    #[test]
+    fn the_instrument_that_is_taken_out_goes_with_the_cables_that_drove_it_first_and_is_put_back_before_them_and_when_it_was_not_handed_back_it_is_loaded_again() {
+        let (engine, mut ctl, _clock) = controller_over(load(INSTRUMENTS).model);
+        let lane0 = node(&ctl, NodePath::Instrument(0));
+        let before = (written(&ctl), picture(&ctl));
+        engine.drain();
+        ctl.apply(Intent::ClearInstrument { node: lane0 }).unwrap();
+        let (commands, _) = engine.drain();
+        // The cables that drove the instrument go first (the lane's own, then its group's), and then the instrument, which is asked to be handed to a channel.
+        assert_eq!(commands, ["RemoveModTarget inst=0 mod=0 target=0", "RemoveGroupModTarget group=0 mod=0 target=0", "ClearInstrument inst=0 keep"]);
+        assert_ne!(written(&ctl), before.0);
+        // (Nobody runs the audio thread, and nobody answers the channel: undo loads the oscillator again, with the values that the model has.) The swap is the first to be put back, the cables
+        // after it, the last that went first.
+        ctl.undo().unwrap();
+        let (commands, _) = engine.drain();
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        assert_eq!(commands[0], "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=true");
+        assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 0, slot: 0,"), "{commands:?}");
+        assert!(commands[2].starts_with("InsertModTarget inst=0 mod=0 target=0 kind=PluginParam { slot: 0,"), "{commands:?}");
+        assert_eq!((written(&ctl), picture(&ctl)), before, "the model has what it had, the values the user set among it");
+    }
+
+    #[test]
+    fn taking_the_instrument_out_of_a_lane_that_has_none_and_of_what_is_no_lane_is_refused_and_leaves_no_step() {
+        let (engine, mut ctl, _clock) = controller_over(load(INSTRUMENTS).model);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        let (empty, filter) = (node(&ctl, NodePath::Instrument(2)), node(&ctl, NodePath::Effect { inst: 0, index: 0 }));
+        let (group, ghost) = (node(&ctl, NodePath::Group(0)), NodeId(9_999));
+        engine.drain();
+        let before = picture(&ctl);
+        for (node, why) in [(empty, "the lane has no instrument to take out"), (filter, "an instrument is taken out of a lane"), (group, "an instrument is taken out of a lane")] {
+            assert_eq!(ctl.apply(Intent::ClearInstrument { node }).unwrap_err(), IntentError::Invalid(why.to_string()), "{why}");
+        }
+        assert_eq!(ctl.apply(Intent::ClearInstrument { node: ghost }).unwrap_err(), IntentError::NotFound(ghost));
+        assert_eq!(picture(&ctl), before);
+        assert!(engine.drain().0.is_empty(), "nothing was sent");
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "the step before is the last one");
+    }
+
+    #[test]
+    fn an_instrument_that_is_taken_out_of_a_lane_whose_lane_is_gone_is_refused_with_the_reason_and_nothing_changes_and_the_step_is_dropped() {
+        let (engine, mut ctl, _clock) = controller_over(load(INSTRUMENTS).model);
+        ctl.apply(Intent::SetLocked { locked: true }).unwrap();
+        let lane = node(&ctl, NodePath::Instrument(1));
+        ctl.apply(Intent::ClearInstrument { node: lane }).unwrap();
+        engine.drain();
+        // Something takes the lane out without the history.
+        ctl.model.instruments.remove(1);
+        let before = picture(&ctl);
+        assert_eq!(ctl.undo().unwrap_err(), IntentError::Invalid(format!("node {} is not there to have its instrument put back", lane.0)));
+        assert_eq!(picture(&ctl), before);
+        assert!(engine.drain().0.is_empty(), "nothing was sent");
+        assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl)), (Some("lock the piano to its scale"), None), "the step is gone, the one before it is next");
+    }
+
+    #[test]
     fn a_lane_that_had_no_instrument_is_emptied_again_by_undo_and_filled_by_redo() {
         let (engine, mut ctl, _clock) = controller_over(load(INSTRUMENTS).model);
         ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
@@ -6277,6 +6378,25 @@ size = 0.5
         scripts.push((
             "an instrument that is refused changes nothing in the history",
             vec![set(detune, 1.0), replace(lane0, "builtin:reverb"), replace(reverb, "builtin:osc"), replace(ghost, "builtin:osc"), replace(lane0, "builtin:nothing"), undo()],
+        ));
+        // The instrument of a lane that is taken out leaves the lane, with the rest of what it has: it goes with the cables that drove it, and comes back with them.
+        let clear = |node: NodeId| Op::Do(Intent::ClearInstrument { node });
+        scripts.push((
+            "an instrument that is taken out of its lane is put back by undo with the cables that drove it and taken out again by redo, and what was done before it is still to be undone",
+            vec![set(detune, 1.0), pause(), set(volume, 0.5), pause(), clear(lane0), undo(), undo(), redo(), redo(), undo(), redo(), undo()],
+        ));
+        scripts.push(("the instrument of a lane that nothing drives is taken out and put back too", vec![clear(lane1), undo(), redo(), undo()]));
+        scripts.push((
+            "the instrument of a lane that an add made is taken out, and both are put back",
+            vec![add_instrument("builtin:osc"), clear(fresh(0)), undo(), undo(), redo(), redo(), undo(), undo()],
+        ));
+        scripts.push((
+            "a lane that has no instrument, an effect, a group and a node that is not there are refused when an instrument is taken out of them, and change nothing in the history",
+            vec![set(detune, 1.0), clear(lane1), clear(lane1), clear(reverb), clear(g0), clear(ghost), undo(), undo()],
+        ));
+        scripts.push((
+            "an instrument that is put in a lane that its own was taken out of is taken out again by undo, and the first is put back by the one after it",
+            vec![clear(lane1), replace(lane1, "builtin:osc"), undo(), undo(), redo(), redo()],
         ));
         // A preset that is loaded overwrites the values of the plugin and the preset it had: undo gives them back.
         let (damping, _) = param(&base, NodePath::Effect { inst: 0, index: 0 }, "damping");

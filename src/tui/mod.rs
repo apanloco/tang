@@ -2786,15 +2786,15 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.remove_node(node);
                     }
                     TreeAddress::Instrument(inst) => {
-                        let has_plugin =
-                            s.ctl.model.instruments.get(inst).is_some_and(|n| n.instrument.is_some());
-                        if has_plugin {
-                            s.ctl.clear_instrument(inst);
-                            s.ctl.dirty = true;
-                            s.rebuild_tree();
-                        } else {
-                            let node = s.ctl.model.instruments.get(inst).map(|lane| lane.node);
-                            s.remove_node(node);
+                        // (The instrument is taken out by the intent that the page's "Remove only the instrument" asks, the lane keeping its effects and the rest; a lane that has
+                        // none is taken out by the intent that takes out a lane.)
+                        let lane = s.ctl.model.instruments.get(inst).map(|lane| (lane.node, lane.instrument.is_some()));
+                        match lane {
+                            Some((node, true)) => {
+                                s.apply(Intent::ClearInstrument { node });
+                            }
+                            Some((node, false)) => s.remove_node(Some(node)),
+                            None => {}
                         }
                     }
                     TreeAddress::Pattern(inst) => s.clear_pattern(inst),

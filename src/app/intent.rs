@@ -118,6 +118,12 @@ pub enum Intent {
     /// since the new plugin has parameters of its own, and a note remap goes with the old plugin. Refused, with nothing changed,
     /// for a node that is not a lane, and for what `AddInstrument` refuses.
     ReplaceInstrument { node: NodeId, plugin: String },
+    /// Take the instrument out of a lane (the TUI's `d` on an instrument that has one, the page's "Remove only the instrument"): `node` is the node of the lane. The lane
+    /// keeps what else it has, its effects (which go on running, on what is cabled into them), modulators, pattern, range, volume, transpose, group, way out, mute and solo, and
+    /// is an empty lane until an instrument is put in it (`ReplaceInstrument`). The cables that drove the plugin's parameters (a lane's and a group's, with what drives their
+    /// depths) are taken out, since there is nothing left for them to drive, and a note remap goes with the plugin. A step of the history: undo puts the very plugin back, with its
+    /// cables. Refused, with nothing changed, for a node that is not a lane and for a lane that has no instrument.
+    ClearInstrument { node: NodeId },
     /// Set the keys a lane plays: `node` is the node of the lane (its instrument's, which an empty lane has too), and
     /// `range` the notes it takes, both ends included, or `None` for every note. A lane that is given a range
     /// plays no note outside it (a held note that was counted under the old range is let go). The ends are notes,
@@ -775,6 +781,7 @@ mod tests {
                 Intent::ReplaceInstrument { node: NodeId(2), plugin: "builtin:osc".to_string() },
                 json!({"type": "replaceInstrument", "node": 2, "plugin": "builtin:osc"}),
             ),
+            (Intent::ClearInstrument { node: NodeId(2) }, json!({"type": "clearInstrument", "node": 2})),
             (Intent::Save, json!({"type": "save"})),
             (Intent::SaveAs { name: "copy".to_string() }, json!({"type": "saveAs", "name": "copy"})),
             (Intent::Undo, json!({"type": "undo"})),

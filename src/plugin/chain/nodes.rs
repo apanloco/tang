@@ -219,11 +219,10 @@ impl InstrumentLane {
         Ok(())
     }
 
-    /// An effect of the lane's chain as a node (its place in the chain is `index`). The effects of a lane that has no instrument do not run, and what they make is silence.
+    /// An effect of the lane's chain as a node (its place in the chain is `index`). A lane that has no instrument runs its effects all the same: what comes to the first of them is the
+    /// silence that the head made, with what the cables that end at it or at an effect after it bring, so that the effects that a lane keeps when its instrument is taken out go on working
+    /// (a reverb's tail rings out, and what another lane sends into one of them is heard through it).
     fn run_fx(&mut self, index: usize, dry: Option<&mut DelayLine>, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
-        if self.instrument.is_none() {
-            return Ok(());
-        }
         let (Some(effect), Some(&mix)) = (self.effects.get_mut(index), self.mix_values.get(index)) else { return Ok(()) };
         run_effect(effect.as_mut(), mix as f32, dry, io, cx.num_channels)?;
         store_taps(&self.taps, cx.telemetry, TapStage::Effect(index), &io.outputs()[0]);

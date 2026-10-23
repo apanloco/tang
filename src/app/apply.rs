@@ -101,6 +101,7 @@ impl Controller {
             Intent::AddEffect { parent, plugin } => self.add_effect_intent(parent, &plugin)?,
             Intent::AddInstrument { plugin } => self.add_instrument_intent(&plugin)?,
             Intent::ReplaceInstrument { node, plugin } => self.replace_instrument_intent(node, &plugin)?,
+            Intent::ClearInstrument { node } => self.clear_instrument_intent(node)?,
             Intent::Save | Intent::SaveAs { .. } | Intent::Undo | Intent::Redo => unreachable!("done above"),
         };
         Ok(self.conclude(done))
@@ -823,6 +824,18 @@ impl Controller {
         match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
             NodePath::Instrument(inst) => self.put_instrument(inst, plugin)?,
             _ => return Err(invalid("an instrument goes in a lane")),
+        }
+        Ok(Done::Restructured)
+    }
+
+    fn clear_instrument_intent(&mut self, node: NodeId) -> Result<Done, IntentError> {
+        match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
+            NodePath::Instrument(inst) => {
+                if !self.clear_instrument(inst) {
+                    return Err(invalid("the lane has no instrument to take out"));
+                }
+            }
+            _ => return Err(invalid("an instrument is taken out of a lane")),
         }
         Ok(Done::Restructured)
     }
@@ -5973,6 +5986,67 @@ type = "midi"
         assert_eq!(ctl.model.instruments[1].instrument.as_ref().map(|p| (p.node, p.name.as_str())), Some((empty, "Oscillator")));
         let graph = ctl.model.graph();
         assert_eq!(graph.nodes.iter().find(|n| n.id == empty).map(|n| n.name.as_str()), Some("Oscillator"), "the lane has a name now");
+    }
+
+    fn clear_instrument(ctl: &mut Controller, node: NodeId) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::ClearInstrument { node })
+    }
+
+    #[test]
+    fn clear_instrument_takes_the_instrument_out_and_the_cables_to_it_and_leaves_the_lane_what_else_it_has() {
+        use crate::app::graph::EdgeKind;
+        let (engine, mut ctl) = controller_with_builtins();
+        let (lane0, group_lfo) = (lane(&ctl), ctl.model.groups[0].modulators[0].node);
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        ctl.apply(cable_to(group_lfo, lane0, detune)).unwrap();
+        sent(&engine);
+        let rev = ctl.rev;
+
+        let applied = clear_instrument(&mut ctl, lane0).unwrap();
+        assert_eq!(applied, Applied::restructured(rev + 1));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        // The group's cable to the plugin goes first: it names a parameter of a plugin that is not there. The audio thread is asked to hand the instrument to a channel of its own.
+        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=0", "ClearInstrument inst=0 keep"]);
+        assert!(ctl.model.groups[0].modulators[0].targets.is_empty());
+        let lane = &ctl.model.instruments[0];
+        assert!(lane.instrument.is_none());
+        assert_eq!(lane.node, lane0, "the lane keeps its node");
+        assert_eq!((lane.group, lane.effects.len()), (Some(0), 1), "and what else it has");
+        // A client sees it in the graph: the same node, an empty lane called so, no cable into it, and its effect still after it in the audio path.
+        let graph = ctl.model.graph();
+        let node = graph.nodes.iter().find(|n| n.id == lane0).unwrap();
+        assert_eq!(node.name, "(empty)");
+        assert!(matches!(&node.kind, NodeKind::Instrument { plugin: None, .. }), "{node:?}");
+        assert!(!graph.edges.iter().any(|e| matches!(e.kind, EdgeKind::Modulation { .. })), "no cable is left");
+        assert!(graph.edges.iter().any(|e| e.kind == EdgeKind::Audio && e.from.node == lane0), "the audio path goes on from the lane to its effect");
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn clear_instrument_refuses_a_lane_that_has_none_and_what_is_no_lane_and_changes_nothing() {
+        let (engine, mut ctl) = controller_with_builtins();
+        let (lane0, group_lfo) = (lane(&ctl), ctl.model.groups[0].modulators[0].node);
+        let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
+        ctl.apply(cable_to(group_lfo, lane0, detune)).unwrap();
+        let (_other_engine, mut untouched) = controller_with_builtins();
+        untouched.apply(cable_to(group_lfo, lane0, detune)).unwrap();
+        sent(&engine);
+        let empty = node(&ctl, NodePath::Instrument(1));
+        assert!(ctl.model.instruments[1].instrument.is_none());
+        for (node, error) in [
+            (empty, invalid("the lane has no instrument to take out")),
+            (node(&ctl, NodePath::Effect { inst: 0, index: 0 }), invalid("an instrument is taken out of a lane")),
+            (node(&ctl, NodePath::GroupEffect { group: 0, index: 0 }), invalid("an instrument is taken out of a lane")),
+            (node(&ctl, NodePath::Group(0)), invalid("an instrument is taken out of a lane")),
+            (node(&ctl, NodePath::Modulator { at: ModulatorLocation::Group(0), index: 0 }), invalid("an instrument is taken out of a lane")),
+            (NodeId(9_999), IntentError::NotFound(NodeId(9_999))),
+        ] {
+            assert_eq!(clear_instrument(&mut ctl, node).unwrap_err(), error);
+        }
+        assert!(sent(&engine).is_empty(), "nothing was sent");
+        assert_eq!(ctl.model.graph(), untouched.model.graph(), "and nothing changed, the cable to the instrument among it");
+        assert!(ctl.model.instruments[0].instrument.is_some());
     }
 
     #[test]
