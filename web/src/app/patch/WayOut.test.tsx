@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { isLink } from "../../client/cables";
+import { Editor } from "../../client/editor";
 import { audioCablesFixture, nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
 import { linksOf } from "../../client/wiring";
 import type { Edge, Snapshot } from "../../protocol";
@@ -11,7 +12,10 @@ import { useNotices } from "../ClientProvider";
 import { rig } from "../testing";
 import { PatchView } from "./PatchView";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 // The way out of a lane and of a group, a button under its mute and solo (the controller's `SetRoute`: what it makes of the request is in `apply.rs`, `history.rs` and `wiring.test.ts`, and the
 // mock engine's agreement with it in `history.test.ts`): what the page shows of it, what it asks and when, and what it says when it is refused.
@@ -160,5 +164,124 @@ describe("the way out of a lane or a group", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Cut the way out of Oscillator 2" }).getAttribute("aria-pressed")).toBe("true");
     });
+  });
+});
+
+// The link that is a way out (the end of a lane's chain, or of a group's, to the group or the master) is the one link of the audio path that can be cut, and it has the button that does it, at its middle,
+// as every cable that a person can take out has: the same as the button in the cell, which is the one that gives it back.
+
+/** The button on the link of a way out, by the words of the link (`Filter → Master`). */
+const disconnect = (words: string) => screen.findByRole("button", { name: `Disconnect ${words}` });
+
+describe("the link of a way out", () => {
+  test("has a button that disconnects it, and no other link of the audio path has one: the links inside a chain are the template's", async () => {
+    // (The tracer's lane: its instrument goes to its filter, which is a link inside the chain, and the filter goes to the master, which is the way out.)
+    await rig(<PatchView />);
+    expect(await disconnect("Filter → Master")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /^Disconnect / })).toHaveLength(1);
+  });
+
+  test("is on the link of every lane and every group, an empty lane too, from the end of the chain: the last effect, or the instrument if the lane has none", async () => {
+    await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+    await disconnect("(empty) → Master");
+    expect(screen.getAllByRole("button", { name: /^Disconnect / }).map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Disconnect Filter 1 → Master",
+      "Disconnect Reverb 1 → Master",
+      "Disconnect Filter 2 → Group 1",
+      "Disconnect Oscillator 2 → Group 1",
+      "Disconnect Reverb 2 → Group 2",
+      "Disconnect Filter 3 → Master",
+      "Disconnect (empty) → Master",
+    ]);
+  });
+
+  test("is not on a link that is not there: a way out that is cut has no link, and so no button, and has it again when it is given back", async () => {
+    await rig(<PatchView />, { snapshot: cutAt(tracerSnapshot, oscillator.id) });
+    await wayOut();
+    expect(screen.queryByRole("button", { name: /^Disconnect / })).toBeNull();
+    fireEvent.click(await wayOut());
+    expect(await disconnect("Filter → Master")).toBeTruthy();
+  });
+
+  test("a press asks the server to cut the way out of the lane that the link is the end of, and the link, with its button, is gone, and the way out says so", async () => {
+    const { requests } = await rig(<PatchView />);
+    fireEvent.click(await disconnect("Filter → Master"));
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /^Disconnect / })).toBeNull();
+    });
+    // (The lane, not the filter that its chain ends in: a link is the way out of the lane, whatever node it starts at.)
+    expect(requests().map((request) => request.intent)).toEqual([{ type: "setRoute", node: oscillator.id, route: "none" }]);
+    expect((await wayOut()).getAttribute("aria-pressed")).toBe("true");
+    expect((await wayOut()).textContent).toBe("no out");
+  });
+
+  test("a press on a group's link is for the group, and leaves the lanes in it as they were", async () => {
+    const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+    fireEvent.click(await disconnect("Filter 1 → Master"));
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Disconnect Filter 1 → Master" })).toBeNull();
+    });
+    expect(requests().map((request) => request.intent)).toEqual([{ type: "setRoute", node: 0, route: "none" }]);
+    expect((await wayOut("Group 1")).getAttribute("aria-pressed")).toBe("true");
+    expect((await wayOut("Oscillator 1")).getAttribute("aria-pressed")).toBe("false");
+    // The focus is on the group's button, of all the way outs there are.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cut the way out of Group 1" }));
+    });
+    // The lanes' own links into the group are there still.
+    expect(screen.getByRole("button", { name: "Disconnect Filter 2 → Group 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect Oscillator 2 → Group 1" })).toBeTruthy();
+  });
+
+  test("a press on a lane's link in a group is for the lane: the group keeps its link to the master", async () => {
+    const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
+    fireEvent.click(await disconnect("Oscillator 2 → Group 1"));
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Disconnect Oscillator 2 → Group 1" })).toBeNull();
+    });
+    expect(requests().map((request) => request.intent)).toEqual([{ type: "setRoute", node: 7, route: "none" }]);
+    expect((await wayOut("Oscillator 2")).getAttribute("aria-pressed")).toBe("true");
+    expect((await wayOut("Group 1")).getAttribute("aria-pressed")).toBe("false");
+    // The focus is on the lane's button, of all the way outs there are.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cut the way out of Oscillator 2" }));
+    });
+    expect(screen.getByRole("button", { name: "Disconnect Filter 1 → Master" })).toBeTruthy();
+  });
+
+  test("puts the focus on the button that gives the way out back, once the link is gone", async () => {
+    await rig(<PatchView />);
+    const button = await disconnect("Filter → Master");
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cut the way out of Oscillator" }));
+    });
+    // (Pressed again it gives the link back, as a keyboard would: the focus has not been lost to the page.)
+    fireEvent.click(screen.getByRole("button", { name: "Cut the way out of Oscillator" }));
+    expect(await disconnect("Filter → Master")).toBeTruthy();
+  });
+
+  test("leaves the link and the focus where they are when the server does not cut the way out", async () => {
+    const asked = vi.spyOn(Editor.prototype, "setRoute").mockResolvedValue(false);
+    await rig(<PatchView />);
+    const button = await disconnect("Filter → Master");
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(asked).toHaveBeenCalledWith(oscillator.id, "none");
+    });
+    // (Long enough for a focus that was moved to be moved: it goes at once when the button is there, and else on the next frames.)
+    await act(async () => {
+      await new Promise((done) => setTimeout(done, 60));
+    });
+    expect(screen.getByRole("button", { name: "Disconnect Filter → Master" })).toBe(button);
+    expect(document.activeElement).toBe(button);
+    expect((await wayOut()).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  test("has a title that says what a press does and where the way out is given back", async () => {
+    await rig(<PatchView />);
+    expect((await disconnect("Filter → Master")).title).toBe("Disconnect Filter → Master: cut the way out, to hear it only through its cables (the button under Mute / Solo gives it back)");
   });
 });

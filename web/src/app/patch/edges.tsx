@@ -1,4 +1,4 @@
-// The cables of the canvas: the audio path, derived and plain; the audio cables a person has drawn (the sends), amber, and the thicker the louder they are, with a slider for
+// The cables of the canvas: the audio path, derived and plain, whose links into a group or the master (the way out of a lane or a group) have a button that disconnects them; the audio cables a person has drawn (the sends), amber, and the thicker the louder they are, with a slider for
 // the level at the middle; the cables of notes a person has drawn, from a source to a lane, violet, with the button that takes them out at the middle, and, faint and dotted in the same
 // colour, the links by which a lane that no cable of notes ends at hears every source; and modulation, which is magenta, dashed, and the thicker the deeper it goes.
 import { BaseEdge, EdgeLabelRenderer, getBezierPath } from "@xyflow/react";
@@ -6,20 +6,61 @@ import { useRef } from "react";
 import type { EdgeProps } from "@xyflow/react";
 
 import { cableDepthOf, cableGainOf } from "../../client/selectors";
-import type { EdgeId } from "../../protocol";
+import type { EdgeId, NodeId } from "../../protocol";
 import { useClientState, useEditor } from "../ClientProvider";
 import { focusWhenPossible } from "../focus";
 import { useCableLight } from "./cableLight";
 import { cableRoute } from "./cableRoute";
-import { CableDepthControl, CableLevelControl, drivesId } from "./controls";
+import { CableDepthControl, CableLevelControl, drivesId, wayOutId } from "./controls";
 import { cableWidth, sendWidth } from "./describe";
 import { notesToId } from "./NotesMenus";
 import { sendId } from "./SendMenu";
 import type { PatchEdge } from "./toFlow";
 
+/**
+ * The button on the link that is the way out of a lane or a group, which cuts it (the controller's `SetRoute`, as the button under the mute and the solo does, which gives it back). The lane or group is then
+ * heard only through the cables that start at it; the focus goes to that button, since the link, and this one, are gone.
+ */
+function DisconnectButton({ node, label }: { node: NodeId; label: string }) {
+  const editor = useEditor();
+  return (
+    <button
+      type="button"
+      className="tang-depth__remove"
+      aria-label={`Disconnect ${label}`}
+      title={`Disconnect ${label}: cut the way out, to hear it only through its cables (the button under Mute / Solo gives it back)`}
+      onClick={() => {
+        // (If it is refused the page says so: `Editor` puts the reason among the notices, and the focus stays on the button.)
+        void editor.setRoute(node, "none").then((cut) => {
+          if (cut) focusWhenPossible(wayOutId(node));
+        });
+      }}
+    >
+      ×
+    </button>
+  );
+}
+
+/**
+ * A link of the audio path, the way that the audio goes by itself: plain and grey. The end of a lane's chain, or of a group's, which goes to the group's bus or the master, is its way out, and has the
+ * button at its middle that disconnects it; the links inside a chain (an instrument to its first effect, an effect to the next) are the template's and have none.
+ */
 export function AudioEdge(props: EdgeProps<PatchEdge>) {
-  const [path] = getBezierPath(props);
-  return <BaseEdge id={props.id} path={path} className="tang-cable tang-cable--audio" />;
+  const [path, labelX, labelY] = getBezierPath(props);
+  const owner = props.data?.wayOut;
+  return (
+    <>
+      <BaseEdge id={props.id} path={path} className="tang-cable tang-cable--audio" />
+      {owner === undefined ? null : (
+        // (In the layer over the canvas that the cables' controls are in, at the middle of the link.)
+        <EdgeLabelRenderer>
+          <div className="tang-depth-anchor nodrag nopan nowheel" style={{ transform: `translate(-50%, -50%) translate(${String(labelX)}px, ${String(labelY)}px)` }}>
+            <DisconnectButton node={owner} label={props.data?.label ?? "a link"} />
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
 }
 
 /**

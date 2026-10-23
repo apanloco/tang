@@ -1626,6 +1626,36 @@ describe("the cables on the canvas", () => {
     expect(into && [into.type, into.sourceHandle, into.targetHandle]).toEqual(["audio", "audioOut", "audioIn"]);
   });
 
+  test("say whose way out a link is, and what it joins, where it goes from the end of a lane's chain or a group's to a group or the master, and say nothing of the links inside a chain", () => {
+    const flow = toFlow(grouped);
+    const data = (id: string) => flow.edges.find((edge) => edge.id === id)?.data;
+    // The group's bus: its effect (11) goes on to the master, which is the group's way out; the group's own link to its effect is inside the chain.
+    expect(data("audio:10>11")).toEqual({});
+    expect(data(`audio:11>${String(MASTER)}`)).toEqual({ wayOut: 10, label: "Effect 11 → Master" });
+    // A lane in the group: from the end of its chain (the effect) to the group's bus, or from the instrument itself where the lane has no effect.
+    expect(data("audio:1>2")).toEqual({});
+    expect(data("audio:2>10")).toEqual({ wayOut: 1, label: "Effect 2 → Group 10" });
+    expect(data("audio:3>10")).toEqual({ wayOut: 3, label: "Instrument 3 → Group 10" });
+    // A lane in no group: the last of its two effects goes to the master.
+    expect(data("audio:4>5")).toEqual({});
+    expect(data("audio:5>6")).toEqual({});
+    expect(data(`audio:6>${String(MASTER)}`)).toEqual({ wayOut: 4, label: "Effect 6 → Master" });
+  });
+
+  test("say whose way out a lane's only link is when it has no effects: the lane's own", () => {
+    const flow = toFlow({ nodes: [instrument(1), master], edges: [audio(1, MASTER)] });
+    expect(flow.edges.map((edge) => [edge.id, edge.data])).toEqual([[`audio:1>${String(MASTER)}`, { wayOut: 1, label: "Instrument 1 → Master" }]]);
+  });
+
+  test("say no way out for a link whose owner is not in the graph, or is not a lane or a group (it could not be cut: the controller has no such node to ask)", () => {
+    // An effect whose parent is not there, an effect that has no parent, and an effect whose parent is another effect: none has a lane or a group to cut.
+    const orphan: Node = effect(98, 12345);
+    const parentless: Node = { ...effect(97, 1), parent: null };
+    const nested: Node = effect(96, 98);
+    const flow = toFlow({ nodes: [instrument(1), orphan, parentless, nested, master], edges: [audio(98, MASTER), audio(97, MASTER), audio(96, MASTER)] });
+    expect(flow.edges.map((edge) => edge.data)).toEqual([{}, {}, {}]);
+  });
+
   test("carry modulation from a modulator's output to the control it drives, as the cable that it is", () => {
     const flow = toFlow(tracerSnapshot.graph);
     const modulation = flow.edges.filter((edge) => edge.type === "modulation");

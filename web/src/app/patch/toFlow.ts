@@ -116,6 +116,8 @@ export interface PatchEdgeData extends Record<string, unknown> {
   modulator?: NodeId;
   /** What the cable is, in words: `LFO → Filter: cutoff`, `Oscillator → Reverb`, `Keys → Oscillator`. */
   label?: string;
+  /** The lane or the group whose way out the link is, on a link of the audio path that is one (the end of its chain): the node that the button on the link cuts the way out of. */
+  wayOut?: NodeId;
 }
 
 export type PatchEdge = FlowEdge<PatchEdgeData, PatchEdgeKind>;
@@ -678,6 +680,7 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
   }));
 
   const edges: PatchEdge[] = [];
+  const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
   for (const edge of graph.edges) {
     const common = { source: String(edge.from.node), target: String(edge.to.node), sourceHandle: handleOf(edge.from.port), targetHandle: handleOf(edge.to.port), deletable: false };
     if (edge.kind === "modulation") {
@@ -692,10 +695,24 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
       // (The link that the graph derives for a lane that no cable of notes ends at, which hears every source: nothing is drawn or taken out by it. The lowest of the cables, over the links of the audio path.)
       edges.push({ ...common, id: `hears:${String(edge.from.node)}>${String(edge.to.node)}`, type: "hears", data: {}, zIndex: 1 });
     } else {
-      edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: {} });
+      // (A link of the audio path, derived. The end of a chain is the way out of its lane or group: it says whose, for the button that cuts it. The links inside a chain are the template's: nothing to cut.)
+      const owner = ownerOfWayOut(edge, nodesById);
+      edges.push({ ...common, id: `audio:${String(edge.from.node)}>${String(edge.to.node)}`, type: "audio", data: owner === undefined ? {} : { wayOut: owner, label: cableWords(graph, names, edge) } });
     }
   }
   return { nodes, edges, places, arranged };
+}
+
+/**
+ * The lane or the group whose way out a link of the audio path is, if it is one. A link into a group or the master is the end of a chain (a link inside a chain goes into an effect), of the chain of the
+ * lane or the group that it starts at, or that the effect it starts at is in. None for any other link, and for one whose lane or group is not in the graph, which the controller would not find to cut.
+ */
+function ownerOfWayOut(edge: Edge, nodes: ReadonlyMap<NodeId, Node>): NodeId | undefined {
+  const into = nodes.get(edge.to.node)?.kind;
+  if (into !== "group" && into !== "master") return undefined;
+  const start = nodes.get(edge.from.node);
+  const owner = start?.kind === "effect" ? (start.parent === null ? undefined : nodes.get(start.parent)) : start;
+  return owner?.kind === "instrument" || owner?.kind === "group" ? owner.id : undefined;
 }
 
 /** A cable as the canvas depends on it: where it goes, and not how deep or at what level (which are values). */

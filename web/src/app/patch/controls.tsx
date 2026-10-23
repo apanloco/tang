@@ -394,6 +394,9 @@ export const GroupCell = memo(function GroupCell({ node, name }: { node: NodeId;
   );
 });
 
+/** The `id` of the button of the way out of the lane or group `node`, which the focus goes to when its link is disconnected. */
+export const wayOutId = (node: NodeId): string => `way-out-${String(node)}`;
+
 /**
  * The way out of a lane or a group, a button under its mute and solo (the controller's `SetRoute`): it says where the audio goes (`→ Master`, or `→ Pad` for a lane in a group) and, when the way
  * out is cut, that there is none (`no out`: the node is then heard only through the cables that start at it). Pressed, it is cut. A press asks for the other way and the button shows what the
@@ -406,6 +409,7 @@ function WayOutButton({ node, name }: { node: NodeId; name: string }) {
   return (
     <button
       type="button"
+      id={wayOutId(node)}
       className="tang-way-out"
       aria-label={`Cut the way out of ${name}`}
       aria-pressed={way.cut}
