@@ -597,7 +597,7 @@ the new one grows under today's structure until it equals it, and is then taken 
     that can be taken out). *The form that they take beside the lane, the group and `group = n`* is my decision to make before building it, and it is this (overrule it before P3c starts): the
     templates stay, and a session has, besides them, **extra cables** (`SessionModel.cables`: an id, an output, an input and a gain) and, for the end of each lane and group, **a route**: by
     default to its group's bus, or to the master (today's `group = n`), or none (the template's own cable cut, so that a lane can be heard only through the reverb that another lane has). The
-    cables of the templates that are not at a lane's or group's end (instrument to the first effect, effect to effect) are not edited: an effect is taken out or moved to change them. This is
+    cables of the templates that are not at a lane's or group's end (instrument to the first effect, effect to effect) are not edited: an effect is taken out or moved to change them (*since step 86 the link into an effect can be cut, `feed = "none"`: see `CLAUDE.md`, "The input of an effect"*). This is
     the netlist of §11.5 with the sugar kept: every extra cable and every route is a cable of the netlist, the file writes `[[cable]]` tables for them (`from = "instrument[0]"`, `to =
     "instrument[1].effect[0]"`, `"group[0]"`, `"master"`, `gain`) and `route = "none"` on a lane or group, and a session without any is the file it was. Cycles are refused when the cable is
     drawn. *Mute and solo for routed audio* (the law of §9.8 written for a graph, in the engine and in the page's copy of it, `audible.ts`, pinned by the same kind of fixture): a muted
