@@ -336,6 +336,25 @@ const SOURCE_EDITS: [(u64, Edit); 15] = [
     (41_000, Edit::RemoveSource { source: 0 }),
 ];
 
+/// What is done to the instruments of `CABLED` while it plays (the effects of a lane that has none run): lane 0's instrument is sent to lane 1's delay by a cable; lane 1's instrument is taken
+/// out while the chord is held (its delay goes on, and is heard on what the cable sends it: the lane has no sound of its own); lane 0's instrument is taken out too (the cable sends nothing,
+/// the filter and the reverb ring out); Undo puts lane 0's instrument back, the very plugin, still holding the chord, and then lane 1's; the cable is taken out by Undo and drawn again by Redo, lane 1's
+/// instrument is taken out again by Redo, and lane 1, which has none, is taken out with its delay and its cable and put back whole by Undo, and its instrument by the one after it. Each is made
+/// (`Counts` says so: none is skipped or refused). (It has a cable: the loop that the plan replaced, which stops the effects of a lane that has no instrument, is not held to it.)
+const INSTRUMENT_EDITS: [(u64, Edit); 11] = [
+    (8_000, Edit::AddCable { from: 0, to: 1, gain: 0.7 }),
+    (12_000, Edit::ClearInstrument { lane: 1 }),
+    (16_000, Edit::ClearInstrument { lane: 0 }),
+    (20_000, Edit::Undo),
+    (24_000, Edit::Undo),
+    (28_000, Edit::Undo),
+    (32_000, Edit::Redo),
+    (34_000, Edit::Redo),
+    (36_000, Edit::RemoveLane { lane: 1 }),
+    (40_000, Edit::Undo),
+    (42_000, Edit::Undo),
+];
+
 /// What the keys play into `edited:sources`: `performance`, and a key (E4) that is hit and let go of after the pedal is up, which a lane that has been given the keys again plays.
 fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     let mut events = performance();
@@ -345,7 +364,7 @@ fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     events
 }
 
-/// The scenarios that edit the cables, the ways out, the solos, the latency and the sources of notes of a session while it plays.
+/// The scenarios that edit the cables, the ways out, the solos, the latency, the sources of notes and the instruments of a session while it plays.
 pub fn edited() -> Vec<Scenario> {
     let scenario = |name: &str, edits: &[(u64, Edit)]| Scenario {
         id: format!("edited:{name}@{BLOCK}"),
@@ -357,7 +376,7 @@ pub fn edited() -> Vec<Scenario> {
         edits: edits.to_vec(),
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -846,7 +865,7 @@ mod tests {
     #[test]
     fn the_scenarios_that_have_cables_are_those_that_the_loop_the_plan_replaced_is_not_held_to() {
         let with: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cables()).map(|scenario| scenario.id.clone()).collect();
-        assert_eq!(with, ["session:patched@256", "session:routed@256", "session:sends@256", "edited:cables@256", "edited:routes@256", "edited:solos@256", "edited:latency@256"]);
+        assert_eq!(with, ["session:patched@256", "session:routed@256", "session:sends@256", "edited:cables@256", "edited:routes@256", "edited:solos@256", "edited:latency@256", "edited:instruments@256"]);
     }
 
     #[test]
@@ -909,6 +928,25 @@ mod tests {
         let (heard, alone) = (window(&with, 21_000, 23_500), window(&without, 21_000, 23_500));
         assert!(heard > 1.05 * alone, "lane 1 is heard for what lane 0 sends it: {heard} and {alone}");
         // (Measured: an rms of 0.0700 against 0.0575 in the first window, 1.22 times as much, and 0.0399 against 0.0238 in the second, 1.68 times; the test asks for 1.05.)
+    }
+
+    #[test]
+    fn what_a_cable_sends_to_the_effects_of_a_lane_that_has_no_instrument_is_heard_in_the_instruments_scenario() {
+        // Lane 0's chord goes by the cable (drawn at 8 000) into lane 1's delay, and lane 1's instrument is taken out at 12 000: from 12 288 on lane 1 has no sound of its own, and its delay
+        // runs all the same and puts out what the cable sends it (the part of it that the mix leaves dry, at once). Without the cable the lane is silent there.
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:instruments")).expect("a scenario of the corpus");
+        assert!(matches!(scenario.edits[0].1, Edit::AddCable { .. }) && matches!(scenario.edits[1].1, Edit::ClearInstrument { lane: 1 }));
+        let until_16_000 = |edits: &[(u64, Edit)]| render(&Scenario { edits: edits.to_vec(), frames: 16_128, ..scenario.clone() }, &engine);
+        let with = until_16_000(&scenario.edits[..2]);
+        let without = until_16_000(&scenario.edits[1..2]);
+        // (Lane 0 is in both: what is different is what lane 1 puts out.)
+        let difference = |from: usize, to: usize| -> f32 {
+            let (a, b) = (&with.samples[2 * from..2 * to], &without.samples[2 * from..2 * to]);
+            (a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f32>() / a.len() as f32).sqrt()
+        };
+        let after = difference(12_288, 16_000);
+        assert!(after > 0.01, "lane 1, which has no instrument, is heard through its delay for what the cable sends it: {after}");
+        // (Measured: an rms of 0.0328, and exactly 0 where the effects of a lane that has no instrument do not run; the test asks for 0.01.)
     }
 
     #[test]

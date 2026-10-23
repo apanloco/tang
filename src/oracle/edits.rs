@@ -42,6 +42,8 @@ pub enum Edit {
     AddGroup { lanes: Vec<usize> },
     AddLane { plugin: &'static str },
     RemoveLane { lane: usize },
+    /// The instrument of a lane taken out, the lane staying with its effects (which go on running) and the rest of what it has.
+    ClearInstrument { lane: usize },
     RemoveGroup { group: usize },
     /// A preset of the plugin at `slot` of a lane, by its place among the plugin's.
     Preset { lane: usize, slot: usize, preset: usize },
@@ -207,6 +209,11 @@ impl Edit {
             }
             Edit::AddLane { plugin } => Intent::AddInstrument { plugin: (*plugin).to_string() },
             Edit::RemoveLane { lane: l } => Intent::RemoveNode { node: lane(*l)?.node },
+            Edit::ClearInstrument { lane: l } => {
+                let lane = lane(*l)?;
+                lane.instrument.as_ref()?;
+                Intent::ClearInstrument { node: lane.node }
+            }
             Edit::RemoveGroup { group: g } => Intent::RemoveNode { node: group(*g)?.node },
             Edit::Preset { lane: l, slot, preset } => {
                 let plugin = plugin_at(lane(*l)?, *slot)?;
@@ -365,6 +372,9 @@ plugin = "builtin:osc"
         ] {
             assert_eq!(edit.make(&mut ctl), Outcome::Skipped, "{edit:?}");
         }
+        // A lane that has no instrument has none to take out: the first edit takes it out, and the second finds nothing.
+        assert_eq!(Edit::ClearInstrument { lane: 1 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::ClearInstrument { lane: 1 }.make(&mut ctl), Outcome::Skipped, "the lane has none now");
         let mut none = controller("[[instrument]]\nplugin = \"builtin:osc\"\n");
         assert_eq!(Edit::GroupVolume { group: 0, value: 0.5 }.make(&mut none), Outcome::Skipped, "no group");
         assert_eq!(Edit::LaneGroup { lane: 0, group: Some(0) }.make(&mut none), Outcome::Skipped, "no group to put a lane in");
@@ -494,6 +504,7 @@ plugin = "builtin:osc"
         expect(Edit::AddGroup { lanes: vec![0, 1] }, Intent::AddGroup { members: vec![lane0, lane1] });
         expect(Edit::AddLane { plugin: "builtin:osc" }, Intent::AddInstrument { plugin: "builtin:osc".to_string() });
         expect(Edit::RemoveLane { lane: 1 }, Intent::RemoveNode { node: lane1 });
+        expect(Edit::ClearInstrument { lane: 1 }, Intent::ClearInstrument { node: lane1 });
         expect(Edit::RemoveGroup { group: 0 }, Intent::RemoveNode { node: bus });
         expect(Edit::Bpm { bpm: 99.0 }, Intent::SetBpm { bpm: 99.0 });
         expect(Edit::Undo, Intent::Undo);
