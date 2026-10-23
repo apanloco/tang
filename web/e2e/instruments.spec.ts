@@ -94,12 +94,12 @@ test("the instrument of a lane is taken out alone and its filter stays and runs:
   await expect(wayOut).toHaveText("no out");
   await heardAt(page, "the first lane");
 
-  // The instrument of the first lane is taken out alone: the lane is empty, with its filter and its LFO, and nothing is heard (the second lane has no way out).
+  // The instrument of the first lane is taken out alone: the lane is left with its filter and its LFO, which stand by themselves, and nothing is heard (the second lane has no way out).
   // (The canvas moved to show the lane that was added, and the first is above it: the view is fitted to all of it.)
   await showAll(page);
   await page.getByRole("button", { name: "Remove the lane of Oscillator 1" }).click();
   await page.getByRole("menuitem", { name: /^Remove Oscillator 1 only: its 1 effect and 1 modulator stay in the lane$/ }).click();
-  await expect(node(page, "\\(empty\\)")).toBeVisible();
+  await expect(node(page, "\\(empty\\)")).toHaveCount(0);
   await expect(node(page, "Filter")).toBeVisible();
   await expect(node(page, "LFO")).toBeVisible();
   await silentAt(page, "a session whose lane that has a way out has no instrument");
@@ -111,7 +111,7 @@ test("the instrument of a lane is taken out alone and its filter stays and runs:
   expect(lanes[0]).toContain("[[instrument.modulator]]");
   expect(lanes[1]).toContain('plugin = "builtin:osc"');
 
-  // The second lane sends its sound into the filter of the empty lane (the other lane is called what it is now): the filter runs, and it is heard through it.
+  // The second lane sends its sound into the filter that stands by itself (the other lane is called what it is now): the filter runs, and it is heard through it.
   await showAll(page);
   await page.getByRole("button", { name: "Send audio from Oscillator" }).click();
   await page.getByRole("menuitem", { name: "Filter" }).click();
