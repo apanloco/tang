@@ -319,6 +319,19 @@ describe("the nodes that take a cable from an output", () => {
     expect(cableTakers(graph, 0)).not.toContain(1);
   });
 
+  test("do not have a link that is cut where giving it back would make the audio go round, whatever kind of link it is, and have it where there is no loop", () => {
+    // The group's output into Filter 5, a lane that is in the group, with the lane's way out cut: Delay 6, the end of the lane's chain, is not offered the group's bus (its way out), which would close
+    // the loop through the lane; with no cable into the lane it is.
+    expect(cableTakers(withWaysOutCut(withCables([0, 5]), 4), 6)).not.toContain(0);
+    expect(cableTakers(withWaysOutCut(withCables(), 4), 6)).toContain(0);
+    // Delay 6 sent back to Filter 5 with the delay's feed cut: Filter 5 is not offered Delay 6 (its feed), which would close the loop through the cable; with no cable it is.
+    expect(cableTakers(withFeedsCut(withCables([6, 5]), 6), 5)).not.toContain(6);
+    expect(cableTakers(withFeedsCut(withCables(), 6), 5)).toContain(6);
+    // The same on the group's bus: Reverb 2 sent back to Filter 1 with the reverb's feed cut.
+    expect(cableTakers(withFeedsCut(withCables([2, 1]), 2), 1)).not.toContain(2);
+    expect(cableTakers(withFeedsCut(withCables(), 2), 1)).toContain(2);
+  });
+
   test("are those of the controller's AddCable, for every start of the fixture: the ends that it takes with no level of its own are the takers", () => {
     const starts = graph.nodes.filter((n) => n.kind === "instrument" || n.kind === "effect" || n.kind === "group").map((n) => n.id);
     const taken = (from: NodeId): NodeId[] =>

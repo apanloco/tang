@@ -815,6 +815,30 @@ mod tests {
     }
 
     #[test]
+    fn the_input_of_an_effect_that_is_cut_is_refused_where_giving_it_back_would_make_the_audio_go_round_and_given_back_where_it_would_not() {
+        let (mut run, _) = bench_of(SENDS);
+        let n = Sends::of(&run.model);
+        // The delay after lane 0's filter is sent back into the filter by a cable, and its own input (the link from the filter) is cut: the audio does not go round, and the link given back would
+        // (filter, delay, the cable, filter).
+        run.model.instruments[0].effects[1].fed = false;
+        run.model.insert_audio_cable(AudioCable { id: EdgeId(3), from: CableFrom::Effect(n.fx[1]), to: CableTo::Effect(n.fx[0]), gain: 1.0 });
+        let bench = Bench::of(&run.model);
+        let mut patch = Patch::new();
+        let (row, col) = at(&bench, CableFrom::Effect(n.fx[0]), CableTo::Effect(n.fx[1]));
+        assert_eq!(patch.cell(&run.model, &bench, row, col), Cell::Refused("the audio would go round".to_string()));
+        patch.row = row;
+        patch.col = col;
+        patch.settle(&bench);
+        assert!(matches!(key(&mut patch, &run.model, KeyCode::Enter), Act::Notice(why) if why.contains("cannot send") && why.contains("go round")));
+        // With no cable back into the filter the same link is given back, as any cut link is.
+        run.model.remove_audio_cable(EdgeId(3));
+        let bench = Bench::of(&run.model);
+        let mut patch = Patch::new();
+        let (row, col) = at(&bench, CableFrom::Effect(n.fx[0]), CableTo::Effect(n.fx[1]));
+        assert_eq!(patch.cell(&run.model, &bench, row, col), Cell::Link { of: LinkOf::Feed(n.fx[1]), present: false });
+    }
+
+    #[test]
     fn the_cursor_moves_by_arrows_and_stays_in_the_matrix() {
         let (run, bench) = bench_of(SENDS);
         let model = &run.model;
