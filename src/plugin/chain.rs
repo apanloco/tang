@@ -12313,7 +12313,8 @@ mod tests {
     }
 
     /// An effect with two parameters, `a` (0) and `b` (1), that passes its input
-    /// through: for telling apart what is published for each.
+    /// through: for telling apart what is published for each. Its one preset,
+    /// `loud`, sets `a` to 0.9 and `b` to 0.1.
     struct TwoParamEffect {
         values: [f32; 2],
     }
@@ -12372,10 +12373,15 @@ mod tests {
             }
         }
         fn presets(&self) -> Vec<Preset> {
-            Vec::new()
+            vec![Preset { name: "Loud".into(), id: "loud".into() }]
         }
         fn load_preset(&mut self, id: &str) -> anyhow::Result<()> {
-            anyhow::bail!("no preset {id}")
+            if id == "loud" {
+                self.values = [0.9, 0.1];
+                Ok(())
+            } else {
+                anyhow::bail!("no preset {id}")
+            }
         }
     }
 
@@ -12737,6 +12743,167 @@ mod tests {
         g.rig.graph.drain_commands();
         assert_eq!(all_modulators(&g.rig.graph), before);
         g.rig.process(&[]); // (and a buffer goes by with what is left)
+    }
+
+    // -- What the user sets is what the cables that drive it work from --
+    //
+    // (`AudioGraph::centre` finds a cable by what it drives, in whichever rack it is. A cable writes its target at every buffer, from the value that it is centred on, so each of
+    // these sets one thing that a cable drives, with the cable at a depth of 0, which writes what it is centred on and nothing more: if the cable were not centred on what the user
+    // set, or were centred on the wrong thing, the next buffer would put the old value back.)
+
+    /// `[attack, decay, sustain, release]` of an envelope.
+    fn stages(source: &ModSource) -> [f32; 4] {
+        match *source {
+            ModSource::Envelope { attack, decay, sustain, release, .. } => [attack, decay, sustain, release],
+            ref other => panic!("an envelope: {other:?}"),
+        }
+    }
+
+    /// The settings of an envelope that a cable can drive, with the range of each: the times are turned on a log scale and the sustain is a level.
+    const STAGE_RANGES: [(ModSetting, f32, f32); 4] = [(ModSetting::Attack, 0.001, 10.0), (ModSetting::Decay, 0.001, 10.0), (ModSetting::Sustain, 0.0, 1.0), (ModSetting::Release, 0.001, 10.0)];
+
+    fn all_near(got: &[f32], want: &[f32]) -> bool {
+        got.len() == want.len() && got.iter().zip(want).all(|(got, want)| near(*got, *want))
+    }
+
+    #[test]
+    fn a_parameter_that_the_user_sets_is_what_the_cables_on_that_plugin_work_from_and_no_others() {
+        let mut rig = Rig::new(); // the effect `effect_node(0, 0)` is in slot 1
+        insert_effect(&rig.cmd_tx, 1, scale_effect(), 1.0); // and `effect_node(0, 1)` in slot 2
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        let first = rig.gain_target(0, 0.2); // on the gain of the effect in slot 1
+        let second = rig.slot();
+        let target = ModTarget { effective: Some(second), ..cable(param(0, 2, 0), 0.4) }; // on the gain of the one in slot 2
+        rig.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 0, target }).unwrap();
+        let slots = [first, second];
+        assert_published(&mut rig, &slots, &[0.7, 0.9], "to begin with");
+        rig.cmd_tx.send(GraphCommand::SetParameter { inst: 0, slot: 1, param_index: 0, value: 0.3 }).unwrap();
+        assert_published(&mut rig, &slots, &[0.5, 0.9], "the gain of the first effect set: only its cable works from it");
+        rig.cmd_tx.send(GraphCommand::SetParameter { inst: 0, slot: 2, param_index: 0, value: 0.2 }).unwrap();
+        assert_published(&mut rig, &slots, &[0.5, 0.6], "the gain of the second set: only its cable works from it");
+    }
+
+    #[test]
+    fn a_bus_parameter_that_the_user_sets_is_what_the_cables_on_that_effect_work_from_and_no_others() {
+        let mut g = GroupRig::new(); // the bus effect `bus_effect_node(0, 0)`, whose gain a cable drives (`g.bus`)
+        g.rig.cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: two_param_effect(), mix: 1.0, node: bus_effect_node(0, 1) }).unwrap();
+        let (a, b) = (g.target(0, bus_param(0, 1, 0), 0.05), g.target(0, bus_param(0, 1, 1), 0.25));
+        let slots = [g.member0, g.bus, a, b];
+        assert_published(&mut g.rig, &slots, &[0.7, 0.9, 0.55, 0.75], "to begin with");
+        g.rig.cmd_tx.send(GraphCommand::SetGroupParameter { group: 0, index: 1, param_index: 1, value: 0.2 }).unwrap();
+        assert_published(&mut g.rig, &slots, &[0.7, 0.9, 0.55, 0.45], "the second parameter of the second effect set: its cable works from it");
+        g.rig.cmd_tx.send(GraphCommand::SetGroupParameter { group: 0, index: 0, param_index: 0, value: 0.1 }).unwrap();
+        assert_published(&mut g.rig, &slots, &[0.7, 0.5, 0.55, 0.45], "the gain of the first effect set: its cable works from it");
+    }
+
+    #[test]
+    fn a_preset_is_what_the_cables_on_the_parameters_it_changes_work_from_in_the_plugin_that_loaded_it_and_in_no_other() {
+        let mut rig = Rig::new();
+        rig.cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0, keep: None }).unwrap();
+        insert_effect(&rig.cmd_tx, 0, two_param_effect(), 1.0); // slot 1: `effect_node(0, 0)`
+        insert_effect(&rig.cmd_tx, 1, two_param_effect(), 1.0); // slot 2: `effect_node(0, 1)`
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        let on = |rig: &mut Rig, plugin_slot: usize, param_index: u32| {
+            let slot = rig.slot();
+            let target = ModTarget { effective: Some(slot), ..cable(param(0, plugin_slot, param_index), 0.05) };
+            rig.cmd_tx.send(GraphCommand::AddModTarget { inst: 0, mod_index: 0, target }).unwrap();
+            slot
+        };
+        // Both parameters of the first effect are driven, and only the second, `b`, of the second's: so what a preset of the first changes, `a` and `b`, is not what is driven in the second.
+        let (first_a, first_b, second_b) = (on(&mut rig, 1, 0), on(&mut rig, 1, 1), on(&mut rig, 2, 1));
+        let slots = [first_a, first_b, second_b];
+        assert_published(&mut rig, &slots, &[0.55, 0.55, 0.55], "to begin with");
+        // A preset that the plugin has not is not loaded, and nothing moves.
+        rig.cmd_tx.send(GraphCommand::LoadPreset { inst: 0, slot: 1, preset_id: "nope".into() }).unwrap();
+        assert_published(&mut rig, &slots, &[0.55, 0.55, 0.55], "a preset that is not there");
+        // `loud` makes `a` 0.9 and `b` 0.1: the cables on them work from those, and the cable on the second effect works from what it did.
+        rig.cmd_tx.send(GraphCommand::LoadPreset { inst: 0, slot: 1, preset_id: "loud".into() }).unwrap();
+        assert_published(&mut rig, &slots, &[0.95, 0.15, 0.55], "the preset loaded in the first effect");
+        rig.cmd_tx.send(GraphCommand::LoadPreset { inst: 0, slot: 2, preset_id: "loud".into() }).unwrap();
+        assert_published(&mut rig, &slots, &[0.95, 0.15, 0.15], "and in the second");
+    }
+
+    #[test]
+    fn a_rate_that_the_user_sets_is_what_the_cables_that_drive_it_work_from_in_whichever_rack_they_are() {
+        let rate = |modulators: &[Modulator], index: usize| modulators[index].source.rate().unwrap();
+        // A lane's modulator, driven by another of the lane's rack.
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        rig.lane_modulator(1, lfo(LfoWaveform::Sine, 2.0));
+        rig.field_target(0, setting(ModulatorLocation::Lane(0), 1, ModSetting::Rate), 0.0, 2.0, 0.01, 50.0);
+        rig.process(&[]);
+        assert!(near(rate(&rig.graph.instruments[0].modulators, 1), 2.0), "to begin with");
+        rig.cmd_tx.send(GraphCommand::SetModulatorRate { inst: 0, mod_index: 1, rate: 7.0 }).unwrap();
+        rig.process(&[]);
+        assert!(near(rate(&rig.graph.instruments[0].modulators, 1), 7.0), "a lane's rate: {}", rate(&rig.graph.instruments[0].modulators, 1));
+
+        // A group's modulator, driven by another of the group's rack, and a member's, driven by a group's.
+        let mut g = GroupRig::new();
+        g.rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: lfo(LfoWaveform::Sine, 2.0), node: modulator_node(ModulatorLocation::Group(0), 1) }).unwrap();
+        g.rig.cmd_tx.send(GraphCommand::InsertModulator { inst: 0, index: 0, source: lfo(LfoWaveform::Sine, 3.0), node: modulator_node(ModulatorLocation::Lane(0), 0) }).unwrap();
+        for (aim, base) in [(setting(ModulatorLocation::Group(0), 1, ModSetting::Rate), 2.0), (setting(ModulatorLocation::Lane(0), 0, ModSetting::Rate), 3.0)] {
+            let target = ModTarget { edge: test_edge(), aim, depth: 0.0, base_value: base, param_min: 0.01, param_max: 50.0, effective: None };
+            g.rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
+        }
+        g.rig.process(&[]);
+        assert!(near(rate(&g.rig.graph.groups[0].modulators, 1), 2.0) && near(rate(&g.rig.graph.instruments[0].modulators, 0), 3.0), "to begin with");
+        g.rig.cmd_tx.send(GraphCommand::SetGroupModulatorRate { group: 0, mod_index: 1, rate: 7.0 }).unwrap();
+        g.rig.process(&[]);
+        assert!(near(rate(&g.rig.graph.groups[0].modulators, 1), 7.0), "a group's rate: {}", rate(&g.rig.graph.groups[0].modulators, 1));
+        g.rig.cmd_tx.send(GraphCommand::SetModulatorRate { inst: 0, mod_index: 0, rate: 9.0 }).unwrap();
+        g.rig.process(&[]);
+        assert!(near(rate(&g.rig.graph.instruments[0].modulators, 0), 9.0), "a member's rate, which the group's cable drives: {}", rate(&g.rig.graph.instruments[0].modulators, 0));
+    }
+
+    #[test]
+    fn the_stages_of_an_envelope_that_the_user_sets_are_what_the_cables_that_drive_them_work_from_each_its_own() {
+        let was = [0.01, 0.1, 0.5, 0.1]; // what `adsr` makes
+        // Four numbers, none another's, so that a cable that is centred on another stage's value shows.
+        let set = [0.2, 0.3, 0.4, 0.6];
+
+        // A lane's envelope, driven by the LFO before it in the rack.
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        rig.lane_modulator(1, adsr(0.01));
+        for ((field, min, max), base) in STAGE_RANGES.into_iter().zip(was) {
+            rig.field_target(0, setting(ModulatorLocation::Lane(0), 1, field), 0.0, base, min, max);
+        }
+        rig.process(&[]);
+        let got = stages(&rig.graph.instruments[0].modulators[1].source);
+        assert!(all_near(&got, &was), "to begin with: {got:?} for {was:?}");
+        rig.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam { inst: 0, mod_index: 1, attack: set[0], decay: set[1], sustain: set[2], release: set[3] }).unwrap();
+        rig.process(&[]);
+        rig.process(&[]);
+        let got = stages(&rig.graph.instruments[0].modulators[1].source);
+        assert!(all_near(&got, &set), "a lane's envelope: {got:?} for {set:?}");
+
+        // A group's, driven by the group's LFO.
+        let mut g = GroupRig::new();
+        g.rig.cmd_tx.send(GraphCommand::InsertGroupModulator { group: 0, index: 1, source: adsr(0.01), node: modulator_node(ModulatorLocation::Group(0), 1) }).unwrap();
+        for ((field, min, max), base) in STAGE_RANGES.into_iter().zip(was) {
+            let target = ModTarget { edge: test_edge(), aim: setting(ModulatorLocation::Group(0), 1, field), depth: 0.0, base_value: base, param_min: min, param_max: max, effective: None };
+            g.rig.cmd_tx.send(GraphCommand::AddGroupModTarget { group: 0, mod_index: 0, target }).unwrap();
+        }
+        g.rig.process(&[]);
+        let got = stages(&g.rig.graph.groups[0].modulators[1].source);
+        assert!(all_near(&got, &was), "to begin with, a group's: {got:?} for {was:?}");
+        g.rig.cmd_tx.send(GraphCommand::SetGroupModulatorEnvelopeParam { group: 0, mod_index: 1, attack: set[0], decay: set[1], sustain: set[2], release: set[3] }).unwrap();
+        g.rig.process(&[]);
+        g.rig.process(&[]);
+        let got = stages(&g.rig.graph.groups[0].modulators[1].source);
+        assert!(all_near(&got, &set), "a group's envelope: {got:?} for {set:?}");
+    }
+
+    #[test]
+    fn a_modulator_with_a_cable_to_its_own_rate_is_not_moved_by_it() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // at +1, with a rate of 0
+        // A cable of modulator 0 to the rate of modulator 0, at a depth that would take it to the top of its knob: nothing can come of it.
+        let own = rig.field_target(0, setting(ModulatorLocation::Lane(0), 0, ModSetting::Rate), 0.5, 5.0, 0.01, 50.0);
+        rig.process(&[]);
+        rig.process(&[]);
+        assert_eq!(rig.graph.instruments[0].modulators[0].source.rate(), Some(0.0), "it keeps the rate it has");
+        assert_eq!(rig.read(own), 0.0, "and the cable publishes nothing");
     }
 
     // -- Telemetry: lane and group meters --

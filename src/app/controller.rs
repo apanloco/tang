@@ -2464,6 +2464,19 @@ plugin = "builtin:osc"
         testutil::described(engine.cmd_rx.try_iter())
     }
 
+    /// `sent`, and with it the node that each modulator in it was given (`describe` leaves it out), in the order they were sent.
+    fn sent_with_modulator_nodes(engine: &StubEngine) -> (Vec<String>, Vec<NodeId>) {
+        let commands: Vec<GraphCommand> = engine.cmd_rx.try_iter().collect();
+        let nodes = commands
+            .iter()
+            .filter_map(|command| match command {
+                GraphCommand::InsertModulator { node, .. } | GraphCommand::InsertGroupModulator { node, .. } => Some(*node),
+                _ => None,
+            })
+            .collect();
+        (testutil::described(commands), nodes)
+    }
+
     fn lfo_source() -> ModSourceSlot {
         ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 }
     }
@@ -2485,11 +2498,13 @@ plugin = "builtin:osc"
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         sent(&engine);
         assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source()), Some(1));
+        let (told, nodes) = sent_with_modulator_nodes(&engine);
         assert_eq!(
-            sent(&engine),
+            told,
             ["InsertModulator inst=0 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]
         );
         let rack = &ctl.model.instruments[0].modulators;
+        assert_eq!(nodes, [rack[1].node], "the audio thread names the modulator by the node that the model gave it");
         assert_eq!(rack.len(), 2);
         assert!(matches!(rack[1].source, ModSourceSlot::Lfo { rate, .. } if rate == 1.0));
         assert!(rack[1].targets.is_empty());
@@ -2506,13 +2521,17 @@ plugin = "builtin:osc"
         assert_eq!(ctl.add_modulator(ModulatorLocation::Group(0), envelope), Some(1));
         let learn = ModSourceSlot::MidiLearn { source: None, learning: true };
         assert_eq!(ctl.add_modulator(ModulatorLocation::Group(0), learn), Some(2));
+        let (told, nodes) = sent_with_modulator_nodes(&engine);
         assert_eq!(
-            sent(&engine),
+            told,
             [
                 "InsertGroupModulator group=0 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }",
                 "InsertGroupModulator group=0 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }",
             ]
         );
+        let rack = &ctl.model.groups[0].modulators;
+        assert_eq!(nodes, [rack[1].node, rack[2].node], "the audio thread names each modulator by the node that the model gave it");
+        assert_ne!(rack[1].node, rack[2].node);
         assert_eq!(ctl.model.groups[0].modulators.len(), 3);
         assert_eq!(ctl.model.instruments[0].modulators.len(), 1, "the lane's rack is untouched");
         ctl.model.check_ids().unwrap();
