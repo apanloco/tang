@@ -2729,6 +2729,34 @@ fn d_on_a_free_modulator_takes_it_out_with_its_cables_and_undo_puts_it_back() {
 }
 
 #[test]
+fn the_pane_and_the_d_of_the_second_free_modulator_are_its_own() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    // The second is the envelope: the row after its type is its attack, which a step along makes longer, and the LFO's wave is as it was.
+    let wave = |h: &Harness| match h.s.ctl.model.free_modulators[0].source {
+        ModSourceSlot::Lfo { waveform, .. } => waveform,
+        ref other => panic!("{other:?}"),
+    };
+    let before = wave(&h);
+    h.goto(TreeAddress::FreeModulator { index: 1 });
+    h.press(KeyCode::Enter).press(KeyCode::Down);
+    h.commands();
+    h.press(KeyCode::Right);
+    let commands = h.commands();
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert!(commands[0].starts_with("SetFreeModulatorEnvelopeParam mod=1"), "{commands:?}");
+    assert!(matches!(h.s.ctl.model.free_modulators[1].source, ModSourceSlot::Envelope { attack, .. } if attack > 0.05), "the envelope's attack is longer");
+    assert_eq!(wave(&h), before, "and the LFO is as it was");
+    // `d` takes that one out and leaves the LFO.
+    h.press(KeyCode::Esc);
+    h.commands();
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.s.ctl.model.free_modulators.len(), 1);
+    assert!(matches!(h.s.ctl.model.free_modulators[0].source, ModSourceSlot::Lfo { .. }), "the LFO stays");
+    let commands = h.commands();
+    assert!(commands.iter().any(|c| c.starts_with("RemoveFreeModulator index=1")), "{commands:?}");
+}
+
+#[test]
 fn a_plugin_that_goes_takes_the_cable_of_a_free_modulator_out_of_the_tree() {
     let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
     assert!(h.tree()[0].contains("L1 Reverb: damping"));

@@ -3124,6 +3124,47 @@ to = "master"
     }
 
     #[test]
+    fn a_free_cable_names_the_lane_and_the_group_it_drives_by_their_places_whichever_they_are() {
+        // The second lane's instrument and effect and the second group's bus effect, which a place that was read as the first of each would not find.
+        let model = load(
+            r#"
+[[modulator]]
+[[modulator.target]]
+to = "instrument[1]"
+param = "detune"
+[[modulator.target]]
+to = "group[1].effect[0]"
+param = "damping"
+[[modulator.target]]
+to = "instrument[1].effect[0]"
+param = "damping"
+
+[[group]]
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+"#,
+        )
+        .model;
+        let aims: Vec<NodeId> = model.free_modulators[0]
+            .targets
+            .iter()
+            .map(|t| match t.aim {
+                Driven::Param { plugin, .. } => plugin,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(aims, [model.instruments[1].node, model.groups[1].effects[0].node, model.instruments[1].effects[0].node]);
+    }
+
+    #[test]
     fn the_free_modulators_take_the_nodes_after_the_lanes_and_the_groups_and_the_sources_the_nodes_after_them() {
         let run = load(&format!("[keys]\n{}", testutil::FREE_MODULATORS));
         let model = &run.model;

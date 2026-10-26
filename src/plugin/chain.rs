@@ -12192,6 +12192,52 @@ mod tests {
     }
 
     #[test]
+    fn what_free_modulators_add_up_to_is_held_to_the_range_of_the_parameter() {
+        let mut free = FreeRig::new();
+        free.another(1);
+        // A second modulator, always +1 as well, with a cable to lane 0's gain as deep as the range is wide (0.5 and the first one's 0.2 and this 1.0 are more than a gain that there can be)
+        // and one to lane 1's that takes it under nothing (0.5 and the first one's 0.3 and this -1.0).
+        let over = free.target(1, param(0, 1, 0), 1.0);
+        let under = free.target(1, param(1, 1, 0), -1.0);
+        free.rig.process(&[]);
+        assert_eq!(free.rig.read(over), 1.0, "held to the top of the range");
+        assert_eq!(free.rig.read(under), 0.0, "and to the bottom");
+    }
+
+    #[test]
+    fn a_free_modulator_drives_two_parameters_of_one_plugin_each_by_its_own_cable() {
+        let mut free = FreeRig::new();
+        // A second effect in lane 0's chain (slot 2) that has two parameters.
+        insert_effect(&free.rig.cmd_tx, 1, two_param_effect(), 1.0);
+        let (a, b) = (free.target(0, param(0, 2, 0), 0.2), free.target(0, param(0, 2, 1), 0.4));
+        free.rig.process(&[]);
+        // Base 0.5 plus the LFO's +1 times the depth, for each: a drive of the plugin and not of the parameter would put the sum on one of them and leave the other where it was.
+        assert!(close(free.rig.read(a), 0.7) && close(free.rig.read(b), 0.9), "{} and {}", free.rig.read(a), free.rig.read(b));
+        let (first, second) = (free.rig.graph.peek_effect(0, 1, 0).unwrap(), free.rig.graph.peek_effect(0, 1, 1).unwrap());
+        assert!(close(first, 0.7) && close(second, 0.9), "the plugin has them: {first} and {second}");
+        assert!(close(free.rig.read(free.lane0), 0.7), "and the first effect's own cable is as it was");
+    }
+
+    #[test]
+    fn a_free_modulator_that_follows_the_tempo_goes_by_it_as_it_changes() {
+        let mut rig = Rig::new();
+        // A free saw that goes a cycle in a quarter of a beat: 8 cycles a second at the 120 beats a minute that a graph begins at.
+        let output = rig.slot();
+        rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 0, source: synced_saw(1.0, 0.25), node: modulator_node(ModulatorLocation::Free, 0) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Free, index: 0, slot: output }).unwrap();
+        for _ in 0..10 {
+            rig.process(&[]);
+        }
+        // Half the tempo, half the rate, as a lane's: the first ten buffers were at 8 cycles a second and the next ten are at 4.
+        rig.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: 60.0 }).unwrap();
+        for _ in 0..10 {
+            rig.process(&[]);
+        }
+        let expected = (lfo_phase(8.0, 10) + lfo_phase(4.0, 10)) % 1.0 * 2.0 - 1.0;
+        assert!(close(rig.read(output), expected), "{} for {expected}", rig.read(output));
+    }
+
+    #[test]
     fn a_group_modulator_on_a_parameter_that_a_free_one_drives_writes_it_after_and_wins() {
         let mut g = GroupRig::new();
         // A free modulator drives member 0's gain by 0.5 (and so wants 1.0); the group's LFO drives it by 0.2 from the value the user set: 0.7. The group's write is the later one.

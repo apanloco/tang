@@ -770,6 +770,16 @@ mod tests {
     }
 
     #[test]
+    fn what_a_free_modulator_is_told_to_aim_at_is_a_port_of_a_plugin_that_is_there() {
+        use crate::plugin::chain::ModTargetKind as K;
+        let model = load(crate::app::testutil::FREE_MODULATORS).model;
+        let osc = model.instruments[0].node;
+        assert_eq!(model.endpoint_of(ModulatorLocation::Free, &K::FreeParam { plugin: osc, param_index: 1 }), Some(param(osc, 1)));
+        assert_eq!(model.endpoint_of(ModulatorLocation::Free, &K::FreeParam { plugin: NodeId(9_999), param_index: 1 }), None, "a node that is not there");
+        assert_eq!(model.endpoint_of(ModulatorLocation::Free, &K::FreeParam { plugin: model.free_modulators[0].node, param_index: 0 }), None, "a node that is not a plugin");
+    }
+
+    #[test]
     fn a_free_modulator_has_no_audio_ports_and_its_node_says_what_it_is() {
         let model = load("[[modulator]]\ntype = \"macro\"\nvalue = 0.5\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
         let graph = model.graph();

@@ -3263,6 +3263,12 @@ param = "detune"
         assert_eq!(free[1].1, NodePath::Modulator { at: ModulatorLocation::Free, index: 1 });
         let order: Vec<NodeId> = model.nodes().map(|(id, _)| id).collect();
         assert!(order.iter().position(|id| *id == free[0].0).unwrap() > order.iter().position(|id| *id == model.instruments[1].node).unwrap(), "after the lanes");
+        // The sources are nodes before the free modulators (groups, lanes, sources and then the free modulators).
+        let with_keys = load("[keys]\n[[modulator]]\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let places: Vec<NodePath> = with_keys.nodes().map(|(_, path)| path).collect();
+        let keys = places.iter().position(|path| matches!(path, NodePath::Source(_))).expect("the keys are a source");
+        let lfo = places.iter().position(|path| matches!(path, NodePath::Modulator { at: ModulatorLocation::Free, .. })).expect("a free modulator");
+        assert!(keys < lfo, "after the sources: {places:?}");
         assert_eq!(model.locate(free[0].0), Some(NodePath::Modulator { at: ModulatorLocation::Free, index: 0 }));
         let cable = model.free_modulators[1].targets[0].edge;
         assert_eq!(model.locate_edge(cable), Some((ModulatorLocation::Free, 1, 0)));
