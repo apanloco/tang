@@ -85,13 +85,13 @@ test("the instrument of a lane is taken out alone and its filter stays and runs:
   };
   await heardAt(page, "the lane");
 
-  // A second lane, which is heard through the cables that start at it only: its way out is cut. The first lane is heard still.
+  // A second lane, which is heard through the cables that start at it only: its link to the master is taken out. The first lane is heard still.
   await page.getByRole("button", { name: "Add an instrument" }).click();
   await page.getByRole("menu", { name: "Add an instrument" }).getByRole("menuitem", { name: "Oscillator" }).click();
   await expect(node(page, "Oscillator 2")).toBeVisible();
-  const wayOut = page.getByRole("button", { name: "Cut the way out of Oscillator 2", exact: true });
-  await wayOut.click();
-  await expect(wayOut).toHaveText("no out");
+  const link = page.getByRole("button", { name: "Remove cable Oscillator 2 → Master", exact: true });
+  await link.click();
+  await expect(link).toHaveCount(0);
   await heardAt(page, "the first lane");
 
   // The instrument of the first lane is taken out alone: the lane is left with its filter and its LFO, which stand by themselves, and nothing is heard (the second lane has no way out).

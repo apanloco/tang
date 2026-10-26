@@ -7,43 +7,19 @@ import { audioIn, audioOut, centre, drag, node, nodeBoxes, open, sends, showAll 
 import { test } from "./own";
 import { heardAt, silentAt } from "./sound";
 
-// The link into an effect from the stage before it in its chain, from the page (docs/web-ui.md D86): every link of the audio path is a cable that can be cut. A button on the badge's line of an
-// effect says where it is fed from and, pressed, cuts the link, so that it is fed only by the cables that end at it; the link has a × at its middle that does the same. The first tests are against the
-// mock engine in the page (what the canvas draws and says), the last against the real program (what is heard, what the file keeps and what the history does).
+// The link into an effect from the stage before it in its chain, from the page (docs/web-ui.md D86 and step 88): it is a cable, amber, with the button that takes it out at its middle and no slider (it has no
+// level). Taking it out cuts the input of the effect, which is then fed by the cables that end at it and by nothing else, and the chain goes on from it; the menu that sends the audio of the node the link started
+// at, or a drag, draws it again (a cable between the two ends of a link that is cut is the link given back). There is no button on the effect that says where it is fed from. The first tests are against the mock
+// engine in the page (what the canvas draws and says), the last against the real program (what is heard, what the file keeps and what the history does).
 
-/** The button of the input of the effect `name`. */
-const input = (page: Page, name: string) => page.getByRole("button", { name: `Cut the input of ${name}`, exact: true });
-
-/** The links of the audio path that the canvas draws, grey (the amber ones are the cables that a person drew). */
+/** The links of the audio path that the canvas draws: cables with no level (the amber ones that have a slider are the cables that a person drew). */
 const links = (page: Page) => page.locator(".tang-cable--audio");
 
-/** Whether the text of a button is all there: a name that is too long for the line is cut. */
-const fits = (button: Locator) => button.evaluate((element) => element.scrollWidth <= element.clientWidth);
+/** The button that takes a link out, by the words of the link (`Oscillator → Filter`). */
+const removeLink = (page: Page, words: string) => page.getByRole("button", { name: `Remove cable ${words}`, exact: true });
 
-mock("the input of an effect is cut from its node: the link into it is gone, the button says that there is none, nothing on the canvas moves, and a second press gives it back", async ({ page }) => {
-  await open(page);
-  const button = input(page, "Filter");
-  await expect(button).toHaveAttribute("aria-pressed", "false");
-  await expect(button).toContainText("←");
-  // (The tracer's lane has its instrument and a filter: a link from the one to the other, and one from the filter to the master.)
-  await expect(links(page)).toHaveCount(2);
-  const before = await nodeBoxes(page);
-
-  await button.click();
-  await expect(button).toHaveText("no in");
-  await expect(button).toHaveAttribute("aria-pressed", "true");
-  expect(await fits(button)).toBe(true);
-  // The link out of the filter is there still: the chain goes on from it.
-  await expect(links(page)).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "Disconnect Filter → Master" })).toBeVisible();
-  expect(await nodeBoxes(page)).toEqual(before);
-
-  await button.click();
-  await expect(button).toHaveAttribute("aria-pressed", "false");
-  await expect(button).toContainText("←");
-  await expect(links(page)).toHaveCount(2);
-  expect(await nodeBoxes(page)).toEqual(before);
-});
+/** The menu that sends the audio of the node `name`, which draws a cable from it, a link that was taken out among them. */
+const send = (page: Page, name: string) => page.getByRole("button", { name: `Send audio from ${name}`, exact: true });
 
 /** How far the middle of `button` is from the link `link` (a path), in pixels: the least distance to a point along it. */
 async function distanceFromLink(button: Locator, link: Locator): Promise<number> {
@@ -63,84 +39,86 @@ async function distanceFromLink(button: Locator, link: Locator): Promise<number>
   }, middle);
 }
 
-mock("the link from the instrument to the filter has a button on it that disconnects it: the filter's input is cut as the button in its header cuts it, the focus goes to that button, and undo gives the link back", async ({ page }) => {
+mock("the link from the instrument to the filter is a cable with a button on it that takes it out: the filter's input is cut, the link out of the filter is there still, the focus goes to the menu that sends from the instrument, nothing moves, and the menu draws the link again", async ({ page }) => {
   await open(page);
-  const disconnect = page.getByRole("button", { name: "Disconnect Oscillator → Filter" });
-  await expect(disconnect).toBeVisible();
-  // Every link of the audio path has one: the end of the chain is the way out of the lane.
-  await expect(page.getByRole("button", { name: /^Disconnect / })).toHaveCount(2);
+  const link = removeLink(page, "Oscillator → Filter");
+  await expect(link).toBeVisible();
+  // (The tracer's lane has its instrument and a filter: a link from the one to the other, and one from the filter to the master, which has a button of its own that cuts the way out: `routes.spec.ts`.)
+  await expect(links(page)).toHaveCount(2);
   // It is on the link, in the middle of it, as the buttons of the cables that a person draws are.
-  expect(await distanceFromLink(disconnect, links(page).first())).toBeLessThan(4);
+  expect(await distanceFromLink(link, links(page).first())).toBeLessThan(4);
   const before = await nodeBoxes(page);
 
-  await disconnect.click();
-  await expect(input(page, "Filter")).toHaveText("no in");
-  await expect(input(page, "Filter")).toBeFocused();
+  await link.click();
   await expect(links(page)).toHaveCount(1);
-  await expect(page.getByRole("button", { name: /^Disconnect / })).toHaveCount(1);
+  await expect(link).toHaveCount(0);
+  // The link out of the filter is there still: the chain goes on from it.
+  await expect(removeLink(page, "Filter → Master")).toBeVisible();
+  await expect(send(page, "Oscillator")).toBeFocused();
   expect(await nodeBoxes(page)).toEqual(before);
 
-  await page.getByRole("button", { name: /^Undo/ }).click();
-  await expect(input(page, "Filter")).toHaveAttribute("aria-pressed", "false");
+  // The menu has the filter to offer, and draws the link: the input given back, and no cable of a person's (it has no slider).
+  await page.keyboard.press("Enter");
+  await page.getByRole("menuitem", { name: "Filter" }).click();
   await expect(links(page)).toHaveCount(2);
-  await expect(disconnect).toBeVisible();
+  await expect(sends(page)).toHaveCount(0);
+  await expect(link).toBeVisible();
+  expect(await nodeBoxes(page)).toEqual(before);
 });
 
-mock("an effect that is added is fed by the stage before it, and the link into it has a button: cutting the input of the first leaves the second fed, and the cut goes with an effect that is moved", async ({ page }) => {
+mock("an effect that is added is fed by the stage before it, and the link into it has a button: taking out the link into the first leaves the second fed, and the cut goes with an effect that is moved", async ({ page }) => {
   await open(page);
   await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
   await page.getByRole("menuitem", { name: "Delay" }).click();
   await expect(node(page, "Delay")).toBeVisible();
   // The instrument to the filter, the filter to the delay, the delay to the master.
   await expect(links(page)).toHaveCount(3);
-  await expect(input(page, "Delay")).toContainText("Filter");
-  await expect(page.getByRole("button", { name: "Disconnect Filter → Delay" })).toBeVisible();
+  await expect(removeLink(page, "Filter → Delay")).toBeVisible();
 
-  // The filter's input is cut: no link into it, and the delay is still fed by the filter.
-  await input(page, "Filter").click();
-  await expect(input(page, "Filter")).toHaveText("no in");
-  await expect(input(page, "Delay")).toHaveAttribute("aria-pressed", "false");
+  // The link into the filter is taken out: the delay is still fed by the filter.
+  await removeLink(page, "Oscillator → Filter").click();
   await expect(links(page)).toHaveCount(2);
+  await expect(removeLink(page, "Filter → Delay")).toBeVisible();
 
   // The filter goes later in its chain: it is the one that is not fed, wherever it is, and the delay is fed by the instrument now.
   await page.getByRole("button", { name: "Move Filter later in its chain" }).click();
-  await expect(input(page, "Filter")).toHaveText("no in");
-  await expect(input(page, "Delay")).toContainText("Oscillator");
-  // (The instrument to the delay, and the delay to the filter, which goes to the master: no link into the filter... the one from the delay is the filter's input, which is cut.)
+  // (The instrument to the delay, and the delay to the filter, which goes to the master: no link into the filter, whose input is cut.)
   await expect(links(page)).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "Disconnect Oscillator → Delay" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Disconnect Delay → Filter" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Disconnect Filter → Master" })).toBeVisible();
+  await expect(removeLink(page, "Oscillator → Delay")).toBeVisible();
+  await expect(removeLink(page, "Delay → Filter")).toHaveCount(0);
+  await expect(removeLink(page, "Filter → Master")).toBeVisible();
 
   // The filter that is not fed is taken out: the delay is fed by the instrument still, and the chain closes up.
   await node(page, "Filter").getByRole("button", { name: "Remove Filter" }).click();
   await expect(node(page, "Filter")).toHaveCount(0);
   await expect(links(page)).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "Disconnect Delay → Master" })).toBeVisible();
+  await expect(removeLink(page, "Delay → Master")).toBeVisible();
   // Undo puts it back, with its input still cut.
   await page.getByRole("button", { name: /^Undo remove Filter/ }).click();
-  await expect(input(page, "Filter")).toHaveText("no in");
+  await expect(node(page, "Filter")).toBeVisible();
+  await expect(removeLink(page, "Delay → Filter")).toHaveCount(0);
+  await expect(removeLink(page, "Filter → Master")).toBeVisible();
 });
 
-mock("the history has the input in the words of the controller's: cut, and given back", async ({ page }) => {
+mock("the history has the input in the words of the controller's: cut when its link is taken out, and given back when a cable draws the link again", async ({ page }) => {
   await open(page);
   const [undo, redo] = [page.getByRole("button", { name: /^Undo/ }), page.getByRole("button", { name: /^Redo/ })];
-  await input(page, "Filter").click();
+  await removeLink(page, "Oscillator → Filter").click();
   await expect(undo).toHaveAccessibleName("Undo cut the input of Filter");
-  await input(page, "Filter").click();
+  await send(page, "Oscillator").click();
+  await page.getByRole("menuitem", { name: "Filter" }).click();
   await expect(undo).toHaveAccessibleName("Undo give Filter its input back");
+  await expect(links(page)).toHaveCount(2);
   await undo.click();
-  await expect(input(page, "Filter")).toHaveText("no in");
+  await expect(links(page)).toHaveCount(1);
   await expect(redo).toHaveAccessibleName("Redo give Filter its input back");
   await undo.click();
-  await expect(input(page, "Filter")).toContainText("←");
   await expect(links(page)).toHaveCount(2);
   await redo.click();
-  await expect(input(page, "Filter")).toHaveText("no in");
   await expect(links(page)).toHaveCount(1);
 });
 
-test("the input of an effect is cut in the real program: the lane is silent at the master, a cable drawn between the two ends gives the link back and makes no cable, another lane's instrument feeds the filter by a cable on its own, the file keeps the cut and the cable, and undo gives the link back", async ({ page, own }) => {
+test("the link into an effect is taken out in the real program: the lane is silent at the master, a cable drawn between the two ends gives the link back and makes no cable, another lane's instrument feeds the filter by a cable on its own, the file keeps the cut and the cable, and undo gives the link back", async ({ page, own }) => {
   // (A good many waits for silence, each the better part of a second.)
   test.slow();
   await page.setViewportSize({ width: 1600, height: 1000 });
@@ -156,16 +134,15 @@ test("the input of an effect is cut in the real program: the lane is silent at t
   await expect(links(page)).toHaveCount(2);
   await heardAt(page, "the lane");
 
-  // The filter's input is cut: the link from the instrument is gone from the canvas, and the filter is given nothing, so the same key is silent.
-  await page.getByRole("button", { name: "Disconnect Oscillator → Filter" }).click();
-  await expect(input(page, "Filter")).toHaveText("no in");
+  // The link into the filter is taken out: it is gone from the canvas, and the filter is given nothing, so the same key is silent.
+  await removeLink(page, "Oscillator → Filter").click();
   await expect(links(page)).toHaveCount(1);
   await silentAt(page, "a filter that is fed nothing");
 
-  // A cable drawn from the instrument to the filter is the link that was cut (step 88: every link is a cable): it gives the link back and makes no cable of its own, the key is heard again, and the file has no word of a feed.
+  // A cable drawn from the instrument to the filter is the link that was taken out (step 88: every link is a cable): it gives the link back and makes no cable of its own, the key is heard again, and the file has
+  // no word of a feed.
   await showAll(page);
   await drag(page, audioOut(node(page, "Oscillator")), audioIn(node(page, "Filter")));
-  await expect(input(page, "Filter")).toContainText("←");
   await expect(links(page)).toHaveCount(2);
   await expect(sends(page)).toHaveCount(0);
   await heardAt(page, "the lane, given its input back by a cable");
@@ -174,15 +151,15 @@ test("the input of an effect is cut in the real program: the lane is silent at t
   expect(given).not.toContain("[[cable]]");
   // It is a step of the history in the words of the link, and undo cuts the input again.
   await page.getByRole("button", { name: "Undo give Filter its input back", exact: true }).click();
-  await expect(input(page, "Filter")).toHaveText("no in");
+  await expect(links(page)).toHaveCount(1);
   await silentAt(page, "the filter, with the input that a cable gave back cut by undo");
 
-  // A second lane's oscillator, with no way out of its own, is drawn to the filter: the filter is fed by that cable, and the key is heard through the filter and only through it.
+  // A second lane's oscillator, with no way out of its own (its link to the master is taken out), is drawn to the filter: the filter is fed by that cable, and the key is heard through the filter and only through it.
   await page.getByRole("button", { name: "Add an instrument" }).click();
   await page.getByRole("menuitem", { name: "Oscillator" }).click();
   await expect(node(page, "Oscillator 2")).toBeVisible();
-  await page.getByRole("button", { name: "Cut the way out of Oscillator 2", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Cut the way out of Oscillator 2", exact: true })).toHaveText("no out");
+  await removeLink(page, "Oscillator 2 → Master").click();
+  await expect(removeLink(page, "Oscillator 2 → Master")).toHaveCount(0);
   await showAll(page);
   await drag(page, audioOut(node(page, "Oscillator 2")), audioIn(node(page, "Filter")));
   await expect(sends(page)).toHaveCount(1);
@@ -191,28 +168,30 @@ test("the input of an effect is cut in the real program: the lane is silent at t
   expect(cut).toMatch(/\[\[instrument\.effect\]\]\nplugin = "builtin:filter"\nfeed = "none"\n/);
   expect(cut).toMatch(/\[\[cable\]\]\nfrom = "instrument\[1\]"\nto = "instrument\[0\]\.effect\[0\]"\n/);
 
-  // The cable is taken out, and the filter is fed by nothing again; given its input back, the key is heard, and the file has no word of a feed.
+  // The cable is taken out, and the filter is fed by nothing again; a cable drawn from the first lane's instrument gives the link back, the key is heard, and the file has no word of a feed.
   await page.getByRole("button", { name: "Remove cable Oscillator 2 → Filter" }).click();
   await expect(sends(page)).toHaveCount(0);
   await silentAt(page, "a filter that is fed nothing, with no cable");
-  await input(page, "Filter").click();
+  await drag(page, audioOut(node(page, "Oscillator 1")), audioIn(node(page, "Filter")));
   await expect(links(page)).toHaveCount(2);
+  await expect(sends(page)).toHaveCount(0);
   await heardAt(page, "the lane, given its input back");
   expect(await saved()).not.toContain("feed");
 
   // The history has it: undo cuts the input that was given back, the key is silent, and redo gives it back.
   await page.getByRole("button", { name: "Undo give Filter its input back", exact: true }).click();
-  await expect(input(page, "Filter")).toHaveText("no in");
+  await expect(links(page)).toHaveCount(1);
   await silentAt(page, "the filter, with its input cut by undo");
   await page.getByRole("button", { name: "Redo give Filter its input back", exact: true }).click();
-  await expect(input(page, "Filter")).toContainText("←");
+  await expect(links(page)).toHaveCount(2);
   await heardAt(page, "the lane, with its input given back by redo");
 
-  // A page that is opened again draws what the program has: the input, cut.
-  await input(page, "Filter").click();
-  await expect(input(page, "Filter")).toHaveText("no in");
+  // A page that is opened again draws what the program has: the link, taken out.
+  await removeLink(page, "Oscillator 1 → Filter").click();
+  await expect(links(page)).toHaveCount(1);
   await page.reload();
   await expect(page.getByRole("status")).toHaveText("Connected");
-  await expect(input(page, "Filter")).toHaveText("no in");
   await expect(links(page)).toHaveCount(1);
+  await expect(removeLink(page, "Oscillator 1 → Filter")).toHaveCount(0);
+  await expect(removeLink(page, "Filter → Master")).toBeVisible();
 });

@@ -106,10 +106,10 @@ test("a lane that is soloed and has no way out is heard through the cable that i
   await page.getByRole("status").click();
   await showAll(page);
 
-  // The second lane has no way out, so that what it sends is heard by the cable and by nothing else: from its instrument to the filter of the first lane (the tracer's low-pass).
-  const cut = page.getByRole("button", { name: "Cut the way out of Oscillator 2", exact: true });
+  // The second lane has no way out (its link to the master is taken out), so that what it sends is heard by the cable and by nothing else: from its instrument to the filter of the first lane (the tracer's low-pass).
+  const cut = page.getByRole("button", { name: "Remove cable Oscillator 2 → Master", exact: true });
   await cut.click();
-  await expect(cut).toHaveText("no out");
+  await expect(cut).toHaveCount(0);
   await drag(page, audioOut(node(page, "Oscillator 2")), audioIn(node(page, "Filter")));
   await expect(sends(page)).toHaveCount(1);
   // Nothing is soloed: both lanes are heard, the second only through the cable.

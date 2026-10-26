@@ -88,14 +88,14 @@ test("the instrument of a lane is taken out alone: its filter and its LFO stay a
   await expect(page.getByRole("menuitem")).toHaveText(["Keep Oscillator", "Remove Oscillator only: its 1 effect and 1 modulator stay in the lane"]);
   await page.getByRole("menuitem", { name: /^Remove Oscillator only/ }).click();
   // The lane has nothing left that a card shows (no instrument, no key range, no group): its filter and its LFO are on the canvas as they were, modules that stand by themselves, and the filter has
-  // the lane's mute, solo and way out. The focus is on the bar's button that adds an instrument.
+  // the lane's mute and solo. The focus is on the bar's button that adds an instrument.
   await expect(node(page, "Filter")).toBeVisible();
   await expect(node(page, "LFO")).toBeVisible();
   await expect(node(page, "\\(empty\\)")).toHaveCount(0);
   await expect(node(page, "Oscillator")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add an instrument" })).toBeFocused();
   await expect(node(page, "Filter").getByRole("button", { name: "Mute Filter" })).toBeVisible();
-  await expect(node(page, "Filter").getByRole("button", { name: "Cut the way out of Filter" })).toBeVisible();
+  await expect(node(page, "Filter").getByRole("button", { name: "Solo Filter" })).toBeVisible();
   // It is the only lane, and has no instrument: nothing is left to take out of it, and it has no button for it.
   await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(0);
 

@@ -8,7 +8,7 @@ import { test } from "./own";
 import { heardAt, silentAt } from "./sound";
 
 // An effect that stands by itself, from the page (docs/web-ui.md D87): the bar's "+ Effect" adds an effect in a lane of its own that has no instrument and no card on the canvas, so that what the canvas
-// has is the effect, a module like any other: it is fed by the cables that end at it, it has the lane's mute, solo and way out, and its "×" takes it out with the lane. The first tests are against the mock
+// has is the effect, a module like any other: it is fed by the cables that end at it, it has the lane's mute and solo, and its "×" takes it out with the lane. The first tests are against the mock
 // engine in the page (what the canvas draws and says), the last against the real program (what is heard, what the file keeps and what the history does).
 
 /** The button in the bar that adds an effect. */
@@ -42,13 +42,10 @@ mock("an effect that is added from the bar stands by itself: a module with the l
   await expect(page.getByRole("button", { name: /^Choose an instrument for / })).toHaveCount(0);
   await expect(reverb.getByRole("button", { name: "Mute Reverb" })).toBeVisible();
   await expect(reverb.getByRole("button", { name: "Solo Reverb" })).toBeVisible();
-  // A module that stands by itself sends nowhere until a cable says where (step 88): its way out is cut when it is made.
-  await expect(reverb.getByRole("button", { name: "Cut the way out of Reverb" })).toHaveText("no out");
-  await expect(reverb.getByRole("button", { name: "Cut the way out of Reverb" })).toHaveAttribute("aria-pressed", "true");
+  // A module that stands by itself sends nowhere until a cable says where (step 88): it is made with no cable at all, none into it from the lane (which has no sound) and none out of it to the master.
   await expect(reverb.getByRole("button", { name: "Add a modulator to Reverb" })).toBeVisible();
-  // It has no input from a chain, since nothing is before it: no button for it, and no link out of it to the master.
-  await expect(reverb.getByRole("button", { name: "Cut the input of Reverb" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Disconnect Reverb → Master" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Remove cable .*Reverb/ })).toHaveCount(0);
+  await expect(reverb.getByRole("button", { name: /^Cut the (way out|input) of / })).toHaveCount(0);
   // The nodes that were there are where they were on the canvas, and the module is below them, clear of them.
   const after = await flowBoxes(page);
   for (const box of before) expect(after.find((found) => found.name === box.name), box.name).toEqual(box);
@@ -136,8 +133,8 @@ test("an effect that stands by itself in the real program is fed by a cable only
   await add(page, "Reverb");
   await heardAt(page, "the lane, with a reverb beside it that is fed nothing");
   await showAll(page);
-  await page.getByRole("button", { name: "Cut the way out of Oscillator", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Cut the way out of Oscillator", exact: true })).toHaveText("no out");
+  await page.getByRole("button", { name: "Remove cable Filter → Master", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Remove cable Filter → Master", exact: true })).toHaveCount(0);
   await silentAt(page, "a lane with no way out, and a reverb that is fed nothing");
 
   // A cable from the instrument to the reverb: the reverb is fed, and is silent still, since a module that no cable leaves sends nowhere (its way out was cut when it was made).
@@ -148,7 +145,7 @@ test("an effect that stands by itself in the real program is fed by a cable only
   // A cable from the reverb to the master is the link that its lane's cut way out would be (step 88: every link is a cable): it gives the way out back and makes no cable of its own, and the sound is heard through the
   // reverb, and only through it.
   await drag(page, audioOut(node(page, "Reverb")), audioIn(node(page, "Master")));
-  await expect(node(page, "Reverb").getByRole("button", { name: "Cut the way out of Reverb" })).toHaveText("→ Master");
+  await expect(page.getByRole("button", { name: "Remove cable Reverb → Master", exact: true })).toBeVisible();
   await expect(sends(page)).toHaveCount(1);
   await heardAt(page, "the lane through its cable to the reverb that stands by itself");
 
