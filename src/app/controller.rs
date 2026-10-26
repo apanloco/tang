@@ -4547,6 +4547,41 @@ depth = 0.2
     }
 
     #[test]
+    fn a_modulator_that_comes_back_without_two_of_its_cables_keeps_the_one_between_them() {
+        let (engine, mut ctl) = controller_for(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+[[instrument.modulator.target]]
+param = "detune"
+[[instrument.modulator.target]]
+slot = 1
+param = "resonance"
+"#,
+        );
+        let (modulator, detune) = (ctl.model.instruments[0].modulators[0].node, ctl.model.instruments[0].modulators[0].targets[1].edge);
+        ctl.apply(Intent::RemoveNode { node: modulator }).unwrap();
+        // The filter goes without the history, and with it what drove its cutoff and its resonance.
+        ctl.model.remove_effect(0, 0).unwrap();
+        sent(&engine);
+        ctl.undo().unwrap();
+        let edges: Vec<EdgeId> = ctl.model.instruments[0].modulators[0].targets.iter().map(|target| target.edge).collect();
+        assert_eq!(edges, [detune], "the cable to the detune is the one that is left");
+        let told = sent(&engine);
+        let cables: Vec<&String> = told.iter().filter(|command| command.starts_with("AddModTarget")).collect();
+        assert_eq!(cables.len(), 1, "{told:?}");
+        assert!(cables[0].contains("kind=PluginParam { slot: 0,"), "{told:?}");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
     fn a_target_bound_later_carries_its_slot_to_the_real_engine_too() {
         use crate::plugin::chain::LfoWaveform;
         let (handles, engine) = testutil::stub_engine();

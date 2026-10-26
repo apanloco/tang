@@ -2534,9 +2534,12 @@ plugin = "builtin:osc"
 rate = 3.0
 [[instrument.modulator.target]]
 mod_rate = 7
+# The one after the last: the rack has one modulator, and its second is not there either.
+[[instrument.modulator.target]]
+mod_rate = 1
 "#,
         );
-        // (It would drive nothing, and the model has no cable that does: the audio thread is not told of it either.)
+        // (They would drive nothing, and the model has no cable that does: the audio thread is not told of them either.)
         assert!(run.commands.iter().all(|c| !c.contains("ModTarget")), "{:#?}", run.commands);
         assert!(run.model.instruments[0].modulators[0].targets.is_empty());
     }
@@ -2625,6 +2628,91 @@ mod_depth = [1, 1]
         let lane = &run.model.instruments[0];
         assert_eq!(lane.modulators.iter().map(|m| m.targets.len()).collect::<Vec<_>>(), [1, 0, 0]);
         assert_eq!(run.commands.iter().filter(|c| c.contains("ModTarget")).count(), 1, "{:#?}", run.commands);
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_that_drives_the_depth_of_a_cable_that_is_left_out_is_left_out_whatever_the_order_of_the_file() {
+        let run = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+# The depth of the first cable of the second modulator, which is made as far as anyone can tell when this one is looked at...
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+mod_depth = [1, 0]
+# ...and which drives the depth of the seventh cable of the third modulator, which has none: it is left out, and so, after it, is the one before.
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+mod_depth = [2, 6]
+[[instrument.modulator]]
+rate = 3.0
+"#,
+        );
+        let lane = &run.model.instruments[0];
+        assert_eq!(lane.modulators.iter().map(|m| m.targets.len()).collect::<Vec<_>>(), [0, 0, 0]);
+        assert!(run.commands.iter().all(|c| !c.contains("ModTarget")), "{:#?}", run.commands);
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_to_the_depth_of_a_cable_of_a_modulator_that_an_older_file_nested_in_an_effect_counts_the_modulators_of_the_effect() {
+        // The lane's own modulator is the first of the merged list, the effect's two are the second and the third, and the third's cable names "the first cable of the first
+        // modulator" of the effect: the second's.
+        let run = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+param = "detune"
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect.modulator]]
+rate = 3.0
+[[instrument.effect.modulator.target]]
+param = "cutoff"
+[[instrument.effect.modulator]]
+rate = 4.0
+[[instrument.effect.modulator.target]]
+mod_depth = [0, 0]
+"#,
+        );
+        let lane = &run.model.instruments[0];
+        assert_eq!(lane.modulators.iter().map(|m| m.targets.len()).collect::<Vec<_>>(), [1, 1, 1]);
+        assert_eq!(lane.modulators[2].targets[0].aim, Driven::Depth(lane.modulators[1].targets[0].edge));
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_depth_of_a_cable_is_told_to_the_audio_thread_by_its_place_among_the_cables_that_are_made_and_not_by_its_place_in_the_file() {
+        let run = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 1.0
+# The first cable of the file is left out, so that the second is the first that the modulator has.
+[[instrument.modulator.target]]
+param = "no such parameter"
+[[instrument.modulator.target]]
+param = "detune"
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+mod_depth = [0, 1]
+"#,
+        );
+        let lane = &run.model.instruments[0];
+        assert_eq!(lane.modulators.iter().map(|m| m.targets.len()).collect::<Vec<_>>(), [1, 1]);
+        assert_eq!(lane.modulators[1].targets[0].aim, Driven::Depth(lane.modulators[0].targets[0].edge));
+        let told: Vec<&String> = run.commands.iter().filter(|c| c.starts_with("AddModTarget inst=0 mod=1 ")).collect();
+        assert_eq!(told.len(), 1, "{:#?}", run.commands);
+        assert!(told[0].contains("kind=ModulatorDepth { mod_index: 0, target_index: 0 }"), "{told:?}");
         run.model.check_ids().unwrap();
     }
 

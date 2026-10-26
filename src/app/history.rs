@@ -927,7 +927,8 @@ rate = 3.0
 
     /// A controller over `model` and a stub engine, with a clock that the test turns.
     fn controller_over(model: SessionModel) -> (StubEngine, Controller, Clock) {
-        let (handles, engine) = testutil::stub_engine();
+        // (Room for the commands of a long test that does not take them: with the 64 that `stub_engine` has, a test that sends one more blocks in `send` for ever instead of failing.)
+        let (handles, engine) = testutil::stub_engine_of(4_096);
         let mut ctl = Controller::new(model, handles, None);
         let clock = Clock(Arc::new(Mutex::new(Instant::now())));
         let shared = clock.clone();

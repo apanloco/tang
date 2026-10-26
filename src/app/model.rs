@@ -4474,6 +4474,24 @@ param = "pan"
     }
 
     #[test]
+    fn a_groups_rack_reaches_the_effects_of_its_own_bus_and_of_no_other() {
+        // Two groups with an effect on each bus, and a lane in each.
+        let model = load(
+            "[[group]]\n[[group.effect]]\nplugin = \"builtin:reverb\"\n[[group]]\n[[group.effect]]\nplugin = \"builtin:filter\"\n\
+             [[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 1\n",
+        )
+        .model;
+        let (first, second) = (model.groups[0].effects[0].node, model.groups[1].effects[0].node);
+        let param = |plugin: NodeId| Driven::Param { plugin, index: 0 };
+        assert_eq!(model.kind_of(ModulatorLocation::Group(0), 0, param(first)), Some(K::GroupBus { effect_index: 0, param_index: 0 }));
+        assert_eq!(model.kind_of(ModulatorLocation::Group(1), 0, param(second)), Some(K::GroupBus { effect_index: 0, param_index: 0 }));
+        assert_eq!(model.kind_of(ModulatorLocation::Group(0), 0, param(second)), None, "the bus of another group");
+        assert_eq!(model.kind_of(ModulatorLocation::Group(1), 0, param(first)), None, "the bus of another group");
+        // A lane's rack reaches no bus at all.
+        assert_eq!(model.kind_of(ModulatorLocation::Lane(0), 0, param(first)), None, "a lane's rack and a bus effect");
+    }
+
+    #[test]
     fn a_lane_that_leaves_a_group_takes_the_groups_cables_to_it_and_one_that_joins_is_counted_among_the_members() {
         use crate::app::testutil::LANES_IN_GROUPS;
         // Group 0's cables: the detune of lane 0 (member 0), the pan of lane 3 (member 1), and the rate of lane 3's modulator.
