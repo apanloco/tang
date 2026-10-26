@@ -708,8 +708,8 @@ the new one grows under today's structure until it equals it, and is then taken 
     while between the two ends of one that is there it is refused (`there is a cable between those two already`). The engine, the file and the oracle are as they were; only `AddFreeEffect` changes what
     it makes (a lane whose way out is cut). **P5c makes the links cables with ids and levels, in the engine and the file, when the lane goes** (below): until then a lane's own links cannot be turned down, and cutting
     one is at once and not over a buffer (a click while a note rings). *Built in two parts.* **88a is built (2026-10-23: the controller's rule `link_or_cable`, the free effect made bare, the terminal's Patch tab with
-    the links as `●` crosspoints, and the page's logic and mock engine; `CLAUDE.md`, "Links are cables")**; **88b, the page's picture, is not** (the buttons `→ Master`, `no out`, `← Oscillator` and `no in`, and the grey links
-    with their ×, cut and give back a link by the intents of before until 88b draws every link as an amber cable with a × that takes it out).
+    the links as `●` crosspoints, and the page's logic and mock engine; `CLAUDE.md`, "Links are cables")**; **88b is built (2026-10-26: the page's picture: every link is an amber cable with no slider and a × named
+    `Remove cable A → B` that cuts it and puts the focus on the send menu of the node it started at, which draws it again; the buttons `→ Master`, `no out`, `← Oscillator` and `no in` are gone)**.
   - **P5a, targets by id in the model** (nothing to see, the same bits). A modulation target names the node and the port that it drives (`NodeId` and a parameter's index, a modulator's setting, the depth of a
     cable by its id) and not a place in a rack (a chain slot, a member's ordinal in a group, a sibling's index, a cable's place): the 20 functions that the model has to keep those places in step
     (`shift_*`, `fixup_*`, `adjust_*`, 304 lines) go with their tests, and the controller turns ids into the places that the audio thread's commands still name, as `endpoint_of` turns them back.
