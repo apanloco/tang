@@ -133,29 +133,20 @@ pub struct EngineHandles {
 
 /// The command that gives the audio thread the rate of the LFO at `index` of the rack at `at`.
 pub(super) fn rate_command(at: ModulatorLocation, index: usize, rate: f32) -> GraphCommand {
-    match at {
-        ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorRate { inst, mod_index: index, rate },
-        ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorRate { group, mod_index: index, rate },
-    }
+    GraphCommand::SetModulatorRate { location: at, mod_index: index, rate }
 }
 
 /// The command that gives the audio thread the stages of the envelope at `index` of the rack at `at`:
 /// attack, decay, sustain and release.
 pub(super) fn envelope_command(at: ModulatorLocation, index: usize, (attack, decay, sustain, release): (f32, f32, f32, f32)) -> GraphCommand {
-    match at {
-        ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorEnvelopeParam { inst, mod_index: index, attack, decay, sustain, release },
-        ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorEnvelopeParam { group, mod_index: index, attack, decay, sustain, release },
-    }
+    GraphCommand::SetModulatorEnvelopeParam { location: at, mod_index: index, attack, decay, sustain, release }
 }
 
 /// The command that gives the audio thread a macro of `value` in the place of the macro at `index` of the rack at `at`: a macro has nothing in the engine but its value,
 /// so a new one is all that a change of the value is.
 pub(super) fn macro_command(at: ModulatorLocation, index: usize, value: f32) -> GraphCommand {
     let source = crate::plugin::chain::ModSource::Macro { value };
-    match at {
-        ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorSource { inst, mod_index: index, source },
-        ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorSource { group, mod_index: index, source },
-    }
+    GraphCommand::SetModulatorSource { location: at, mod_index: index, source }
 }
 
 /// The command that gives the audio thread what the step sequencer at `index` of the rack at `at` goes through, how many of them are in use, how it glides and
@@ -179,10 +170,7 @@ pub(super) fn sync_command(at: ModulatorLocation, index: usize, beats: f32) -> G
 
 /// The command that gives the audio thread the depth of cable `target_index` of the modulator at `mod_index` of the rack at `at`.
 pub(super) fn depth_command(at: ModulatorLocation, mod_index: usize, target_index: usize, depth: f32) -> GraphCommand {
-    match at {
-        ModulatorLocation::Lane(inst) => GraphCommand::SetModTargetDepth { inst, mod_index, target_index, depth },
-        ModulatorLocation::Group(group) => GraphCommand::SetGroupModTargetDepth { group, mod_index, target_index, depth },
-    }
+    GraphCommand::SetModTargetDepth { location: at, mod_index, target_index, depth }
 }
 
 /// A modulation target to bind (`Controller::add_target`): the parameter it
@@ -482,12 +470,7 @@ impl Controller {
         let index = self.model.modulators_mut(at)?.len();
         let graph_source = mod_source_slot_to_graph(&source);
         let node = self.model.alloc_node();
-        let _ = self.cmd_tx.send(match at {
-            ModulatorLocation::Lane(inst) => GraphCommand::InsertModulator { inst, index, source: graph_source, node },
-            ModulatorLocation::Group(group) => {
-                GraphCommand::InsertGroupModulator { group, index, source: graph_source, node }
-            }
-        });
+        let _ = self.cmd_tx.send(GraphCommand::InsertModulator { location: at, index, source: graph_source, node });
         // Its output is published from now on, and where it is if it is a step sequencer.
         let (output, position) = ModulatorSlot::alloc_slots(&mut self.model.slots, &source);
         for command in modulator_slot_commands(at, index, output, position) {
@@ -862,10 +845,7 @@ impl Controller {
                 bases.push(self.model.centre_of(target.aim).unwrap_or(target.param_min));
             }
         }
-        let _ = self.cmd_tx.send(match at {
-            ModulatorLocation::Lane(inst) => GraphCommand::RemoveModulator { inst, index },
-            ModulatorLocation::Group(group) => GraphCommand::RemoveGroupModulator { group, index },
-        });
+        let _ = self.cmd_tx.send(GraphCommand::RemoveModulator { location: at, index });
         // The model does what the audio thread does: the cables of the modulators after it are told the places they have now, and a lane's that is a member
         // of a group tells the group's cables to its modulators.
         if let Some(modulator) = self.model.remove_modulator_at(at, index) {
@@ -906,10 +886,7 @@ impl Controller {
         let removals = self.model.remove_edge(edge)?;
         for removed in removals {
             let (at, mod_index, target_index) = (removed.at, removed.mod_index, removed.target_index);
-            let _ = self.cmd_tx.send(match at {
-                ModulatorLocation::Lane(inst) => GraphCommand::RemoveModTarget { inst, mod_index, target_index },
-                ModulatorLocation::Group(group) => GraphCommand::RemoveGroupModTarget { group, mod_index, target_index },
-            });
+            let _ = self.cmd_tx.send(GraphCommand::RemoveModTarget { location: at, mod_index, target_index });
             self.took_out(if removed.still_driven { Inverse::NoWayBack } else { Inverse::Cable(removed) });
         }
         Some(driven)
@@ -1066,10 +1043,7 @@ impl Controller {
             param_max: new.param_max,
             effective,
         });
-        let _ = self.cmd_tx.send(match at {
-            ModulatorLocation::Lane(inst) => GraphCommand::AddModTarget { inst, mod_index: index, target },
-            ModulatorLocation::Group(group) => GraphCommand::AddGroupModTarget { group, mod_index: index, target },
-        });
+        let _ = self.cmd_tx.send(GraphCommand::AddModTarget { location: at, mod_index: index, target });
         true
     }
 
@@ -2470,7 +2444,7 @@ plugin = "builtin:osc"
         let nodes = commands
             .iter()
             .filter_map(|command| match command {
-                GraphCommand::InsertModulator { node, .. } | GraphCommand::InsertGroupModulator { node, .. } => Some(*node),
+                GraphCommand::InsertModulator { node, .. } => Some(*node),
                 _ => None,
             })
             .collect();

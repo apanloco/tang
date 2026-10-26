@@ -13,10 +13,19 @@ use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
 use crate::piano_filter::{PianoFilter, PianoMode};
-use crate::plugin::chain::{GraphCommand, GroupFacts, LaneFacts, MidiLearnedNotification, PatternNotification};
+use crate::plugin::chain::{GraphCommand, GroupFacts, LaneFacts, MidiLearnedNotification, ModulatorLocation, PatternNotification};
 use crate::scale::ScaleSetting;
 use crate::telemetry::Telemetry;
 use crate::{plugin, session};
+
+/// How `describe` names a command that addresses a rack of modulators: the command's name for a lane's rack or for a group's, and the place of the lane or the group
+/// (`InsertModulator inst=0`, `InsertGroupModulator group=1`), which is what the tests that read it have always said.
+fn rack_word(location: ModulatorLocation, lane: &str, group: &str) -> String {
+    match location {
+        ModulatorLocation::Lane(inst) => format!("{lane} inst={inst}"),
+        ModulatorLocation::Group(of) => format!("{group} group={of}"),
+    }
+}
 
 /// One line per command, for asserting on what a front-end or the loader sent
 /// to the audio thread. `GraphCommand` carries boxed plugins, so it has no
@@ -49,27 +58,6 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetGroupParameter { group, index, param_index, value } => {
             format!("SetGroupParameter group={group} fx={index} param={param_index} value={value:.3}")
         }
-        C::InsertGroupModulator { group, index, source, .. } => {
-            format!("InsertGroupModulator group={group} index={index} source={source:?}")
-        }
-        C::RemoveGroupModulator { group, index } => {
-            format!("RemoveGroupModulator group={group} index={index}")
-        }
-        C::AddGroupModTarget { group, mod_index, target } => format!(
-            "AddGroupModTarget group={group} mod={mod_index} aim={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
-            target.aim, target.depth, target.base_value, target.param_min, target.param_max
-        ),
-        C::InsertGroupModTarget { group, mod_index, target_index, target } => format!(
-            "InsertGroupModTarget group={group} mod={mod_index} target={target_index} aim={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
-            target.aim, target.depth, target.base_value, target.param_min, target.param_max
-        ),
-        C::SetGroupModTargetDepth { group, mod_index, target_index, depth } => {
-            format!("SetGroupModTargetDepth group={group} mod={mod_index} target={target_index} depth={depth:.3}")
-        }
-        C::RemoveGroupModTarget { group, mod_index, target_index } => {
-            format!("RemoveGroupModTarget group={group} mod={mod_index} target={target_index}")
-        }
-
         C::AddInstrument { range, .. } => format!("AddInstrument range={range:?}"),
         C::RemoveInstrument { inst, keep } => format!("RemoveInstrument inst={inst}{}", if keep.is_some() { " keep" } else { "" }),
         C::InsertInstrument { index, lane } => format!("InsertInstrument index={index} plugins={}", lane.plugin_count()),
@@ -98,20 +86,30 @@ pub fn describe(cmd: &GraphCommand) -> String {
         }
         C::RemoveEffect { inst, index, keep } => format!("RemoveEffect inst={inst} index={index}{}", if keep.is_some() { " keep" } else { "" }),
         C::ReorderEffect { inst, from, to } => format!("ReorderEffect inst={inst} from={from} to={to}"),
-        C::InsertModulator { inst, index, source, .. } => {
-            format!("InsertModulator inst={inst} index={index} source={source:?}")
+        C::InsertModulator { location, index, source, .. } => {
+            format!("{} index={index} source={source:?}", rack_word(*location, "InsertModulator", "InsertGroupModulator"))
         }
-        C::RemoveModulator { inst, index } => format!("RemoveModulator inst={inst} index={index}"),
-        C::AddModTarget { inst, mod_index, target } => format!(
-            "AddModTarget inst={inst} mod={mod_index} aim={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
-            target.aim, target.depth, target.base_value, target.param_min, target.param_max
+        C::RemoveModulator { location, index } => format!("{} index={index}", rack_word(*location, "RemoveModulator", "RemoveGroupModulator")),
+        C::AddModTarget { location, mod_index, target } => format!(
+            "{} mod={mod_index} aim={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
+            rack_word(*location, "AddModTarget", "AddGroupModTarget"),
+            target.aim,
+            target.depth,
+            target.base_value,
+            target.param_min,
+            target.param_max
         ),
-        C::InsertModTarget { inst, mod_index, target_index, target } => format!(
-            "InsertModTarget inst={inst} mod={mod_index} target={target_index} aim={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
-            target.aim, target.depth, target.base_value, target.param_min, target.param_max
+        C::InsertModTarget { location, mod_index, target_index, target } => format!(
+            "{} mod={mod_index} target={target_index} aim={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
+            rack_word(*location, "InsertModTarget", "InsertGroupModTarget"),
+            target.aim,
+            target.depth,
+            target.base_value,
+            target.param_min,
+            target.param_max
         ),
-        C::RemoveModTarget { inst, mod_index, target_index } => {
-            format!("RemoveModTarget inst={inst} mod={mod_index} target={target_index}")
+        C::RemoveModTarget { location, mod_index, target_index } => {
+            format!("{} mod={mod_index} target={target_index}", rack_word(*location, "RemoveModTarget", "RemoveGroupModTarget"))
         }
         C::SetModulatorOutput { location, index, slot } => {
             format!("SetModulatorOutput {location:?} index={index} slot={}", slot.index())
@@ -134,32 +132,21 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetGroupMeter { group, slots } => {
             format!("SetGroupMeter group={group} peak={} clips={}", slots.peak.index(), slots.clips.index())
         }
-        C::SetModulatorRate { inst, mod_index, rate } => {
-            format!("SetModulatorRate inst={inst} mod={mod_index} rate={rate:.3}")
+        C::SetModulatorRate { location, mod_index, rate } => {
+            format!("{} mod={mod_index} rate={rate:.3}", rack_word(*location, "SetModulatorRate", "SetGroupModulatorRate"))
         }
-        C::SetModTargetDepth { inst, mod_index, target_index, depth } => {
-            format!("SetModTargetDepth inst={inst} mod={mod_index} target={target_index} depth={depth:.3}")
+        C::SetModTargetDepth { location, mod_index, target_index, depth } => {
+            format!("{} mod={mod_index} target={target_index} depth={depth:.3}", rack_word(*location, "SetModTargetDepth", "SetGroupModTargetDepth"))
         }
-        C::SetModulatorSource { inst, mod_index, source } => {
-            format!("SetModulatorSource inst={inst} mod={mod_index} source={source:?}")
+        C::SetModulatorSource { location, mod_index, source } => {
+            format!("{} mod={mod_index} source={source:?}", rack_word(*location, "SetModulatorSource", "SetGroupModulatorSource"))
         }
-        C::SetGroupModulatorSource { group, mod_index, source } => {
-            format!("SetGroupModulatorSource group={group} mod={mod_index} source={source:?}")
+        C::SetModulatorWaveform { location, mod_index, waveform } => {
+            format!("{} mod={mod_index} waveform={waveform:?}", rack_word(*location, "SetModulatorWaveform", "SetGroupModulatorWaveform"))
         }
-        C::SetModulatorWaveform { inst, mod_index, waveform } => {
-            format!("SetModulatorWaveform inst={inst} mod={mod_index} waveform={waveform:?}")
-        }
-        C::SetModulatorEnvelopeParam { inst, mod_index, attack, decay, sustain, release } => format!(
-            "SetModulatorEnvelopeParam inst={inst} mod={mod_index} attack={attack:.3} decay={decay:.3} sustain={sustain:.3} release={release:.3}"
-        ),
-        C::SetGroupModulatorRate { group, mod_index, rate } => {
-            format!("SetGroupModulatorRate group={group} mod={mod_index} rate={rate:.3}")
-        }
-        C::SetGroupModulatorWaveform { group, mod_index, waveform } => {
-            format!("SetGroupModulatorWaveform group={group} mod={mod_index} waveform={waveform:?}")
-        }
-        C::SetGroupModulatorEnvelopeParam { group, mod_index, attack, decay, sustain, release } => format!(
-            "SetGroupModulatorEnvelopeParam group={group} mod={mod_index} attack={attack:.3} decay={decay:.3} sustain={sustain:.3} release={release:.3}"
+        C::SetModulatorEnvelopeParam { location, mod_index, attack, decay, sustain, release } => format!(
+            "{} mod={mod_index} attack={attack:.3} decay={decay:.3} sustain={sustain:.3} release={release:.3}",
+            rack_word(*location, "SetModulatorEnvelopeParam", "SetGroupModulatorEnvelopeParam")
         ),
 
         C::SetPattern { inst, pattern, base_note, in_key } => format!(

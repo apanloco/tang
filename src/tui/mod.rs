@@ -1691,10 +1691,7 @@ impl State {
         };
         let source = mod_source_slot_to_graph(&new_source);
         m.source = new_source;
-        let command = match at {
-            ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorSource { inst, mod_index: index, source },
-            ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorSource { group, mod_index: index, source },
-        };
+        let command = GraphCommand::SetModulatorSource { location: at, mod_index: index, source };
         let _ = self.ctl.cmd_tx.send(command);
         self.ctl.dirty = true;
         self.param_state.selected = 0;

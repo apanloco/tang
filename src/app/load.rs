@@ -832,7 +832,7 @@ fn load_lane_modulators(
 
             cmd_tx
                 .send(plugin::chain::GraphCommand::InsertModulator {
-                    inst: inst_idx,
+                    location: ModulatorLocation::Lane(inst_idx),
                     index: mod_idx,
                     source: mod_source_slot_to_graph(&source_slot),
                     node: nodes[mod_idx],
@@ -952,10 +952,7 @@ fn make_cables(
         let cable = plugin::chain::ModTarget { edge, aim, depth, base_value: plan.base_value, param_min: plan.param_min, param_max: plan.param_max, effective };
         send(
             cmd_tx,
-            match location {
-                ModulatorLocation::Lane(inst) => plugin::chain::GraphCommand::AddModTarget { inst, mod_index: mod_idx, target: cable },
-                ModulatorLocation::Group(group) => plugin::chain::GraphCommand::AddGroupModTarget { group, mod_index: mod_idx, target: cable },
-            },
+            plugin::chain::GraphCommand::AddModTarget { location, mod_index: mod_idx, target: cable },
         )?;
         log::info!("Modulator {mod_idx} target: '{}' depth={}", plan.label, config.depth);
         made.push(ModTargetSlot { edge, param_name: plan.label.clone(), aim, depth, param_min: plan.param_min, param_max: plan.param_max, effective });
@@ -1209,8 +1206,8 @@ fn load_group_modulators(
     for (mod_idx, mod_config) in group_config.modulators.iter().enumerate() {
         let (source_slot, desc) = build_mod_source(mod_config);
         cmd_tx
-            .send(plugin::chain::GraphCommand::InsertGroupModulator {
-                group: g_idx,
+            .send(plugin::chain::GraphCommand::InsertModulator {
+                location: ModulatorLocation::Group(g_idx),
                 index: mod_idx,
                 source: mod_source_slot_to_graph(&source_slot),
                 node: nodes[mod_idx],

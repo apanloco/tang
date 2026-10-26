@@ -488,10 +488,7 @@ impl Controller {
                     return;
                 }
                 let target = cable_for_the_audio_thread(&self.model.modulators(at).expect("the rack it went into")[mod_index].targets[place], base_value);
-                let _ = self.cmd_tx.send(match at {
-                    ModulatorLocation::Lane(inst) => GraphCommand::InsertModTarget { inst, mod_index, target_index: place, target },
-                    ModulatorLocation::Group(group) => GraphCommand::InsertGroupModTarget { group, mod_index, target_index: place, target },
-                });
+                let _ = self.cmd_tx.send(GraphCommand::InsertModTarget { location: at, mod_index, target_index: place, target });
             }
             Inverse::AudioCable(cable) => {
                 // (Its ends are back, if the nodes it was at were taken out with it: they were put back before it, as it was taken out before them. A cable that the wiring
@@ -539,19 +536,13 @@ impl Controller {
                         rack[place].targets.remove(target_index);
                     }
                 }
-                let _ = self.cmd_tx.send(match at {
-                    ModulatorLocation::Lane(inst) => GraphCommand::InsertModulator { inst, index: place, source, node },
-                    ModulatorLocation::Group(group) => GraphCommand::InsertGroupModulator { group, index: place, source, node },
-                });
+                let _ = self.cmd_tx.send(GraphCommand::InsertModulator { location: at, index: place, source, node });
                 // It publishes what it puts out (and where it is) where it did, and its own cables come after it, in the order they had.
                 for command in modulator_slot_commands(at, place, output, position) {
                     let _ = self.cmd_tx.send(command);
                 }
                 for target in cables {
-                    let _ = self.cmd_tx.send(match at {
-                        ModulatorLocation::Lane(inst) => GraphCommand::AddModTarget { inst, mod_index: place, target },
-                        ModulatorLocation::Group(group) => GraphCommand::AddGroupModTarget { group, mod_index: place, target },
-                    });
+                    let _ = self.cmd_tx.send(GraphCommand::AddModTarget { location: at, mod_index: place, target });
                 }
             }
             Inverse::Effect { at, index, slot, kept: Kept::InHand(effect) } => {

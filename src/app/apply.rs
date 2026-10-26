@@ -603,10 +603,7 @@ impl Controller {
             (ModSourceSlot::Lfo { waveform, .. }, ModulatorField::Waveform) => {
                 *waveform = LfoWaveform::ALL[value as usize];
                 let waveform = *waveform;
-                match at {
-                    ModulatorLocation::Lane(inst) => GraphCommand::SetModulatorWaveform { inst, mod_index: index, waveform },
-                    ModulatorLocation::Group(group) => GraphCommand::SetGroupModulatorWaveform { group, mod_index: index, waveform },
-                }
+                GraphCommand::SetModulatorWaveform { location: at, mod_index: index, waveform }
             }
             (
                 ModSourceSlot::Envelope { attack, decay, sustain, release },
