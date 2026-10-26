@@ -22,7 +22,7 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible, keepFocus } from "../focus";
-import { AudioPort, DepthPort, DrivePicker, FeedButton, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, NotesPort, ParamCell, RangeCell, StepsControl, SyncControl } from "./controls";
+import { AudioPort, DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, NotesPort, ParamCell, RangeCell, StepsControl, SyncControl } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import { ModulateMenu } from "./ModulateMenu";
@@ -428,7 +428,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         sub={
           <>
             {silent ? null : <SendMenu node={data.node} name={data.name} />}
-            {effect ? <FeedButton node={data.node} name={data.name} /> : <NotesFromMenu node={data.node} name={data.name} />}
+            {effect ? null : <NotesFromMenu node={data.node} name={data.name} />}
           </>
         }
       >

@@ -347,69 +347,6 @@
   background: var(--tang-warn);
 }
 
-/* The way out of a lane or a group, under its mute and solo: where its audio goes, quiet (a name that is too long for the cell is cut, and the tooltip has all of it); pressed, in the colour of audio that goes by cables, it says that there is none. */
-.tang-way-out {
-  min-width: 0;
-  margin-top: 2px;
-  padding: 1px 3px;
-  overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: none;
-  color: var(--tang-text-muted);
-  font: 10px / 1.4 var(--tang-font);
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.tang-way-out:hover {
-  border-color: var(--tang-border);
-}
-
-.tang-way-out:focus-visible {
-  outline: 2px solid var(--tang-scale);
-  outline-offset: 1px;
-}
-
-.tang-way-out[aria-pressed="true"] {
-  border-color: var(--tang-send);
-  color: var(--tang-send);
-  font-weight: 600;
-}
-
-/* The input of an effect, on the badge's line of its header: where it is fed from, quiet (a name that is too long for the line is cut, and the tooltip has all of it); pressed, in the colour of audio that goes by cables, it says that its chain does not feed it. */
-.tang-feed {
-  min-width: 0;
-  padding: 0 3px;
-  overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: none;
-  color: var(--tang-text-muted);
-  font: 10px / 1.4 var(--tang-font);
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.tang-feed:hover {
-  border-color: var(--tang-border);
-}
-
-.tang-feed:focus-visible {
-  outline: 2px solid var(--tang-scale);
-  outline-offset: 1px;
-}
-
-.tang-feed[aria-pressed="true"] {
-  border-color: var(--tang-send);
-  color: var(--tang-send);
-  font-weight: 600;
-}
-
 /* A node that cannot be heard at the master (muted, not soloed while something is, or in the chain of one): dimmed, and as ready as it was. (It stays dimmed under the pointer: a press of its mute is seen at once.) */
 .tang-node--unheard {
   opacity: 0.55;
@@ -567,12 +504,13 @@
   fill: none;
 }
 
+/* A link of the audio path that a lane or a group makes by itself: a cable like the ones that a person draws (the same colour, and the thickness of a send at the level of 1, since a link has no level of its own and no slider). */
 .tang-cable--audio {
-  stroke: var(--tang-text-muted);
-  stroke-width: 2px;
+  stroke: var(--tang-send);
+  stroke-width: 3px;
 }
 
-/* An audio cable that a person has drawn, in the colour of audio that is sent, as thick as it is loud (the stroke's width is set from the level), over the plain links of the audio path. */
+/* An audio cable that a person has drawn, in the colour of audio that is sent, as thick as it is loud (the stroke's width is set from the level), over the links of the audio path. */
 .tang-cable--send {
   stroke: var(--tang-send);
 }

@@ -5,7 +5,6 @@ import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, Patt
 import type { ClientState } from "./connection";
 import type { Stages } from "./envelope";
 import { audibleOf, ownAudibleOf } from "./audible";
-import { holdersOf } from "./holders";
 import { displayNames } from "./names";
 import { shownParams } from "./pinning";
 
@@ -129,59 +128,6 @@ export function sameFlags(a: Flags | undefined, b: Flags | undefined): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
   return a.muted === b.muted && a.solo === b.solo;
-}
-
-/** Where a lane's or a group's audio goes, and whether that way out is cut. */
-export interface WayOut {
-  /** The way out is cut (`route = "none"`): the node is heard only through the cables that start at it. */
-  cut: boolean;
-  /** Where its audio goes when it has its way out: the group that a lane is a member of, or the master, by the name the canvas gives it. */
-  to: string;
-}
-
-/** The way out of a lane (an empty lane has one) or of a group; undefined if the node is neither. */
-export function wayOutOf(state: ClientState, id: NodeId): WayOut | undefined {
-  const graph = state.snapshot?.graph;
-  const found = graph?.nodes.find((node) => node.id === id);
-  if (graph === undefined || (found?.kind !== "instrument" && found?.kind !== "group")) return undefined;
-  const parent = found.kind === "instrument" ? found.parent : null;
-  const sink = (parent === null ? undefined : graph.nodes.find((node) => node.id === parent)) ?? graph.nodes.find((node) => node.kind === "master");
-  return { cut: found.route === "none", to: sink === undefined ? "Master" : (displayNames(graph).get(sink.id) ?? sink.name) };
-}
-
-/** Whether two answers of `wayOutOf` say the same. */
-export function sameWayOut(a: WayOut | undefined, b: WayOut | undefined): boolean {
-  if (a === b) return true;
-  if (a === undefined || b === undefined) return false;
-  return a.cut === b.cut && a.to === b.to;
-}
-
-/** What feeds an effect, and whether that link is cut. */
-export interface Input {
-  /** The link into the effect from the stage before it is cut (`feed = "none"`): it is fed by the audio cables that end at it and by nothing else. */
-  cut: boolean;
-  /** The stage that feeds it when the link is there: what comes before it in its chain, by the name the canvas gives it (the lane's instrument, the effect before it, or the group whose bus it is on). */
-  from: string;
-}
-
-/** The input of an effect, of a lane's chain or of a group's bus; undefined if the node is no effect. */
-export function inputOf(state: ClientState, id: NodeId): Input | undefined {
-  const graph = state.snapshot?.graph;
-  const found = graph?.nodes.find((node) => node.id === id);
-  if (graph === undefined || found?.kind !== "effect") return undefined;
-  // (The effects of a chain are the nodes whose parent is the lane or the group, in the order of the graph: the stage before is the one before in that list, or the lane or the group itself.)
-  const chain = graph.nodes.filter((node) => node.kind === "effect" && node.parent === found.parent);
-  // (The first effect of a lane that only holds effects has no stage before it that is drawn: the lane has no card, and no sound.)
-  if (found.parent !== null && chain.indexOf(found) === 0 && holdersOf(graph).has(found.parent)) return undefined;
-  const before = chain[chain.indexOf(found) - 1] ?? graph.nodes.find((node) => node.id === found.parent);
-  return { cut: found.feed === "none", from: before === undefined ? "the chain" : (displayNames(graph).get(before.id) ?? before.name) };
-}
-
-/** Whether two answers of `inputOf` say the same. */
-export function sameInput(a: Input | undefined, b: Input | undefined): boolean {
-  if (a === b) return true;
-  if (a === undefined || b === undefined) return false;
-  return a.cut === b.cut && a.from === b.from;
 }
 
 /**

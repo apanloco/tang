@@ -76,14 +76,14 @@ describe("the patch", () => {
   test("puts what kind of plugin a node has under its name in the header, in a title of its own that the buttons leave what room is left", async () => {
     await rig(<PatchView />);
     for (const [id, name, badge, buttons] of [
-      // (A lane has a button after the one that sends its audio: the one that takes notes into it, from the sources; an effect has the one that cuts and gives back the link into it.)
+      // (A lane has a button after the one that sends its audio: the one that takes notes into it, from the sources; an effect has no more.)
       [oscillator.id, "Oscillator", "Built-in", ["tang-menu-button nodrag nopan tang-node__send", "tang-menu-button nodrag nopan tang-node__notes"]],
-      [filter.id, "Filter", "Built-in", ["tang-menu-button nodrag nopan tang-node__send", "tang-feed nodrag nopan"]],
+      [filter.id, "Filter", "Built-in", ["tang-menu-button nodrag nopan tang-node__send"]],
     ] as const) {
       const header = (await nodeOf(id)).querySelector(".tang-node__header");
       const title = header?.querySelector(".tang-node__title");
       expect(title?.querySelector(".tang-node__name")?.textContent, name).toBe(name);
-      // (The badge is the second thing in the title, under the name, and the buttons that send the node's audio and take notes into it, or feed it, are the next, on the badge's line, which a row of buttons
+      // (The badge is the second thing in the title, under the name, and the buttons that send the node's audio and take notes into it are the next, on the badge's line, which a row of buttons
       // that is full has no room for; the title is the first in the header, before the buttons.)
       expect(Array.from(title?.children ?? [], (child) => child.className), name).toEqual(["tang-node__name", "tang-node__badge", ...buttons]);
       expect(title?.querySelector(".tang-node__badge")?.textContent, name).toBe(badge);
@@ -1446,7 +1446,7 @@ describe("the patch", () => {
       button.focus();
       fireEvent.click(button);
       await waitFor(() => {
-        expect(screen.queryByRole("button", { name: /^Remove cable/ })).toBeNull();
+        expect(screen.queryByRole("button", { name: /^Remove cable LFO/ })).toBeNull();
       });
       await waitFor(() => {
         expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add a cable from LFO" }));

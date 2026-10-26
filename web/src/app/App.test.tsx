@@ -221,9 +221,9 @@ describe("the page", () => {
     await waitFor(() => {
       expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add an instrument" }));
     });
-    // (The lane has no card: its filter is on the canvas, with the way out of the lane, which is its own.)
+    // (The lane has no card: its filter is on the canvas, with the mute and the solo of the lane, which are its own.)
     expect(screen.queryByRole("button", { name: "Choose an instrument for (empty)" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Cut the way out of Filter" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Mute Filter" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Remove Filter" })).toHaveLength(1);
   });
 
@@ -243,9 +243,9 @@ describe("the page", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /^Remove Oscillator 2 only/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Undo take Oscillator out of its lane" }));
     expect(await screen.findByRole("button", { name: "Change the instrument of Oscillator 2" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Cut the way out of Filter" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Mute Filter" })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Redo take Oscillator out of its lane" }));
-    expect(await screen.findByRole("button", { name: "Cut the way out of Filter" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Mute Filter" })).toBeTruthy();
     // (The lane has no card: the oscillators that are left are numbered without it, so that "Oscillator 2" is another lane's.)
     expect(document.getElementById("change-instrument-5")).toBeNull();
   });

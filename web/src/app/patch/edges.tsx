@@ -1,6 +1,6 @@
-// The cables of the canvas: the audio path, derived and plain, whose links into a group or the master (the way out of a lane or a group) have a button that disconnects them; the audio cables a person has drawn (the sends), amber, and the thicker the louder they are, with a slider for
-// the level at the middle; the cables of notes a person has drawn, from a source to a lane, violet, with the button that takes them out at the middle, and, faint and dotted in the same
-// colour, the links by which a lane that no cable of notes ends at hears every source; and modulation, which is magenta, dashed, and the thicker the deeper it goes.
+// The cables of the canvas: the links of the audio path that a lane and a group make by themselves, which are cables like the rest (amber, with the button that takes them out at the middle, and no slider: a link has no level);
+// the audio cables a person has drawn (the sends), amber too, and the thicker the louder they are, with a slider for the level at the middle; the cables of notes a person has drawn, from a source to a lane, violet, with the
+// button that takes them out at the middle, and, faint and dotted in the same colour, the links by which a lane that no cable of notes ends at hears every source; and modulation, which is magenta, dashed, and the thicker the deeper it goes.
 import { BaseEdge, EdgeLabelRenderer, getBezierPath } from "@xyflow/react";
 import { useRef } from "react";
 import type { EdgeProps } from "@xyflow/react";
@@ -11,83 +11,11 @@ import { useClientState, useEditor } from "../ClientProvider";
 import { focusWhenPossible } from "../focus";
 import { useCableLight } from "./cableLight";
 import { cableRoute } from "./cableRoute";
-import { CableDepthControl, CableLevelControl, drivesId, feedId, wayOutId } from "./controls";
+import { CableDepthControl, CableLevelControl, drivesId } from "./controls";
 import { cableWidth, sendWidth } from "./describe";
 import { notesToId } from "./NotesMenus";
 import { sendId } from "./SendMenu";
 import type { PatchEdge } from "./toFlow";
-
-/**
- * The button on the link that is the way out of a lane or a group, which cuts it (the controller's `SetRoute`, as the button under the mute and the solo does, which gives it back). The lane or group is then
- * heard only through the cables that start at it; the focus goes to that button, since the link, and this one, are gone.
- */
-function DisconnectButton({ node, label }: { node: NodeId; label: string }) {
-  const editor = useEditor();
-  return (
-    <button
-      type="button"
-      className="tang-depth__remove"
-      aria-label={`Disconnect ${label}`}
-      title={`Disconnect ${label}: cut the way out, to hear it only through its cables (the button under Mute / Solo gives it back)`}
-      onClick={() => {
-        // (If it is refused the page says so: `Editor` puts the reason among the notices, and the focus stays on the button.)
-        void editor.setRoute(node, "none").then((cut) => {
-          if (cut) focusWhenPossible(wayOutId(node));
-        });
-      }}
-    >
-      ×
-    </button>
-  );
-}
-
-/**
- * The button on a link into an effect (an instrument to its first effect, an effect to the next, a group to the first of its bus), which cuts it (the controller's `SetFeed`, as the button in the effect's header
- * does, which gives it back). The effect is then fed by the cables that end at it and by nothing else, and the chain goes on from it; the focus goes to that button, since the link, and this one, are gone.
- */
-function DisconnectFeedButton({ node, label }: { node: NodeId; label: string }) {
-  const editor = useEditor();
-  return (
-    <button
-      type="button"
-      className="tang-depth__remove"
-      aria-label={`Disconnect ${label}`}
-      title={`Disconnect ${label}: cut the link, to feed the effect only by its cables (the button in the effect's header gives it back)`}
-      onClick={() => {
-        // (If it is refused the page says so: `Editor` puts the reason among the notices, and the focus stays on the button.)
-        void editor.setFeed(node, "none").then((cut) => {
-          if (cut) focusWhenPossible(feedId(node));
-        });
-      }}
-    >
-      ×
-    </button>
-  );
-}
-
-/**
- * A link of the audio path, the way that the audio goes by itself: plain and grey. Every link has the button at its middle that disconnects it, as a cable has: the end of a lane's chain, or of a group's, which goes
- * to the group's bus or the master, is its way out and the button cuts that; a link into an effect (an instrument to its first effect, an effect to the next) is that effect's input and the button cuts that.
- */
-export function AudioEdge(props: EdgeProps<PatchEdge>) {
-  const [path, labelX, labelY] = getBezierPath(props);
-  const owner = props.data?.wayOut;
-  const fed = props.data?.feedOf;
-  const label = props.data?.label ?? "a link";
-  return (
-    <>
-      <BaseEdge id={props.id} path={path} className="tang-cable tang-cable--audio" />
-      {owner === undefined && fed === undefined ? null : (
-        // (In the layer over the canvas that the cables' controls are in, at the middle of the link.)
-        <EdgeLabelRenderer>
-          <div className="tang-depth-anchor nodrag nopan nowheel" style={{ transform: `translate(-50%, -50%) translate(${String(labelX)}px, ${String(labelY)}px)` }}>
-            {owner !== undefined ? <DisconnectButton node={owner} label={label} /> : fed !== undefined ? <DisconnectFeedButton node={fed} label={label} /> : null}
-          </div>
-        </EdgeLabelRenderer>
-      )}
-    </>
-  );
-}
 
 /**
  * The button on a cable that takes it out (the node it starts at stays); the focus goes to `focusTo`, the button that draws the next cable from that node: the list of a modulator, or the
@@ -110,6 +38,56 @@ function RemoveCableButton({ edge, focusTo, label }: { edge: EdgeId; focusTo: st
     >
       ×
     </button>
+  );
+}
+
+/**
+ * The button on a link of the audio path that takes it out, as it takes out any cable (the controller cuts the link: `SetRoute` for the end of a lane's chain or of a group's, which goes to the group's bus or the
+ * master, and `SetFeed` for a link into an effect, from the instrument, the effect before it or the group). What is left is a node that sends nowhere by that link, and the cable can be drawn again as any is,
+ * from the menu of the node it starts at (the focus goes to it, since the link and this button are gone) or by a drag. If it is refused the page says so, and the focus stays on the button.
+ */
+function RemoveLinkButton({ owner, fed, source, label }: { owner: NodeId | undefined; fed: NodeId | undefined; source: NodeId; label: string }) {
+  const editor = useEditor();
+  return (
+    <button
+      type="button"
+      className="tang-depth__remove"
+      aria-label={`Remove cable ${label}`}
+      title={`Remove cable ${label}`}
+      onClick={() => {
+        const cut = owner !== undefined ? editor.setRoute(owner, "none") : fed !== undefined ? editor.setFeed(fed, "none") : Promise.resolve(false);
+        void cut.then((done) => {
+          if (done) focusWhenPossible(sendId(source));
+        });
+      }}
+    >
+      ×
+    </button>
+  );
+}
+
+/**
+ * A link of the audio path, the way that the audio goes by itself: a cable like the ones a person draws (amber, a line as thick as a send at the level of 1, which is all that a link has) with the button that
+ * takes it out at its middle, and no slider. The end of a lane's chain, or of a group's, which goes to the group's bus or the master, is its way out; a link into an effect (an instrument to its first effect, an
+ * effect to the next, a group to the first of its bus) is that effect's input; the button cuts either.
+ */
+export function AudioEdge(props: EdgeProps<PatchEdge>) {
+  const [path, labelX, labelY] = getBezierPath(props);
+  const owner = props.data?.wayOut;
+  const fed = props.data?.feedOf;
+  const label = props.data?.label ?? "a link";
+  return (
+    <>
+      <BaseEdge id={props.id} path={path} className="tang-cable tang-cable--audio" />
+      {owner === undefined && fed === undefined ? null : (
+        // (In the layer over the canvas that the cables' controls are in, at the middle of the link.)
+        <EdgeLabelRenderer>
+          <div className="tang-depth-anchor nodrag nopan nowheel" style={{ transform: `translate(-50%, -50%) translate(${String(labelX)}px, ${String(labelY)}px)` }}>
+            <RemoveLinkButton owner={owner} fed={fed} source={Number(props.source)} label={label} />
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
   );
 }
 

@@ -51,7 +51,9 @@ describe("the mute and the solo of a lane or a group", () => {
       const cells = Array.from(node?.querySelectorAll(".tang-node__controls > .tang-cell") ?? []);
       expect(cells).toHaveLength(3); // the volume, the pan and the mute and solo
       expect(cells.at(-1)?.textContent).toContain("Mute");
-      expect(within(cells.at(-1) as HTMLElement).getAllByRole("button")).toHaveLength(3); // the mute, the solo and, under them, the way out
+      // (The mute and the solo, and no button for where the audio goes: that is its cables.)
+      const name = (button.getAttribute("aria-label") ?? "").replace(/^Mute /, "");
+      expect(within(cells.at(-1) as HTMLElement).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([`Mute ${name}`, `Solo ${name}`]);
     }
     const lanes = await screen.findAllByRole("button", { name: /^Mute Oscillator/ });
     expect(lanes.length).toBeGreaterThan(1);

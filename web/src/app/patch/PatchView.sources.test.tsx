@@ -157,15 +157,24 @@ describe("the cables of notes and the links by which the lanes hear the sources"
     for (const path of [...cablesOf(view, "notes"), ...cablesOf(view, "hears")]) expect(path.classList.contains("tang-cable--audio"), path.id).toBe(false);
   });
 
-  test("have a button on the cable of notes that takes it out, named for what it joins, and none on a link, which is the lane's own hearing and is not drawn or taken out", async () => {
+  test("have a button on the cable of notes that takes it out, named for what it joins, and none on a link by which a lane hears a source, which is the lane's own hearing and is not drawn or taken out", async () => {
     await rig(<PatchView />, { snapshot, inputs: INPUTS });
     expect(await screen.findByRole("button", { name: "Remove cable Keys → Oscillator 2" })).toBeDefined();
-    // (The buttons on the cables there are: the cable of notes, the audio cable and the cable of modulation. The four links have none.)
+    // (The buttons on the cables there are: the links of the audio path, which are cables to a person and have one each, the audio cable, the cable of notes and the cable of modulation. The links by which the
+    // lanes hear the sources have none.)
     expect(screen.getAllByRole("button", { name: /^Remove cable / }).map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Remove cable Pad → Reverb",
+      "Remove cable Reverb → Master",
+      "Remove cable Oscillator 1 → Filter",
+      "Remove cable Filter → Pad",
+      "Remove cable Oscillator 2 → Master",
+      "Remove cable (empty) → Master",
       "Remove cable Oscillator 2 → Filter",
       "Remove cable Keys → Oscillator 2",
       "Remove cable LFO → Filter: cutoff",
     ]);
+    // (None says what the sources are heard by: the links of hearing are faint and dotted and have nothing on them.)
+    expect(screen.getAllByRole("button", { name: /^Remove cable (Keys|Device|Nothing)/ })).toHaveLength(1);
   });
 
   test("are taken out by it: the server is asked, the lane hears every source again by its links, and Undo draws the cable again", async () => {

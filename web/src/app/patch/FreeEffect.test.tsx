@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test } from "vitest";
 
-import { nodeNamed, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, nodeNamed, tracerSnapshot } from "../../client/fixtures";
 import type { Intent } from "../../protocol";
 import { NoticeBoard } from "../../ui/NoticeBoard";
 import { AddFreeEffectMenu } from "../AddFreeEffect";
@@ -55,41 +55,51 @@ describe("an effect that stands by itself", () => {
     expect(Array.from(document.querySelectorAll(".tang-node__name")).map((name) => name.textContent)).toEqual(["Oscillator", "Filter", "LFO", "Reverb", "Master"]);
   });
 
-  test("has the mute, the solo and the way out of its lane, which the lane's card would have, and no input from a chain, which it has none of", async () => {
+  test("has the mute, the solo and the \"+\" of its lane, which the lane's card would have, and no cable at all to begin with: nothing feeds it from the lane, which has no sound, and it sends nowhere", async () => {
     await withReverb();
     const reverb = await nodeOf(4);
     expect(within(reverb).getByRole("button", { name: "Mute Reverb" })).toBeTruthy();
     expect(within(reverb).getByRole("button", { name: "Solo Reverb" })).toBeTruthy();
-    expect(within(reverb).getByRole("button", { name: "Cut the way out of Reverb" })).toBeTruthy();
     expect(within(reverb).getByRole("button", { name: "Add a modulator to Reverb" })).toBeTruthy();
-    // (Not the input that the effect of a lane that has an instrument has: nothing feeds it from the lane, which has no sound.)
-    expect(within(reverb).queryByRole("button", { name: "Cut the input of Reverb" })).toBeNull();
+    // (No button says where its audio goes or where it is fed from: that is its cables, and a module that is made by itself has none.)
+    expect(screen.queryAllByRole("button", { name: /^Remove cable Reverb/ })).toHaveLength(0);
+    expect(screen.queryAllByRole("button", { name: /→ Reverb$/ })).toHaveLength(0);
+    expect(screen.queryAllByRole("button", { name: /^Cut the (way out|input) of / })).toHaveLength(0);
     // The effects of the lane that has an instrument have none of the lane's cells, and the lane has its own.
     const filter = await nodeOf(1);
     expect(within(filter).queryByRole("button", { name: "Mute Filter" })).toBeNull();
-    expect(within(filter).getByRole("button", { name: "Cut the input of Filter" })).toBeTruthy();
     expect(within(await nodeOf(oscillator.id)).getByRole("button", { name: "Mute Oscillator" })).toBeTruthy();
   });
 
-  test("is muted, soloed and given its way out by the buttons of its module, which ask for them for its lane and show what the server has: it begins with none (a module with no cable sends nowhere: step 88)", async () => {
+  test("is muted and soloed by the buttons of its module, which ask for them for its lane and show what the server has", async () => {
     const { requests } = await withReverb();
     const reverb = await nodeOf(4);
-    // (Nothing is sent to the master unless a person says so: the button is pressed, `no out`, and a press gives the way out.)
-    expect(within(reverb).getByRole("button", { name: "Cut the way out of Reverb" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(within(reverb).getByRole("button", { name: "Mute Reverb" }));
     await waitFor(() => {
       expect(within(reverb).getByRole("button", { name: "Mute Reverb" }).getAttribute("aria-pressed")).toBe("true");
     });
     fireEvent.click(within(reverb).getByRole("button", { name: "Solo Reverb" }));
-    fireEvent.click(within(reverb).getByRole("button", { name: "Cut the way out of Reverb" }));
     await waitFor(() => {
-      expect(within(reverb).getByRole("button", { name: "Cut the way out of Reverb" }).getAttribute("aria-pressed")).toBe("false");
+      expect(within(reverb).getByRole("button", { name: "Solo Reverb" }).getAttribute("aria-pressed")).toBe("true");
     });
     expect(asked(requests)).toEqual([
       { type: "setMute", node: 3, muted: true },
       { type: "setSolo", node: 3, solo: true },
-      { type: "setRoute", node: 3, route: "out" },
     ]);
+  });
+
+  test("sends nowhere until a cable is drawn from it, and a cable from it to the master is the way out of its lane given back: the menu that sends its audio offers the master, and what is drawn is a link, with no level", async () => {
+    const { requests } = await withReverb();
+    const reverb = await nodeOf(4);
+    // (A module that is made by itself has its way out cut, and so no link out of it.)
+    expect(screen.queryByRole("button", { name: "Remove cable Reverb → Master" })).toBeNull();
+    fireEvent.click(within(reverb).getByRole("button", { name: "Send audio from Reverb" }));
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Master" }));
+    expect(await screen.findByRole("button", { name: "Remove cable Reverb → Master" })).toBeTruthy();
+    expect(asked(requests)).toEqual([{ type: "addCable", from: { node: 4, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } }, gain: null }]);
+    // (The server made it the link that was cut, which has no level: no cable of a person's, which has a slider.)
+    expect(document.querySelectorAll(".tang-cable--send")).toHaveLength(0);
+    expect(screen.queryByRole("slider", { name: /^Level of / })).toBeNull();
   });
 
   test("is dimmed, as the effects of a lane are, while its lane cannot be heard: muted, or not soloed while something is", async () => {
@@ -139,9 +149,9 @@ describe("an effect that stands by itself", () => {
     expect(within(first).getByRole("button", { name: "Add a modulator to Reverb" })).toBeTruthy();
     expect(within(second).queryByRole("button", { name: /^Mute / })).toBeNull();
     expect(within(second).queryByRole("button", { name: /^Add a modulator / })).toBeNull();
-    // The link between them is the input of the second, as in any chain; the first has none.
-    expect(within(second).getByRole("button", { name: /^Cut the input of Filter/ })).toBeTruthy();
-    expect(within(first).queryByRole("button", { name: /^Cut the input of / })).toBeNull();
+    // The link between them is a cable like any other, and the input of the second, as in any chain; the first has none into it.
+    expect(screen.getByRole("button", { name: "Remove cable Reverb → Filter 2" })).toBeTruthy();
+    expect(screen.queryAllByRole("button", { name: /^Remove cable .* → Reverb$/ })).toHaveLength(0);
     // Either's "×" takes out the effect and no more: the lane is the chain's.
     fireEvent.click(within(second).getByRole("button", { name: /^Remove Filter/ }));
     await waitFor(() => {
