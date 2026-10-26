@@ -1196,7 +1196,7 @@ mod tests {
     // -- The example sessions --
 
     /// The example sessions of this repository that show what the built-in plugins do (the others name a plugin that has to be installed, or are somebody's saved sound).
-    const SOUND_EXAMPLES: [&str; 13] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml", "fold.toml", "wobble.toml", "gate.toml", "melody.toml", "shared-reverb.toml"];
+    const SOUND_EXAMPLES: [&str; 14] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml", "fold.toml", "wobble.toml", "gate.toml", "melody.toml", "shared-reverb.toml", "shared-lfo.toml"];
 
     fn example(name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(name);
@@ -1469,6 +1469,48 @@ mod tests {
         // (Measured: an rms of 0.00265, and no difference at all, the same bits; the test asks for a millionth of the rms, so that it does not hold a platform whose rounding is another's to the bit.)
         assert!(worst < 1e-6 * rms(&room), "the room is the room of the saw's cable alone: the largest difference is {worst}, against an rms of {}", rms(&room));
         assert_ne!(soloed, heard(&session), "the square is not in what is heard");
+    }
+
+    #[test]
+    fn the_shared_lfo_example_has_one_lfo_that_is_in_no_lane_with_a_cable_to_the_filter_of_each_lane() {
+        // The file's `to` names a plugin by its place in the session: the first effect of the first lane and of the second. They are the two filters, and the cables are the two depths.
+        let run = crate::app::testutil::load(&example("shared-lfo.toml"));
+        assert_eq!(run.model.free_modulators.len(), 1, "one modulator that is nobody's");
+        assert!(run.model.instruments.iter().all(|lane| lane.modulators.is_empty()), "and none in a lane");
+        let lfo = &run.model.free_modulators[0];
+        let filters: Vec<_> = run.model.instruments.iter().map(|lane| (lane.effects[0].name.as_str(), lane.effects[0].node)).collect();
+        assert_eq!(filters.iter().map(|(name, _)| *name).collect::<Vec<_>>(), ["Filter", "Filter"]);
+        let aims: Vec<_> = lfo.targets.iter().map(|t| (t.aim, t.param_name.as_str(), t.depth)).collect();
+        let (first, second) = (filters[0].1, filters[1].1);
+        assert_eq!(aims.len(), 2);
+        assert!(matches!(aims[0], (crate::app::model::Driven::Param { plugin, .. }, "cutoff", depth) if plugin == first && depth == 0.2), "{aims:?}");
+        assert!(matches!(aims[1], (crate::app::model::Driven::Param { plugin, .. }, "cutoff", depth) if plugin == second && depth == -0.2), "{aims:?}");
+    }
+
+    #[test]
+    fn the_shared_lfo_example_opens_the_filter_of_one_lane_as_it_shuts_the_filter_of_the_other_and_is_another_sound_without_its_lfo() {
+        // The LFO is a sine of 0.5 Hz that begins at its middle, so that it is at its top at 0.5 s and at its bottom at 1.5 s. The saw's filter has +0.2 of it and the square's has -0.2, so
+        // each lane alone (the other one muted: a mute is heard, and nothing else is changed) is brightest at the top for the saw and at the bottom for the square.
+        let session = example("shared-lfo.toml");
+        let lane_one = session.find("[[instrument]]\n").expect("the first lane") + "[[instrument]]\n".len();
+        let lane_two = session.rfind("[[instrument]]\n").expect("the second lane") + "[[instrument]]\n".len();
+        let saw_alone = format!("{}mute = true\n{}", &session[..lane_two], &session[lane_two..]);
+        let square_alone = format!("{}mute = true\n{}", &session[..lane_one], &session[lane_one..]);
+        let heard = |session: &str| play(session, &[48, 52, 55], 0.0, 3.0, 3.0);
+        let brightness = |x: &[f32]| (x.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>()).sqrt();
+        let window = |out: &[f32], from: f32| out[(from * 48_000.0) as usize..((from + 0.2) * 48_000.0) as usize].to_vec();
+        let (saw, square) = (heard(&saw_alone), heard(&square_alone));
+        let (saw_top, saw_bottom) = (brightness(&window(&saw, 0.4)), brightness(&window(&saw, 1.4)));
+        let (square_top, square_bottom) = (brightness(&window(&square, 0.4)), brightness(&window(&square, 1.4)));
+        // (Measured: the saw 0.142 at the top and 0.025 at the bottom, 5.8 times, and the square 0.037 and 0.166, 4.4 times; the test asks for 2.)
+        assert!(saw_top > 2.0 * saw_bottom, "the saw is brightest when the LFO is at its top: {saw_top} at the top and {saw_bottom} at the bottom");
+        assert!(square_bottom > 2.0 * square_top, "and the square when it is at its bottom: {square_top} at the top and {square_bottom} at the bottom");
+        // Without the LFO the two filters stay where they are set, and the session is another sound.
+        let without = &session[..session.find("\n[[modulator]]\n").expect("the example's LFO") + 1];
+        let (with, still) = (heard(&session), heard(without));
+        let worst = with.iter().zip(&still).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        // (Measured: 0.43, against a loudest sample of 0.47; the test asks for 0.05.)
+        assert!(worst > 0.05, "the LFO is heard: the largest difference is {worst}");
     }
 
     #[test]
