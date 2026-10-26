@@ -598,17 +598,16 @@ impl Rig {
             assert_eq!(facts.lanes, testutil::model_lanes(&self.ctl.model), "{what}: the lanes of the engine are not those of the model");
             assert_eq!(facts.groups, testutil::model_groups(&self.ctl.model), "{what}: the groups of the engine are not those of the model");
             assert_eq!(facts.cables, testutil::model_audio_cables(&self.ctl.model), "{what}: the audio cables of the engine are not those of the model");
-            // What each modulator's cables drive: the engine keeps the places of the plugins, the members and the siblings that they name up by its own fix-ups, and the model by its own.
+            // What each modulator is and what its cables are and drive: the nodes, the ids and the ports are the model's, as they are, in the engine (no place is translated: P5b-1).
             let model_racks = testutil::model_racks(&self.ctl.model);
-            let kinds = |racks: &crate::plugin::chain::RackCables| -> Vec<_> {
-                racks.iter().map(|(at, modulator, cables)| (*at, *modulator, cables.iter().map(|(kind, _)| kind.clone()).collect::<Vec<_>>())).collect()
+            let without_depths = |racks: &crate::plugin::chain::RackCables| -> Vec<_> {
+                racks.iter().map(|(at, modulator, node, cables)| (*at, *modulator, *node, cables.iter().map(|(edge, aim, _)| (*edge, *aim)).collect::<Vec<_>>())).collect()
             };
-            assert_eq!(kinds(&facts.racks), kinds(&model_racks), "{what}: the modulation cables of the engine are not those of the model");
+            assert_eq!(without_depths(&facts.racks), without_depths(&model_racks), "{what}: the modulation cables of the engine are not those of the model");
             // And their depths, but for those that another cable drives (the engine's is the one that cable has made of it this block, and the model's what the user set).
-            for ((at, modulator, engine), (_, _, model)) in facts.racks.iter().zip(&model_racks) {
-                for (place, ((_, engine), (_, model))) in engine.iter().zip(model).enumerate() {
-                    let edge = self.ctl.model.modulators(*at).and_then(|rack| rack.get(*modulator)).and_then(|m| m.targets.get(place)).map(|t| t.edge);
-                    if edge.is_some_and(|edge| !self.ctl.model.is_driven(crate::app::model::Driven::Depth(edge))) {
+            for ((at, modulator, _, engine), (_, _, _, model)) in facts.racks.iter().zip(&model_racks) {
+                for (place, ((edge, _, engine), (_, _, model))) in engine.iter().zip(model).enumerate() {
+                    if !self.ctl.model.is_driven(crate::app::model::Driven::Depth(*edge)) {
                         assert_eq!(engine, model, "{what}: {at:?} modulator {modulator}, cable {place}: the depth of the engine is not the model's");
                     }
                 }
@@ -616,12 +615,12 @@ impl Rig {
             // And the value that each is centred on, where the model has one (what a cable drives that is not a parameter of a plugin with a row, or a setting that the modulator has, has none).
             let model_cables = self.ctl.model.instruments.iter().enumerate().map(|(i, lane)| (crate::plugin::chain::ModulatorLocation::Lane(i), &lane.modulators));
             let model_cables = model_cables.chain(self.ctl.model.groups.iter().enumerate().map(|(i, group)| (crate::plugin::chain::ModulatorLocation::Group(i), &group.modulators)));
-            let aims: Vec<_> = model_cables.flat_map(|(at, rack)| rack.iter().enumerate().flat_map(move |(m, modulator)| modulator.targets.iter().map(move |cable| (at, m, cable.aim)))).collect();
+            let aims: Vec<_> = model_cables.flat_map(|(at, rack)| rack.iter().enumerate().flat_map(move |(m, modulator)| modulator.targets.iter().map(move |cable| (at, m, cable.edge, cable.aim)))).collect();
             assert_eq!(aims.len(), facts.bases.len(), "{what}: the engine has as many cables as the model");
-            for ((at, modulator, aim), (engine_at, engine_modulator, kind, base)) in aims.into_iter().zip(&facts.bases) {
-                assert_eq!((at, modulator), (*engine_at, *engine_modulator), "{what}: the cables are in the same places");
+            for ((at, modulator, edge, aim), (engine_at, engine_modulator, engine_edge, engine_aim, base)) in aims.into_iter().zip(&facts.bases) {
+                assert_eq!((at, modulator, edge, aim), (*engine_at, *engine_modulator, *engine_edge, *engine_aim), "{what}: the cables are in the same places and drive the same things");
                 if let Some(centre) = self.ctl.model.centre_of(aim) {
-                    assert_eq!(*base, centre, "{what}: {at:?} modulator {modulator}: the cable {kind:?} is centred on another value in the engine than in the model");
+                    assert_eq!(*base, centre, "{what}: {at:?} modulator {modulator}: the cable {aim:?} is centred on another value in the engine than in the model");
                 }
             }
         }

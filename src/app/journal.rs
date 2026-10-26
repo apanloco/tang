@@ -32,7 +32,7 @@ use crate::app::apply::{Done, PluginAt};
 use crate::app::controller::{has_audio_output, outputs_fit_the_chain, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
 use crate::app::model::{mod_source_slot_to_graph, modulator_slot_commands, AudioCable, EventCable, GroupNode, InstrumentNode, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable, SourceKind, SourceNode};
-use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModTargetKind, ModulatorLocation, NoteRemapper};
+use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, NoteRemapper};
 use crate::plugin::{self, Plugin};
 use crate::session::RemapTarget;
 
@@ -196,10 +196,9 @@ pub(super) fn lane_words(lane: &InstrumentNode) -> String {
     }
 }
 
-/// A cable as the audio thread is told of it when it goes in: the place its racks name what it drives by (`kind`: the model's `kind_of`, from the structure there is when it goes in),
-/// and centred on `base_value`.
-fn cable_for_the_audio_thread(slot: &ModTargetSlot, kind: ModTargetKind, base_value: f32) -> ModTarget {
-    ModTarget { kind, depth: slot.depth, base_value, param_min: slot.param_min, param_max: slot.param_max, effective: slot.effective }
+/// A cable as the audio thread is told of it when it goes in: under its id, driving what it drove, and centred on `base_value`.
+fn cable_for_the_audio_thread(slot: &ModTargetSlot, base_value: f32) -> ModTarget {
+    ModTarget { edge: slot.edge, aim: slot.aim, depth: slot.depth, base_value, param_min: slot.param_min, param_max: slot.param_max, effective: slot.effective }
 }
 
 impl Controller {
@@ -480,15 +479,15 @@ impl Controller {
             Inverse::Cable(RemovedCable { at, mod_index, target_index, slot, base_value, .. }) => {
                 // (The place it went to, which is the last for one past the end: the audio thread is told the same.)
                 let Some(place) = self.model.insert_target_at(at, mod_index, target_index, slot) else { return };
-                // What the audio thread's racks call what it drives is what the structure says now, which is what it was when the cable went: the history is undone in the reverse order.
-                let Some(kind) = self.model.kind_of_target(at, mod_index, place) else {
+                // What it drove is where it was when the cable went (the history is undone in the reverse order), unless the session was changed without the history.
+                if self.model.kind_of_target(at, mod_index, place).is_none() {
                     log::warn!("a cable was not put back: what it drove is not there");
                     if let Some(rack) = self.model.modulators_mut(at) {
                         rack[mod_index].targets.remove(place);
                     }
                     return;
-                };
-                let target = cable_for_the_audio_thread(&self.model.modulators(at).expect("the rack it went into")[mod_index].targets[place], kind, base_value);
+                }
+                let target = cable_for_the_audio_thread(&self.model.modulators(at).expect("the rack it went into")[mod_index].targets[place], base_value);
                 let _ = self.cmd_tx.send(match at {
                     ModulatorLocation::Lane(inst) => GraphCommand::InsertModTarget { inst, mod_index, target_index: place, target },
                     ModulatorLocation::Group(group) => GraphCommand::InsertGroupModTarget { group, mod_index, target_index: place, target },
@@ -519,17 +518,18 @@ impl Controller {
             Inverse::Modulator { at, index, modulator, bases } => {
                 debug_assert_eq!(modulator.targets.len(), bases.len(), "a base for each cable");
                 let source = mod_source_slot_to_graph(&modulator.source);
-                let (output, position) = (modulator.output, modulator.position);
+                let (output, position, node) = (modulator.output, modulator.position, modulator.node);
                 // (The place it went to, which is the last for one past the end: the audio thread is told the same.)
                 let Some(place) = self.model.insert_modulator_at(at, index, modulator) else { return };
-                // Its cables are told as the places that the structure says now, with it in: all of its own are there, so that a cable to the depth of another of them has it.
+                // Its cables are told as they are, with it in: all of its own are there, so that a cable to the depth of another of them has it.
                 let mut cables: Vec<ModTarget> = Vec::new();
                 let mut lost: Vec<usize> = Vec::new();
                 for (target_index, base) in bases.into_iter().enumerate() {
                     let slot = &self.model.modulators(at).expect("the rack it went into")[place].targets[target_index];
-                    match self.model.kind_of(at, place, slot.aim) {
-                        Some(kind) => cables.push(cable_for_the_audio_thread(slot, kind, base)),
-                        None => lost.push(target_index),
+                    if self.model.kind_of(at, place, slot.aim).is_some() {
+                        cables.push(cable_for_the_audio_thread(slot, base));
+                    } else {
+                        lost.push(target_index);
                     }
                 }
                 // (A cable that drives nothing that is there now, because the session was changed without the history, is not put back: not in the model either.)
@@ -540,8 +540,8 @@ impl Controller {
                     }
                 }
                 let _ = self.cmd_tx.send(match at {
-                    ModulatorLocation::Lane(inst) => GraphCommand::InsertModulator { inst, index: place, source },
-                    ModulatorLocation::Group(group) => GraphCommand::InsertGroupModulator { group, index: place, source },
+                    ModulatorLocation::Lane(inst) => GraphCommand::InsertModulator { inst, index: place, source, node },
+                    ModulatorLocation::Group(group) => GraphCommand::InsertGroupModulator { group, index: place, source, node },
                 });
                 // It publishes what it puts out (and where it is) where it did, and its own cables come after it, in the order they had.
                 for command in modulator_slot_commands(at, place, output, position) {

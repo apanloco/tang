@@ -697,7 +697,7 @@ mod tests {
     use crate::app::controller::Controller;
     use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
     use crate::app::intent::{Applied, Event, IntentError, ModulatorKind, PatternField};
-    use crate::app::model::{Made, ModSourceSlot, NodePath, SessionModel, SourceKind, SourceNode};
+    use crate::app::model::{Driven, EdgeId, Made, ModSourceSlot, NodePath, SessionModel, SourceKind, SourceNode};
     use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load, wire};
     use crate::session::{Feed, Route};
     use crate::plugin::chain::{CableFrom, CableTo};
@@ -2717,7 +2717,7 @@ depth = 0.4
         assert_eq!(written(&ctl), saved);
         let commands = sent(&engine);
         assert_eq!(commands.len(), 1, "{commands:?}");
-        assert!(commands[0].starts_with("InsertModTarget inst=0 mod=0 target=1 kind=PluginParam { slot: 0, param_index: "), "{commands:?}");
+        assert!(commands[0].starts_with(&format!("InsertModTarget inst=0 mod=0 target=1 aim=Param {{ plugin: {:?}, ", node(&ctl, NodePath::Instrument(0)))), "{commands:?}");
         assert_eq!((undo_label(&ctl).as_deref(), redo_label(&ctl).as_deref()), (Some("set detune"), Some("remove a cable")), "what was done before it is still to be undone");
         assert!(ctl.dirty);
 
@@ -2750,8 +2750,8 @@ depth = 0.4
         assert_eq!(picture(&ctl), before);
         let commands = sent(&engine);
         assert_eq!(commands.len(), 2, "{commands:?}");
-        assert!(commands[0].starts_with("InsertModTarget inst=0 mod=0 target=2 kind=PluginParam { slot: 1,"), "the cable first: {commands:?}");
-        assert!(commands[1].starts_with("InsertModTarget inst=0 mod=1 target=0 kind=ModulatorDepth { mod_index: 0, target_index: 2 }"), "then what drives its depth: {commands:?}");
+        assert!(commands[0].starts_with(&format!("InsertModTarget inst=0 mod=0 target=2 aim=Param {{ plugin: {:?}, ", node(&ctl, NodePath::Effect { inst: 0, index: 0 }))), "the cable first: {commands:?}");
+        assert!(commands[1].starts_with(&testutil::told(&ctl.model, "InsertModTarget inst=0 mod=1 target=0 kind=ModulatorDepth { mod_index: 0, target_index: 2 }")), "then what drives its depth: {commands:?}");
         ctl.redo().unwrap();
         assert!(ctl.model.locate_edge(cutoff).is_none() && ctl.model.locate_edge(depth_cable).is_none());
         ctl.undo().unwrap();
@@ -2767,12 +2767,12 @@ depth = 0.4
         let mut graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
         let mut ctl = Controller::new(model, handles, None);
         graph.drain_commands();
-        // What the model says every cable is, in the audio thread's words, and what the audio thread has.
-        let in_the_model = |ctl: &Controller| -> Vec<(crate::plugin::chain::ModulatorLocation, usize, crate::plugin::chain::ModTargetKind)> {
+        // What the model says every cable is and drives, and what the audio thread has.
+        let in_the_model = |ctl: &Controller| -> Vec<(crate::plugin::chain::ModulatorLocation, usize, EdgeId, Driven)> {
             let at = crate::plugin::chain::ModulatorLocation::Lane(0);
-            (0..ctl.model.instruments[0].modulators.len()).flat_map(|m| crate::app::testutil::kinds_at(&ctl.model, at, m).into_iter().map(move |kind| (at, m, kind))).collect()
+            ctl.model.instruments[0].modulators.iter().enumerate().flat_map(|(m, modulator)| modulator.targets.iter().map(move |t| (at, m, t.edge, t.aim))).collect()
         };
-        let on_the_audio_thread = |graph: &AudioGraph| -> Vec<_> { graph.cable_bases().into_iter().map(|(at, m, kind, _)| (at, m, kind)).collect() };
+        let on_the_audio_thread = |graph: &AudioGraph| -> Vec<_> { graph.cable_bases().into_iter().map(|(at, m, edge, aim, _)| (at, m, edge, aim)).collect() };
         let before = (graph.cable_bases(), in_the_model(&ctl));
         assert_eq!(on_the_audio_thread(&graph), before.1);
 
@@ -2871,14 +2871,14 @@ depth = 0.5
         let commands = sent(&engine);
         assert_eq!(commands.len(), 2, "{commands:?}");
         assert!(commands[0].starts_with("InsertModTarget inst=0 mod=0 target=1 "), "{commands:?}");
-        assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=1 target=0 kind=GroupMemberMod { member: 0, mod_index: 0, field: Depth(1) }"), "{commands:?}");
+        assert!(commands[1].starts_with(&testutil::told(&ctl.model, "InsertGroupModTarget group=0 mod=1 target=0 kind=GroupMemberMod { member: 0, mod_index: 0, field: Depth(1) }")), "{commands:?}");
         // A cable of the group's first modulator, and nothing else, by the group's command.
         ctl.apply(Intent::RemoveEdge { edge: group_bus }).unwrap();
         sent(&engine);
         ctl.undo().unwrap();
         let commands = sent(&engine);
         assert_eq!(commands.len(), 1, "{commands:?}");
-        assert!(commands[0].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupBus { effect_index: 0, param_index: 1 }"), "{commands:?}");
+        assert!(commands[0].starts_with(&testutil::told(&ctl.model, "InsertGroupModTarget group=0 mod=0 target=0 kind=GroupBus { effect_index: 0, param_index: 1 }")), "{commands:?}");
     }
 
     #[test]
@@ -2914,7 +2914,8 @@ depth = 0.5
         // The user turns the knob that the cable no longer drives, and then the cable comes back: it is centred on the new value, which is what is set.
         ctl.undo().unwrap();
         graph.drain_commands();
-        let centre = |graph: &AudioGraph| graph.cable_bases().into_iter().find(|(_, _, kind, _)| matches!(kind, crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index } if *param_index == detune_index)).map(|(.., base)| base);
+        let detune_of_the_lane = Driven::Param { plugin: lane(&ctl), index: detune_index };
+        let centre = |graph: &AudioGraph| graph.cable_bases().into_iter().find(|(_, _, _, aim, _)| *aim == detune_of_the_lane).map(|(.., base)| base);
         assert_eq!(centre(&graph), Some(7.0), "the value that was set when the cable went");
     }
 
@@ -3160,7 +3161,7 @@ depth = 0.9
         (crate::app::graph::Graph, crate::app::layout::TelemetryLayout),
         String,
         Vec<String>,
-        Vec<(crate::plugin::chain::ModulatorLocation, usize, crate::plugin::chain::ModTargetKind, Option<f32>)>,
+        Vec<(crate::plugin::chain::ModulatorLocation, usize, EdgeId, Driven, f32)>,
     );
 
     /// What the modulators are, as each place that says so tells it: the picture a client is given (the nodes and cables with their ids, and the layout of
@@ -3168,8 +3169,7 @@ depth = 0.9
     /// is centred on.
     fn modulators_as_they_are(ctl: &Controller, graph: &crate::plugin::chain::AudioGraph) -> Modulators {
         // (Every cable drives something: a file that has one that does not, to the depth of a cable that is not there, is loaded without it.)
-        let centres = graph.cable_bases().into_iter().map(|(at, modulator, kind, centre)| (at, modulator, kind, Some(centre))).collect();
-        (picture(ctl), written(ctl), graph.modulator_dump(), centres)
+        (picture(ctl), written(ctl), graph.modulator_dump(), graph.cable_bases())
     }
 
     /// The same places say the same: each of them on its own, so that a failure says which.
@@ -3439,8 +3439,8 @@ depth = 0.9
         assert_eq!(detune(&ctl).1, 3.0);
         ctl.undo().unwrap();
         graph.drain_commands();
-        let centre = |kind: crate::plugin::chain::ModTargetKind| graph.cable_bases().into_iter().find(|(_, _, k, _)| *k == kind).map(|(.., base)| base);
-        assert_eq!(centre(crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: detune_index }), Some(3.0), "the value that was set when it went");
+        let centre = |aim: Driven| graph.cable_bases().into_iter().find(|(_, _, _, a, _)| *a == aim).map(|(.., base)| base);
+        assert_eq!(centre(Driven::Param { plugin: lane(&ctl), index: detune_index }), Some(3.0), "the value that was set when it went");
     }
 
     #[test]
@@ -3465,10 +3465,10 @@ depth = 0.9
         assert_eq!(slots, [format!("SetModulatorOutput Lane(0) index=1 slot={}", output.index())]);
         assert_eq!(commands.len(), 5, "{commands:?}");
         assert!(commands[0].starts_with("InsertModulator inst=0 index=1 source=Envelope { attack: 0.02, decay: 0.4, sustain: 0.6, release: 0.8,"), "{commands:?}");
-        assert!(commands[1].starts_with(&format!("AddModTarget inst=0 mod=1 kind=PluginParam {{ slot: 0, param_index: {volume} }}")), "{commands:?}");
-        assert!(commands[2].starts_with("AddModTarget inst=0 mod=1 kind=ModulatorRate { mod_index: 0 }"), "{commands:?}");
-        assert!(commands[3].starts_with("InsertModTarget inst=0 mod=2 target=0 kind=ModulatorDepth { mod_index: 1, target_index: 0 }"), "{commands:?}");
-        assert!(commands[4].starts_with("InsertModTarget inst=0 mod=2 target=0 kind=ModulatorAttack { mod_index: 1 }"), "{commands:?}");
+        assert!(commands[1].starts_with(&testutil::told(&ctl.model, &format!("AddModTarget inst=0 mod=1 kind=PluginParam {{ slot: 0, param_index: {volume} }}"))), "{commands:?}");
+        assert!(commands[2].starts_with(&testutil::told(&ctl.model, "AddModTarget inst=0 mod=1 kind=ModulatorRate { mod_index: 0 }")), "{commands:?}");
+        assert!(commands[3].starts_with(&testutil::told(&ctl.model, "InsertModTarget inst=0 mod=2 target=0 kind=ModulatorDepth { mod_index: 1, target_index: 0 }")), "{commands:?}");
+        assert!(commands[4].starts_with(&testutil::told(&ctl.model, "InsertModTarget inst=0 mod=2 target=0 kind=ModulatorAttack { mod_index: 1 }")), "{commands:?}");
     }
 
     /// A lane with a step sequencer and an LFO after it.
@@ -3542,7 +3542,7 @@ depth = 0.9
         let (commands, slots) = engine.drain();
         assert_eq!(slots, [format!("SetModulatorOutput Group(0) index=1 slot={}", output.index())]);
         assert!(commands[0].starts_with("InsertGroupModulator group=0 index=1 source=Lfo { waveform: Sine, rate: 2.0,"), "{commands:?}");
-        assert!(commands[1].starts_with("AddGroupModTarget group=0 mod=1 kind=GroupMemberMod { member: 0, mod_index: 0, field: Depth(1) }"), "{commands:?}");
+        assert!(commands[1].starts_with(&testutil::told(&ctl.model, "AddGroupModTarget group=0 mod=1 kind=GroupMemberMod { member: 0, mod_index: 0, field: Depth(1) }")), "{commands:?}");
         assert_eq!(commands.len(), 2);
 
         // The member's own modulator: the group's cable to the depth of its cable goes first, by the group's command, and comes back last.
@@ -3552,7 +3552,7 @@ depth = 0.9
         ctl.undo().unwrap();
         let (commands, _) = engine.drain();
         assert!(commands[0].starts_with("InsertModulator inst=0 index=0 source=Lfo {"), "{commands:?}");
-        assert!(commands.last().unwrap().starts_with("InsertGroupModTarget group=0 mod=1 target=0 kind=GroupMemberMod { member: 0, mod_index: 0, field: Depth(1) }"), "{commands:?}");
+        assert!(commands.last().unwrap().starts_with(&testutil::told(&ctl.model, "InsertGroupModTarget group=0 mod=1 target=0 kind=GroupMemberMod { member: 0, mod_index: 0, field: Depth(1) }")), "{commands:?}");
     }
 
     #[test]
@@ -3826,9 +3826,9 @@ plugin = "builtin:reverb"
         // then the cables, the last that went first, each with what it was centred on.
         assert_eq!(commands.len(), 4, "{commands:?}");
         assert!(commands[0].starts_with("InsertEffect inst=0 index=2 plugin=Filter mix="), "{commands:?}");
-        assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=0 target=1 kind=GroupMember { member: 0, slot: 3,"), "{commands:?}");
-        assert!(commands[2].starts_with("InsertModTarget inst=0 mod=0 target=1 kind=PluginParam { slot: 3,"), "{commands:?}");
-        assert!(commands[3].starts_with("InsertModTarget inst=0 mod=1 target=0 kind=ModulatorDepth { mod_index: 0, target_index: 1 }"), "{commands:?}");
+        assert!(commands[1].starts_with(&format!("InsertGroupModTarget group=0 mod=0 target=1 aim=Param {{ plugin: {third:?}, ")), "{commands:?}");
+        assert!(commands[2].starts_with(&format!("InsertModTarget inst=0 mod=0 target=1 aim=Param {{ plugin: {third:?}, ")), "{commands:?}");
+        assert!(commands[3].starts_with(&testutil::told(&ctl.model, "InsertModTarget inst=0 mod=1 target=0 kind=ModulatorDepth { mod_index: 0, target_index: 1 }")), "{commands:?}");
     }
 
     #[test]
@@ -3843,7 +3843,7 @@ plugin = "builtin:reverb"
         let (commands, _) = engine.drain();
         assert_eq!(commands.len(), 2, "{commands:?}");
         assert!(commands[0].starts_with("InsertGroupEffect group=0 index=1 plugin=Filter mix="), "{commands:?}");
-        assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupBus { effect_index: 1,"), "{commands:?}");
+        assert!(commands[1].starts_with(&format!("InsertGroupModTarget group=0 mod=0 target=0 aim=Param {{ plugin: {bus_filter:?}, ")), "{commands:?}");
     }
 
     // -- audio cables (P3c of docs/patch-graph.md §11.6) --
@@ -4621,7 +4621,7 @@ depth = 0.6
         assert_eq!(commands.len(), 3, "{commands:?}");
         assert_eq!(commands[0], "InsertInstrument index=0 plugins=2");
         assert_eq!(commands[1], "SetGlobalBpm bpm=90.0");
-        assert!(commands[2].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 0, slot: 0,"), "{commands:?}");
+        assert!(commands[2].starts_with(&format!("InsertGroupModTarget group=0 mod=0 target=0 aim=Param {{ plugin: {first:?}, ")), "{commands:?}");
     }
 
     #[test]
@@ -5203,9 +5203,10 @@ plugin = "builtin:osc"
         assert_eq!(commands.len(), 4, "{commands:?}");
         assert_eq!(commands[0], "InsertGroup index=0 plugins=2 members=[0, 2]");
         // (Each was taken out at the first place, the rest moving up, so each goes back at the first, the last first.)
-        assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 1, slot: 1,"), "{commands:?}");
-        assert!(commands[2].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 0, slot: 0,"), "{commands:?}");
-        assert!(commands[3].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupBus { effect_index: 0,"), "{commands:?}");
+        let (second_members_filter, first_member, bus_effect) = (node(&ctl, NodePath::Effect { inst: 2, index: 0 }), node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::GroupEffect { group: 0, index: 0 }));
+        assert!(commands[1].starts_with(&format!("InsertGroupModTarget group=0 mod=0 target=0 aim=Param {{ plugin: {second_members_filter:?}, ")), "{commands:?}");
+        assert!(commands[2].starts_with(&format!("InsertGroupModTarget group=0 mod=0 target=0 aim=Param {{ plugin: {first_member:?}, ")), "{commands:?}");
+        assert!(commands[3].starts_with(&format!("InsertGroupModTarget group=0 mod=0 target=0 aim=Param {{ plugin: {bus_effect:?}, ")), "{commands:?}");
     }
 
     #[test]
@@ -5521,8 +5522,8 @@ plugin = "builtin:reverb"
         let (commands, _) = engine.drain();
         assert_eq!(commands.len(), 3, "{commands:?}");
         assert_eq!(commands[0], "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=true");
-        assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 0, slot: 0,"), "{commands:?}");
-        assert!(commands[2].starts_with("InsertModTarget inst=0 mod=0 target=0 kind=PluginParam { slot: 0,"), "{commands:?}");
+        assert!(commands[1].starts_with(&format!("InsertGroupModTarget group=0 mod=0 target=0 aim=Param {{ plugin: {lane0:?}, ")), "{commands:?}");
+        assert!(commands[2].starts_with(&format!("InsertModTarget inst=0 mod=0 target=0 aim=Param {{ plugin: {lane0:?}, ")), "{commands:?}");
         assert_eq!((written(&ctl), picture(&ctl)), before, "the model has what it had, the values the user set among it");
     }
 
@@ -5578,8 +5579,8 @@ plugin = "builtin:reverb"
         let (commands, _) = engine.drain();
         assert_eq!(commands.len(), 3, "{commands:?}");
         assert_eq!(commands[0], "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=true");
-        assert!(commands[1].starts_with("InsertGroupModTarget group=0 mod=0 target=0 kind=GroupMember { member: 0, slot: 0,"), "{commands:?}");
-        assert!(commands[2].starts_with("InsertModTarget inst=0 mod=0 target=0 kind=PluginParam { slot: 0,"), "{commands:?}");
+        assert!(commands[1].starts_with(&format!("InsertGroupModTarget group=0 mod=0 target=0 aim=Param {{ plugin: {lane0:?}, ")), "{commands:?}");
+        assert!(commands[2].starts_with(&format!("InsertModTarget inst=0 mod=0 target=0 aim=Param {{ plugin: {lane0:?}, ")), "{commands:?}");
         assert_eq!((written(&ctl), picture(&ctl)), before, "the model has what it had, the values the user set among it");
     }
 

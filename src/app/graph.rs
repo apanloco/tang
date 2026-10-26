@@ -25,8 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::intent::ModulatorField;
-use crate::app::model::{Driven, EdgeId, FieldTarget, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, SourceKind};
+use crate::app::model::{Driven, EdgeId, FieldTarget, ModSetting, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, SourceKind};
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::{Feed, NodeUi, Route};
 
@@ -485,12 +484,11 @@ impl SessionModel {
             Driven::Param { plugin, index } => Some(Endpoint { node: plugin, port: Port::Param { index } }),
             Driven::Setting { modulator, field } => {
                 let port = match field {
-                    ModulatorField::Rate => Port::Rate,
-                    ModulatorField::Attack => Port::Attack,
-                    ModulatorField::Decay => Port::Decay,
-                    ModulatorField::Sustain => Port::Sustain,
-                    ModulatorField::Release => Port::Release,
-                    _ => return None,
+                    ModSetting::Rate => Port::Rate,
+                    ModSetting::Attack => Port::Attack,
+                    ModSetting::Decay => Port::Decay,
+                    ModSetting::Sustain => Port::Sustain,
+                    ModSetting::Release => Port::Release,
                 };
                 Some(Endpoint { node: modulator, port })
             }
@@ -1465,10 +1463,10 @@ depth = 0.1
             // A plugin that is not there, a node that is not a plugin, a modulator that is not there and a cable that is not there.
             Driven::Param { plugin: crate::app::model::NodeId(9_999), index: 0 },
             Driven::Param { plugin: own, index: 0 },
-            Driven::Setting { modulator: crate::app::model::NodeId(9_998), field: crate::app::intent::ModulatorField::Rate },
+            Driven::Setting { modulator: crate::app::model::NodeId(9_998), field: crate::app::model::ModSetting::Rate },
             Driven::Depth(EdgeId(9_997)),
             // The modulator's own settings: a cable like that does nothing.
-            Driven::Setting { modulator: own, field: crate::app::intent::ModulatorField::Rate },
+            Driven::Setting { modulator: own, field: crate::app::model::ModSetting::Rate },
         ]
         .into_iter()
         .enumerate()
@@ -1482,8 +1480,7 @@ depth = 0.1
 
     #[test]
     fn a_group_target_whose_aim_is_gone_has_no_edge() {
-        use crate::app::intent::ModulatorField;
-        use crate::app::model::{Driven, NodeId};
+        use crate::app::model::{Driven, ModSetting, NodeId};
         let mut model = load(GROUPS).model;
         let before = model.graph().edges.len();
         let rack = &mut model.groups[0].modulators[0];
@@ -1492,10 +1489,10 @@ depth = 0.1
             // A plugin, a modulator and a cable that are not there, and a node that is not a plugin.
             Driven::Param { plugin: NodeId(9_999), index: 0 },
             Driven::Param { plugin: own, index: 0 },
-            Driven::Setting { modulator: NodeId(9_998), field: ModulatorField::Rate },
+            Driven::Setting { modulator: NodeId(9_998), field: ModSetting::Rate },
             Driven::Depth(EdgeId(9_997)),
             // The modulator's own settings: a cable like that does nothing.
-            Driven::Setting { modulator: own, field: ModulatorField::Rate },
+            Driven::Setting { modulator: own, field: ModSetting::Rate },
         ]
         .into_iter()
         .enumerate()

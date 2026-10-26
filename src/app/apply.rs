@@ -3987,7 +3987,7 @@ type = "steps"
         let commands = sent(&engine);
         assert_eq!(commands.len(), 2, "{commands:?}");
         assert!(commands[0].starts_with("InsertModulator inst=0 index=0 source=Lfo"), "{commands:?}");
-        assert!(commands[1].starts_with(&format!("AddModTarget inst=0 mod=0 kind=PluginParam {{ slot: 0, param_index: {detune} }} depth=0.500")), "{commands:?}");
+        assert!(commands[1].starts_with(&testutil::told(&ctl.model, &format!("AddModTarget inst=0 mod=0 kind=PluginParam {{ slot: 0, param_index: {detune} }} depth=0.500"))), "{commands:?}");
         assert!(ctl.dirty);
         ctl.model.check_ids().unwrap();
     }
@@ -4071,7 +4071,7 @@ type = "steps"
         assert_eq!(ctl.model.instruments[0].modulators.len(), 1, "the lane's rack is as it was");
         let commands = sent(&engine);
         assert!(commands[0].starts_with("InsertGroupModulator group=0 index=1"), "{commands:?}");
-        assert!(commands[1].starts_with("AddGroupModTarget group=0 mod=1 kind=GroupBus"), "{commands:?}");
+        assert!(commands[1].starts_with(&testutil::told(&ctl.model, &format!("AddGroupModTarget group=0 mod=1 kind=GroupBus {{ effect_index: 0, param_index: {cutoff} }}"))), "{commands:?}");
         ctl.model.check_ids().unwrap();
     }
 
@@ -4094,9 +4094,9 @@ type = "steps"
         assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Group(0), 2, 0), Some(ModTargetKind::ModulatorRate { mod_index: 0 }));
         let commands = sent(&engine);
         assert!(commands[0].starts_with("InsertModulator inst=0 index=4"), "{commands:?}");
-        assert!(commands[1].starts_with("AddModTarget inst=0 mod=4 kind=ModulatorRate { mod_index: 0 }"), "{commands:?}");
+        assert!(commands[1].starts_with(&testutil::told(&ctl.model, "AddModTarget inst=0 mod=4 kind=ModulatorRate { mod_index: 0 }")), "{commands:?}");
         assert!(commands[2].starts_with("InsertGroupModulator group=0 index=2"), "{commands:?}");
-        assert!(commands[3].starts_with("AddGroupModTarget group=0 mod=2 kind=ModulatorRate { mod_index: 0 }"), "{commands:?}");
+        assert!(commands[3].starts_with(&testutil::told(&ctl.model, "AddGroupModTarget group=0 mod=2 kind=ModulatorRate { mod_index: 0 }")), "{commands:?}");
         ctl.model.check_ids().unwrap();
     }
 
@@ -4240,7 +4240,7 @@ type = "midi"
     fn command(prefix: &str, kind: &str, ctl: &Controller, path: NodePath, name: &str) -> String {
         let (_, value) = param(ctl, path, name);
         let (min, max) = bounds(ctl, path, name);
-        format!("{prefix} kind={kind} depth=0.500 base={value:.3} range=[{min:.3}, {max:.3}]")
+        testutil::told(&ctl.model, &format!("{prefix} kind={kind} depth=0.500 base={value:.3} range=[{min:.3}, {max:.3}]"))
     }
 
     #[test]
@@ -4536,25 +4536,25 @@ type = "midi"
         let applied = ctl.apply(cable_to_field(lfo, envelope, Port::Attack)).unwrap();
         assert_eq!(applied, Applied::restructured(1));
         assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
-        assert_eq!(sent(&engine), ["AddModTarget inst=0 mod=0 kind=ModulatorAttack { mod_index: 1 } depth=0.500 base=0.010 range=[0.001, 10.000]"]);
+        assert_eq!(sent(&engine), [testutil::told(&ctl.model, "AddModTarget inst=0 mod=0 kind=ModulatorAttack { mod_index: 1 } depth=0.500 base=0.010 range=[0.001, 10.000]")]);
         for (port, text) in [
             (Port::Decay, "kind=ModulatorDecay { mod_index: 1 } depth=0.500 base=0.300 range=[0.001, 10.000]"),
             (Port::Sustain, "kind=ModulatorSustain { mod_index: 1 } depth=0.500 base=0.400 range=[0.000, 1.000]"),
             (Port::Release, "kind=ModulatorRelease { mod_index: 1 } depth=0.500 base=0.500 range=[0.001, 10.000]"),
         ] {
             ctl.apply(cable_to_field(lfo, envelope, port)).unwrap_or_else(|e| panic!("{port:?}: {e}"));
-            assert_eq!(sent(&engine), [format!("AddModTarget inst=0 mod=0 {text}")]);
+            assert_eq!(sent(&engine), [testutil::told(&ctl.model, &format!("AddModTarget inst=0 mod=0 {text}"))]);
         }
         // The depth of the envelope's second cable, which is named by the cable.
         let edge = ctl.model.instruments[0].modulators[1].targets[1].edge;
         ctl.apply(cable_to_field(lfo, envelope, Port::Depth { edge })).unwrap();
         assert_eq!(
             sent(&engine),
-            ["AddModTarget inst=0 mod=0 kind=ModulatorDepth { mod_index: 1, target_index: 1 } depth=0.500 base=0.700 range=[-1.000, 1.000]"]
+            [testutil::told(&ctl.model, "AddModTarget inst=0 mod=0 kind=ModulatorDepth { mod_index: 1, target_index: 1 } depth=0.500 base=0.700 range=[-1.000, 1.000]")]
         );
         // And the rate of the sibling that is an LFO, from the envelope: the other way.
         ctl.apply(cable_to_field(envelope, lfo, Port::Rate)).unwrap();
-        assert_eq!(sent(&engine), ["AddModTarget inst=0 mod=1 kind=ModulatorRate { mod_index: 0 } depth=0.500 base=3.000 range=[0.010, 50.000]"]);
+        assert_eq!(sent(&engine), [testutil::told(&ctl.model, "AddModTarget inst=0 mod=1 kind=ModulatorRate { mod_index: 0 } depth=0.500 base=3.000 range=[0.010, 50.000]")]);
 
         // The model has them, as the TUI's selector binds them: the label says whose, the depth is the new cable's.
         let targets = &ctl.model.instruments[0].modulators[0].targets;
@@ -4591,22 +4591,22 @@ type = "midi"
         ctl.apply(cable_to_field(group_lfo, first_lfo, Port::Rate)).unwrap();
         assert_eq!(
             sent(&engine),
-            ["AddGroupModTarget group=0 mod=0 kind=GroupMemberMod { member: 0, mod_index: 0, field: Rate } depth=0.500 base=3.000 range=[0.010, 50.000]"]
+            [testutil::told(&ctl.model, "AddGroupModTarget group=0 mod=0 kind=GroupMemberMod { member: 0, mod_index: 0, field: Rate } depth=0.500 base=3.000 range=[0.010, 50.000]")]
         );
         ctl.apply(cable_to_field(group_lfo, second_lfo, Port::Rate)).unwrap();
         assert_eq!(
             sent(&engine),
-            ["AddGroupModTarget group=0 mod=0 kind=GroupMemberMod { member: 1, mod_index: 0, field: Rate } depth=0.500 base=1.000 range=[0.010, 50.000]"]
+            [testutil::told(&ctl.model, "AddGroupModTarget group=0 mod=0 kind=GroupMemberMod { member: 1, mod_index: 0, field: Rate } depth=0.500 base=1.000 range=[0.010, 50.000]")]
         );
         let edge = ctl.model.instruments[0].modulators[1].targets[0].edge;
         ctl.apply(cable_to_field(group_lfo, first_envelope, Port::Depth { edge })).unwrap();
         assert_eq!(
             sent(&engine),
-            ["AddGroupModTarget group=0 mod=0 kind=GroupMemberMod { member: 0, mod_index: 1, field: Depth(0) } depth=0.500 base=0.200 range=[-1.000, 1.000]"]
+            [testutil::told(&ctl.model, "AddGroupModTarget group=0 mod=0 kind=GroupMemberMod { member: 0, mod_index: 1, field: Depth(0) } depth=0.500 base=0.200 range=[-1.000, 1.000]")]
         );
         // The group's own siblings are addressed as a lane's are.
         ctl.apply(cable_to_field(group_lfo, sibling_envelope, Port::Decay)).unwrap();
-        assert_eq!(sent(&engine), ["AddGroupModTarget group=0 mod=0 kind=ModulatorDecay { mod_index: 1 } depth=0.500 base=0.300 range=[0.001, 10.000]"]);
+        assert_eq!(sent(&engine), [testutil::told(&ctl.model, "AddGroupModTarget group=0 mod=0 kind=ModulatorDecay { mod_index: 1 } depth=0.500 base=0.300 range=[0.001, 10.000]")]);
 
         let targets = &ctl.model.groups[0].modulators[0].targets;
         assert_eq!(

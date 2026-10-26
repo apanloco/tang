@@ -38,10 +38,10 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::app::catalog::Catalog;
 use crate::app::history::History;
 use crate::app::journal::{Inverse, Journal, Kept, Replaced};
-use crate::app::intent::{Applied, IntentError, ModulatorField};
+use crate::app::intent::{Applied, IntentError};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
-    AudioCable, CABLE_GAIN_MAX, Driven, EdgeId, GroupNode, InstrumentNode, Made, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState,
+    AudioCable, CABLE_GAIN_MAX, Driven, EdgeId, GroupNode, InstrumentNode, Made, ModSetting, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState,
     PluginSlot, SessionModel, default_effect_mix, mod_source_slot_to_graph, modulator_slot_commands,
 };
 use crate::app::save::to_save;
@@ -481,10 +481,11 @@ impl Controller {
     pub fn add_modulator(&mut self, at: ModulatorLocation, source: ModSourceSlot) -> Option<usize> {
         let index = self.model.modulators_mut(at)?.len();
         let graph_source = mod_source_slot_to_graph(&source);
+        let node = self.model.alloc_node();
         let _ = self.cmd_tx.send(match at {
-            ModulatorLocation::Lane(inst) => GraphCommand::InsertModulator { inst, index, source: graph_source },
+            ModulatorLocation::Lane(inst) => GraphCommand::InsertModulator { inst, index, source: graph_source, node },
             ModulatorLocation::Group(group) => {
-                GraphCommand::InsertGroupModulator { group, index, source: graph_source }
+                GraphCommand::InsertGroupModulator { group, index, source: graph_source, node }
             }
         });
         // Its output is published from now on, and where it is if it is a step sequencer.
@@ -492,7 +493,6 @@ impl Controller {
         for command in modulator_slot_commands(at, index, output, position) {
             let _ = self.cmd_tx.send(command);
         }
-        let node = self.model.alloc_node();
         self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new(), output, position });
         Some(index)
     }
@@ -1015,10 +1015,10 @@ impl Controller {
             Driven::Setting { modulator, field } => {
                 let NodePath::Modulator { at, index } = self.model.locate(modulator)? else { return None };
                 match (&self.model.modulators(at)?.get(index)?.source, field) {
-                    (ModSourceSlot::Lfo { rate, .. }, ModulatorField::Rate) => Some(rate_command(at, index, *rate)),
+                    (ModSourceSlot::Lfo { rate, .. }, ModSetting::Rate) => Some(rate_command(at, index, *rate)),
                     (
                         ModSourceSlot::Envelope { attack, decay, sustain, release },
-                        ModulatorField::Attack | ModulatorField::Decay | ModulatorField::Sustain | ModulatorField::Release,
+                        ModSetting::Attack | ModSetting::Decay | ModSetting::Sustain | ModSetting::Release,
                     ) => Some(envelope_command(at, index, (*attack, *decay, *sustain, *release))),
                     _ => None,
                 }
@@ -1038,13 +1038,16 @@ impl Controller {
         if self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_none() {
             return false;
         }
-        // What the audio thread's racks call what it drives (a cable that drives nothing that is in reach of the rack is not drawn).
-        let Some(kind) = self.model.kind_of(at, index, new.aim) else { return false };
+        // (A cable that drives nothing that is in reach of the rack is not drawn.)
+        if self.model.kind_of(at, index, new.aim).is_none() {
+            return false;
+        }
         // A target publishes the value that what it drives is set to: a plugin's parameter, or a setting of a modulator.
         let effective = self.model.slots.alloc();
         let edge = self.model.alloc_edge();
         let target = ModTarget {
-            kind,
+            edge,
+            aim: new.aim,
             depth: new.depth,
             base_value: new.base_value,
             param_min: new.param_min,
@@ -2533,7 +2536,7 @@ plugin = "builtin:osc"
         assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, 0.5)));
         assert_eq!(
             sent(&engine),
-            ["AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]"]
+            [testutil::told(&ctl.model, "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]")]
         );
         let target = &ctl.model.instruments[0].modulators[0].targets[0];
         assert_eq!((target.param_name.as_str(), target.depth), ("cutoff", 0.5));
@@ -2565,7 +2568,7 @@ plugin = "builtin:osc"
         assert!(ctl.add_target(ModulatorLocation::Group(0), 0, target));
         assert_eq!(
             sent(&engine),
-            ["AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 1, param_index: 0 } depth=0.400 base=0.350 range=[0.000, 1.000]"]
+            [testutil::told(&ctl.model, "AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 1, param_index: 0 } depth=0.400 base=0.350 range=[0.000, 1.000]")]
         );
         assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 1);
         assert!(ctl.model.instruments[0].modulators[0].targets.is_empty());
@@ -2757,14 +2760,12 @@ plugin = "builtin:osc"
 
     const SCENES_OF_CABLES: [&str; 3] = [testutil::CROSS_MOD, testutil::CABLES_THAT_DRIVE_CABLES, testutil::CABLES_THAT_DRIVE_EACH_OTHER];
 
-    /// The value the cables that drive parameter `param` of the plugin in `slot` of lane 0 (the lane's own, and its group's, which
-    /// reaches the lane as its first member) are centred on, on the audio thread.
-    fn bases_of_the_cables_on(graph: &crate::plugin::chain::AudioGraph, slot: usize, param: u32) -> Vec<f32> {
-        use crate::plugin::chain::ModTargetKind as K;
+    /// The value the cables that drive parameter `param` of the plugin `plugin` (the lane's own, and its group's) are centred on, on the audio thread.
+    fn bases_of_the_cables_on(graph: &crate::plugin::chain::AudioGraph, plugin: NodeId, param: u32) -> Vec<f32> {
         graph
             .cable_bases()
             .into_iter()
-            .filter(|(_, _, kind, _)| matches!(kind, K::PluginParam { slot: s, param_index: p } | K::GroupMember { member: 0, slot: s, param_index: p } if *s == slot && *p == param))
+            .filter(|(_, _, _, aim, _)| matches!(aim, Driven::Param { plugin: p, index } if *p == plugin && *index == param))
             .map(|(.., base)| base)
             .collect()
     }
@@ -2776,9 +2777,10 @@ plugin = "builtin:osc"
         let reverb = ctl.model.instruments[0].effects[1].node;
         let damping = ctl.model.instruments[0].effects[1].params.iter().find(|p| p.name == "damping").expect("a damping").index;
         let cutoff = ctl.model.instruments[0].effects[0].params.iter().find(|p| p.name == "cutoff").expect("a cutoff").index;
+        let filter = ctl.model.instruments[0].effects[0].node;
         let before = graph.plugin_parameter(0, 2, damping).expect("the reverb has it");
-        assert_eq!(bases_of_the_cables_on(&graph, 2, damping), [before, before], "centred on what it is, as loaded");
-        let filter_before = bases_of_the_cables_on(&graph, 1, cutoff);
+        assert_eq!(bases_of_the_cables_on(&graph, reverb, damping), [before, before], "centred on what it is, as loaded");
+        let filter_before = bases_of_the_cables_on(&graph, filter, cutoff);
         assert!(!filter_before.is_empty());
 
         // A preset that has another damping than the reverb has (some of them do).
@@ -2792,18 +2794,17 @@ plugin = "builtin:osc"
                 changed = Some(after);
                 // The cables that drive the parameter are centred on the value the plugin has now (modulation is applied around it, and
                 // would otherwise put the old one back at the next buffer, undoing the preset for what is driven).
-                assert_eq!(bases_of_the_cables_on(&graph, 2, damping), [after, after], "preset {preset}");
+                assert_eq!(bases_of_the_cables_on(&graph, reverb, damping), [after, after], "preset {preset}");
                 break;
             }
         }
         assert!(changed.is_some(), "one of the reverb's presets has a damping of its own");
         // What belongs to another plugin of the lane is as it was.
-        assert_eq!(bases_of_the_cables_on(&graph, 1, cutoff), filter_before);
+        assert_eq!(bases_of_the_cables_on(&graph, filter, cutoff), filter_before);
     }
 
     #[test]
     fn a_preset_that_is_loaded_leaves_the_cables_of_another_member_of_the_group_where_they_are_centred() {
-        use crate::plugin::chain::ModTargetKind as K;
         // Two members of a group, each with a reverb, and a cable of the group's LFO on the damping of each.
         let (mut graph, mut ctl) = controller_on_a_real_graph(
             r#"
@@ -2834,26 +2835,28 @@ plugin = "builtin:reverb"
 "#,
         );
         let damping = ctl.model.instruments[0].effects[0].params.iter().find(|p| p.name == "damping").expect("a damping").index;
-        let bases = |graph: &crate::plugin::chain::AudioGraph| -> Vec<(usize, f32)> {
+        // The reverbs of the two members, which the group's cables name by their nodes.
+        let reverbs = [ctl.model.instruments[0].effects[0].node, ctl.model.instruments[1].effects[0].node];
+        let bases = |graph: &crate::plugin::chain::AudioGraph| -> Vec<(NodeId, f32)> {
             graph
                 .cable_bases()
                 .into_iter()
-                .filter_map(|(_, _, kind, base)| match kind {
-                    K::GroupMember { member, slot: 1, param_index } if param_index == damping => Some((member, base)),
+                .filter_map(|(_, _, _, aim, base)| match aim {
+                    Driven::Param { plugin, index } if index == damping => Some((plugin, base)),
                     _ => None,
                 })
                 .collect()
         };
         let before = graph.plugin_parameter(0, 1, damping).unwrap();
-        assert_eq!(bases(&graph), [(0, before), (1, before)]);
-        let reverb = ctl.model.instruments[0].effects[0].node;
+        assert_eq!(bases(&graph), [(reverbs[0], before), (reverbs[1], before)]);
+        let reverb = reverbs[0];
         for preset in ctl.model.instruments[0].effects[0].presets.iter().map(|p| p.id.clone()).collect::<Vec<_>>() {
             ctl.apply(crate::app::intent::Intent::LoadPreset { node: reverb, preset }).unwrap();
             graph.drain_commands();
             let after = graph.plugin_parameter(0, 1, damping).unwrap();
             if (after - before).abs() > 1e-6 {
                 // The first member's cable follows its plugin; the second member's reverb was not touched, and its cable is as it was.
-                assert_eq!(bases(&graph), [(0, after), (1, before)]);
+                assert_eq!(bases(&graph), [(reverbs[0], after), (reverbs[1], before)]);
                 assert_eq!(graph.plugin_parameter(1, 1, damping), Some(before));
                 return;
             }
@@ -3116,9 +3119,11 @@ rate = 2.0
     }
 
     /// The cables of `CHAINS` in the order `model_cables` lists them (lane racks, then group racks), as
-    /// `(rack, modulator, [kind of each cable])`.
+    /// `(rack, modulator, [the place that `kind_of` says for each cable])`.
     fn chains_cables(model: &SessionModel) -> Vec<(ModulatorLocation, usize, Vec<ModTargetKind>)> {
-        model_cables(model).into_iter().map(|(at, m, cables)| (at, m, cables.into_iter().map(|(kind, _)| kind).collect())).collect()
+        let lanes = model.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), lane.modulators.len()));
+        let groups = model.groups.iter().enumerate().map(|(i, group)| (ModulatorLocation::Group(i), group.modulators.len()));
+        lanes.chain(groups).flat_map(|(at, count)| (0..count).map(move |m| (at, m, testutil::kinds_at(model, at, m)))).collect()
     }
 
     #[test]
@@ -4448,7 +4453,7 @@ plugin = "builtin:drive"
         // (The group's cable drives the same filter, which lane 0, the group's first member, has.)
         assert!(ctl.add_target(ModulatorLocation::Group(0), 0, cutoff_target(&ctl, 0.5)));
         let cross = NewTarget {
-            aim: Driven::Setting { modulator: ctl.model.instruments[0].modulators[1].node, field: ModulatorField::Rate },
+            aim: Driven::Setting { modulator: ctl.model.instruments[0].modulators[1].node, field: ModSetting::Rate },
             param_name: "Mod 1 rate".to_string(),
             ..cutoff_target(&ctl, 0.5)
         };
@@ -4489,7 +4494,7 @@ plugin = "builtin:drive"
         // Lane 0's rack and the second lane's instrument; lane 0's rack and its own modulator's rate; the group's rack and the lane that is in no group.
         let elsewhere = NewTarget { aim: Driven::Param { plugin: ctl.model.instruments[1].node, index: 0 }, ..cutoff_target(&ctl, 0.5) };
         assert!(!ctl.add_target(ModulatorLocation::Lane(0), 0, elsewhere));
-        let own = NewTarget { aim: Driven::Setting { modulator: ctl.model.instruments[0].modulators[0].node, field: ModulatorField::Rate }, ..cutoff_target(&ctl, 0.5) };
+        let own = NewTarget { aim: Driven::Setting { modulator: ctl.model.instruments[0].modulators[0].node, field: ModSetting::Rate }, ..cutoff_target(&ctl, 0.5) };
         assert!(!ctl.add_target(ModulatorLocation::Lane(0), 0, own));
         let not_a_member = NewTarget { aim: Driven::Param { plugin: ctl.model.instruments[1].node, index: 0 }, ..cutoff_target(&ctl, 0.5) };
         assert!(!ctl.add_target(ModulatorLocation::Group(0), 0, not_a_member));
@@ -4542,7 +4547,7 @@ depth = 0.2
         assert_eq!(told.iter().filter(|command| command.starts_with("InsertModulator")).count(), 1, "{told:?}");
         let cables: Vec<&String> = told.iter().filter(|command| command.starts_with("AddModTarget")).collect();
         assert_eq!(cables.len(), 1, "{cables:?}");
-        assert!(cables[0].contains("kind=PluginParam { slot: 0,"), "{cables:?}");
+        assert!(cables[0].contains(&format!("aim=Param {{ plugin: {:?},", ctl.model.instruments[0].node)), "the cable to the detune, on the instrument: {cables:?}");
         ctl.model.check_ids().unwrap();
     }
 
@@ -4577,7 +4582,7 @@ param = "resonance"
         let told = sent(&engine);
         let cables: Vec<&String> = told.iter().filter(|command| command.starts_with("AddModTarget")).collect();
         assert_eq!(cables.len(), 1, "{told:?}");
-        assert!(cables[0].contains("kind=PluginParam { slot: 0,"), "{told:?}");
+        assert!(cables[0].contains(&format!("aim=Param {{ plugin: {:?},", ctl.model.instruments[0].node)), "the cable to the detune, on the instrument: {told:?}");
         ctl.model.check_ids().unwrap();
     }
 

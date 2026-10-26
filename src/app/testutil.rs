@@ -49,19 +49,19 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetGroupParameter { group, index, param_index, value } => {
             format!("SetGroupParameter group={group} fx={index} param={param_index} value={value:.3}")
         }
-        C::InsertGroupModulator { group, index, source } => {
+        C::InsertGroupModulator { group, index, source, .. } => {
             format!("InsertGroupModulator group={group} index={index} source={source:?}")
         }
         C::RemoveGroupModulator { group, index } => {
             format!("RemoveGroupModulator group={group} index={index}")
         }
         C::AddGroupModTarget { group, mod_index, target } => format!(
-            "AddGroupModTarget group={group} mod={mod_index} kind={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
-            target.kind, target.depth, target.base_value, target.param_min, target.param_max
+            "AddGroupModTarget group={group} mod={mod_index} aim={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
+            target.aim, target.depth, target.base_value, target.param_min, target.param_max
         ),
         C::InsertGroupModTarget { group, mod_index, target_index, target } => format!(
-            "InsertGroupModTarget group={group} mod={mod_index} target={target_index} kind={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
-            target.kind, target.depth, target.base_value, target.param_min, target.param_max
+            "InsertGroupModTarget group={group} mod={mod_index} target={target_index} aim={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
+            target.aim, target.depth, target.base_value, target.param_min, target.param_max
         ),
         C::SetGroupModTargetDepth { group, mod_index, target_index, depth } => {
             format!("SetGroupModTargetDepth group={group} mod={mod_index} target={target_index} depth={depth:.3}")
@@ -98,17 +98,17 @@ pub fn describe(cmd: &GraphCommand) -> String {
         }
         C::RemoveEffect { inst, index, keep } => format!("RemoveEffect inst={inst} index={index}{}", if keep.is_some() { " keep" } else { "" }),
         C::ReorderEffect { inst, from, to } => format!("ReorderEffect inst={inst} from={from} to={to}"),
-        C::InsertModulator { inst, index, source } => {
+        C::InsertModulator { inst, index, source, .. } => {
             format!("InsertModulator inst={inst} index={index} source={source:?}")
         }
         C::RemoveModulator { inst, index } => format!("RemoveModulator inst={inst} index={index}"),
         C::AddModTarget { inst, mod_index, target } => format!(
-            "AddModTarget inst={inst} mod={mod_index} kind={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
-            target.kind, target.depth, target.base_value, target.param_min, target.param_max
+            "AddModTarget inst={inst} mod={mod_index} aim={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
+            target.aim, target.depth, target.base_value, target.param_min, target.param_max
         ),
         C::InsertModTarget { inst, mod_index, target_index, target } => format!(
-            "InsertModTarget inst={inst} mod={mod_index} target={target_index} kind={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
-            target.kind, target.depth, target.base_value, target.param_min, target.param_max
+            "InsertModTarget inst={inst} mod={mod_index} target={target_index} aim={:?} depth={:.3} base={:.3} range=[{:.3}, {:.3}]",
+            target.aim, target.depth, target.base_value, target.param_min, target.param_max
         ),
         C::RemoveModTarget { inst, mod_index, target_index } => {
             format!("RemoveModTarget inst={inst} mod={mod_index} target={target_index}")
@@ -1553,8 +1553,8 @@ pub fn model_audio_cables(model: &SessionModel) -> Vec<crate::plugin::chain::Cab
     model.cables.iter().map(|cable| crate::plugin::chain::CableFacts { id: cable.id, from: cable.from, to: cable.to, gain: cable.gain }).collect()
 }
 
-/// Every modulator's cables as the model has them, in the terms and the order of `AudioGraph::cables`: the lanes' racks and then the groups', each modulator with its cables'
-/// kinds and depths.
+/// Every modulator's cables as the model has them, in the terms and the order of `AudioGraph::cables`: the lanes' racks and then the groups', each modulator with its node and its
+/// cables' ids, what they drive and their depths.
 pub fn model_racks(model: &SessionModel) -> crate::plugin::chain::RackCables {
     use crate::plugin::chain::ModulatorLocation;
     let racks = |at: fn(usize) -> ModulatorLocation, i: usize, rack: &[crate::app::model::ModulatorSlot]| -> Vec<_> {
@@ -1562,10 +1562,10 @@ pub fn model_racks(model: &SessionModel) -> crate::plugin::chain::RackCables {
             .enumerate()
             .map(|(m, modulator)| {
                 let cables = modulator.targets.iter().enumerate().map(|(t, cable)| {
-                    let kind = model.kind_of_target(at(i), m, t).unwrap_or_else(|| panic!("the cable {:?} of modulator {m} of {:?} drives nothing that is in reach", cable.edge, at(i)));
-                    (kind, cable.depth)
+                    assert!(model.kind_of_target(at(i), m, t).is_some(), "the cable {:?} of modulator {m} of {:?} drives nothing that is in reach", cable.edge, at(i));
+                    (cable.edge, cable.aim, cable.depth)
                 });
-                (at(i), m, cables.collect())
+                (at(i), m, modulator.node, cables.collect())
             })
             .collect()
     };
@@ -1588,6 +1588,73 @@ pub fn slot_of(kind: &crate::plugin::chain::ModTargetKind) -> usize {
         K::PluginParam { slot, .. } | K::GroupMember { slot, .. } => *slot,
         _ => 0,
     }
+}
+
+/// A command as `describe` prints it, written with the place that its cable was drawn at (`kind=PluginParam { slot: 1, param_index: 0 }`: how the tests said what a cable drives before the
+/// audio thread named it by a node, and how the file and the terminal's lists still say it, `ModTargetKind`), turned into what the audio thread is told (`aim=Param { plugin: NodeId(7),
+/// index: 0 }`) by the node that the model has at that place. A test says where a cable goes by the place it chose, and is held to the node that is there; a text that has no `kind=`
+/// is as it was.
+pub fn told(model: &SessionModel, text: &str) -> String {
+    use crate::app::graph::Port;
+    use crate::app::model::{Driven, ModSetting};
+    use crate::plugin::chain::{CrossModField, ModTargetKind as K, ModulatorLocation};
+    let Some(start) = text.find("kind=") else { return text.to_string() };
+    let (head, rest) = (&text[..start], &text[start + "kind=".len()..]);
+    let number_after = |text: &str, key: &str| -> Option<usize> {
+        let from = text.find(key)? + key.len();
+        let digits: String = text[from..].chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    let at = match number_after(head, "group=") {
+        Some(group) => ModulatorLocation::Group(group),
+        None => ModulatorLocation::Lane(number_after(head, "inst=").expect("a command that names a lane or a group")),
+    };
+    let name_end = rest.find(' ').expect("a kind has a name and fields");
+    let open = name_end + 1;
+    assert!(rest[open..].starts_with('{'), "a kind has fields: {text}");
+    let close = open + rest[open..].find('}').unwrap_or_else(|| panic!("the fields of a kind end: {text}"));
+    let fields: Vec<(&str, &str)> = rest[open + 1..close].split(',').map(|f| f.split_once(':').map(|(k, v)| (k.trim(), v.trim())).expect("a field has a name and a value")).collect();
+    let field = |key: &str| fields.iter().find(|(k, _)| *k == key).unwrap_or_else(|| panic!("the kind has no field {key}: {text}")).1;
+    let n = |key: &str| -> usize { field(key).parse().unwrap_or_else(|_| panic!("{key} is a number: {text}")) };
+    let cross = |value: &str| match value {
+        "Rate" => CrossModField::Rate,
+        "Attack" => CrossModField::Attack,
+        "Decay" => CrossModField::Decay,
+        "Sustain" => CrossModField::Sustain,
+        "Release" => CrossModField::Release,
+        depth => CrossModField::Depth(depth.strip_prefix("Depth(").and_then(|d| d.strip_suffix(')')).and_then(|d| d.parse().ok()).unwrap_or_else(|| panic!("a field of a cross-mod cable: {depth}"))),
+    };
+    let kind = match &rest[..name_end] {
+        "PluginParam" => K::PluginParam { slot: n("slot"), param_index: n("param_index") as u32 },
+        "GroupMember" => K::GroupMember { member: n("member"), slot: n("slot"), param_index: n("param_index") as u32 },
+        "GroupBus" => K::GroupBus { effect_index: n("effect_index"), param_index: n("param_index") as u32 },
+        "GroupMemberMod" => K::GroupMemberMod { member: n("member"), mod_index: n("mod_index"), field: cross(field("field")) },
+        "ModulatorRate" => K::ModulatorRate { mod_index: n("mod_index") },
+        "ModulatorDepth" => K::ModulatorDepth { mod_index: n("mod_index"), target_index: n("target_index") },
+        "ModulatorAttack" => K::ModulatorAttack { mod_index: n("mod_index") },
+        "ModulatorDecay" => K::ModulatorDecay { mod_index: n("mod_index") },
+        "ModulatorSustain" => K::ModulatorSustain { mod_index: n("mod_index") },
+        "ModulatorRelease" => K::ModulatorRelease { mod_index: n("mod_index") },
+        other => panic!("{other} is not a kind of cable: {text}"),
+    };
+    let endpoint = model.endpoint_of(at, &kind).unwrap_or_else(|| panic!("{kind:?} is not a place of the rack at {at:?}: {text}"));
+    let setting = |field| Driven::Setting { modulator: endpoint.node, field };
+    let aim = match endpoint.port {
+        Port::Param { index } => Driven::Param { plugin: endpoint.node, index },
+        Port::Rate => setting(ModSetting::Rate),
+        Port::Attack => setting(ModSetting::Attack),
+        Port::Decay => setting(ModSetting::Decay),
+        Port::Sustain => setting(ModSetting::Sustain),
+        Port::Release => setting(ModSetting::Release),
+        Port::Depth { edge } => Driven::Depth(edge),
+        port => panic!("{port:?} is not what a cable drives"),
+    };
+    format!("{head}aim={aim:?}{}", &rest[close + 1..])
+}
+
+/// `told` for each of `texts`: the commands that a test expects, in order.
+pub fn told_all(model: &SessionModel, texts: &[&str]) -> Vec<String> {
+    texts.iter().map(|text| told(model, text)).collect()
 }
 
 pub fn model_groups(model: &SessionModel) -> Vec<GroupFacts> {

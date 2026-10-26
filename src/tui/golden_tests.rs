@@ -20,7 +20,7 @@ use ratatui::buffer::Buffer;
 
 use super::*;
 use crate::app::load::load_session;
-use crate::app::testutil::{DropProbe, described, recording, stub_engine};
+use crate::app::testutil::{DropProbe, described, recording, stub_engine, told, told_all};
 use crate::plugin::PluginInfo;
 use crate::plugin::chain::{MidiBindSource, MidiLearnedNotification, ModulatorLocation};
 use crate::app::graph::{Endpoint, Port};
@@ -2601,10 +2601,10 @@ fn the_modulate_popup_makes_an_lfo_in_the_lane_and_binds_the_parameter_to_it() {
     h.press(KeyCode::Char('m')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        [
+        told_all(&h.s.ctl.model, &[
             "InsertModulator inst=2 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
             "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
-        ]
+        ])
     );
     let made = &h.s.ctl.model.instruments[2].modulators[1];
     assert!(matches!(made.source, ModSourceSlot::Lfo { rate, .. } if rate == 1.0));
@@ -2621,10 +2621,10 @@ fn the_modulate_popup_can_make_an_envelope_instead() {
     h.press(KeyCode::Char('m')).press(KeyCode::Down).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        [
+        told_all(&h.s.ctl.model, &[
             "InsertModulator inst=2 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }",
             "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
-        ]
+        ])
     );
     let made = &h.s.ctl.model.instruments[2].modulators[1];
     assert!(
@@ -2647,7 +2647,7 @@ fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
     h.press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len()).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"],
+        told_all(&h.s.ctl.model, &["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"]),
         "no new modulator, a second target on the bass's LFO"
     );
     let modulators = &h.s.ctl.model.instruments[2].modulators;
@@ -2673,10 +2673,10 @@ fn the_modulate_popup_on_a_bus_parameter_makes_a_group_modulator() {
     h.press(KeyCode::Enter).press(KeyCode::Char('m')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        [
+        told_all(&h.s.ctl.model, &[
             "InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
             "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=0.500 base=0.880 range=[0.100, 0.990]",
-        ]
+        ])
     );
     assert_eq!(
         target_fields(&h.s.ctl.model, ModulatorLocation::Group(0), 2),
@@ -2693,7 +2693,7 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
     h.press(KeyCode::Char('t')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"]
+        told_all(&h.s.ctl.model, &["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"])
     );
     let bound = target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 0);
     assert_eq!(bound.len(), 2, "the LFO had one target already");
@@ -2708,7 +2708,7 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
     h.press(KeyCode::Char('t')).press_n(KeyCode::Down, 21).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"]
+        told_all(&h.s.ctl.model, &["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"])
     );
     let bound = target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 0);
     assert_eq!(bound.len(), 3);
@@ -2722,7 +2722,7 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
     h.press(KeyCode::Char('t')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 0, param_index: 0 } depth=0.500 base=1.000 range=[0.000, 4.000]"]
+        told_all(&h.s.ctl.model, &["AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 0, param_index: 0 } depth=0.500 base=1.000 range=[0.000, 4.000]"])
     );
     let bound = target_fields(&h.s.ctl.model, ModulatorLocation::Group(0), 0);
     assert_eq!(bound.len(), 3, "the group LFO had two targets already");
@@ -2740,7 +2740,7 @@ fn the_target_selector_binds_to_the_modulator_it_was_opened_for_whichever_place_
     h.press(KeyCode::Char('t')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"]
+        told_all(&h.s.ctl.model, &["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"])
     );
     assert_eq!(h.s.ctl.model.instruments[0].modulators[1].targets.len(), 3);
 }
@@ -2753,7 +2753,7 @@ fn the_modulate_popup_attaches_the_parameter_to_the_modulator_that_was_chosen_wh
     h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len() + 1).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        ["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"]
+        told_all(&h.s.ctl.model, &["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"])
     );
     assert_eq!(h.s.ctl.model.instruments[0].modulators[1].targets.len(), 3);
 }
@@ -2764,11 +2764,11 @@ fn learning_a_parameter_arms_a_midi_modulator_bound_to_it_at_full_depth() {
     h.press(KeyCode::Char('l'));
     assert_eq!(
         h.commands(),
-        [
+        told_all(&h.s.ctl.model, &[
             "InsertModulator inst=2 index=1 source=MidiLearn { source: None, value: 0.0, learning: true }",
             "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
             "SetModTargetDepth inst=2 mod=1 target=0 depth=1.000",
-        ]
+        ])
     );
     let armed = &h.s.ctl.model.instruments[2].modulators[1];
     assert!(matches!(armed.source, ModSourceSlot::MidiLearn { source: None, learning: true }));
@@ -2783,11 +2783,11 @@ fn learning_a_parameter_arms_a_midi_modulator_bound_to_it_at_full_depth() {
     h.press(KeyCode::Enter).press(KeyCode::Char('l'));
     assert_eq!(
         h.commands(),
-        [
+        told_all(&h.s.ctl.model, &[
             "InsertGroupModulator group=0 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }",
             "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=0.500 base=0.880 range=[0.100, 0.990]",
             "SetGroupModTargetDepth group=0 mod=2 target=0 depth=1.000",
-        ]
+        ])
     );
     assert_eq!(h.s.ctl.model.groups[0].modulators[2].targets.len(), 1);
 }
@@ -4361,7 +4361,7 @@ fn the_modulate_popup_has_a_new_step_sequencer_that_is_made_as_a_staircase_with_
     assert_eq!(rack[1].targets.len(), 1);
     let commands = h.commands();
     assert!(commands[0].starts_with("InsertModulator inst=2 index=1 source=Steps { values: [-1.0, -0.875,"), "{commands:?}");
-    assert!(commands[1].starts_with("AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }"), "{commands:?}");
+    assert!(commands[1].starts_with(&told(&h.s.ctl.model, "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }")), "{commands:?}");
     assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("modulate cutoff"), "the step sequencer and the cable to it are one thing");
 }
 
@@ -4416,7 +4416,7 @@ fn the_modulate_popup_has_a_new_velocity_and_a_new_key_that_are_bound_at_once_wi
     assert_eq!(rack[1].targets.len(), 1);
     let commands = h.commands();
     assert_eq!(commands[0], "InsertModulator inst=2 index=1 source=MidiLearn { source: Some(Velocity), value: 0.0, learning: false }", "{commands:?}");
-    assert!(commands[1].starts_with("AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }") && commands[1].contains("depth=0.500"), "{commands:?}");
+    assert!(commands[1].starts_with(&told(&h.s.ctl.model, "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }")) && commands[1].contains("depth=0.500"), "{commands:?}");
     assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("modulate cutoff"), "the control and the cable to it are one thing");
     assert!(h.tree().iter().any(|line| line.contains("~ Velocity → Filter: cutoff (50%)")), "{:#?}", h.tree());
 
@@ -4452,7 +4452,9 @@ fn the_popup_of_a_modulators_own_setting_can_make_a_key_to_drive_it() {
     assert_eq!(rack.len(), 4, "the three it has, and the key");
     assert!(matches!(rack[3].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }), "{:?}", rack[3].source);
     assert_eq!(rack[3].targets.len(), 1, "it drives the rate of the LFO");
-    assert!(h.commands()[1].contains("ModulatorRate"), "{:?}", h.commands());
+    let rate = crate::app::model::Driven::Setting { modulator: rack[0].node, field: crate::app::model::ModSetting::Rate };
+    let commands = h.commands();
+    assert!(commands[1].contains(&format!("aim={rate:?} ")), "{commands:?}");
 }
 
 #[test]
@@ -4476,7 +4478,7 @@ fn the_modulate_popup_has_a_new_macro_that_is_made_at_rest_with_a_cable_to_the_p
     assert_eq!(rack[1].targets.len(), 1);
     let commands = h.commands();
     assert_eq!(commands[0], "InsertModulator inst=2 index=1 source=Macro { value: 0.0 }", "{commands:?}");
-    assert!(commands[1].starts_with("AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }"), "{commands:?}");
+    assert!(commands[1].starts_with(&told(&h.s.ctl.model, "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }")), "{commands:?}");
     assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("modulate cutoff"), "the macro and the cable to it are one thing");
 }
 

@@ -163,7 +163,7 @@ impl InstrumentLane {
                 m.tick(frames, effective_events, cx.bpm);
             }
             apply_cross_mod(&mut self.modulators, &mut self.cross_mod_scratch, cx.telemetry);
-            apply_modulators_to_chain(&self.modulators, &mut self.instrument, &mut self.effects, &mut self.drive_scratch, cx.telemetry);
+            apply_modulators_to_chain(&self.modulators, self.node, &self.effect_nodes, &mut self.instrument, &mut self.effects, &mut self.drive_scratch, cx.telemetry);
         }
 
         let Some(instrument) = self.instrument.as_mut() else {

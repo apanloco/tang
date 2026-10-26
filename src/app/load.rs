@@ -15,7 +15,7 @@ use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
     AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, Driven, EdgeId, EventCable, FREE, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NEW_CABLE_GAIN, NodeId, NodeIds,
     ParamKind, ParamSlot, PatternState, PluginSlot, SYNC_DIVISIONS, SessionModel, SourceKind, SourceNode, format_from_id, mod_source_slot_to_graph, modulator_slot_commands,
-    setting_of, sibling_kind, sync_from_name, sync_name, tempo_of_patterns,
+    setting_of, sync_from_name, sync_name, tempo_of_patterns,
 };
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo, GraphCommand, ModulatorLocation};
 use crate::session::{Feed, NodeUi, Route};
@@ -835,6 +835,7 @@ fn load_lane_modulators(
                     inst: inst_idx,
                     index: mod_idx,
                     source: mod_source_slot_to_graph(&source_slot),
+                    node: nodes[mod_idx],
                 })
                 .map_err(|_| anyhow::anyhow!("command channel closed"))?;
             let (output, position) = ModulatorSlot::alloc_slots(alloc.slots, &source_slot);
@@ -874,9 +875,8 @@ struct Plan {
 
 /// What a cable of a file drives.
 enum Drives {
-    /// A plugin's parameter, a modulator's setting, or the depth of a cable that is made already (a member's): by the node and the port, and by the place that the audio thread's rack
-    /// names it by.
-    Known { aim: Driven, kind: plugin::chain::ModTargetKind },
+    /// A plugin's parameter, a modulator's setting, or the depth of a cable that is made already (a member's): by the node and the port.
+    Known { aim: Driven },
     /// The depth of the cable that the file has at place `target` of the modulator `modulator` of the same rack, which has no id until the cables of the rack are made.
     DepthOfSibling { modulator: usize, target: usize },
 }
@@ -940,16 +940,16 @@ fn make_cables(
     let mut made = Vec::new();
     for (target, config) in configs.iter().enumerate() {
         let (Some(plan), Some((edge, _))) = (&plans[mod_idx][target], rack.cables[mod_idx][target]) else { continue };
-        let (aim, kind) = match &plan.drives {
-            Drives::Known { aim, kind } => (*aim, kind.clone()),
+        let aim = match &plan.drives {
+            Drives::Known { aim, .. } => *aim,
             Drives::DepthOfSibling { modulator, target } => {
-                let (edge, place) = rack.cables[*modulator][*target].expect("a cable that is made drives the depth of one that is");
-                (Driven::Depth(edge), plugin::chain::ModTargetKind::ModulatorDepth { mod_index: *modulator, target_index: place })
+                let (edge, _) = rack.cables[*modulator][*target].expect("a cable that is made drives the depth of one that is");
+                Driven::Depth(edge)
             }
         };
         let effective = alloc.slots.alloc();
         let depth = config.depth as f32;
-        let cable = plugin::chain::ModTarget { kind, depth, base_value: plan.base_value, param_min: plan.param_min, param_max: plan.param_max, effective };
+        let cable = plugin::chain::ModTarget { edge, aim, depth, base_value: plan.base_value, param_min: plan.param_min, param_max: plan.param_max, effective };
         send(
             cmd_tx,
             match location {
@@ -966,7 +966,6 @@ fn make_cables(
 /// What the cable `config` of the modulator `me` of a lane is: a parameter of a plugin of the lane's chain, or a field of another modulator of the lane (a modulator that an older file
 /// nested in an effect, `own_slot`, drives that effect). `None`, and the log says why, for a cable that cannot be made.
 fn plan_lane_target(config: &session::ModTargetConfig, me: usize, own_slot: Option<usize>, group_base: usize, lane: &LaneTargets) -> Option<Plan> {
-    use plugin::chain::ModTargetKind as K;
     let Some(ref param_name) = config.param else {
         let info = |index: usize, field| sibling_field_info(lane.siblings.get(index).copied(), field);
         return plan_sibling_target(config, me, group_base, lane.nodes, "Modulator target has no param or mod_* field, skipping", info);
@@ -979,7 +978,7 @@ fn plan_lane_target(config: &session::ModTargetConfig, me: usize, own_slot: Opti
     };
     let plugin = lane.chain_nodes.get(slot).copied().flatten()?;
     Some(Plan {
-        drives: Drives::Known { aim: Driven::Param { plugin, index: info.index }, kind: K::PluginParam { slot, param_index: info.index } },
+        drives: Drives::Known { aim: Driven::Param { plugin, index: info.index } },
         label: info.name.clone(),
         param_min: info.min,
         param_max: info.max,
@@ -1031,7 +1030,7 @@ fn plan_sibling_target(
     let (base_value, param_min, param_max) = info(index, field);
     let drives = match field {
         F::Depth(target) => Drives::DepthOfSibling { modulator: index, target },
-        _ => Drives::Known { aim: Driven::Setting { modulator: nodes[index], field: setting_of(field)? }, kind: sibling_kind(index, field) },
+        _ => Drives::Known { aim: Driven::Setting { modulator: nodes[index], field: setting_of(field)? } },
     };
     Some(Plan { drives, label, param_min, param_max, base_value })
 }
@@ -1214,6 +1213,7 @@ fn load_group_modulators(
                 group: g_idx,
                 index: mod_idx,
                 source: mod_source_slot_to_graph(&source_slot),
+                node: nodes[mod_idx],
             })
             .map_err(|_| anyhow::anyhow!("command channel closed"))?;
         let (output, position) = ModulatorSlot::alloc_slots(alloc.slots, &source_slot);
@@ -1243,7 +1243,7 @@ struct GroupTargets<'a> {
 /// What the cable `config` of the modulator `me` of a group is: a parameter of a member's plugin or of a bus effect, a setting of a member's modulator or the depth of one of its cables, or a
 /// field of another modulator of the group. `None`, and the log says why, for a cable that cannot be made.
 fn plan_group_target(config: &session::ModTargetConfig, me: usize, group: &GroupTargets) -> Option<Plan> {
-    use plugin::chain::{CrossModField, ModTargetKind as K};
+    use plugin::chain::CrossModField;
     if let Some(member) = config.member {
         if let Some(ref param_name) = config.param {
             // Member instrument plugin parameter.
@@ -1255,7 +1255,7 @@ fn plan_group_target(config: &session::ModTargetConfig, me: usize, group: &Group
             };
             let plugin = group.member_nodes.get(member).and_then(|chain| chain.get(slot)).copied().flatten()?;
             return Some(Plan {
-                drives: Drives::Known { aim: Driven::Param { plugin, index: info.index }, kind: K::GroupMember { member, slot, param_index: info.index } },
+                drives: Drives::Known { aim: Driven::Param { plugin, index: info.index } },
                 label: info.name.clone(),
                 param_min: info.min,
                 param_max: info.max,
@@ -1305,7 +1305,7 @@ fn plan_group_target(config: &session::ModTargetConfig, me: usize, group: &Group
             CrossModField::Depth(ti) => format!("depth {ti}"),
         };
         return Some(Plan {
-            drives: Drives::Known { aim, kind: K::GroupMemberMod { member, mod_index: mi, field } },
+            drives: Drives::Known { aim },
             label: format!("M{member} Mod{mi} {field_name}"),
             param_min,
             param_max,
@@ -1324,7 +1324,7 @@ fn plan_group_target(config: &session::ModTargetConfig, me: usize, group: &Group
         };
         let plugin = group.bus_nodes.get(bus).copied()?;
         return Some(Plan {
-            drives: Drives::Known { aim: Driven::Param { plugin, index: info.index }, kind: K::GroupBus { effect_index: bus, param_index: info.index } },
+            drives: Drives::Known { aim: Driven::Param { plugin, index: info.index } },
             label: info.name.clone(),
             param_min: info.min,
             param_max: info.max,
@@ -1339,7 +1339,7 @@ fn plan_group_target(config: &session::ModTargetConfig, me: usize, group: &Group
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testutil::{DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PINNED, PLACED, Run, SETTINGS, load, try_load};
+    use crate::app::testutil::{self, DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PINNED, PLACED, Run, SETTINGS, load, try_load};
 
     #[test]
     fn plugin_slots_hide_locked_parameters_and_turn_labelled_ones_into_enums() {
@@ -1590,10 +1590,10 @@ mod tests {
         );
         assert_eq!(
             target_commands(&run),
-            [
+            testutil::told_all(&run.model, &[
                 "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.500 base=3.000 range=[-24.000, 24.000]",
                 "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
-            ]
+            ])
         );
     }
 
@@ -1647,10 +1647,10 @@ mod tests {
         );
         assert_eq!(
             target_commands(&run),
-            [
+            testutil::told_all(&run.model, &[
                 "AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
                 "AddGroupModTarget group=0 mod=0 kind=GroupBus { effect_index: 0, param_index: 2 } depth=0.500 base=0.600 range=[0.000, 1.000]",
-            ]
+            ])
         );
     }
 
@@ -1664,7 +1664,7 @@ mod tests {
         );
         assert_eq!(
             target_commands(&run),
-            ["AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=1.000 range=[0.000, 1.000]"]
+            testutil::told_all(&run.model, &["AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=1.000 range=[0.000, 1.000]"])
         );
     }
 
@@ -1845,7 +1845,7 @@ mod tests {
         let run = load(include_str!("../../examples/split.toml"));
         assert_eq!(
             run.commands,
-            [
+            testutil::told_all(&run.model, &[
                 "AddInstrument range=Some((12, 59))",
                 "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
                 "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 4.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
@@ -1854,7 +1854,7 @@ mod tests {
                 "SwapInstrument inst=1 plugin=Oscillator bufs=2 remap=false",
                 "InsertModulator inst=1 index=0 source=Lfo { waveform: Sine, rate: 7.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
                 "AddModTarget inst=1 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.150 base=0.000 range=[-24.000, 24.000]",
-            ]
+            ])
         );
         assert_eq!(run.model.instruments.len(), 2);
         assert_eq!(run.model.instruments[0].range, Some((12, 59)));
@@ -1866,7 +1866,7 @@ mod tests {
         let run = load(include_str!("../../examples/echo.toml"));
         assert_eq!(
             run.commands,
-            [
+            testutil::told_all(&run.model, &[
                 "AddInstrument range=None",
                 "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
                 "SetVolume inst=0 value=0.300",
@@ -1881,7 +1881,7 @@ mod tests {
                 // (The second LFO moves the delay's `time`, which the preset has at 0.3 s: that is where it is centred, over a range of 0.001 to 2 s.)
                 "InsertModulator inst=0 index=1 source=Lfo { waveform: Triangle, rate: 0.3, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
                 "AddModTarget inst=0 mod=1 kind=PluginParam { slot: 2, param_index: 0 } depth=0.004 base=0.300 range=[0.001, 2.000]",
-            ]
+            ])
         );
         let delay = &run.model.instruments[0].effects[1];
         assert_eq!((delay.name.as_str(), delay.current_preset.as_deref(), delay.mix), ("Delay", Some("Ping-Pong"), 0.4));
@@ -1914,7 +1914,8 @@ depth = 0.4
         assert!(run.commands.contains(&"InsertGroupModulator group=0 index=0 source=Macro { value: 0.5 }".to_string()), "{:#?}", run.commands);
         // Its cable is a cable like any other.
         assert_eq!(run.model.instruments[0].modulators[0].targets.len(), 1);
-        assert!(run.commands.iter().any(|c| c.starts_with("AddModTarget inst=0 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.400")), "{:#?}", run.commands);
+        let cable = testutil::told(&run.model, "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 0, param_index: 1 } depth=0.400");
+        assert!(run.commands.iter().any(|c| c.starts_with(&cable)), "{:#?}", run.commands);
     }
 
     #[test]
@@ -1977,11 +1978,8 @@ depth = 0.2
         let ModSourceSlot::Steps { values: staircase, .. } = ModSourceSlot::new_steps() else { unreachable!() };
         assert_eq!(steps_of(&run.model.instruments[0].modulators[0].source), (staircase, 16, 8.0, 0.0, true));
         // And a cable that drives its rate is centred on the 8 that it has, where an LFO that has none is at 1.
-        assert!(
-            run.commands.iter().any(|c| c.starts_with("AddModTarget inst=0 mod=1 kind=ModulatorRate { mod_index: 0 } depth=0.200 base=8.000 range=[0.010, 50.000]")),
-            "{:#?}",
-            run.commands
-        );
+        let cable = testutil::told(&run.model, "AddModTarget inst=0 mod=1 kind=ModulatorRate { mod_index: 0 } depth=0.200 base=8.000 range=[0.010, 50.000]");
+        assert!(run.commands.iter().any(|c| c.starts_with(&cable)), "{:#?}", run.commands);
         assert_eq!(run.model.instruments[0].modulators.len(), 2);
     }
 
@@ -2228,7 +2226,7 @@ depth = 0.2
         let run = load(GROUPS);
         assert_eq!(
             run.commands,
-            [
+            testutil::told_all(&run.model, &[
                 // Groups exist before any lane refers to them, with their bus effects.
                 "AddGroup",
                 "SetGroupVolume group=0 value=0.800",
@@ -2258,7 +2256,7 @@ depth = 0.2
                 "InsertGroupModulator group=0 index=1 source=Envelope { attack: 0.02, decay: 0.4, sustain: 0.5, release: 1.0, state: Idle, level: 0.0, notes_held: 0 }",
                 "AddGroupModTarget group=0 mod=1 kind=ModulatorRate { mod_index: 0 } depth=0.300 base=0.500 range=[0.010, 50.000]",
                 "AddGroupModTarget group=0 mod=1 kind=ModulatorDepth { mod_index: 0, target_index: 2 } depth=0.100 base=0.250 range=[0.000, 1.000]",
-            ]
+            ])
         );
         // Progress covers the lanes' plugin slots only; the group's bus effect is not counted.
         assert_eq!(
@@ -2304,7 +2302,7 @@ plugin = "builtin:filter"
         );
         assert!(
             run.commands.contains(
-                &"AddGroupModTarget group=1 mod=0 kind=GroupMember { member: 0, slot: 1, param_index: 0 } depth=0.400 base=1.000 range=[0.000, 1.000]".to_string()
+                &testutil::told(&run.model, "AddGroupModTarget group=1 mod=0 kind=GroupMember { member: 0, slot: 1, param_index: 0 } depth=0.400 base=1.000 range=[0.000, 1.000]")
             ),
             "{:#?}",
             run.commands
@@ -2321,7 +2319,7 @@ plugin = "builtin:filter"
         let run = load(LEGACY);
         assert_eq!(
             run.commands,
-            [
+            testutil::told_all(&run.model, &[
                 "AddInstrument range=None",
                 "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
                 "InsertEffect inst=0 index=0 plugin=Filter mix=1.000",
@@ -2331,7 +2329,7 @@ plugin = "builtin:filter"
                 "AddModTarget inst=0 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.200 base=1.000 range=[0.000, 1.000]",
                 "InsertModulator inst=0 index=2 source=Lfo { waveform: Sine, rate: 4.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
                 "AddModTarget inst=0 mod=2 kind=ModulatorRate { mod_index: 1 } depth=0.300 base=3.000 range=[0.010, 50.000]",
-            ]
+            ])
         );
         let lane = &run.model.instruments[0];
         assert_eq!(lane.modulators.len(), 3);
@@ -2467,13 +2465,13 @@ type = "envelope"
         );
         assert_eq!(
             run.commands,
-            [
+            testutil::told_all(&run.model, &[
                 "AddInstrument range=None",
                 "InsertEffect inst=0 index=0 plugin=Filter mix=1.000",
                 "InsertModulator inst=0 index=0 source=Lfo { waveform: Sine, rate: 2.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
                 "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.400 base=1.000 range=[0.000, 1.000]",
                 "InsertModulator inst=0 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }",
-            ]
+            ])
         );
         let lane = &run.model.instruments[0];
         assert!(lane.instrument.is_none());
@@ -2546,7 +2544,7 @@ mod_rate = 1
 
     #[test]
     fn a_cable_that_names_what_comes_later_is_made_by_the_node_and_the_cable_it_names() {
-        use crate::app::intent::ModulatorField;
+        use crate::app::model::ModSetting;
         // The first modulator drives the rate of the second, the depth of the second's cable and the attack of the third: all of them come after it.
         let run = load(
             r#"
@@ -2574,17 +2572,17 @@ type = "envelope"
         assert_eq!(
             aims,
             [
-                Driven::Setting { modulator: second, field: ModulatorField::Rate },
+                Driven::Setting { modulator: second, field: ModSetting::Rate },
                 Driven::Depth(lane.modulators[1].targets[0].edge),
-                Driven::Setting { modulator: third, field: ModulatorField::Attack },
+                Driven::Setting { modulator: third, field: ModSetting::Attack },
             ]
         );
-        // The audio thread is told the places that the rack names them by: the second modulator, the first of its cables, and the third.
+        // The audio thread is told the nodes that they aim at: the second modulator, the first of its cables, and the third.
         let told: Vec<&String> = run.commands.iter().filter(|c| c.starts_with("AddModTarget inst=0 mod=0 ")).collect();
         assert_eq!(told.len(), 3);
-        assert!(told[0].contains("kind=ModulatorRate { mod_index: 1 }"), "{told:?}");
-        assert!(told[1].contains("kind=ModulatorDepth { mod_index: 1, target_index: 0 }"), "{told:?}");
-        assert!(told[2].contains("kind=ModulatorAttack { mod_index: 2 }"), "{told:?}");
+        for (command, aim) in told.iter().zip(&aims) {
+            assert!(command.contains(&format!("aim={aim:?} ")), "{told:?}");
+        }
         for (m, modulator) in lane.modulators.iter().enumerate() {
             for (t, _) in modulator.targets.iter().enumerate() {
                 assert!(run.model.kind_of_target(ModulatorLocation::Lane(0), m, t).is_some(), "modulator {m} cable {t}");
@@ -2689,7 +2687,7 @@ mod_depth = [0, 0]
     }
 
     #[test]
-    fn the_depth_of_a_cable_is_told_to_the_audio_thread_by_its_place_among_the_cables_that_are_made_and_not_by_its_place_in_the_file() {
+    fn the_depth_of_a_cable_is_told_to_the_audio_thread_by_the_cable_that_is_made_and_not_by_its_place_in_the_file() {
         let run = load(
             r#"
 [[instrument]]
@@ -2712,7 +2710,7 @@ mod_depth = [0, 1]
         assert_eq!(lane.modulators[1].targets[0].aim, Driven::Depth(lane.modulators[0].targets[0].edge));
         let told: Vec<&String> = run.commands.iter().filter(|c| c.starts_with("AddModTarget inst=0 mod=1 ")).collect();
         assert_eq!(told.len(), 1, "{:#?}", run.commands);
-        assert!(told[0].contains("kind=ModulatorDepth { mod_index: 0, target_index: 0 }"), "{told:?}");
+        assert!(told[0].contains(&format!("aim={:?} ", Driven::Depth(lane.modulators[0].targets[0].edge))), "{told:?}");
         run.model.check_ids().unwrap();
     }
 
@@ -2766,7 +2764,7 @@ param = "volume"
         let run = load(MIDI);
         assert_eq!(
             run.commands,
-            [
+            testutil::told_all(&run.model, &[
                 "AddInstrument range=None",
                 "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false",
                 "InsertModulator inst=0 index=0 source=MidiLearn { source: Some(Cc(74)), value: 0.0, learning: false }",
@@ -2777,7 +2775,7 @@ param = "volume"
                 "InsertModulator inst=0 index=4 source=MidiLearn { source: Some(Velocity), value: 0.0, learning: false }",
                 "AddModTarget inst=0 mod=4 kind=PluginParam { slot: 0, param_index: 2 } depth=0.500 base=1.000 range=[0.000, 1.000]",
                 &format!("InsertModulator inst=0 index=5 source=MidiLearn {{ source: Some(Key), value: {:?}, learning: false }}", 60.0f32 / 127.0),
-            ]
+            ])
         );
     }
 

@@ -19,7 +19,7 @@ use crate::source::SourceSet;
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 use std::collections::{BTreeMap, VecDeque};
 
-pub use crate::ids::{EdgeId, NodeId};
+pub use crate::ids::{Driven, EdgeId, ModSetting, NodeId};
 
 /// The ids that were handed out for something: the nodes and the cables, each in the order they were made.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -106,45 +106,37 @@ pub enum NodePath {
     Source(usize),
 }
 
-/// What a cable drives, named so that it can be found again once other cables and modulators have gone
-/// and the places in the racks have moved: a plugin's parameter (by the node of the plugin), a
-/// modulator's rate or a stage of its envelope (by the node of the modulator), or the depth of a cable
-/// (by its edge).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Driven {
-    Param { plugin: NodeId, index: u32 },
-    Setting { modulator: NodeId, field: ModulatorField },
-    Depth(EdgeId),
-}
-
-/// The field of a modulator that a cable of the rack names `field`, if it is one that a cable can drive: a rate or a stage of an envelope (the depth of a cable is a cable's, and
-/// is `Driven::Depth`).
-fn cross_field(field: ModulatorField) -> Option<CrossModField> {
-    match field {
-        ModulatorField::Rate => Some(CrossModField::Rate),
-        ModulatorField::Attack => Some(CrossModField::Attack),
-        ModulatorField::Decay => Some(CrossModField::Decay),
-        ModulatorField::Sustain => Some(CrossModField::Sustain),
-        ModulatorField::Release => Some(CrossModField::Release),
-        ModulatorField::Waveform
-        | ModulatorField::Value
-        | ModulatorField::Glide
-        | ModulatorField::Length
-        | ModulatorField::Retrigger
-        | ModulatorField::Fade
-        | ModulatorField::Sync => None,
+/// The field of a modulator, as the intents name it, that a cable drives when it drives `setting`.
+pub fn field_of_setting(setting: ModSetting) -> ModulatorField {
+    match setting {
+        ModSetting::Rate => ModulatorField::Rate,
+        ModSetting::Attack => ModulatorField::Attack,
+        ModSetting::Decay => ModulatorField::Decay,
+        ModSetting::Sustain => ModulatorField::Sustain,
+        ModSetting::Release => ModulatorField::Release,
     }
 }
 
-/// The setting of a modulator that a cable drives when it drives the field `field` (`None` for the depth of a cable, which is not a setting).
-pub fn setting_of(field: CrossModField) -> Option<ModulatorField> {
+/// The setting of a modulator that a cable drives when its place in a rack names the field `field` (`None` for the depth of a cable, which is not a setting).
+pub fn setting_of(field: CrossModField) -> Option<ModSetting> {
     match field {
-        CrossModField::Rate => Some(ModulatorField::Rate),
-        CrossModField::Attack => Some(ModulatorField::Attack),
-        CrossModField::Decay => Some(ModulatorField::Decay),
-        CrossModField::Sustain => Some(ModulatorField::Sustain),
-        CrossModField::Release => Some(ModulatorField::Release),
+        CrossModField::Rate => Some(ModSetting::Rate),
+        CrossModField::Attack => Some(ModSetting::Attack),
+        CrossModField::Decay => Some(ModSetting::Decay),
+        CrossModField::Sustain => Some(ModSetting::Sustain),
+        CrossModField::Release => Some(ModSetting::Release),
         CrossModField::Depth(_) => None,
+    }
+}
+
+/// The field that a place in a rack names when a cable drives `setting`.
+pub fn place_field_of(setting: ModSetting) -> CrossModField {
+    match setting {
+        ModSetting::Rate => CrossModField::Rate,
+        ModSetting::Attack => CrossModField::Attack,
+        ModSetting::Decay => CrossModField::Decay,
+        ModSetting::Sustain => CrossModField::Sustain,
+        ModSetting::Release => CrossModField::Release,
     }
 }
 
@@ -826,7 +818,7 @@ impl SessionModel {
             }
             Driven::Setting { modulator, field } => {
                 let NodePath::Modulator { at, index } = self.locate(modulator)? else { return None };
-                self.modulators(at)?.get(index)?.source.setting(field)
+                self.modulators(at)?.get(index)?.source.setting(field_of_setting(field))
             }
             Driven::Depth(edge) => {
                 let (at, modulator, target) = self.locate_edge(edge)?;
@@ -894,7 +886,7 @@ impl SessionModel {
             },
             Driven::Setting { modulator, field } => {
                 let NodePath::Modulator { at: there, index } = self.locate(modulator)? else { return None };
-                field_of(there, index, cross_field(field)?)
+                field_of(there, index, place_field_of(field))
             }
             Driven::Depth(edge) => {
                 let (there, index, target) = self.locate_edge(edge)?;
@@ -3694,7 +3686,7 @@ depth = 0.4
         assert!(found > 10, "{found}");
         // What is not there has none: a plugin, a modulator and a cable that are not.
         assert_eq!(model.centre_of(Driven::Param { plugin: NodeId(9_999), index: 0 }), None);
-        assert_eq!(model.centre_of(Driven::Setting { modulator: NodeId(9_999), field: ModulatorField::Rate }), None);
+        assert_eq!(model.centre_of(Driven::Setting { modulator: NodeId(9_999), field: ModSetting::Rate }), None);
         assert_eq!(model.centre_of(Driven::Depth(EdgeId(9_999))), None);
     }
 
@@ -4245,7 +4237,7 @@ param = "pan"
     /// A modulator to put in, told apart by its node, with one cable to the rate of the first modulator of lane 0.
     fn spare_modulator(model: &SessionModel, node: u32) -> ModulatorSlot {
         let mut cable = spare_cable(model, 900 + node);
-        cable.aim = Driven::Setting { modulator: model.instruments[0].modulators[0].node, field: ModulatorField::Rate };
+        cable.aim = Driven::Setting { modulator: model.instruments[0].modulators[0].node, field: ModSetting::Rate };
         ModulatorSlot { node: NodeId(node), source: ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 9.0, retrigger: false, fade: 0.0, sync: 0 }, targets: vec![cable], output: None, position: None }
     }
 
@@ -4461,15 +4453,14 @@ param = "pan"
         assert_eq!(model.kind_of(ModulatorLocation::Lane(0), 0, param(NodeId(9_999))), None);
         // Another modulator's setting is the rack's own sibling's, or a member's modulator for a group; the modulator's own is no one's.
         let (second, third) = (model.instruments[1].modulators[0].node, model.instruments[1].modulators[1].node);
-        let rate = |modulator| Driven::Setting { modulator, field: ModulatorField::Rate };
+        let rate = |modulator| Driven::Setting { modulator, field: ModSetting::Rate };
         assert_eq!(model.kind_of(ModulatorLocation::Lane(1), 0, rate(third)), Some(K::ModulatorRate { mod_index: 1 }));
         assert_eq!(model.kind_of(ModulatorLocation::Lane(1), 1, rate(second)), Some(K::ModulatorRate { mod_index: 0 }));
         assert_eq!(model.kind_of(ModulatorLocation::Lane(1), 0, rate(second)), None, "its own");
         assert_eq!(model.kind_of(ModulatorLocation::Lane(0), 0, rate(third)), None, "another lane's modulator");
         assert_eq!(model.kind_of(ModulatorLocation::Group(0), 0, rate(modulator)), Some(K::GroupMemberMod { member: 0, mod_index: 0, field: CrossModField::Rate }));
         assert_eq!(model.kind_of(ModulatorLocation::Group(0), 0, rate(third)), None, "a modulator of a lane that is no member");
-        // A setting that a modulator does not have a cable to (a waveform is a person's), and a depth that is of a cable that is not there.
-        assert_eq!(model.kind_of(ModulatorLocation::Lane(1), 0, Driven::Setting { modulator: third, field: ModulatorField::Waveform }), None);
+        // A depth that is of a cable that is not there.
         assert_eq!(model.kind_of(ModulatorLocation::Lane(1), 0, Driven::Depth(EdgeId(9_999))), None);
     }
 
