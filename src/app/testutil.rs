@@ -1553,6 +1553,18 @@ pub fn model_audio_cables(model: &SessionModel) -> Vec<crate::plugin::chain::Cab
     model.cables.iter().map(|cable| crate::plugin::chain::CableFacts { id: cable.id, from: cable.from, to: cable.to, gain: cable.gain }).collect()
 }
 
+/// Every modulator's cables as the model has them, in the terms and the order of `AudioGraph::cables`: the lanes' racks and then the groups', each modulator with its cables'
+/// kinds and depths.
+pub fn model_racks(model: &SessionModel) -> crate::plugin::chain::RackCables {
+    use crate::plugin::chain::ModulatorLocation;
+    let racks = |at: fn(usize) -> ModulatorLocation, i: usize, rack: &[crate::app::model::ModulatorSlot]| -> Vec<_> {
+        rack.iter().enumerate().map(|(m, modulator)| (at(i), m, modulator.targets.iter().map(|t| (t.kind.clone(), t.depth)).collect())).collect()
+    };
+    let lanes = model.instruments.iter().enumerate().flat_map(|(i, lane)| racks(ModulatorLocation::Lane, i, &lane.modulators));
+    let groups = model.groups.iter().enumerate().flat_map(|(i, group)| racks(ModulatorLocation::Group, i, &group.modulators));
+    lanes.chain(groups).collect()
+}
+
 pub fn model_groups(model: &SessionModel) -> Vec<GroupFacts> {
     model
         .groups

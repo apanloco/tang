@@ -393,13 +393,18 @@ pub struct CableFacts {
 }
 
 /// What the engine has of the model's nodes and cables, for the oracle (and the tests of the controller) to hold to the model: the ids that it has for its lanes, its groups, their
-/// effects and its audio cables are the model's.
+/// effects and its audio cables are the model's, and so are what each modulator's cables drive (the places that the engine keeps up by its own fix-ups, which the model keeps
+/// as well) and the value that each is centred on.
 #[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub struct Facts {
     pub lanes: Vec<LaneFacts>,
     pub groups: Vec<GroupFacts>,
     pub cables: Vec<CableFacts>,
+    /// Every modulator's cables: `AudioGraph::cables`.
+    pub racks: RackCables,
+    /// The value each of them is centred on: `AudioGraph::cable_bases`.
+    pub bases: Vec<(ModulatorLocation, usize, ModTargetKind, f32)>,
 }
 
 /// What a group is, for a test to compare with the model's: the node it is, the names and the nodes of its bus effects, how many
@@ -4273,7 +4278,7 @@ impl AudioGraph {
     /// What the engine has of the model's nodes and cables.
     #[cfg(test)]
     pub fn facts(&self) -> Facts {
-        Facts { lanes: self.lanes(), groups: self.groups(), cables: self.audio_cables() }
+        Facts { lanes: self.lanes(), groups: self.groups(), cables: self.audio_cables(), racks: self.cables(), bases: self.cable_bases() }
     }
 
     /// The names of the effects of each lane, in the order of its chain, for a test to compare with the model's.

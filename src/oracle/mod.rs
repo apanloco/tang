@@ -512,6 +512,8 @@ pub struct Rig {
     /// How many blocks have been rendered.
     done: usize,
     data: Vec<f32>,
+    /// What each modulation cable drove after the last block, by the node and the port (`SessionModel::driven_by_edge`), to hold the cables that are still there to it.
+    aims: BTreeMap<crate::ids::EdgeId, Option<crate::app::model::Driven>>,
 }
 
 /// A block as it went: the samples (interleaved), how long the engine took (the callback's `Renderer`, nothing else) and how many times it asked for memory.
@@ -562,6 +564,7 @@ impl Rig {
             block: scenario.block,
             done: 0,
             data: vec![0.0; scenario.block * 2],
+            aims: BTreeMap::new(),
         }
     }
 
@@ -598,7 +601,52 @@ impl Rig {
             assert_eq!(facts.lanes, testutil::model_lanes(&self.ctl.model), "{what}: the lanes of the engine are not those of the model");
             assert_eq!(facts.groups, testutil::model_groups(&self.ctl.model), "{what}: the groups of the engine are not those of the model");
             assert_eq!(facts.cables, testutil::model_audio_cables(&self.ctl.model), "{what}: the audio cables of the engine are not those of the model");
+            // What each modulator's cables drive: the engine keeps the places of the plugins, the members and the siblings that they name up by its own fix-ups, and the model by its own.
+            let model_racks = testutil::model_racks(&self.ctl.model);
+            let kinds = |racks: &crate::plugin::chain::RackCables| -> Vec<_> {
+                racks.iter().map(|(at, modulator, cables)| (*at, *modulator, cables.iter().map(|(kind, _)| kind.clone()).collect::<Vec<_>>())).collect()
+            };
+            assert_eq!(kinds(&facts.racks), kinds(&model_racks), "{what}: the modulation cables of the engine are not those of the model");
+            // And their depths, but for those that another cable drives (the engine's is the one that cable has made of it this block, and the model's what the user set).
+            for ((at, modulator, engine), (_, _, model)) in facts.racks.iter().zip(&model_racks) {
+                for (place, ((_, engine), (_, model))) in engine.iter().zip(model).enumerate() {
+                    let edge = self.ctl.model.modulators(*at).and_then(|rack| rack.get(*modulator)).and_then(|m| m.targets.get(place)).map(|t| t.edge);
+                    if edge.is_some_and(|edge| !self.ctl.model.is_driven(crate::app::model::Driven::Depth(edge))) {
+                        assert_eq!(engine, model, "{what}: {at:?} modulator {modulator}, cable {place}: the depth of the engine is not the model's");
+                    }
+                }
+            }
+            // And the value that each is centred on, where the model has one (a cable that drives nothing that is there has none).
+            for (at, modulator, kind, base) in &facts.bases {
+                if let Some(centre) = self.ctl.model.centre_of(*at, *modulator, kind) {
+                    assert_eq!(*base, centre, "{what}: {at:?} modulator {modulator}: the cable {kind:?} is centred on another value in the engine than in the model");
+                }
+            }
         }
+    }
+
+    /// A cable goes on driving what it drove, whatever is done around it: the node and the port that it ends at (a plugin's parameter, a modulator's setting, the depth of a cable)
+    /// are the same as after the last block for every cable that is there still, and one that drove something drives something (the places that the model keeps a cable by are kept
+    /// up through the edits, and a cable that is left pointing at nothing, or at another plugin's parameter, would be a place that was not).
+    fn assert_the_cables_still_drive_what_they_drove(&mut self, what: &str) {
+        use crate::plugin::chain::ModulatorLocation;
+        let model = &self.ctl.model;
+        let lanes = model.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
+        let groups = model.groups.iter().enumerate().map(|(i, group)| (ModulatorLocation::Group(i), &group.modulators));
+        let mut now = BTreeMap::new();
+        for (at, rack) in lanes.chain(groups) {
+            for (source, modulator) in rack.iter().enumerate() {
+                for target in &modulator.targets {
+                    now.insert(target.edge, model.driven_by(at, source, &target.kind));
+                }
+            }
+        }
+        for (edge, was) in &self.aims {
+            if let Some(is) = now.get(edge) {
+                assert_eq!(was, is, "{what}: the cable {edge:?} drives something else than it did");
+            }
+        }
+        self.aims = now;
     }
 
     /// A hash of every cell of the telemetry, as the engine left them.
@@ -628,6 +676,7 @@ pub fn render(scenario: &Scenario, make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> 
             edit_blocks.push(b);
         }
         rig.assert_the_engine_has_the_nodes_of_the_model(&format!("{}, block {b}", scenario.id));
+        rig.assert_the_cables_still_drive_what_they_drove(&format!("{}, block {b}", scenario.id));
         slots.push(rig.telemetry_hash());
         rig.poll();
     }
@@ -1306,6 +1355,62 @@ mod tests {
             }
         }
         sound
+    }
+
+    /// The `cross` session of the corpus at 256 frames: a group's cables to a member's parameter, a member's modulator and the depth of one of its cables, a bus effect and a sibling, an
+    /// envelope on an LFO's rate in a lane, and a cable on the depth of another.
+    fn cross() -> Scenario {
+        sessions().into_iter().find(|scenario| scenario.id.starts_with("session:cross")).expect("the cross session")
+    }
+
+    #[test]
+    fn the_engine_and_the_model_have_the_same_cables_in_the_same_places_as_loaded() {
+        let mut rig = settled(&cross());
+        rig.assert_the_engine_has_the_nodes_of_the_model("as loaded");
+        rig.assert_the_cables_still_drive_what_they_drove("as loaded");
+        rig.assert_the_cables_still_drive_what_they_drove("a block later");
+    }
+
+    #[test]
+    #[should_panic(expected = "the modulation cables of the engine are not those of the model")]
+    fn a_cable_that_only_the_engine_has_is_told() {
+        let mut rig = settled(&cross());
+        let group = &mut rig.ctl.model.groups[0].modulators[0].targets;
+        assert!(group.len() > 1, "the group's first modulator has cables");
+        group.pop();
+        rig.assert_the_engine_has_the_nodes_of_the_model("a cable is missing");
+    }
+
+    #[test]
+    #[should_panic(expected = "the depth of the engine is not the model's")]
+    fn a_depth_that_the_model_has_and_the_engine_has_not_is_told_where_no_cable_drives_it() {
+        let mut rig = settled(&cross());
+        // (The depth of the group's first cable is driven by nothing: the engine has what the user set.)
+        rig.ctl.model.groups[0].modulators[0].targets[0].depth += 0.1;
+        rig.assert_the_engine_has_the_nodes_of_the_model("a depth is another");
+    }
+
+    #[test]
+    #[should_panic(expected = "is centred on another value in the engine than in the model")]
+    fn a_cable_that_is_centred_on_another_value_in_the_engine_than_the_model_has_is_told() {
+        let mut rig = settled(&cross());
+        // The value that lane 0's detune has in the model, which its cables are centred on.
+        let detune = rig.ctl.model.instruments[0].instrument.as_mut().and_then(|plugin| plugin.params.iter_mut().find(|row| row.name == "detune")).expect("a detune");
+        detune.value += 1.0;
+        rig.assert_the_engine_has_the_nodes_of_the_model("a value is another");
+    }
+
+    #[test]
+    #[should_panic(expected = "drives something else than it did")]
+    fn a_cable_that_comes_to_drive_something_else_is_told() {
+        let mut rig = settled(&cross());
+        rig.assert_the_cables_still_drive_what_they_drove("as loaded");
+        // Two cables of the group's first modulator, which drive a modulator's rate and a plugin's parameter, change ids: each is the other, by its id.
+        let targets = &mut rig.ctl.model.groups[0].modulators[0].targets;
+        let (first, second) = (targets[0].edge, targets[1].edge);
+        targets[0].edge = second;
+        targets[1].edge = first;
+        rig.assert_the_cables_still_drive_what_they_drove("two cables have changed their ids");
     }
 
     #[test]

@@ -2742,12 +2742,7 @@ plugin = "builtin:osc"
 
     /// Every modulator's cables as the model has them, in the order `AudioGraph::cables` has them.
     fn model_cables(model: &SessionModel) -> crate::plugin::chain::RackCables {
-        let racks = |at: fn(usize) -> ModulatorLocation, i: usize, rack: &[ModulatorSlot]| -> Vec<_> {
-            rack.iter().enumerate().map(|(m, modulator)| (at(i), m, modulator.targets.iter().map(|t| (t.kind.clone(), t.depth)).collect())).collect()
-        };
-        let lanes = model.instruments.iter().enumerate().flat_map(|(i, lane)| racks(ModulatorLocation::Lane, i, &lane.modulators));
-        let groups = model.groups.iter().enumerate().flat_map(|(i, group)| racks(ModulatorLocation::Group, i, &group.modulators));
-        lanes.chain(groups).collect()
+        testutil::model_racks(model)
     }
 
     /// A controller over `session`, and a real audio graph that has been sent what loading it takes.
