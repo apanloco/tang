@@ -806,7 +806,7 @@ impl Controller {
             .into_iter()
             .find(|t| t.node == node && t.param == param)
             .ok_or_else(|| invalid(format!("the plugin has no parameter {param}")))?;
-        let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.kind == target.kind));
+        let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.aim == target.aim()));
         if drives_it_already {
             return Err(invalid("that modulator drives that parameter already"));
         }
@@ -846,12 +846,13 @@ impl Controller {
                 Port::Param { .. } | Port::ModOut | Port::AudioIn | Port::AudioOut | Port::EventsIn | Port::EventsOut => invalid("that is not a setting of a modulator"),
             });
         };
-        let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.kind == target.kind));
+        let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.aim == target.aim()));
         if drives_it_already {
             return Err(invalid("that modulator drives that setting already"));
         }
-        let FieldTarget { kind, label, base_value, param_min, param_max, .. } = target;
-        Ok(NewTarget { kind, slot: 0, param_name: label, depth: NEW_CABLE_DEPTH, base_value, param_min, param_max })
+        let aim = target.aim();
+        let FieldTarget { label, base_value, param_min, param_max, .. } = target;
+        Ok(NewTarget { aim, param_name: label, depth: NEW_CABLE_DEPTH, base_value, param_min, param_max })
     }
 
     fn add_effect_intent(&mut self, parent: NodeId, plugin: &str) -> Result<Done, IntentError> {
@@ -3981,7 +3982,7 @@ type = "steps"
         assert_eq!(rack.len(), 1);
         assert!(matches!(rack[0].source, ModSourceSlot::Lfo { .. }));
         assert_eq!(rack[0].targets.len(), 1);
-        assert_eq!(rack[0].targets[0].kind, ModTargetKind::PluginParam { slot: 0, param_index: detune });
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(0), 0, 0), Some(ModTargetKind::PluginParam { slot: 0, param_index: detune }));
         assert_eq!(rack[0].targets[0].depth, NEW_CABLE_DEPTH);
         let commands = sent(&engine);
         assert_eq!(commands.len(), 2, "{commands:?}");
@@ -4056,7 +4057,7 @@ type = "steps"
         // The reverb is the second plugin of the lane (slot 1); the lane's modulator is in the lane's rack, though the lane is a member of the group.
         let rack = &ctl.model.instruments[0].modulators;
         assert_eq!(rack.len(), 1);
-        assert_eq!(rack[0].targets[0].kind, ModTargetKind::PluginParam { slot: 1, param_index: damping });
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(0), 0, 0), Some(ModTargetKind::PluginParam { slot: 1, param_index: damping }));
         assert_eq!(ctl.model.groups[0].modulators.len(), 1, "the group's rack is as it was");
 
         let bus = NodePath::GroupEffect { group: 0, index: 0 };
@@ -4066,7 +4067,7 @@ type = "steps"
         modulate(&mut ctl, bus_node, Port::Param { index: cutoff }, ModulatorKind::Envelope, None).unwrap();
         let group_rack = &ctl.model.groups[0].modulators;
         assert_eq!(group_rack.len(), 2);
-        assert_eq!(group_rack[1].targets[0].kind, ModTargetKind::GroupBus { effect_index: 0, param_index: cutoff });
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Group(0), 1, 0), Some(ModTargetKind::GroupBus { effect_index: 0, param_index: cutoff }));
         assert_eq!(ctl.model.instruments[0].modulators.len(), 1, "the lane's rack is as it was");
         let commands = sent(&engine);
         assert!(commands[0].starts_with("InsertGroupModulator group=0 index=1"), "{commands:?}");
@@ -4086,11 +4087,11 @@ type = "steps"
         modulate(&mut ctl, lane_lfo, Port::Depth { edge: cable }, ModulatorKind::Lfo, None).unwrap();
         let lane_rack = &ctl.model.instruments[0].modulators;
         assert_eq!(lane_rack.len(), 6, "two new ones in the lane's rack, after the four it had");
-        assert_eq!(lane_rack[4].targets[0].kind, ModTargetKind::ModulatorRate { mod_index: 0 });
-        assert_eq!(lane_rack[5].targets[0].kind, ModTargetKind::ModulatorDepth { mod_index: 0, target_index: 0 });
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(0), 4, 0), Some(ModTargetKind::ModulatorRate { mod_index: 0 }));
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(0), 5, 0), Some(ModTargetKind::ModulatorDepth { mod_index: 0, target_index: 0 }));
         let group_rack = &ctl.model.groups[0].modulators;
         assert_eq!(group_rack.len(), 3);
-        assert_eq!(group_rack[2].targets[0].kind, ModTargetKind::ModulatorRate { mod_index: 0 });
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Group(0), 2, 0), Some(ModTargetKind::ModulatorRate { mod_index: 0 }));
         let commands = sent(&engine);
         assert!(commands[0].starts_with("InsertModulator inst=0 index=4"), "{commands:?}");
         assert!(commands[1].starts_with("AddModTarget inst=0 mod=4 kind=ModulatorRate { mod_index: 0 }"), "{commands:?}");
@@ -4112,14 +4113,14 @@ type = "steps"
         let filter_node = node(&ctl, filter);
         modulate(&mut ctl, filter_node, Port::Param { index: cutoff }, ModulatorKind::Lfo, None).unwrap();
         assert_eq!(racks(&ctl), [before[0], before[1], before[2], before[3] + 1, before[4]]);
-        assert_eq!(ctl.model.instruments[3].modulators[before[3]].targets[0].kind, ModTargetKind::PluginParam { slot: 1, param_index: cutoff });
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(3), before[3], 0), Some(ModTargetKind::PluginParam { slot: 1, param_index: cutoff }));
         assert!(sent(&engine)[0].starts_with(&format!("InsertModulator inst=3 index={}", before[3])));
         // The instrument of a lane that is a member of a group: the lane's rack too, and the group's is as it was.
         let (detune, _) = param(&ctl, NodePath::Instrument(2), "detune");
         let osc = node(&ctl, NodePath::Instrument(2));
         modulate(&mut ctl, osc, Port::Param { index: detune }, ModulatorKind::Envelope, None).unwrap();
         assert_eq!(racks(&ctl), [before[0], before[1], before[2] + 1, before[3] + 1, before[4]]);
-        assert_eq!(ctl.model.instruments[2].modulators[0].targets[0].kind, ModTargetKind::PluginParam { slot: 0, param_index: detune });
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(2), 0, 0), Some(ModTargetKind::PluginParam { slot: 0, param_index: detune }));
         assert_eq!(groups(&ctl), groups_before);
         ctl.model.check_ids().unwrap();
     }
@@ -4266,11 +4267,11 @@ type = "midi"
 
         let targets = &ctl.model.instruments[0].modulators[0].targets;
         assert_eq!(targets.len(), 2);
-        assert_eq!((targets[0].slot, targets[0].param_name.as_str(), targets[0].depth), (0, "detune", 0.5));
-        assert!(matches!(targets[0].kind, ModTargetKind::PluginParam { slot: 0, param_index } if param_index == detune));
+        assert_eq!((targets[0].param_name.as_str(), targets[0].depth), ("detune", 0.5));
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(0), 0, 0), Some(ModTargetKind::PluginParam { slot: 0, param_index: detune }));
         assert_eq!((targets[0].param_min, targets[0].param_max), (-24.0, 24.0));
-        assert_eq!((targets[1].slot, targets[1].param_name.as_str(), targets[1].depth), (1, "cutoff", 0.5));
-        assert!(matches!(targets[1].kind, ModTargetKind::PluginParam { slot: 1, param_index } if param_index == cutoff));
+        assert_eq!((targets[1].param_name.as_str(), targets[1].depth), ("cutoff", 0.5));
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(0), 0, 1), Some(ModTargetKind::PluginParam { slot: 1, param_index: cutoff }));
         assert_ne!(targets[0].edge, targets[1].edge, "a cable of its own each");
         assert!(ctl.dirty);
         ctl.model.check_ids().unwrap();
@@ -4300,7 +4301,8 @@ type = "midi"
             ]
         );
         let targets = &ctl.model.groups[0].modulators[0].targets;
-        assert_eq!(targets.iter().map(|t| (t.slot, t.param_name.as_str(), t.depth)).collect::<Vec<_>>(), [(0, "detune", 0.5), (1, "cutoff", 0.5), (0, "cutoff", 0.5)]);
+        let slots: Vec<usize> = testutil::kinds_at(&ctl.model, ModulatorLocation::Group(0), 0).iter().map(testutil::slot_of).collect();
+        assert_eq!(targets.iter().zip(slots).map(|(t, slot)| (slot, t.param_name.as_str(), t.depth)).collect::<Vec<_>>(), [(0, "detune", 0.5), (1, "cutoff", 0.5), (0, "cutoff", 0.5)]);
         assert!(ctl.model.instruments[0].modulators[0].targets.is_empty(), "the lane's own modulator is untouched");
         ctl.model.check_ids().unwrap();
     }
@@ -4557,8 +4559,8 @@ type = "midi"
         // The model has them, as the TUI's selector binds them: the label says whose, the depth is the new cable's.
         let targets = &ctl.model.instruments[0].modulators[0].targets;
         assert_eq!(
-            targets.iter().map(|t| (t.param_name.as_str(), t.depth, t.slot)).collect::<Vec<_>>(),
-            [("detune", 0.1, 0), ("Mod 1 attack", 0.5, 0), ("Mod 1 decay", 0.5, 0), ("Mod 1 sustain", 0.5, 0), ("Mod 1 release", 0.5, 0), ("Mod 1 detune depth", 0.5, 0)]
+            targets.iter().map(|t| (t.param_name.as_str(), t.depth)).collect::<Vec<_>>(),
+            [("detune", 0.1), ("Mod 1 attack", 0.5), ("Mod 1 decay", 0.5), ("Mod 1 sustain", 0.5), ("Mod 1 release", 0.5), ("Mod 1 detune depth", 0.5)]
         );
         assert_eq!(
             targets.iter().skip(1).map(|t| (t.param_min, t.param_max)).collect::<Vec<_>>(),
@@ -5083,7 +5085,7 @@ type = "midi"
         assert_eq!(ctl.model.locate(filter), Some(NodePath::Effect { inst: 0, index: 1 }));
         assert_eq!(ctl.model.locate(reverb), Some(NodePath::Effect { inst: 0, index: 0 }));
         // The lane's first modulator drove the filter's cutoff in slot 1 and the reverb's damping in slot 2: it drives them in 2 and 1 now.
-        let kinds: Vec<_> = ctl.model.instruments[0].modulators[0].targets.iter().map(|t| t.kind.clone()).collect();
+        let kinds = testutil::kinds_at(&ctl.model, ModulatorLocation::Lane(0), 0);
         assert_eq!(kinds, [K::PluginParam { slot: 2, param_index: 0 }, K::PluginParam { slot: 1, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]);
         ctl.model.check_ids().unwrap();
     }
@@ -5103,7 +5105,7 @@ type = "midi"
         assert_eq!(bus, ["Reverb", "Filter"]);
         assert_eq!(ctl.model.locate(reverb), Some(NodePath::GroupEffect { group: 0, index: 0 }));
         // The group's cables to the bus follow the plugins.
-        let bus_cables: Vec<_> = ctl.model.groups[0].modulators[0].targets.iter().map(|t| t.kind.clone()).filter(|k| matches!(k, K::GroupBus { .. })).collect();
+        let bus_cables: Vec<_> = testutil::kinds_at(&ctl.model, ModulatorLocation::Group(0), 0).into_iter().filter(|k| matches!(k, K::GroupBus { .. })).collect();
         assert_eq!(bus_cables, [K::GroupBus { effect_index: 1, param_index: 0 }, K::GroupBus { effect_index: 0, param_index: 2 }]);
         assert!(ctl.dirty);
         ctl.model.check_ids().unwrap();
@@ -5751,7 +5753,7 @@ type = "midi"
             ["RemoveGroupModTarget group=0 mod=0 target=0", "SetLaneGroup inst=0 group=None", "SetParameter inst=0 slot=0 param=1 value=0.000"]
         );
         // The cables to the member after it are told their new ordinal: lane 3 is member 0 now.
-        let cables: Vec<_> = ctl.model.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
+        let cables: Vec<_> = testutil::kinds_at(&ctl.model, ModulatorLocation::Group(0), 0).iter().map(|kind| format!("{kind:?}")).collect();
         assert!(cables.iter().all(|kind| kind.contains("member: 0")), "{cables:?}");
         ctl.model.check_ids().unwrap();
     }

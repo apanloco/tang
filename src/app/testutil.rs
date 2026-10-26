@@ -1558,11 +1558,36 @@ pub fn model_audio_cables(model: &SessionModel) -> Vec<crate::plugin::chain::Cab
 pub fn model_racks(model: &SessionModel) -> crate::plugin::chain::RackCables {
     use crate::plugin::chain::ModulatorLocation;
     let racks = |at: fn(usize) -> ModulatorLocation, i: usize, rack: &[crate::app::model::ModulatorSlot]| -> Vec<_> {
-        rack.iter().enumerate().map(|(m, modulator)| (at(i), m, modulator.targets.iter().map(|t| (t.kind.clone(), t.depth)).collect())).collect()
+        rack.iter()
+            .enumerate()
+            .map(|(m, modulator)| {
+                let cables = modulator.targets.iter().enumerate().map(|(t, cable)| {
+                    let kind = model.kind_of_target(at(i), m, t).unwrap_or_else(|| panic!("the cable {:?} of modulator {m} of {:?} drives nothing that is in reach", cable.edge, at(i)));
+                    (kind, cable.depth)
+                });
+                (at(i), m, cables.collect())
+            })
+            .collect()
     };
     let lanes = model.instruments.iter().enumerate().flat_map(|(i, lane)| racks(ModulatorLocation::Lane, i, &lane.modulators));
     let groups = model.groups.iter().enumerate().flat_map(|(i, group)| racks(ModulatorLocation::Group, i, &group.modulators));
     lanes.chain(groups).collect()
+}
+
+/// How the audio thread's racks name what each cable of the modulator at `mod_index` in the rack at `at` drives (`SessionModel::kind_of_target`), for a test that says it.
+pub fn kinds_at(model: &SessionModel, at: crate::plugin::chain::ModulatorLocation, mod_index: usize) -> Vec<crate::plugin::chain::ModTargetKind> {
+    let modulator = &model.modulators(at).expect("the rack is there")[mod_index];
+    (0..modulator.targets.len()).map(|t| model.kind_of_target(at, mod_index, t).expect("a cable drives something that is in reach")).collect()
+}
+
+/// The slot of the chain that a kind of cable drives a plugin in (0 for the instrument and for anything else that is not in a chain): the slot that the file writes, and the tree
+/// labels a target with its plugin by.
+pub fn slot_of(kind: &crate::plugin::chain::ModTargetKind) -> usize {
+    use crate::plugin::chain::ModTargetKind as K;
+    match kind {
+        K::PluginParam { slot, .. } | K::GroupMember { slot, .. } => *slot,
+        _ => 0,
+    }
 }
 
 pub fn model_groups(model: &SessionModel) -> Vec<GroupFacts> {

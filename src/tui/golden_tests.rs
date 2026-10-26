@@ -1990,11 +1990,10 @@ fn a_new_group_member_before_existing_ones_shifts_member_ordinals() {
     h.goto(TreeAddress::Instrument(0));
     h.press(KeyCode::Char('g')).press(KeyCode::Down).press(KeyCode::Enter); // "New group" → "Pad"
     assert_eq!(h.commands(), ["SetLaneGroup inst=0 group=Some(0)"]);
-    let target = &h.s.ctl.model.groups[0].modulators[0].targets[0];
+    let kind = h.s.ctl.model.kind_of_target(ModulatorLocation::Group(0), 0, 0);
     assert!(
-        matches!(target.kind, crate::plugin::chain::ModTargetKind::GroupMember { member: 1, .. }),
-        "{:?}",
-        target.kind
+        matches!(kind, Some(crate::plugin::chain::ModTargetKind::GroupMember { member: 1, .. })),
+        "{kind:?}"
     );
     assert!(
         h.tree().iter().any(|l| l.starts_with("  ~ LFO 0.5Hz sine → M1 Oscillator: detune")),
@@ -2107,7 +2106,7 @@ fn the_param_cursor_survives_moving_between_nodes_and_is_clamped() {
 
 /// The `(slot, kind)` of every target of lane modulator 0 on lane 0.
 fn lane_targets(h: &Harness) -> Vec<(usize, String)> {
-    h.s.ctl.model.instruments[0].modulators[0].targets.iter().map(|t| (t.slot, format!("{:?}", t.kind))).collect()
+    crate::app::testutil::kinds_at(&h.s.ctl.model, ModulatorLocation::Lane(0), 0).into_iter().map(|kind| (crate::app::testutil::slot_of(&kind), format!("{kind:?}"))).collect()
 }
 
 #[test]
@@ -2188,8 +2187,7 @@ fn reordering_bus_effects_moves_group_modulator_targets_with_their_effects() {
     assert_eq!(h.tree()[2], "  fx Reverb  [Built-in]  (bus)");
     assert_eq!(h.tree()[3], "  fx Filter  [Built-in]  (bus)");
     assert!(h.tree().contains(&label.as_str()), "targets follow their effects: {:#?}", h.tree());
-    let kinds: Vec<String> =
-        h.s.ctl.model.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
+    let kinds: Vec<String> = crate::app::testutil::kinds_at(&h.s.ctl.model, ModulatorLocation::Group(0), 0).iter().map(|kind| format!("{kind:?}")).collect();
     assert_eq!(
         kinds,
         [
@@ -2209,8 +2207,7 @@ fn reordering_bus_effects_moves_group_modulator_targets_with_their_effects() {
     h.press_with(KeyCode::Up, KeyModifiers::SHIFT);
     assert_eq!(h.commands(), ["ReorderGroupEffect group=0 from=1 to=0"]);
     assert!(h.s.ctl.dirty);
-    let kinds: Vec<String> =
-        h.s.ctl.model.groups[0].modulators[0].targets.iter().map(|t| format!("{:?}", t.kind)).collect();
+    let kinds: Vec<String> = crate::app::testutil::kinds_at(&h.s.ctl.model, ModulatorLocation::Group(0), 0).iter().map(|kind| format!("{kind:?}")).collect();
     assert_eq!(
         kinds,
         [
@@ -2251,11 +2248,10 @@ fn a_saved_session_does_not_keep_targets_of_a_deleted_effect() {
 /// 0 that addresses a member's plugin, in the target order.
 fn member_targets(h: &Harness) -> Vec<(usize, usize, u32, usize)> {
     use crate::plugin::chain::ModTargetKind;
-    h.s.ctl.model.groups[0].modulators[0]
-        .targets
-        .iter()
-        .filter_map(|t| match t.kind {
-            ModTargetKind::GroupMember { member, slot, param_index } => Some((member, slot, param_index, t.slot)),
+    crate::app::testutil::kinds_at(&h.s.ctl.model, ModulatorLocation::Group(0), 0)
+        .into_iter()
+        .filter_map(|kind| match kind {
+            ModTargetKind::GroupMember { member, slot, param_index } => Some((member, slot, param_index, slot)),
             _ => None,
         })
         .collect()
@@ -2581,10 +2577,13 @@ fn the_target_selector_of_a_group_modulator_lists_the_members_the_members_modula
 }
 
 /// `(slot, param_name, kind, depth, min, max)` of every target of a modulator.
-fn target_fields(targets: &[crate::app::model::ModTargetSlot]) -> Vec<(usize, String, String, f32, f32, f32)> {
-    targets
+fn target_fields(model: &crate::app::model::SessionModel, at: ModulatorLocation, modulator: usize) -> Vec<(usize, String, String, f32, f32, f32)> {
+    let kinds = crate::app::testutil::kinds_at(model, at, modulator);
+    model.modulators(at).expect("the rack")[modulator]
+        .targets
         .iter()
-        .map(|t| (t.slot, t.param_name.clone(), format!("{:?}", t.kind), t.depth, t.param_min, t.param_max))
+        .zip(kinds)
+        .map(|(t, kind)| (crate::app::testutil::slot_of(&kind), t.param_name.clone(), format!("{kind:?}"), t.depth, t.param_min, t.param_max))
         .collect()
 }
 
@@ -2610,7 +2609,7 @@ fn the_modulate_popup_makes_an_lfo_in_the_lane_and_binds_the_parameter_to_it() {
     let made = &h.s.ctl.model.instruments[2].modulators[1];
     assert!(matches!(made.source, ModSourceSlot::Lfo { rate, .. } if rate == 1.0));
     assert_eq!(
-        target_fields(&made.targets),
+        target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 1),
         [(1, "cutoff".to_string(), "PluginParam { slot: 1, param_index: 0 }".to_string(), 0.5, 0.0, 1.0)]
     );
     assert!(h.s.ctl.dirty);
@@ -2653,8 +2652,8 @@ fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
     );
     let modulators = &h.s.ctl.model.instruments[2].modulators;
     assert_eq!(modulators.len(), 1);
-    assert_eq!(target_fields(&modulators[0].targets).len(), 2);
-    assert_eq!(target_fields(&modulators[0].targets)[1].1, "resonance");
+    assert_eq!(target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 0).len(), 2);
+    assert_eq!(target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 0)[1].1, "resonance");
 }
 
 #[test]
@@ -2679,9 +2678,8 @@ fn the_modulate_popup_on_a_bus_parameter_makes_a_group_modulator() {
             "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=0.500 base=0.880 range=[0.100, 0.990]",
         ]
     );
-    let made = &h.s.ctl.model.groups[0].modulators[2];
     assert_eq!(
-        target_fields(&made.targets),
+        target_fields(&h.s.ctl.model, ModulatorLocation::Group(0), 2),
         [(0, "decay".to_string(), "GroupBus { effect_index: 0, param_index: 0 }".to_string(), 0.5, 0.1, 0.99)]
     );
 }
@@ -2697,7 +2695,7 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
         h.commands(),
         ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"]
     );
-    let bound = target_fields(&h.s.ctl.model.instruments[2].modulators[0].targets);
+    let bound = target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 0);
     assert_eq!(bound.len(), 2, "the LFO had one target already");
     assert_eq!(
         bound[1],
@@ -2712,7 +2710,7 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
         h.commands(),
         ["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"]
     );
-    let bound = target_fields(&h.s.ctl.model.instruments[2].modulators[0].targets);
+    let bound = target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 0);
     assert_eq!(bound.len(), 3);
     assert_eq!(
         bound[2],
@@ -2726,7 +2724,7 @@ fn the_target_selector_binds_the_chosen_parameter_to_the_modulator() {
         h.commands(),
         ["AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 0, param_index: 0 } depth=0.500 base=1.000 range=[0.000, 4.000]"]
     );
-    let bound = target_fields(&h.s.ctl.model.groups[0].modulators[0].targets);
+    let bound = target_fields(&h.s.ctl.model, ModulatorLocation::Group(0), 0);
     assert_eq!(bound.len(), 3, "the group LFO had two targets already");
     assert_eq!(
         bound[2],
@@ -2775,7 +2773,7 @@ fn learning_a_parameter_arms_a_midi_modulator_bound_to_it_at_full_depth() {
     let armed = &h.s.ctl.model.instruments[2].modulators[1];
     assert!(matches!(armed.source, ModSourceSlot::MidiLearn { source: None, learning: true }));
     assert_eq!(
-        target_fields(&armed.targets),
+        target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 1),
         [(1, "cutoff".to_string(), "PluginParam { slot: 1, param_index: 0 }".to_string(), 1.0, 0.0, 1.0)]
     );
 

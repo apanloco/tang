@@ -13,9 +13,9 @@ use crossbeam_channel::Sender;
 
 use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
-    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, EventCable, FREE, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NEW_CABLE_GAIN, NodeId, NodeIds,
+    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, Driven, EdgeId, EventCable, FREE, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NEW_CABLE_GAIN, NodeId, NodeIds,
     ParamKind, ParamSlot, PatternState, PluginSlot, SYNC_DIVISIONS, SessionModel, SourceKind, SourceNode, format_from_id, mod_source_slot_to_graph, modulator_slot_commands,
-    sync_from_name, sync_name, tempo_of_patterns,
+    setting_of, sibling_kind, sync_from_name, sync_name, tempo_of_patterns,
 };
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo, GraphCommand, ModulatorLocation};
 use crate::session::{Feed, NodeUi, Route};
@@ -509,8 +509,15 @@ pub fn load_session(
 
         // Build the lane's modulators now that every plugin (and its params)
         // is loaded, so targets can resolve against any slot in the chain.
-        let modulators =
-            load_lane_modulators(inst_config, &chain_params, inst_idx, cmd_tx, &mut Allocators { ids: &mut ids, slots: &mut slots, ui: &mut ui })?;
+        let chain_nodes: Vec<Option<NodeId>> = std::iter::once(instrument_slot.as_ref().map(|slot| slot.node)).chain(effects.iter().map(|slot| Some(slot.node))).collect();
+        let modulators = load_lane_modulators(
+            inst_config,
+            &chain_params,
+            &chain_nodes,
+            inst_idx,
+            cmd_tx,
+            &mut Allocators { ids: &mut ids, slots: &mut slots, ui: &mut ui },
+        )?;
 
         // Mute and solo: what the engine has to begin with is neither.
         if inst_config.muted {
@@ -629,12 +636,21 @@ pub fn load_session(
             .filter(|lane| lane.group == Some(g_idx))
             .map(|lane| lane.modulators.as_slice())
             .collect();
+        // The node of the plugin in each slot of each member's chain, and of each bus effect.
+        let member_nodes: Vec<Vec<Option<NodeId>>> = instruments
+            .iter()
+            .filter(|lane| lane.group == Some(g_idx))
+            .map(|lane| std::iter::once(lane.instrument.as_ref().map(|slot| slot.node)).chain(lane.effects.iter().map(|slot| Some(slot.node))).collect())
+            .collect();
+        let bus_nodes: Vec<NodeId> = groups[g_idx].effects.iter().map(|slot| slot.node).collect();
         let mods = load_group_modulators(
             group_config,
             g_idx,
             &member_chains,
+            &member_nodes,
             &member_mods,
             &bus_params[g_idx],
+            &bus_nodes,
             cmd_tx,
             &mut Allocators { ids: &mut ids, slots: &mut slots, ui: &mut ui },
         )?;
@@ -755,11 +771,11 @@ fn cable_end(place: session::CablePlace, model: &SessionModel) -> Result<CableTo
     }
 }
 
-/// Load modulators from a plugin's config and send the commands to the audio thread.
 /// Build the lane's modulators (lane-scoped) and send them to the audio
 /// thread. Targets address plugins by chain slot (0 = instrument, 1..N =
 /// effect). `chain_params[slot]` holds that plugin's parameters for name→index
-/// resolution.
+/// resolution, and `chain_nodes[slot]` the node of the plugin that is in it (none for the
+/// instrument of a lane that has none).
 ///
 /// Migration: modulators come from the lane's config (slot defaults to the
 /// target's `slot`, i.e. instrument unless set; a lane without an instrument
@@ -770,6 +786,7 @@ fn cable_end(place: session::CablePlace, model: &SessionModel) -> Result<CableTo
 fn load_lane_modulators(
     inst_config: &session::InstrumentSlotConfig,
     chain_params: &[Vec<plugin::ParameterInfo>],
+    chain_nodes: &[Option<NodeId>],
     inst_idx: usize,
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
     alloc: &mut Allocators,
@@ -790,141 +807,233 @@ fn load_lane_modulators(
     // The configs of the lane's modulators in the order they are loaded, which is how a cable between them
     // addresses them: where it is centred is what the file gives the field it drives.
     let siblings: Vec<&session::ModulatorConfig> = groups.iter().flat_map(|(configs, _)| configs.iter()).collect();
-    let sibling = |index: usize, field| sibling_field_info(siblings.get(index).copied(), field);
+    // The nodes of all of them now, so that the cable of one can name another that comes after it (the ids are those that they would have in the order of the rack).
+    let nodes: Vec<NodeId> = siblings.iter().map(|_| alloc.ids.alloc()).collect();
+    let lane = LaneTargets { chain_params, chain_nodes, nodes: &nodes, siblings: &siblings };
+
+    // What each cable of the file is, and then which are made, their places among their modulator's and their ids.
+    let mut plans: Vec<Vec<Option<Plan>>> = Vec::with_capacity(siblings.len());
+    for (gi, (mod_configs, default_slot)) in groups.iter().enumerate() {
+        // (A modulator that an older file nested in an effect drives that effect, whatever the cable says.)
+        let own_slot = (*default_slot != 0).then_some(*default_slot);
+        for mod_config in mod_configs.iter() {
+            let me = plans.len();
+            plans.push(mod_config.targets.iter().map(|config| plan_lane_target(config, me, own_slot, bases[gi], &lane)).collect());
+        }
+    }
+    let rack = resolve_rack(&plans, alloc.ids);
 
     let mut loaded = Vec::new();
     let mut lane_index = 0usize;
-    for (gi, (mod_configs, default_slot)) in groups.iter().enumerate() {
-        let group_base = bases[gi];
-        let is_instrument_group = *default_slot == 0;
+    for (mod_configs, _) in &groups {
         for mod_config in mod_configs.iter() {
             let mod_idx = lane_index;
-        let (source_slot, desc) = build_mod_source(mod_config);
-
-        cmd_tx
-            .send(plugin::chain::GraphCommand::InsertModulator {
-                inst: inst_idx,
-                index: mod_idx,
-                source: mod_source_slot_to_graph(&source_slot),
-            })
-            .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-        let (output, position) = ModulatorSlot::alloc_slots(alloc.slots, &source_slot);
-        for command in modulator_slot_commands(ModulatorLocation::Lane(inst_idx), mod_idx, output, position) {
-            send(cmd_tx, command)?;
-        }
-
-        let mut loaded_targets: Vec<ModTargetSlot> = Vec::new();
-        for target_config in &mod_config.targets {
-            // Determine the target kind and associated metadata.
-            let (kind, slot, label, param_min, param_max, base_value) =
-                if let Some(ref param_name) = target_config.param {
-                    // Plugin parameter target. Instrument-group modulators
-                    // honor the target's `slot` (instrument unless set);
-                    // migrated effect modulators target their own effect.
-                    let slot = if is_instrument_group { target_config.slot } else { *default_slot };
-                    let param_info = chain_params
-                        .get(slot)
-                        .and_then(|ps| ps.iter().find(|p| p.name == *param_name));
-                    let param_info = match param_info {
-                        Some(p) => p,
-                        None => {
-                            log::warn!(
-                                "Modulator target param '{param_name}' not found in slot {slot}",
-                            );
-                            continue;
-                        }
-                    };
-                    (
-                        plugin::chain::ModTargetKind::PluginParam { slot, param_index: param_info.index },
-                        slot,
-                        param_info.name.clone(),
-                        param_info.min,
-                        param_info.max,
-                        param_info.default,
-                    )
-                } else if let Some(mi) = target_config.mod_rate {
-                    let mi = mi + group_base;
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Rate);
-                    (plugin::chain::ModTargetKind::ModulatorRate { mod_index: mi },
-                     0, format!("Mod {mi} rate"), min, max, base)
-                } else if let Some(ref pair) = target_config.mod_depth {
-                    let mi = pair.first().copied().unwrap_or(0) + group_base;
-                    let ti = pair.get(1).copied().unwrap_or(0);
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Depth(ti));
-                    (plugin::chain::ModTargetKind::ModulatorDepth { mod_index: mi, target_index: ti },
-                     0, format!("Mod {mi} depth {ti}"), min, max, base)
-                } else if let Some(mi) = target_config.mod_attack {
-                    let mi = mi + group_base;
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Attack);
-                    (plugin::chain::ModTargetKind::ModulatorAttack { mod_index: mi },
-                     0, format!("Mod {mi} attack"), min, max, base)
-                } else if let Some(mi) = target_config.mod_decay {
-                    let mi = mi + group_base;
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Decay);
-                    (plugin::chain::ModTargetKind::ModulatorDecay { mod_index: mi },
-                     0, format!("Mod {mi} decay"), min, max, base)
-                } else if let Some(mi) = target_config.mod_sustain {
-                    let mi = mi + group_base;
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Sustain);
-                    (plugin::chain::ModTargetKind::ModulatorSustain { mod_index: mi },
-                     0, format!("Mod {mi} sustain"), min, max, base)
-                } else if let Some(mi) = target_config.mod_release {
-                    let mi = mi + group_base;
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Release);
-                    (plugin::chain::ModTargetKind::ModulatorRelease { mod_index: mi },
-                     0, format!("Mod {mi} release"), min, max, base)
-                } else {
-                    log::warn!("Modulator target has no param or mod_* field, skipping");
-                    continue;
-                };
-
-            let effective = alloc.slots.alloc();
-            let target = plugin::chain::ModTarget {
-                kind: kind.clone(),
-                depth: target_config.depth as f32,
-                base_value,
-                param_min,
-                param_max,
-                effective,
-            };
+            let (source_slot, desc) = build_mod_source(mod_config);
 
             cmd_tx
-                .send(plugin::chain::GraphCommand::AddModTarget {
+                .send(plugin::chain::GraphCommand::InsertModulator {
                     inst: inst_idx,
-                    mod_index: mod_idx,
-                    target,
+                    index: mod_idx,
+                    source: mod_source_slot_to_graph(&source_slot),
                 })
                 .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+            let (output, position) = ModulatorSlot::alloc_slots(alloc.slots, &source_slot);
+            for command in modulator_slot_commands(ModulatorLocation::Lane(inst_idx), mod_idx, output, position) {
+                send(cmd_tx, command)?;
+            }
 
-            loaded_targets.push(ModTargetSlot {
-                edge: alloc.ids.alloc_edge(),
-                slot,
-                param_name: label.clone(),
-                kind,
-                depth: target_config.depth as f32,
-                param_min,
-                param_max,
-                effective,
-            });
+            let targets = make_cables(ModulatorLocation::Lane(inst_idx), mod_idx, &mod_config.targets, &plans, &rack, cmd_tx, alloc)?;
+            place(alloc.ui, nodes[mod_idx], mod_config.ui);
+            loaded.push(ModulatorSlot { node: nodes[mod_idx], source: source_slot, targets, output, position });
 
-            log::info!("Modulator {mod_idx} target: '{label}' (slot {slot}) depth={}", target_config.depth);
-        }
-
-        let node = alloc.ids.alloc();
-        place(alloc.ui, node, mod_config.ui);
-        loaded.push(ModulatorSlot {
-            node,
-            source: source_slot,
-            targets: loaded_targets,
-            output,
-            position,
-        });
-
-        log::info!("Loaded lane modulator {mod_idx} for inst={inst_idx}: {desc}");
-        lane_index += 1;
+            log::info!("Loaded lane modulator {mod_idx} for inst={inst_idx}: {desc}");
+            lane_index += 1;
         }
     }
     Ok(loaded)
+}
+
+/// What a lane has for the cables of its modulators to name: its plugins (by the slot of the chain they are in: the parameters, and the node that each is) and its modulators (their
+/// configs, and the node that each is).
+struct LaneTargets<'a> {
+    chain_params: &'a [Vec<plugin::ParameterInfo>],
+    chain_nodes: &'a [Option<NodeId>],
+    nodes: &'a [NodeId],
+    siblings: &'a [&'a session::ModulatorConfig],
+}
+
+/// What a cable of a file is, once the nodes and the cables that it names are known: what it drives, what it is called, the range it is held to and what it is centred on (what the
+/// file gives the field or the parameter that it drives).
+struct Plan {
+    drives: Drives,
+    label: String,
+    param_min: f32,
+    param_max: f32,
+    base_value: f32,
+}
+
+/// What a cable of a file drives.
+enum Drives {
+    /// A plugin's parameter, a modulator's setting, or the depth of a cable that is made already (a member's): by the node and the port, and by the place that the audio thread's rack
+    /// names it by.
+    Known { aim: Driven, kind: plugin::chain::ModTargetKind },
+    /// The depth of the cable that the file has at place `target` of the modulator `modulator` of the same rack, which has no id until the cables of the rack are made.
+    DepthOfSibling { modulator: usize, target: usize },
+}
+
+/// The cables of a rack that are made, once the file's mistakes are out: for each modulator and each cable that the file has for it, the cable's id and the place that it has among the
+/// cables of its modulator that are made (what the audio thread's racks name a cable's depth by), or none if it is not made.
+struct Rack {
+    cables: Vec<Vec<Option<(EdgeId, usize)>>>,
+}
+
+/// Find which of the cables of a rack are made, and give each its id, in the order of the file (a cable has an id from the same series as the cables that were loaded before).
+/// A cable that has no plan has said why. One that drives the depth of a cable that is not made is left out as well, and says so: what it names is not there, which is a cable
+/// that the audio thread would have kept and that drives nothing (and a place that another cable of the modulator would be taken for).
+fn resolve_rack(plans: &[Vec<Option<Plan>>], ids: &mut NodeIds) -> Rack {
+    let mut made: Vec<Vec<bool>> = plans.iter().map(|cables| cables.iter().map(Option::is_some).collect()).collect();
+    loop {
+        let mut changed = false;
+        for (modulator, cables) in plans.iter().enumerate() {
+            for (target, plan) in cables.iter().enumerate() {
+                let Some(Plan { drives: Drives::DepthOfSibling { modulator: of, target: at }, .. }) = plan else { continue };
+                if made[modulator][target] && !made.get(*of).and_then(|cables| cables.get(*at)).copied().unwrap_or(false) {
+                    log::warn!("Modulator {modulator} target {target} drives the depth of cable {at} of modulator {of}, which is not there: left out");
+                    made[modulator][target] = false;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let cables = made
+        .iter()
+        .map(|modulator| {
+            let mut place = 0;
+            modulator
+                .iter()
+                .map(|made| {
+                    made.then(|| {
+                        let cable = (ids.alloc_edge(), place);
+                        place += 1;
+                        cable
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    Rack { cables }
+}
+
+/// Make the cables of the modulator `mod_idx` of the rack at `location`, as the plans say, and tell the audio thread of each (in the order of the file, as the cables are in the rack).
+fn make_cables(
+    location: ModulatorLocation,
+    mod_idx: usize,
+    configs: &[session::ModTargetConfig],
+    plans: &[Vec<Option<Plan>>],
+    rack: &Rack,
+    cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
+    alloc: &mut Allocators,
+) -> anyhow::Result<Vec<ModTargetSlot>> {
+    let mut made = Vec::new();
+    for (target, config) in configs.iter().enumerate() {
+        let (Some(plan), Some((edge, _))) = (&plans[mod_idx][target], rack.cables[mod_idx][target]) else { continue };
+        let (aim, kind) = match &plan.drives {
+            Drives::Known { aim, kind } => (*aim, kind.clone()),
+            Drives::DepthOfSibling { modulator, target } => {
+                let (edge, place) = rack.cables[*modulator][*target].expect("a cable that is made drives the depth of one that is");
+                (Driven::Depth(edge), plugin::chain::ModTargetKind::ModulatorDepth { mod_index: *modulator, target_index: place })
+            }
+        };
+        let effective = alloc.slots.alloc();
+        let depth = config.depth as f32;
+        let cable = plugin::chain::ModTarget { kind, depth, base_value: plan.base_value, param_min: plan.param_min, param_max: plan.param_max, effective };
+        send(
+            cmd_tx,
+            match location {
+                ModulatorLocation::Lane(inst) => plugin::chain::GraphCommand::AddModTarget { inst, mod_index: mod_idx, target: cable },
+                ModulatorLocation::Group(group) => plugin::chain::GraphCommand::AddGroupModTarget { group, mod_index: mod_idx, target: cable },
+            },
+        )?;
+        log::info!("Modulator {mod_idx} target: '{}' depth={}", plan.label, config.depth);
+        made.push(ModTargetSlot { edge, param_name: plan.label.clone(), aim, depth, param_min: plan.param_min, param_max: plan.param_max, effective });
+    }
+    Ok(made)
+}
+
+/// What the cable `config` of the modulator `me` of a lane is: a parameter of a plugin of the lane's chain, or a field of another modulator of the lane (a modulator that an older file
+/// nested in an effect, `own_slot`, drives that effect). `None`, and the log says why, for a cable that cannot be made.
+fn plan_lane_target(config: &session::ModTargetConfig, me: usize, own_slot: Option<usize>, group_base: usize, lane: &LaneTargets) -> Option<Plan> {
+    use plugin::chain::ModTargetKind as K;
+    let Some(ref param_name) = config.param else {
+        let info = |index: usize, field| sibling_field_info(lane.siblings.get(index).copied(), field);
+        return plan_sibling_target(config, me, group_base, lane.nodes, "Modulator target has no param or mod_* field, skipping", info);
+    };
+    // Plugin parameter target. Instrument-group modulators honor the target's `slot` (instrument unless set); migrated effect modulators target their own effect.
+    let slot = own_slot.unwrap_or(config.slot);
+    let Some(info) = lane.chain_params.get(slot).and_then(|ps| ps.iter().find(|p| p.name == *param_name)) else {
+        log::warn!("Modulator target param '{param_name}' not found in slot {slot}");
+        return None;
+    };
+    let plugin = lane.chain_nodes.get(slot).copied().flatten()?;
+    Some(Plan {
+        drives: Drives::Known { aim: Driven::Param { plugin, index: info.index }, kind: K::PluginParam { slot, param_index: info.index } },
+        label: info.name.clone(),
+        param_min: info.min,
+        param_max: info.max,
+        base_value: info.default,
+    })
+}
+
+/// What the cable `config` of the modulator `me` of a rack is, if it drives a field of another modulator of the rack, or the depth of one of its cables (`nodes` are the nodes of the
+/// rack's modulators, and `group_base` where the modulators that the config belongs to begin in it): `info` says the value, the least and the greatest of a field of the modulator at an
+/// index, which the cable is centred on. `None`, and the log says why, for a cable that names no field, a modulator that is not there or the modulator itself (a cable like that does
+/// nothing).
+fn plan_sibling_target(
+    config: &session::ModTargetConfig,
+    me: usize,
+    group_base: usize,
+    nodes: &[NodeId],
+    nothing_named: &str,
+    info: impl Fn(usize, plugin::chain::CrossModField) -> (f32, f32, f32),
+) -> Option<Plan> {
+    use plugin::chain::CrossModField as F;
+    let (index, field) = if let Some(mi) = config.mod_rate {
+        (mi + group_base, F::Rate)
+    } else if let Some(ref pair) = config.mod_depth {
+        (pair.first().copied().unwrap_or(0) + group_base, F::Depth(pair.get(1).copied().unwrap_or(0)))
+    } else if let Some(mi) = config.mod_attack {
+        (mi + group_base, F::Attack)
+    } else if let Some(mi) = config.mod_decay {
+        (mi + group_base, F::Decay)
+    } else if let Some(mi) = config.mod_sustain {
+        (mi + group_base, F::Sustain)
+    } else if let Some(mi) = config.mod_release {
+        (mi + group_base, F::Release)
+    } else {
+        log::warn!("{nothing_named}");
+        return None;
+    };
+    if index >= nodes.len() || index == me {
+        log::warn!("Modulator {me} has a cable to modulator {index}, which is {}: left out", if index == me { "itself" } else { "not there" });
+        return None;
+    }
+    let label = match field {
+        F::Rate => format!("Mod {index} rate"),
+        F::Depth(target) => format!("Mod {index} depth {target}"),
+        F::Attack => format!("Mod {index} attack"),
+        F::Decay => format!("Mod {index} decay"),
+        F::Sustain => format!("Mod {index} sustain"),
+        F::Release => format!("Mod {index} release"),
+    };
+    let (base_value, param_min, param_max) = info(index, field);
+    let drives = match field {
+        F::Depth(target) => Drives::DepthOfSibling { modulator: index, target },
+        _ => Drives::Known { aim: Driven::Setting { modulator: nodes[index], field: setting_of(field)? }, kind: sibling_kind(index, field) },
+    };
+    Some(Plan { drives, label, param_min, param_max, base_value })
 }
 
 /// Build the model's source for a modulator config, with a description for the
@@ -1029,11 +1138,6 @@ fn sync_of(config: &session::ModulatorConfig) -> usize {
     })
 }
 
-/// Build a group's modulators and send them to the audio thread. Targets
-/// address a member instrument's chain (`member` + `slot`), one of the group's
-/// own bus effects (`bus`), or a sibling group modulator (`mod_*`).
-/// `member_chains[ordinal][slot]` holds each member's plugin params (slot 0 =
-/// instrument); `bus_params[i]` holds bus effect `i`'s params.
 /// (base_value, min, max) for a member modulator's field, used to seed a
 /// group→member-modulator cross-mod target on load. Falls back to per-field
 /// defaults if the member modulator's type doesn't match the field.
@@ -1078,17 +1182,30 @@ fn field_info(source: &ModSourceSlot, depth_of: impl Fn(usize) -> Option<f32>, f
     }
 }
 
+/// Build a group's modulators and send them to the audio thread. Targets
+/// address a member instrument's chain (`member` + `slot`), one of the group's
+/// own bus effects (`bus`), a member's modulator (`member` + `mod_*`), or a sibling group modulator (`mod_*`).
+/// `member_chains[ordinal][slot]` holds each member's plugin params (slot 0 =
+/// instrument) and `member_nodes[ordinal][slot]` the node of the plugin there; `bus_params[i]` holds bus effect `i`'s params and
+/// `bus_nodes[i]` its node.
+#[allow(clippy::too_many_arguments)]
 fn load_group_modulators(
     group_config: &session::GroupConfig,
     g_idx: usize,
     member_chains: &[&[Vec<plugin::ParameterInfo>]],
+    member_nodes: &[Vec<Option<NodeId>>],
     member_mods: &[&[ModulatorSlot]],
     bus_params: &[Vec<plugin::ParameterInfo>],
+    bus_nodes: &[NodeId],
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
     alloc: &mut Allocators,
 ) -> anyhow::Result<Vec<ModulatorSlot>> {
-    // A cable between the group's modulators is centred on what the file gives the field it drives.
-    let sibling = |index: usize, field| sibling_field_info(group_config.modulators.get(index), field);
+    // The nodes of all of the group's modulators now, so that the cable of one can name another that comes after it.
+    let nodes: Vec<NodeId> = group_config.modulators.iter().map(|_| alloc.ids.alloc()).collect();
+    let group = GroupTargets { member_chains, member_nodes, member_mods, bus_params, bus_nodes, nodes: &nodes, siblings: &group_config.modulators };
+    let plans: Vec<Vec<Option<Plan>>> =
+        group_config.modulators.iter().enumerate().map(|(me, mod_config)| mod_config.targets.iter().map(|config| plan_group_target(config, me, &group)).collect()).collect();
+    let rack = resolve_rack(&plans, alloc.ids);
     let mut loaded = Vec::new();
     for (mod_idx, mod_config) in group_config.modulators.iter().enumerate() {
         let (source_slot, desc) = build_mod_source(mod_config);
@@ -1104,176 +1221,119 @@ fn load_group_modulators(
             send(cmd_tx, command)?;
         }
 
-        let mut loaded_targets: Vec<ModTargetSlot> = Vec::new();
-        for target_config in &mod_config.targets {
-            let (kind, slot, label, param_min, param_max, base_value) =
-                if let Some(member) = target_config.member {
-                    if let Some(ref param_name) = target_config.param {
-                        // Member instrument plugin parameter.
-                        let slot = target_config.slot;
-                        let param_info = member_chains
-                            .get(member)
-                            .and_then(|chain| chain.get(slot))
-                            .and_then(|ps| ps.iter().find(|p| p.name == *param_name));
-                        let Some(param_info) = param_info else {
-                            log::warn!(
-                                "Group modulator target param '{param_name}' not found (member {member}, slot {slot})"
-                            );
-                            continue;
-                        };
-                        (
-                            plugin::chain::ModTargetKind::GroupMember {
-                                member,
-                                slot,
-                                param_index: param_info.index,
-                            },
-                            slot,
-                            param_info.name.clone(),
-                            param_info.min,
-                            param_info.max,
-                            param_info.default,
-                        )
-                    } else {
-                        // Cross-mod a member instrument's modulator (member + mod_*).
-                        use plugin::chain::CrossModField;
-                        let (field, mi) = if let Some(mi) = target_config.mod_rate {
-                            (CrossModField::Rate, mi)
-                        } else if let Some(mi) = target_config.mod_attack {
-                            (CrossModField::Attack, mi)
-                        } else if let Some(mi) = target_config.mod_decay {
-                            (CrossModField::Decay, mi)
-                        } else if let Some(mi) = target_config.mod_sustain {
-                            (CrossModField::Sustain, mi)
-                        } else if let Some(mi) = target_config.mod_release {
-                            (CrossModField::Release, mi)
-                        } else if let Some(ref pair) = target_config.mod_depth {
-                            let mi = pair.first().copied().unwrap_or(0);
-                            let ti = pair.get(1).copied().unwrap_or(0);
-                            (CrossModField::Depth(ti), mi)
-                        } else {
-                            log::warn!("Group modulator member target has no param or mod_* field, skipping");
-                            continue;
-                        };
-                        let mm = member_mods.get(member).and_then(|mods| mods.get(mi));
-                        let Some(mm) = mm else {
-                            log::warn!("Group member-mod target: member {member} has no modulator {mi}");
-                            continue;
-                        };
-                        let (base, min, max) = member_mod_field_info(mm, field);
-                        let field_name = match field {
-                            CrossModField::Rate => "rate".to_string(),
-                            CrossModField::Attack => "attack".to_string(),
-                            CrossModField::Decay => "decay".to_string(),
-                            CrossModField::Sustain => "sustain".to_string(),
-                            CrossModField::Release => "release".to_string(),
-                            CrossModField::Depth(ti) => format!("depth {ti}"),
-                        };
-                        (
-                            plugin::chain::ModTargetKind::GroupMemberMod { member, mod_index: mi, field },
-                            0,
-                            format!("M{member} Mod{mi} {field_name}"),
-                            min,
-                            max,
-                            base,
-                        )
-                    }
-                } else if let Some(bus) = target_config.bus {
-                    let Some(ref param_name) = target_config.param else {
-                        log::warn!("Group modulator bus target without param, skipping");
-                        continue;
-                    };
-                    let param_info = bus_params
-                        .get(bus)
-                        .and_then(|ps| ps.iter().find(|p| p.name == *param_name));
-                    let Some(param_info) = param_info else {
-                        log::warn!(
-                            "Group modulator target param '{param_name}' not found (bus {bus})"
-                        );
-                        continue;
-                    };
-                    (
-                        plugin::chain::ModTargetKind::GroupBus {
-                            effect_index: bus,
-                            param_index: param_info.index,
-                        },
-                        0,
-                        param_info.name.clone(),
-                        param_info.min,
-                        param_info.max,
-                        param_info.default,
-                    )
-                } else if let Some(mi) = target_config.mod_rate {
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Rate);
-                    (plugin::chain::ModTargetKind::ModulatorRate { mod_index: mi },
-                     0, format!("Mod {mi} rate"), min, max, base)
-                } else if let Some(ref pair) = target_config.mod_depth {
-                    let mi = pair.first().copied().unwrap_or(0);
-                    let ti = pair.get(1).copied().unwrap_or(0);
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Depth(ti));
-                    (plugin::chain::ModTargetKind::ModulatorDepth { mod_index: mi, target_index: ti },
-                     0, format!("Mod {mi} depth {ti}"), min, max, base)
-                } else if let Some(mi) = target_config.mod_attack {
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Attack);
-                    (plugin::chain::ModTargetKind::ModulatorAttack { mod_index: mi },
-                     0, format!("Mod {mi} attack"), min, max, base)
-                } else if let Some(mi) = target_config.mod_decay {
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Decay);
-                    (plugin::chain::ModTargetKind::ModulatorDecay { mod_index: mi },
-                     0, format!("Mod {mi} decay"), min, max, base)
-                } else if let Some(mi) = target_config.mod_sustain {
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Sustain);
-                    (plugin::chain::ModTargetKind::ModulatorSustain { mod_index: mi },
-                     0, format!("Mod {mi} sustain"), min, max, base)
-                } else if let Some(mi) = target_config.mod_release {
-                    let (base, min, max) = sibling(mi, plugin::chain::CrossModField::Release);
-                    (plugin::chain::ModTargetKind::ModulatorRelease { mod_index: mi },
-                     0, format!("Mod {mi} release"), min, max, base)
-                } else {
-                    log::warn!("Group modulator target has no param/member/bus/mod_* field, skipping");
-                    continue;
-                };
-
-            let effective = alloc.slots.alloc();
-            let target = plugin::chain::ModTarget {
-                kind: kind.clone(),
-                depth: target_config.depth as f32,
-                base_value,
-                param_min,
-                param_max,
-                effective,
-            };
-            cmd_tx
-                .send(plugin::chain::GraphCommand::AddGroupModTarget {
-                    group: g_idx,
-                    mod_index: mod_idx,
-                    target,
-                })
-                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-
-            loaded_targets.push(ModTargetSlot {
-                edge: alloc.ids.alloc_edge(),
-                slot,
-                param_name: label,
-                kind,
-                depth: target_config.depth as f32,
-                param_min,
-                param_max,
-                effective,
-            });
-        }
-
-        let node = alloc.ids.alloc();
-        place(alloc.ui, node, mod_config.ui);
-        loaded.push(ModulatorSlot {
-            node,
-            source: source_slot,
-            targets: loaded_targets,
-            output,
-            position,
-        });
+        let targets = make_cables(ModulatorLocation::Group(g_idx), mod_idx, &mod_config.targets, &plans, &rack, cmd_tx, alloc)?;
+        place(alloc.ui, nodes[mod_idx], mod_config.ui);
+        loaded.push(ModulatorSlot { node: nodes[mod_idx], source: source_slot, targets, output, position });
         log::info!("Loaded group modulator {mod_idx} for group={g_idx}: {desc}");
     }
     Ok(loaded)
+}
+
+/// What a group has for the cables of its modulators to name: its members' plugins and modulators (what is loaded of them), its bus effects, and its own modulators.
+struct GroupTargets<'a> {
+    member_chains: &'a [&'a [Vec<plugin::ParameterInfo>]],
+    member_nodes: &'a [Vec<Option<NodeId>>],
+    member_mods: &'a [&'a [ModulatorSlot]],
+    bus_params: &'a [Vec<plugin::ParameterInfo>],
+    bus_nodes: &'a [NodeId],
+    nodes: &'a [NodeId],
+    siblings: &'a [session::ModulatorConfig],
+}
+
+/// What the cable `config` of the modulator `me` of a group is: a parameter of a member's plugin or of a bus effect, a setting of a member's modulator or the depth of one of its cables, or a
+/// field of another modulator of the group. `None`, and the log says why, for a cable that cannot be made.
+fn plan_group_target(config: &session::ModTargetConfig, me: usize, group: &GroupTargets) -> Option<Plan> {
+    use plugin::chain::{CrossModField, ModTargetKind as K};
+    if let Some(member) = config.member {
+        if let Some(ref param_name) = config.param {
+            // Member instrument plugin parameter.
+            let slot = config.slot;
+            let info = group.member_chains.get(member).and_then(|chain| chain.get(slot)).and_then(|ps| ps.iter().find(|p| p.name == *param_name));
+            let Some(info) = info else {
+                log::warn!("Group modulator target param '{param_name}' not found (member {member}, slot {slot})");
+                return None;
+            };
+            let plugin = group.member_nodes.get(member).and_then(|chain| chain.get(slot)).copied().flatten()?;
+            return Some(Plan {
+                drives: Drives::Known { aim: Driven::Param { plugin, index: info.index }, kind: K::GroupMember { member, slot, param_index: info.index } },
+                label: info.name.clone(),
+                param_min: info.min,
+                param_max: info.max,
+                base_value: info.default,
+            });
+        }
+        // Cross-mod a member instrument's modulator (member + mod_*).
+        let (field, mi) = if let Some(mi) = config.mod_rate {
+            (CrossModField::Rate, mi)
+        } else if let Some(mi) = config.mod_attack {
+            (CrossModField::Attack, mi)
+        } else if let Some(mi) = config.mod_decay {
+            (CrossModField::Decay, mi)
+        } else if let Some(mi) = config.mod_sustain {
+            (CrossModField::Sustain, mi)
+        } else if let Some(mi) = config.mod_release {
+            (CrossModField::Release, mi)
+        } else if let Some(ref pair) = config.mod_depth {
+            let mi = pair.first().copied().unwrap_or(0);
+            let ti = pair.get(1).copied().unwrap_or(0);
+            (CrossModField::Depth(ti), mi)
+        } else {
+            log::warn!("Group modulator member target has no param or mod_* field, skipping");
+            return None;
+        };
+        let Some(mm) = group.member_mods.get(member).and_then(|mods| mods.get(mi)) else {
+            log::warn!("Group member-mod target: member {member} has no modulator {mi}");
+            return None;
+        };
+        let aim = match field {
+            CrossModField::Depth(ti) => match mm.targets.get(ti) {
+                Some(cable) => Driven::Depth(cable.edge),
+                None => {
+                    log::warn!("Group member-mod target: modulator {mi} of member {member} has no cable {ti}: left out");
+                    return None;
+                }
+            },
+            _ => Driven::Setting { modulator: mm.node, field: setting_of(field)? },
+        };
+        let (base_value, param_min, param_max) = member_mod_field_info(mm, field);
+        let field_name = match field {
+            CrossModField::Rate => "rate".to_string(),
+            CrossModField::Attack => "attack".to_string(),
+            CrossModField::Decay => "decay".to_string(),
+            CrossModField::Sustain => "sustain".to_string(),
+            CrossModField::Release => "release".to_string(),
+            CrossModField::Depth(ti) => format!("depth {ti}"),
+        };
+        return Some(Plan {
+            drives: Drives::Known { aim, kind: K::GroupMemberMod { member, mod_index: mi, field } },
+            label: format!("M{member} Mod{mi} {field_name}"),
+            param_min,
+            param_max,
+            base_value,
+        });
+    }
+    if let Some(bus) = config.bus {
+        let Some(ref param_name) = config.param else {
+            log::warn!("Group modulator bus target without param, skipping");
+            return None;
+        };
+        let info = group.bus_params.get(bus).and_then(|ps| ps.iter().find(|p| p.name == *param_name));
+        let Some(info) = info else {
+            log::warn!("Group modulator target param '{param_name}' not found (bus {bus})");
+            return None;
+        };
+        let plugin = group.bus_nodes.get(bus).copied()?;
+        return Some(Plan {
+            drives: Drives::Known { aim: Driven::Param { plugin, index: info.index }, kind: K::GroupBus { effect_index: bus, param_index: info.index } },
+            label: info.name.clone(),
+            param_min: info.min,
+            param_max: info.max,
+            base_value: info.default,
+        });
+    }
+    // A sibling group modulator's field, or the depth of one of its cables.
+    let info = |index: usize, field| sibling_field_info(group.siblings.get(index), field);
+    plan_sibling_target(config, me, 0, group.nodes, "Group modulator target has no param/member/bus/mod_* field, skipping", info)
 }
 
 #[cfg(test)]
@@ -2275,7 +2335,7 @@ plugin = "builtin:filter"
         );
         let lane = &run.model.instruments[0];
         assert_eq!(lane.modulators.len(), 3);
-        assert_eq!(lane.modulators[1].targets[0].slot, 1);
+        assert_eq!(run.model.kind_of_target(ModulatorLocation::Lane(0), 1, 0), Some(plugin::chain::ModTargetKind::PluginParam { slot: 1, param_index: 0 }));
     }
 
     #[test]
@@ -2418,7 +2478,8 @@ type = "envelope"
         let lane = &run.model.instruments[0];
         assert!(lane.instrument.is_none());
         assert_eq!(lane.modulators.len(), 2);
-        assert_eq!((lane.modulators[0].targets[0].slot, lane.modulators[0].targets[0].param_name.as_str()), (1, "cutoff"));
+        assert_eq!(lane.modulators[0].targets[0].param_name.as_str(), "cutoff");
+        assert!(matches!(run.model.kind_of_target(ModulatorLocation::Lane(0), 0, 0), Some(plugin::chain::ModTargetKind::PluginParam { slot: 1, .. })));
         run.model.check_ids().unwrap();
     }
 
@@ -2464,7 +2525,7 @@ release = 0.8
     }
 
     #[test]
-    fn a_cable_to_a_modulator_the_file_does_not_have_is_centred_on_the_default() {
+    fn a_cable_to_a_modulator_the_file_does_not_have_is_left_out() {
         let run = load(
             r#"
 [[instrument]]
@@ -2475,7 +2536,141 @@ rate = 3.0
 mod_rate = 7
 "#,
         );
-        assert!(run.commands.iter().any(|c| c.contains("kind=ModulatorRate { mod_index: 7 } depth=0.500 base=1.000 range=[0.010, 50.000]")), "{:#?}", run.commands);
+        // (It would drive nothing, and the model has no cable that does: the audio thread is not told of it either.)
+        assert!(run.commands.iter().all(|c| !c.contains("ModTarget")), "{:#?}", run.commands);
+        assert!(run.model.instruments[0].modulators[0].targets.is_empty());
+    }
+
+    #[test]
+    fn a_cable_that_names_what_comes_later_is_made_by_the_node_and_the_cable_it_names() {
+        use crate::app::intent::ModulatorField;
+        // The first modulator drives the rate of the second, the depth of the second's cable and the attack of the third: all of them come after it.
+        let run = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 1.0
+[[instrument.modulator.target]]
+mod_rate = 1
+[[instrument.modulator.target]]
+mod_depth = [1, 0]
+[[instrument.modulator.target]]
+mod_attack = 2
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+param = "detune"
+[[instrument.modulator]]
+type = "envelope"
+"#,
+        );
+        let lane = &run.model.instruments[0];
+        let (second, third) = (lane.modulators[1].node, lane.modulators[2].node);
+        let aims: Vec<Driven> = lane.modulators[0].targets.iter().map(|target| target.aim).collect();
+        assert_eq!(
+            aims,
+            [
+                Driven::Setting { modulator: second, field: ModulatorField::Rate },
+                Driven::Depth(lane.modulators[1].targets[0].edge),
+                Driven::Setting { modulator: third, field: ModulatorField::Attack },
+            ]
+        );
+        // The audio thread is told the places that the rack names them by: the second modulator, the first of its cables, and the third.
+        let told: Vec<&String> = run.commands.iter().filter(|c| c.starts_with("AddModTarget inst=0 mod=0 ")).collect();
+        assert_eq!(told.len(), 3);
+        assert!(told[0].contains("kind=ModulatorRate { mod_index: 1 }"), "{told:?}");
+        assert!(told[1].contains("kind=ModulatorDepth { mod_index: 1, target_index: 0 }"), "{told:?}");
+        assert!(told[2].contains("kind=ModulatorAttack { mod_index: 2 }"), "{told:?}");
+        for (m, modulator) in lane.modulators.iter().enumerate() {
+            for (t, _) in modulator.targets.iter().enumerate() {
+                assert!(run.model.kind_of_target(ModulatorLocation::Lane(0), m, t).is_some(), "modulator {m} cable {t}");
+            }
+        }
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_to_its_own_modulator_or_to_the_depth_of_a_cable_that_is_not_made_is_left_out_with_the_cables_that_drive_its_depth() {
+        let run = load(
+            r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 1.0
+# Its own rate: it does nothing.
+[[instrument.modulator.target]]
+mod_rate = 0
+# The depth of the sixth cable of the second modulator, which has two.
+[[instrument.modulator.target]]
+mod_depth = [1, 5]
+# The only one that is made.
+[[instrument.modulator.target]]
+param = "detune"
+[[instrument.modulator]]
+rate = 2.0
+# A parameter that the plugin has not.
+[[instrument.modulator.target]]
+param = "no such parameter"
+# The depth of the second cable of the first modulator, which is not made.
+[[instrument.modulator.target]]
+mod_depth = [0, 1]
+[[instrument.modulator]]
+rate = 3.0
+# The depth of the second cable of the second modulator, which is not made.
+[[instrument.modulator.target]]
+mod_depth = [1, 1]
+"#,
+        );
+        let lane = &run.model.instruments[0];
+        assert_eq!(lane.modulators.iter().map(|m| m.targets.len()).collect::<Vec<_>>(), [1, 0, 0]);
+        assert_eq!(run.commands.iter().filter(|c| c.contains("ModTarget")).count(), 1, "{:#?}", run.commands);
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_of_a_group_to_what_a_member_does_not_have_is_left_out() {
+        let run = load(
+            r#"
+[[group]]
+[[group.modulator]]
+rate = 1.0
+# A modulator that the member has not.
+[[group.modulator.target]]
+member = 0
+mod_rate = 3
+# A cable that the member's modulator has not.
+[[group.modulator.target]]
+member = 0
+mod_depth = [0, 4]
+# The one that it has.
+[[group.modulator.target]]
+member = 0
+mod_depth = [0, 0]
+[[group.modulator.target]]
+member = 0
+param = "detune"
+# A member that is not there.
+[[group.modulator.target]]
+member = 3
+param = "detune"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+rate = 2.0
+[[instrument.modulator.target]]
+param = "volume"
+"#,
+        );
+        let group = &run.model.groups[0].modulators[0];
+        let member_cable = run.model.instruments[0].modulators[0].targets[0].edge;
+        assert_eq!(group.targets.iter().map(|t| t.aim).collect::<Vec<_>>().len(), 2);
+        assert_eq!(group.targets[0].aim, Driven::Depth(member_cable));
+        assert!(matches!(group.targets[1].aim, Driven::Param { .. }));
+        assert_eq!(run.commands.iter().filter(|c| c.starts_with("AddGroupModTarget")).count(), 2, "{:#?}", run.commands);
+        run.model.check_ids().unwrap();
     }
 
     #[test]

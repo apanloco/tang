@@ -468,23 +468,6 @@ pub enum ModTargetKind {
 }
 
 impl ModTargetKind {
-    /// The sibling modulator, in the same rack, whose rate, stage or cable depth the target drives;
-    /// `None` for a target that drives anything else.
-    pub fn sibling_modulator(&self) -> Option<usize> {
-        match self {
-            ModTargetKind::ModulatorRate { mod_index }
-            | ModTargetKind::ModulatorAttack { mod_index }
-            | ModTargetKind::ModulatorDecay { mod_index }
-            | ModTargetKind::ModulatorSustain { mod_index }
-            | ModTargetKind::ModulatorRelease { mod_index }
-            | ModTargetKind::ModulatorDepth { mod_index, .. } => Some(*mod_index),
-            ModTargetKind::PluginParam { .. }
-            | ModTargetKind::GroupMember { .. }
-            | ModTargetKind::GroupBus { .. }
-            | ModTargetKind::GroupMemberMod { .. } => None,
-        }
-    }
-
     /// Whether the target drives a setting that is turned on a log scale (an LFO's rate, an envelope's attack, decay and release: `ModulatorField::taper`), whose
     /// knob runs over decades. A cable moves such a setting a fraction of the knob's travel, in ratios (`Modulator::modulated_value`); the rest, a parameter of a plugin, a
     /// sustain and the depth of a cable, it moves a fraction of the range.

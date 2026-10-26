@@ -512,8 +512,6 @@ pub struct Rig {
     /// How many blocks have been rendered.
     done: usize,
     data: Vec<f32>,
-    /// What each modulation cable drove after the last block, by the node and the port (`SessionModel::driven_by_edge`), to hold the cables that are still there to it.
-    aims: BTreeMap<crate::ids::EdgeId, Option<crate::app::model::Driven>>,
 }
 
 /// A block as it went: the samples (interleaved), how long the engine took (the callback's `Renderer`, nothing else) and how many times it asked for memory.
@@ -564,7 +562,6 @@ impl Rig {
             block: scenario.block,
             done: 0,
             data: vec![0.0; scenario.block * 2],
-            aims: BTreeMap::new(),
         }
     }
 
@@ -616,37 +613,18 @@ impl Rig {
                     }
                 }
             }
-            // And the value that each is centred on, where the model has one (a cable that drives nothing that is there has none).
-            for (at, modulator, kind, base) in &facts.bases {
-                if let Some(centre) = self.ctl.model.centre_of(*at, *modulator, kind) {
+            // And the value that each is centred on, where the model has one (what a cable drives that is not a parameter of a plugin with a row, or a setting that the modulator has, has none).
+            let model_cables = self.ctl.model.instruments.iter().enumerate().map(|(i, lane)| (crate::plugin::chain::ModulatorLocation::Lane(i), &lane.modulators));
+            let model_cables = model_cables.chain(self.ctl.model.groups.iter().enumerate().map(|(i, group)| (crate::plugin::chain::ModulatorLocation::Group(i), &group.modulators)));
+            let aims: Vec<_> = model_cables.flat_map(|(at, rack)| rack.iter().enumerate().flat_map(move |(m, modulator)| modulator.targets.iter().map(move |cable| (at, m, cable.aim)))).collect();
+            assert_eq!(aims.len(), facts.bases.len(), "{what}: the engine has as many cables as the model");
+            for ((at, modulator, aim), (engine_at, engine_modulator, kind, base)) in aims.into_iter().zip(&facts.bases) {
+                assert_eq!((at, modulator), (*engine_at, *engine_modulator), "{what}: the cables are in the same places");
+                if let Some(centre) = self.ctl.model.centre_of(aim) {
                     assert_eq!(*base, centre, "{what}: {at:?} modulator {modulator}: the cable {kind:?} is centred on another value in the engine than in the model");
                 }
             }
         }
-    }
-
-    /// A cable goes on driving what it drove, whatever is done around it: the node and the port that it ends at (a plugin's parameter, a modulator's setting, the depth of a cable)
-    /// are the same as after the last block for every cable that is there still, and one that drove something drives something (the places that the model keeps a cable by are kept
-    /// up through the edits, and a cable that is left pointing at nothing, or at another plugin's parameter, would be a place that was not).
-    fn assert_the_cables_still_drive_what_they_drove(&mut self, what: &str) {
-        use crate::plugin::chain::ModulatorLocation;
-        let model = &self.ctl.model;
-        let lanes = model.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
-        let groups = model.groups.iter().enumerate().map(|(i, group)| (ModulatorLocation::Group(i), &group.modulators));
-        let mut now = BTreeMap::new();
-        for (at, rack) in lanes.chain(groups) {
-            for (source, modulator) in rack.iter().enumerate() {
-                for target in &modulator.targets {
-                    now.insert(target.edge, model.driven_by(at, source, &target.kind));
-                }
-            }
-        }
-        for (edge, was) in &self.aims {
-            if let Some(is) = now.get(edge) {
-                assert_eq!(was, is, "{what}: the cable {edge:?} drives something else than it did");
-            }
-        }
-        self.aims = now;
     }
 
     /// A hash of every cell of the telemetry, as the engine left them.
@@ -676,7 +654,6 @@ pub fn render(scenario: &Scenario, make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> 
             edit_blocks.push(b);
         }
         rig.assert_the_engine_has_the_nodes_of_the_model(&format!("{}, block {b}", scenario.id));
-        rig.assert_the_cables_still_drive_what_they_drove(&format!("{}, block {b}", scenario.id));
         slots.push(rig.telemetry_hash());
         rig.poll();
     }
@@ -1365,10 +1342,8 @@ mod tests {
 
     #[test]
     fn the_engine_and_the_model_have_the_same_cables_in_the_same_places_as_loaded() {
-        let mut rig = settled(&cross());
+        let rig = settled(&cross());
         rig.assert_the_engine_has_the_nodes_of_the_model("as loaded");
-        rig.assert_the_cables_still_drive_what_they_drove("as loaded");
-        rig.assert_the_cables_still_drive_what_they_drove("a block later");
     }
 
     #[test]
@@ -1398,19 +1373,6 @@ mod tests {
         let detune = rig.ctl.model.instruments[0].instrument.as_mut().and_then(|plugin| plugin.params.iter_mut().find(|row| row.name == "detune")).expect("a detune");
         detune.value += 1.0;
         rig.assert_the_engine_has_the_nodes_of_the_model("a value is another");
-    }
-
-    #[test]
-    #[should_panic(expected = "drives something else than it did")]
-    fn a_cable_that_comes_to_drive_something_else_is_told() {
-        let mut rig = settled(&cross());
-        rig.assert_the_cables_still_drive_what_they_drove("as loaded");
-        // Two cables of the group's first modulator, which drive a modulator's rate and a plugin's parameter, change ids: each is the other, by its id.
-        let targets = &mut rig.ctl.model.groups[0].modulators[0].targets;
-        let (first, second) = (targets[0].edge, targets[1].edge);
-        targets[0].edge = second;
-        targets[1].edge = first;
-        rig.assert_the_cables_still_drive_what_they_drove("two cables have changed their ids");
     }
 
     #[test]

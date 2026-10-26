@@ -6,7 +6,7 @@
 //! a session.
 
 use crate::app::model::{EdgeId, ModSourceSlot, ModulatorSlot, NodeId, ParamSlot, PluginSlot, SessionModel, SourceKind, sync_name};
-use crate::plugin::chain::{CableFrom, CableTo, MidiBindSource};
+use crate::plugin::chain::{CableFrom, CableTo, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::{
     CablePlace, Feed, NodeUi, SaveCable, SaveDevice, SaveEffect, SaveGroup, SaveInstrument, SaveInstrumentSlot, SaveKeys, SaveModSource, SaveModTarget, SaveModulator,
     SavePattern, SaveSources,
@@ -20,7 +20,8 @@ pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>
     let save_groups = model
         .groups
         .iter()
-        .map(|g| SaveGroup {
+        .enumerate()
+        .map(|(group, g)| SaveGroup {
             name: g.name.clone(),
             volume: g.volume,
             pan: g.pan,
@@ -28,21 +29,22 @@ pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>
             route: g.route,
             solo: g.solo,
             effects: g.effects.iter().map(|fx| effect_to_save(fx, ui)).collect(),
-            modulators: modulators_to_save(&g.modulators, ui),
+            modulators: modulators_to_save(model, ModulatorLocation::Group(group)),
             ui: ui.get(&g.node).copied(),
         })
         .collect();
     let save_instruments = model
         .instruments
         .iter()
-        .map(|lane| SaveInstrumentSlot {
+        .enumerate()
+        .map(|(inst, lane)| SaveInstrumentSlot {
             range: lane.range,
             transpose: lane.transpose,
             muted: lane.muted,
             route: lane.route,
             solo: lane.solo,
             group: lane.group,
-            modulators: modulators_to_save(&lane.modulators, ui),
+            modulators: modulators_to_save(model, ModulatorLocation::Lane(inst)),
             instrument: lane.instrument.as_ref().map(|inst| SaveInstrument {
                 plugin: inst.id.clone(),
                 volume: lane.volume,
@@ -152,9 +154,14 @@ fn sync_for_file(sync: usize) -> Option<String> {
     (sync > 0).then(|| sync_name(sync).to_string())
 }
 
-fn modulators_to_save(mods: &[ModulatorSlot], ui: &BTreeMap<NodeId, NodeUi>) -> Vec<SaveModulator> {
+/// The modulators of the rack at `at`, as the file writes them: each cable by the place that the rack names what it drives by (`SessionModel::kind_of`: the file names a plugin by its
+/// slot in the chain, a member by its place in the group, a sibling by its index), which is the same as what the audio thread has.
+fn modulators_to_save(model: &SessionModel, at: ModulatorLocation) -> Vec<SaveModulator> {
+    let ui = &model.ui;
+    let mods: &[ModulatorSlot] = model.modulators(at).map_or(&[], |rack| rack.as_slice());
     mods.iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(index, m)| {
             let source = match &m.source {
                 ModSourceSlot::Lfo { waveform, rate, retrigger, fade, sync } => {
                     SaveModSource::Lfo { waveform: waveform.name().to_string(), rate: *rate, retrigger: *retrigger, fade: *fade, sync: sync_for_file(*sync) }
@@ -185,11 +192,14 @@ fn modulators_to_save(mods: &[ModulatorSlot], ui: &BTreeMap<NodeId, NodeUi>) -> 
                 targets: m
                     .targets
                     .iter()
-                    .map(|t| SaveModTarget {
-                        kind: t.kind.clone(),
-                        label: t.param_name.clone(),
-                        depth: t.depth,
-                        slot: t.slot,
+                    // (A cable that drives nothing that is in reach is not in the model: this leaves out none.)
+                    .filter_map(|t| {
+                        let kind = model.kind_of(at, index, t.aim)?;
+                        let slot = match kind {
+                            ModTargetKind::PluginParam { slot, .. } | ModTargetKind::GroupMember { slot, .. } => slot,
+                            _ => 0,
+                        };
+                        Some(SaveModTarget { kind, label: t.param_name.clone(), depth: t.depth, slot })
                     })
                     .collect(),
                 ui: ui.get(&m.node).copied(),
@@ -346,10 +356,15 @@ depth = 0.4
         let file = saved(&first.model);
         let second = try_load(&file).unwrap_or_else(|e| panic!("the saved file does not load: {e:#}\n{file}"));
         let rack = |model: &SessionModel| {
+            let at = ModulatorLocation::Lane(0);
             model.instruments[0]
                 .modulators
                 .iter()
-                .map(|m| (format!("{:?}", m.source), m.targets.iter().map(|t| (t.slot, t.param_name.clone(), t.depth)).collect::<Vec<_>>()))
+                .enumerate()
+                .map(|(m, modulator)| {
+                    let targets = modulator.targets.iter().enumerate().map(|(t, cable)| (model.kind_of_target(at, m, t), cable.param_name.clone(), cable.depth));
+                    (format!("{:?}", modulator.source), targets.collect::<Vec<_>>())
+                })
                 .collect::<Vec<_>>()
         };
         assert_eq!(rack(&first.model).len(), 1);

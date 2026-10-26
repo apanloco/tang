@@ -25,7 +25,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::model::{EdgeId, FieldTarget, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, SourceKind};
+use crate::app::intent::ModulatorField;
+use crate::app::model::{Driven, EdgeId, FieldTarget, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, SourceKind};
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::{Feed, NodeUi, Route};
 
@@ -460,9 +461,13 @@ impl SessionModel {
         let groups = self.groups.iter().enumerate().map(|(g, group)| (ModulatorLocation::Group(g), &group.modulators));
         let lanes = self.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
         for (at, rack) in groups.chain(lanes) {
-            for modulator in rack {
+            for (index, modulator) in rack.iter().enumerate() {
                 for target in &modulator.targets {
-                    if let Some(to) = self.aim(at, rack, &target.kind) {
+                    // (What a rack does not reach is not drawn, as it is not told to the audio thread: the model has no such cable, and a test that makes one sees it.)
+                    if self.kind_of(at, index, target.aim).is_none() {
+                        continue;
+                    }
+                    if let Some(to) = self.endpoint_of_aim(target.aim) {
                         edges.push(Edge {
                             from: Endpoint { node: modulator.node, port: Port::ModOut },
                             to,
@@ -470,6 +475,28 @@ impl SessionModel {
                         });
                     }
                 }
+            }
+        }
+    }
+
+    /// Where `aim` points, as a port of a node: how `AddModEdge` names it. `None` if what it points at is not there.
+    pub fn endpoint_of_aim(&self, aim: Driven) -> Option<Endpoint> {
+        match aim {
+            Driven::Param { plugin, index } => Some(Endpoint { node: plugin, port: Port::Param { index } }),
+            Driven::Setting { modulator, field } => {
+                let port = match field {
+                    ModulatorField::Rate => Port::Rate,
+                    ModulatorField::Attack => Port::Attack,
+                    ModulatorField::Decay => Port::Decay,
+                    ModulatorField::Sustain => Port::Sustain,
+                    ModulatorField::Release => Port::Release,
+                    _ => return None,
+                };
+                Some(Endpoint { node: modulator, port })
+            }
+            Driven::Depth(edge) => {
+                let (at, index, _) = self.locate_edge(edge)?;
+                Some(Endpoint { node: self.modulators(at)?.get(index)?.node, port: Port::Depth { edge } })
             }
         }
     }
@@ -1292,12 +1319,11 @@ depth = 0.1
             // The oscillator's detune is its parameter 1, the filter's cutoff its parameter 0.
             modulation(lfo, param(osc, 1), lfo_edges[0], 0.1),
             modulation(lfo, param(filter, 0), lfo_edges[1], -0.3),
-            // The envelope drives the LFO's rate and the depth of the LFO's second edge,
-            // and (`mod_sustain = 1` is the envelope itself) its own sustain.
+            // The envelope drives the LFO's rate and the depth of the LFO's second edge. (Its third cable, to its own sustain, which does nothing, is not made.)
             modulation(env, at(lfo, Port::Rate), env_edges[0], 0.5),
             modulation(env, at(lfo, Port::Depth { edge: lfo_edges[1] }), env_edges[1], 0.2),
-            modulation(env, at(env, Port::Sustain), env_edges[2], 0.1),
         ];
+        assert_eq!(env_edges.len(), 2);
         assert_eq!(modulation_edges, expected.iter().collect::<Vec<_>>());
     }
 
@@ -1312,10 +1338,12 @@ depth = 0.1
             let groups = model.groups.iter().enumerate().map(|(g, group)| (ModulatorLocation::Group(g), &group.modulators));
             let lanes = model.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
             for (at, rack) in groups.chain(lanes) {
-                for target in rack.iter().flat_map(|modulator| &modulator.targets) {
+                for (index, target) in rack.iter().enumerate().flat_map(|(index, modulator)| modulator.targets.iter().map(move |target| (index, target))) {
                     let drawn = graph.edges.iter().find(|edge| matches!(edge.kind, EdgeKind::Modulation { id, .. } if id == target.edge)).map(|edge| edge.to);
-                    // (A target that has nothing to drive is not drawn, and is not named either.)
-                    assert_eq!(model.endpoint_of(at, &target.kind), drawn, "{at:?} {:?}", target.kind);
+                    // The place that the rack names what the cable drives by, and the endpoint that the place is: the same as the node and the port that the cable has.
+                    let kind = model.kind_of(at, index, target.aim).expect("a cable drives something that is in reach");
+                    assert_eq!(model.endpoint_of(at, &kind), drawn, "{at:?} {kind:?}");
+                    assert_eq!(model.endpoint_of_aim(target.aim), drawn, "{at:?} {:?}", target.aim);
                     checked += usize::from(drawn.is_some());
                 }
             }
@@ -1419,62 +1447,63 @@ depth = 0.1
 
     #[test]
     fn a_target_whose_aim_is_gone_has_no_edge() {
-        use crate::plugin::chain::ModTargetKind as K;
+        use crate::app::model::Driven;
         let mut model = load(MODULATED).model;
         let lfo = &mut model.instruments[0].modulators[0];
         let real = lfo.targets.len();
-        let template = |kind: K| crate::app::model::ModTargetSlot {
+        let own = lfo.node;
+        let template = |aim: Driven| crate::app::model::ModTargetSlot {
             edge: EdgeId(1_000),
-            slot: 0,
             param_name: "x".to_string(),
-            kind,
+            aim,
             depth: 0.5,
             param_min: 0.0,
             param_max: 1.0,
             effective: None,
         };
-        for (n, kind) in [
-            K::PluginParam { slot: 9, param_index: 0 },
-            K::ModulatorRate { mod_index: 9 },
-            K::ModulatorDepth { mod_index: 0, target_index: 99 },
-            K::ModulatorAttack { mod_index: 9 },
-            K::GroupBus { effect_index: 0, param_index: 0 },
-            K::GroupMember { member: 0, slot: 0, param_index: 0 },
+        for (n, aim) in [
+            // A plugin that is not there, a node that is not a plugin, a modulator that is not there and a cable that is not there.
+            Driven::Param { plugin: crate::app::model::NodeId(9_999), index: 0 },
+            Driven::Param { plugin: own, index: 0 },
+            Driven::Setting { modulator: crate::app::model::NodeId(9_998), field: crate::app::intent::ModulatorField::Rate },
+            Driven::Depth(EdgeId(9_997)),
+            // The modulator's own settings: a cable like that does nothing.
+            Driven::Setting { modulator: own, field: crate::app::intent::ModulatorField::Rate },
         ]
         .into_iter()
         .enumerate()
         {
-            lfo.targets.push(ModTargetSlot { edge: EdgeId(1_000 + n as u32), ..template(kind) });
+            lfo.targets.push(ModTargetSlot { edge: EdgeId(1_000 + n as u32), ..template(aim) });
         }
         let graph = model.graph();
         let edges = graph.edges.iter().filter(|e| matches!(e.kind, EdgeKind::Modulation { .. })).count();
-        assert_eq!(edges, 5, "only the {real} real targets of the LFO and the envelope's three");
+        assert_eq!(edges, 4, "only the {real} real targets of the LFO and the envelope's two");
     }
 
     #[test]
     fn a_group_target_whose_aim_is_gone_has_no_edge() {
-        use crate::plugin::chain::{CrossModField, ModTargetKind as K};
+        use crate::app::intent::ModulatorField;
+        use crate::app::model::{Driven, NodeId};
         let mut model = load(GROUPS).model;
         let before = model.graph().edges.len();
         let rack = &mut model.groups[0].modulators[0];
-        for (n, kind) in [
-            K::GroupMember { member: 9, slot: 0, param_index: 0 },
-            K::GroupMember { member: 0, slot: 9, param_index: 0 },
-            K::GroupBus { effect_index: 9, param_index: 0 },
-            K::GroupMemberMod { member: 9, mod_index: 0, field: CrossModField::Rate },
-            K::GroupMemberMod { member: 1, mod_index: 9, field: CrossModField::Rate },
-            K::GroupMemberMod { member: 1, mod_index: 0, field: CrossModField::Depth(9) },
-            K::ModulatorRate { mod_index: 9 },
-            K::PluginParam { slot: 0, param_index: 0 },
+        let own = rack.node;
+        for (n, aim) in [
+            // A plugin, a modulator and a cable that are not there, and a node that is not a plugin.
+            Driven::Param { plugin: NodeId(9_999), index: 0 },
+            Driven::Param { plugin: own, index: 0 },
+            Driven::Setting { modulator: NodeId(9_998), field: ModulatorField::Rate },
+            Driven::Depth(EdgeId(9_997)),
+            // The modulator's own settings: a cable like that does nothing.
+            Driven::Setting { modulator: own, field: ModulatorField::Rate },
         ]
         .into_iter()
         .enumerate()
         {
             rack.targets.push(ModTargetSlot {
                 edge: EdgeId(2_000 + n as u32),
-                slot: 0,
                 param_name: "x".to_string(),
-                kind,
+                aim,
                 depth: 0.5,
                 param_min: 0.0,
                 param_max: 1.0,

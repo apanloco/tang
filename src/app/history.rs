@@ -2768,12 +2768,8 @@ depth = 0.4
         graph.drain_commands();
         // What the model says every cable is, in the audio thread's words, and what the audio thread has.
         let in_the_model = |ctl: &Controller| -> Vec<(crate::plugin::chain::ModulatorLocation, usize, crate::plugin::chain::ModTargetKind)> {
-            let lane = &ctl.model.instruments[0];
-            lane.modulators
-                .iter()
-                .enumerate()
-                .flat_map(|(m, modulator)| modulator.targets.iter().map(move |t| (crate::plugin::chain::ModulatorLocation::Lane(0), m, t.kind.clone())))
-                .collect()
+            let at = crate::plugin::chain::ModulatorLocation::Lane(0);
+            (0..ctl.model.instruments[0].modulators.len()).flat_map(|m| crate::app::testutil::kinds_at(&ctl.model, at, m).into_iter().map(move |kind| (at, m, kind))).collect()
         };
         let on_the_audio_thread = |graph: &AudioGraph| -> Vec<_> { graph.cable_bases().into_iter().map(|(at, m, kind, _)| (at, m, kind)).collect() };
         let before = (graph.cable_bases(), in_the_model(&ctl));
@@ -2893,8 +2889,9 @@ depth = 0.5
         ctl.apply(Intent::RemoveEdge { edge: volume }).unwrap();
         ctl.undo().unwrap();
         // Something that no step made (a front-end that edits the model by itself) makes the cable and another drive each other's depths.
-        ctl.model.instruments[0].modulators[0].targets[1].kind = crate::plugin::chain::ModTargetKind::ModulatorDepth { mod_index: 1, target_index: 0 };
-        ctl.model.instruments[0].modulators[1].targets[0].kind = crate::plugin::chain::ModTargetKind::ModulatorDepth { mod_index: 0, target_index: 1 };
+        let (first, second) = (ctl.model.instruments[0].modulators[0].targets[1].edge, ctl.model.instruments[0].modulators[1].targets[0].edge);
+        ctl.model.instruments[0].modulators[0].targets[1].aim = crate::app::model::Driven::Depth(second);
+        ctl.model.instruments[0].modulators[1].targets[0].aim = crate::app::model::Driven::Depth(first);
         let redone = ctl.redo().unwrap();
         assert!(redone.restructured, "it was done");
         assert_eq!(ctl.model.instruments[0].modulators[1].targets.len(), 0, "and the other cable went with the cable");
@@ -2966,9 +2963,8 @@ depth = 0.5
             let target = &ctl.model.instruments[0].modulators[0].targets[1];
             crate::app::model::ModTargetSlot {
                 edge: target.edge,
-                slot: target.slot,
                 param_name: target.param_name.clone(),
-                kind: target.kind.clone(),
+                aim: target.aim,
                 depth: target.depth,
                 param_min: target.param_min,
                 param_max: target.param_max,
@@ -3170,16 +3166,8 @@ depth = 0.9
     /// the telemetry), what `Ctrl+S` would write, and the audio thread's own: every modulator with what it drives and where it publishes, and what each cable
     /// is centred on.
     fn modulators_as_they_are(ctl: &Controller, graph: &crate::plugin::chain::AudioGraph) -> Modulators {
-        // (What a cable that drives nothing is centred on does not matter: a file can have one, to the depth of a cable that is not there, and the loader says
-        // one thing of it and the controller another. What it was is not kept; the centre of every other cable is.)
-        let centres = graph
-            .cable_bases()
-            .into_iter()
-            .map(|(at, modulator, kind, centre)| {
-                let drives_something = ctl.model.driven_by(at, modulator, &kind).is_some();
-                (at, modulator, kind, drives_something.then_some(centre))
-            })
-            .collect();
+        // (Every cable drives something: a file that has one that does not, to the depth of a cable that is not there, is loaded without it.)
+        let centres = graph.cable_bases().into_iter().map(|(at, modulator, kind, centre)| (at, modulator, kind, Some(centre))).collect();
         (picture(ctl), written(ctl), graph.modulator_dump(), centres)
     }
 
@@ -3593,9 +3581,8 @@ depth = 0.9
             let (node, cable) = (ctl.model.instruments[0].modulators[4].node, &ctl.model.instruments[0].modulators[4].targets[0]);
             let copy = crate::app::model::ModTargetSlot {
                 edge: cable.edge,
-                slot: cable.slot,
                 param_name: cable.param_name.clone(),
-                kind: cable.kind.clone(),
+                aim: cable.aim,
                 depth: cable.depth,
                 param_min: cable.param_min,
                 param_max: cable.param_max,

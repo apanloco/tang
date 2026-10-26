@@ -40,7 +40,7 @@ use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, PatternField, Taper};
 use crate::app::model::{
     BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, EdgeId, FREE, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
-    ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, SYNC_DIVISIONS, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
+    ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, SYNC_DIVISIONS, SessionModel, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
 use crate::piano_filter::PianoMode;
@@ -509,7 +509,7 @@ impl State {
     /// construction: no engine commands are sent and no threads are spawned, so
     /// tests can build a `State` around stub channels.
     fn new(ctl: Controller) -> State {
-        let tree_entries = build_tree_entries(&ctl.model.instruments, &ctl.model.groups);
+        let tree_entries = build_tree_entries(&ctl.model);
         let param_len = ctl.model.instruments.first()
             .and_then(|n| n.instrument.as_ref())
             .map_or(0, |p| p.params.len());
@@ -569,7 +569,7 @@ impl State {
     /// if it is not.
     fn rebuild_tree(&mut self) {
         let was_on = self.node_under_cursor();
-        self.tree_entries = build_tree_entries(&self.ctl.model.instruments, &self.ctl.model.groups);
+        self.tree_entries = build_tree_entries(&self.ctl.model);
         self.chain_state.set_len(self.tree_entries.len());
         // The cursor stays on the node it was on, wherever the tree has put it now: what came or went above it
         // (a browser added a modulator to an earlier lane, say) has moved its place, and what the person does
@@ -4485,6 +4485,7 @@ fn feed_label(fed: bool) -> &'static str {
 
 fn push_instrument_entries(
     entries: &mut Vec<TreeEntry>,
+    model: &SessionModel,
     inst: &InstrumentNode,
     inst_idx: usize,
     prefix: &str,
@@ -4552,9 +4553,10 @@ fn push_instrument_entries(
             inst.effects.get(slot - 1).map(|p| p.name.clone()).unwrap_or_else(|| format!("fx{slot}"))
         }
     };
-    let target_disp = |t: &ModTargetSlot| -> String {
-        match t.kind {
-            crate::plugin::chain::ModTargetKind::PluginParam { slot, .. } => {
+    // (The plugin a cable drives is the one in the slot of the chain that the model says now: a cable keeps what it drives, not the place.)
+    let target_disp = |mod_idx: usize, t: &ModTargetSlot| -> String {
+        match model.kind_of(ModulatorLocation::Lane(inst_idx), mod_idx, t.aim) {
+            Some(crate::plugin::chain::ModTargetKind::PluginParam { slot, .. }) => {
                 format!("{}: {}", slot_name(slot), t.param_name)
             }
             _ => t.param_name.clone(),
@@ -4568,7 +4570,7 @@ fn push_instrument_entries(
             let list = m
                 .targets
                 .iter()
-                .map(|t| format!("{} ({})", target_disp(t), depth_percent(t.depth)))
+                .map(|t| format!("{} ({})", target_disp(mod_idx, t), depth_percent(t.depth)))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(" \u{2192} {list}")
@@ -4584,7 +4586,8 @@ fn push_instrument_entries(
     }
 }
 
-fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> Vec<TreeEntry> {
+fn build_tree_entries(model: &SessionModel) -> Vec<TreeEntry> {
+    let (instruments, groups) = (&model.instruments[..], &model.groups[..]);
     let mut entries = Vec::new();
 
     // Groups first: a header, the member instruments nested under it, then the
@@ -4605,7 +4608,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
         });
         for (inst_idx, inst) in instruments.iter().enumerate() {
             if inst.group == Some(g_idx) {
-                push_instrument_entries(&mut entries, inst, inst_idx, "  ");
+                push_instrument_entries(&mut entries, model, inst, inst_idx, "  ");
             }
         }
         for (fx_idx, fx) in group.effects.iter().enumerate() {
@@ -4631,18 +4634,18 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
                     m.effects.get(slot - 1).map(|p| p.name.clone()).unwrap_or_else(|| format!("fx{slot}"))
                 }
             };
-            let target_disp = |t: &ModTargetSlot| -> String {
-                match t.kind {
-                    crate::plugin::chain::ModTargetKind::GroupMember { member, slot, .. } => {
+            let target_disp = |mod_idx: usize, t: &ModTargetSlot| -> String {
+                match model.kind_of(ModulatorLocation::Group(g_idx), mod_idx, t.aim) {
+                    Some(crate::plugin::chain::ModTargetKind::GroupMember { member, slot, .. }) => {
                         format!("M{member} {}: {}", member_plugin(member, slot), t.param_name)
                     }
-                    crate::plugin::chain::ModTargetKind::GroupBus { effect_index, .. } => {
+                    Some(crate::plugin::chain::ModTargetKind::GroupBus { effect_index, .. }) => {
                         let name = group.effects.get(effect_index)
                             .map(|p| p.name.clone())
                             .unwrap_or_else(|| format!("fx{effect_index}"));
                         format!("Bus {name}: {}", t.param_name)
                     }
-                    crate::plugin::chain::ModTargetKind::GroupMemberMod { member, mod_index, field } => {
+                    Some(crate::plugin::chain::ModTargetKind::GroupMemberMod { member, mod_index, field }) => {
                         // Render live from the kind so it survives membership fixups.
                         use crate::plugin::chain::CrossModField;
                         let fname = match field {
@@ -4666,7 +4669,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
                     let list = m
                         .targets
                         .iter()
-                        .map(|t| format!("{} ({})", target_disp(t), depth_percent(t.depth)))
+                        .map(|t| format!("{} ({})", target_disp(mod_idx, t), depth_percent(t.depth)))
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!(" \u{2192} {list}")
@@ -4685,7 +4688,7 @@ fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> V
     // Ungrouped instruments at the top level.
     for (inst_idx, inst) in instruments.iter().enumerate() {
         if inst.group.is_none() {
-            push_instrument_entries(&mut entries, inst, inst_idx, "");
+            push_instrument_entries(&mut entries, model, inst, inst_idx, "");
         }
     }
 
@@ -4897,9 +4900,8 @@ mod tests {
             },
             targets: vec![ModTargetSlot {
                 edge: crate::app::model::EdgeId(0),
-                slot: 0,
                 param_name: "cutoff".into(),
-                kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
+                aim: crate::app::model::Driven::Param { plugin: crate::app::model::NodeId(1), index: 0 },
                 depth: -0.5,
                 param_min: 0.0,
                 param_max: 1.0,

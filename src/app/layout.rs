@@ -112,10 +112,13 @@ impl SessionModel {
         // The lanes' targets first: of two slots for one parameter, theirs holds the final value.
         let mut named: HashSet<(NodeId, Port)> = HashSet::new();
         for (at, rack) in lanes.chain(groups) {
-            for modulator in rack {
+            for (index, modulator) in rack.iter().enumerate() {
                 for target in &modulator.targets {
                     let Some(slot) = target.effective else { continue };
-                    let Some(Endpoint { node, port }) = self.aim(at, rack, &target.kind) else { continue };
+                    if self.kind_of(at, index, target.aim).is_none() {
+                        continue;
+                    }
+                    let Some(Endpoint { node, port }) = self.endpoint_of_aim(target.aim) else { continue };
                     if named.insert((node, port)) {
                         modulation.push(entry(slot, node, port, SlotKind::Effective));
                     }
@@ -271,7 +274,7 @@ param = "detune"
         assert_eq!(model.telemetry_layout().modulation.len(), before - 1);
         // A target whose aim is gone.
         let target = &mut model.groups[0].modulators[0].targets[1];
-        target.kind = crate::plugin::chain::ModTargetKind::GroupBus { effect_index: 9, param_index: 0 };
+        target.aim = crate::app::model::Driven::Param { plugin: NodeId(9_999), index: 0 };
         assert_eq!(model.telemetry_layout().modulation.len(), before - 2);
         // And a modulator with no output slot.
         model.groups[0].modulators[1].output = None;
@@ -301,7 +304,9 @@ param = "detune"
         other.instruments[0].node = NodeId(9_000);
         assert_ne!(other.telemetry_layout().rev, layout.rev, "a node's id");
         let mut other = load(GROUPS).model;
-        other.groups[0].modulators[0].targets[0].kind = crate::plugin::chain::ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 5 };
+        let target = &mut other.groups[0].modulators[0].targets[0];
+        let crate::app::model::Driven::Param { index, .. } = &mut target.aim else { panic!("the first cable of the group drives a parameter") };
+        *index = 5;
         assert_ne!(other.telemetry_layout().rev, layout.rev, "a parameter");
         let swapped = TelemetryLayout::new(layout.modulation.clone(), layout.meters.clone());
         assert_ne!(swapped.rev, layout.rev, "which list an entry is in");
@@ -311,14 +316,13 @@ param = "detune"
     fn a_target_added_later_changes_the_layout() {
         use crate::app::controller::{Controller, NewTarget};
         use crate::app::testutil::stub_engine;
-        use crate::plugin::chain::ModTargetKind;
         let model = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\n").model;
+        let osc = model.instruments[0].node;
         let (handles, _engine) = stub_engine();
         let mut ctl = Controller::new(model, handles, None);
         let before = ctl.model.telemetry_layout();
         let detune = NewTarget {
-            kind: ModTargetKind::PluginParam { slot: 0, param_index: 1 },
-            slot: 0,
+            aim: crate::app::model::Driven::Param { plugin: osc, index: 1 },
             param_name: "detune".to_string(),
             depth: 0.5,
             base_value: 0.0,
