@@ -2337,6 +2337,19 @@ describe("a lane that only holds effects", () => {
     for (const id of [1, 2, 3, 4, 5]) expect(at(back, id).position, String(id)).toEqual(at(first, id).position);
   });
 
+  test("lays a modulator that is in no lane and no group out as a node of its own, and draws its cables, until the page has a place of its own for it", () => {
+    // (A free modulator: the server says it has no parent. The page draws it in the row below the strips, as it does a node whose parent is not there, and its cable runs to the parameter.)
+    const free: Node = { ...modulator(30, 1), parent: null };
+    const graph: Graph = { nodes: [instrument(1), effect(2, 1), free, master], edges: [audio(1, 2), audio(2, MASTER), cable(0, 30, 2, 1)] };
+    const flow = toFlow(graph);
+    expect(at(flow, 30)).toBeDefined();
+    expect(overlapsIn(graph, flow)).toBeNull();
+    expect(flow.edges.some((edge) => edge.source === String(30))).toBe(true);
+    // And it stays where it was while the canvas is not arranged, as every node does.
+    const again = toFlow({ ...graph, nodes: [...graph.nodes.slice(0, 2), { ...free }, master] }, flow.places);
+    expect(at(again, 30).position).toEqual(at(flow, 30).position);
+  });
+
   test("is not among the nodes that the layout puts in a row below because it has no place for them: a node whose parent is not there is first in that row", () => {
     const orphan: Graph = { nodes: [instrumentOf(1, null), effect(2, 1, 0), effect(3, 99, 0), master], edges: [] };
     const flow = toFlow(orphan);

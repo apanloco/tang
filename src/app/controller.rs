@@ -739,8 +739,13 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
-        // The audio cables at its instrument and at each of its effects go with it, and so do the cables of notes that end at it.
+        // The audio cables at its instrument and at each of its effects go with it, and so do the cables of notes that end at it. So do the cables of the free modulators to its
+        // plugins (a free modulator stays: they are not the lane's own, and are written down by themselves).
         let nodes = self.model.audio_nodes_of_lane(inst);
+        for edge in self.model.free_cables_into(&nodes) {
+            // (One that an earlier one took with it is not there any more.)
+            self.take_out(edge);
+        }
         self.take_out_audio_cables_at(&nodes);
         self.take_out_event_cables_at(&[self.model.instruments[inst].node]);
         // The whole lane is kept for the history, when an intent is carried out: the audio thread hands it to a channel of its own.
@@ -770,8 +775,13 @@ impl Controller {
             // (One that an earlier one took with it is not there any more.)
             driven.extend(self.take_out(edge).into_iter().flatten());
         }
-        // The audio cables at its bus, its output and each of its bus effects go with it.
+        // The audio cables at its bus, its output and each of its bus effects go with it, and so do the cables of the free modulators to its bus effects (nothing is given back:
+        // what they drove goes with the bus).
         let nodes = self.model.audio_nodes_of_group(group);
+        for edge in self.model.free_cables_into(&nodes) {
+            // (One that an earlier one took with it is not there any more.)
+            self.take_out(edge);
+        }
         self.take_out_audio_cables_at(&nodes);
         // The whole group is kept for the history, when an intent is carried out: the audio thread hands it to a channel of its own.
         let (keep, kept) = self.channel_for();

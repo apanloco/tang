@@ -33,6 +33,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::alloc_guard::allocations_in;
 use crate::app::controller::Controller;
+use crate::app::intent::ModulatorKind;
 use crate::app::load::load_session;
 use crate::app::testutil;
 use crate::audio::{Engine, MidiEvent, Renderer};
@@ -161,6 +162,12 @@ impl Scenario {
         self.session.contains("feed = \"none\"") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::Feed { feed: Feed::None, .. }))
     }
 
+    /// Whether it has free modulators (modulators that are in no lane and no group: P5b-2), in its file or made by its edits. The loop that the plan replaced does not tick them, which
+    /// are from after it, so a scenario that has some is not held to it.
+    pub fn has_free_modulators(&self) -> bool {
+        self.session.contains("[[modulator]]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddFreeModulator { .. }))
+    }
+
     /// Whether it has a plugin that is late (the built-in drive, in its file or put in by an edit). Where the paths that are added are not in step by the plugins' latencies, the engine is
     /// what the loop that the plan replaced is (P3f: the plan puts them in step, and the loop does not, so `agree` holds the two with the compensation off); where nothing is late the
     /// compensation changes nothing, bit for bit, and a scenario that has nothing late is held to that.
@@ -169,9 +176,9 @@ impl Scenario {
             || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddEffect { plugin, .. } | Edit::AddBusEffect { plugin, .. } if *plugin == "builtin:drive"))
     }
 
-    /// Whether the loop that the plan replaced can run it: it has no audio cables, no way out that is cut and no link of a chain that is cut, which that loop is from before.
+    /// Whether the loop that the plan replaced can run it: it has no audio cables, no way out that is cut, no link of a chain that is cut and no free modulator, which that loop is from before.
     pub fn is_in_the_old_loop(&self) -> bool {
-        !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds()
+        !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds() && !self.has_free_modulators()
     }
 }
 
@@ -408,6 +415,34 @@ const FREE_EDITS: [(u64, Edit); 14] = [
     (45_000, Edit::Undo),
 ];
 
+/// What is done to the free modulators of a session on `CABLED` while it plays (P5b-2): a free LFO is made and drives the detune of lane 0's oscillator and the cutoff of its filter, a free envelope
+/// drives the reverb on the bus (its damping and its mix), a free step sequencer drives lane 1's oscillator's detune, the user sets the filter's cutoff (what the free cable is centred on moves), the
+/// filter is taken out while a free cable drives it and put back by Undo (the very plugin, its cable with it), lane 1 is taken out with the sequencer's cable and put back by Undo, the LFO is taken out
+/// (what it drove has the value the user set again) and put back by Undo, and the group is taken out with the envelope's cables to its reverb and put back by Undo, taken out again by Redo and put back
+/// again. Each is made (`Counts` says so: none is skipped or refused). The plugins' places among the session's are lane 0's oscillator and filter (0 and 1), lane 1's oscillator and delay (2 and 3) and
+/// the reverb on the bus (4); a place among a plugin's parameters is 1 for the oscillator's detune, 0 for the filter's cutoff, and for the reverb 1 and 3.
+const FREE_MODULATOR_EDITS: [(u64, Edit); 19] = [
+    (6_000, Edit::AddFreeModulator { kind: ModulatorKind::Lfo }),
+    (8_000, Edit::FreeCable { modulator: 0, plugin: 0, param: 1 }),
+    (10_000, Edit::FreeCable { modulator: 0, plugin: 1, param: 0 }),
+    (12_000, Edit::AddFreeModulator { kind: ModulatorKind::Envelope }),
+    (14_000, Edit::FreeCable { modulator: 1, plugin: 4, param: 1 }),
+    (16_000, Edit::FreeCable { modulator: 1, plugin: 4, param: 3 }),
+    (18_000, Edit::AddFreeModulator { kind: ModulatorKind::Steps }),
+    (20_000, Edit::FreeCable { modulator: 2, plugin: 2, param: 1 }),
+    (22_000, Edit::Param { lane: 0, slot: 1, param: 0, fraction: 0.3 }),
+    (24_000, Edit::RemoveEffect { lane: 0, effect: 0 }),
+    (26_000, Edit::Undo),
+    (28_000, Edit::RemoveLane { lane: 1 }),
+    (30_000, Edit::Undo),
+    (32_000, Edit::RemoveFreeModulator { index: 0 }),
+    (34_000, Edit::Undo),
+    (36_000, Edit::RemoveGroup { group: 0 }),
+    (38_000, Edit::Undo),
+    (40_000, Edit::Redo),
+    (42_000, Edit::Undo),
+];
+
 /// What the keys play into `edited:sources`: `performance`, and a key (E4) that is hit and let go of after the pedal is up, which a lane that has been given the keys again plays.
 fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     let mut events = performance();
@@ -429,7 +464,7 @@ pub fn edited() -> Vec<Scenario> {
         edits: edits.to_vec(),
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -615,6 +650,7 @@ impl Rig {
             // And the value that each is centred on, where the model has one (what a cable drives that is not a parameter of a plugin with a row, or a setting that the modulator has, has none).
             let model_cables = self.ctl.model.instruments.iter().enumerate().map(|(i, lane)| (crate::plugin::chain::ModulatorLocation::Lane(i), &lane.modulators));
             let model_cables = model_cables.chain(self.ctl.model.groups.iter().enumerate().map(|(i, group)| (crate::plugin::chain::ModulatorLocation::Group(i), &group.modulators)));
+            let model_cables = model_cables.chain(std::iter::once((crate::plugin::chain::ModulatorLocation::Free, &self.ctl.model.free_modulators)));
             let aims: Vec<_> = model_cables.flat_map(|(at, rack)| rack.iter().enumerate().flat_map(move |(m, modulator)| modulator.targets.iter().map(move |cable| (at, m, cable.edge, cable.aim)))).collect();
             assert_eq!(aims.len(), facts.bases.len(), "{what}: the engine has as many cables as the model");
             for ((at, modulator, edge, aim), (engine_at, engine_modulator, engine_edge, engine_aim, base)) in aims.into_iter().zip(&facts.bases) {
@@ -963,6 +999,36 @@ mod tests {
     }
 
     #[test]
+    fn the_scenarios_that_have_free_modulators_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
+        let with: Vec<String> = always_on().iter().filter(|scenario| scenario.has_free_modulators()).map(|scenario| scenario.id.clone()).collect();
+        assert_eq!(with, ["session:freemod@256", "edited:freemods@256"]);
+        assert!(always_on().iter().filter(|scenario| scenario.has_free_modulators()).all(|scenario| !scenario.is_in_the_old_loop()));
+        // (A session that has none, and the scenarios of the generator, which draw none, are.)
+        assert!(always_on().iter().filter(|scenario| scenario.id.starts_with("generated:")).all(|scenario| !scenario.has_free_modulators()));
+        let plain = Scenario { session: "[[instrument]]\nplugin = \"builtin:osc\"\n".to_string(), edits: Vec::new(), ..sessions().remove(0) };
+        assert!(!plain.has_free_modulators() && plain.is_in_the_old_loop());
+        assert!(Scenario { edits: vec![(1_000, Edit::AddFreeModulator { kind: ModulatorKind::Lfo })], ..plain.clone() }.has_free_modulators());
+        assert!(Scenario { session: format!("{}[[modulator]]\n", plain.session), ..plain }.has_free_modulators());
+    }
+
+    #[test]
+    fn the_free_modulators_of_the_session_and_of_the_scenario_are_heard_and_not_before_a_cable_drives_something() {
+        // The session: without its free modulators the render is another, and both are heard.
+        let session = sessions().into_iter().find(|scenario| scenario.id.starts_with("session:freemod")).expect("a session of the corpus");
+        let modulated = render(&session, &engine);
+        let without: String = session.session.split("[[modulator]]").next().unwrap().to_string() + "[[instrument]]" + session.session.split("[[instrument]]").skip(1).collect::<Vec<_>>().join("[[instrument]]").as_str();
+        let plain = render(&Scenario { session: without, ..session }, &engine);
+        assert!(fingerprint(&modulated).peak > 0.01 && fingerprint(&plain).peak > 0.01, "both are heard");
+        assert_ne!(modulated.samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>(), plain.samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>(), "the free modulators are heard");
+        // The scenario makes a free LFO at 6,000 frames and draws its first cable at 8,000: a modulator with no cable changes nothing, to the bit.
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:freemods")).expect("a scenario of the corpus");
+        let drawn = render(&scenario, &engine);
+        let alone = render(&Scenario { edits: Vec::new(), ..scenario }, &engine);
+        let first = drawn.samples.iter().zip(&alone.samples).position(|(x, y)| x.to_bits() != y.to_bits()).expect("the cable is heard");
+        assert!(first / 2 >= 8_000 - 8_000 % BLOCK, "a free modulator that drives nothing changes nothing: the first frame that differs is {}", first / 2);
+    }
+
+    #[test]
     fn the_scenarios_that_cut_the_link_into_an_effect_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
         let cut: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cut_feeds()).map(|scenario| scenario.id.clone()).collect();
         assert_eq!(cut, ["session:unfed@256", "edited:feeds@256"]);
@@ -1230,7 +1296,7 @@ mod tests {
     #[test]
     #[ignore = "the whole corpus at three block sizes: cargo test --release oracle -- --ignored"]
     fn the_whole_corpus_is_the_same_under_the_plan_and_under_the_loop_it_replaced() {
-        let differences: Vec<String> = whole().iter().filter(|scenario| !scenario.has_cables()).filter_map(|scenario| agree(scenario, &legacy, &engine_uncompensated)).collect();
+        let differences: Vec<String> = whole().iter().filter(|scenario| scenario.is_in_the_old_loop()).filter_map(|scenario| agree(scenario, &legacy, &engine_uncompensated)).collect();
         assert!(differences.is_empty(), "{} of the {} renders differ:\n{}", differences.len(), whole().len(), differences.join("\n"));
     }
 

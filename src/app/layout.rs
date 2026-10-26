@@ -99,7 +99,8 @@ impl SessionModel {
         let mut modulation = Vec::new();
         let groups = self.groups.iter().enumerate().map(|(g, group)| (ModulatorLocation::Group(g), &group.modulators));
         let lanes = self.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
-        for (_, rack) in groups.clone().chain(lanes.clone()) {
+        let free = std::iter::once((ModulatorLocation::Free, &self.free_modulators));
+        for (_, rack) in groups.clone().chain(lanes.clone()).chain(free.clone()) {
             for modulator in rack {
                 if let Some(slot) = modulator.output {
                     modulation.push(entry(slot, modulator.node, Port::ModOut, SlotKind::ModOutput));
@@ -109,9 +110,10 @@ impl SessionModel {
                 }
             }
         }
-        // The lanes' targets first: of two slots for one parameter, theirs holds the final value.
+        // The lanes' targets first, then the groups' and then the free modulators': of two slots for one parameter, the one that is nearer to the plugin holds the final value, and is
+        // the one that is named (a lane's modulators write it last, a group's before them and a free modulator's before those).
         let mut named: HashSet<(NodeId, Port)> = HashSet::new();
-        for (at, rack) in lanes.chain(groups) {
+        for (at, rack) in lanes.chain(groups).chain(free) {
             for (index, modulator) in rack.iter().enumerate() {
                 for target in &modulator.targets {
                     let Some(slot) = target.effective else { continue };
@@ -222,6 +224,58 @@ mod tests {
             ]
         );
         assert_ne!(lane0, lane1);
+    }
+
+    #[test]
+    fn the_free_modulators_outputs_come_after_the_lanes_and_what_they_drive_is_named_after_what_the_lanes_and_the_groups_do() {
+        let model = load(
+            r#"
+[[group]]
+[[group.modulator]]
+[[group.modulator.target]]
+member = 0
+param = "detune"
+
+[[modulator]]
+[[modulator.target]]
+to = "instrument[0]"
+param = "detune"
+[[modulator.target]]
+to = "instrument[0]"
+param = "volume"
+[[modulator]]
+[[modulator.target]]
+mod_rate = 0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+[[instrument.modulator.target]]
+param = "pan"
+"#,
+        )
+        .model;
+        let layout = model.telemetry_layout();
+        let lane = model.instruments[0].node;
+        let slot = |s: Option<Slot>| s.unwrap().index();
+        let (group_lfo, lane_lfo, free_lfo, free_second) = (&model.groups[0].modulators[0], &model.instruments[0].modulators[0], &model.free_modulators[0], &model.free_modulators[1]);
+        let index = |name: &str| model.instruments[0].instrument.as_ref().unwrap().params.iter().find(|row| row.name == name).unwrap().index;
+        assert_eq!(
+            entries(&layout.modulation),
+            [
+                // The outputs: the group's, the lanes' and then the free modulators'.
+                (slot(group_lfo.output), group_lfo.node, Port::ModOut, SlotKind::ModOutput),
+                (slot(lane_lfo.output), lane_lfo.node, Port::ModOut, SlotKind::ModOutput),
+                (slot(free_lfo.output), free_lfo.node, Port::ModOut, SlotKind::ModOutput),
+                (slot(free_second.output), free_second.node, Port::ModOut, SlotKind::ModOutput),
+                // The values: the lane's cable, then the group's, which the free LFO's cable to the same detune does not name again; the free LFO's volume, and the setting that the second one drives.
+                (slot(lane_lfo.targets[0].effective), lane, Port::Param { index: index("pan") }, SlotKind::Effective),
+                (slot(group_lfo.targets[0].effective), lane, Port::Param { index: index("detune") }, SlotKind::Effective),
+                (slot(free_lfo.targets[1].effective), lane, Port::Param { index: index("volume") }, SlotKind::Effective),
+                (slot(free_second.targets[0].effective), free_lfo.node, Port::Rate, SlotKind::Effective),
+            ]
+        );
     }
 
     #[test]

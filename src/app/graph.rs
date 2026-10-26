@@ -381,7 +381,7 @@ impl SessionModel {
                 kind: NodeKind::Group { volume: group.volume, pan: group.pan, muted: group.muted, solo: group.solo, route: group.route },
             });
             nodes.extend(group.effects.iter().map(|fx| effect_node(fx, group.node)));
-            nodes.extend(group.modulators.iter().map(|m| modulator_node(m, group.node)));
+            nodes.extend(group.modulators.iter().map(|m| modulator_node(m, Some(group.node))));
             // Out of the group, through its bus effects, to the master (unless its way out is cut: then the chain ends at its last effect).
             audio_chain(&mut edges, group.node, group.effects.iter().map(|fx| (fx.node, fx.fed)), (group.route == Route::Out).then_some((NodeId::MASTER, EdgeKind::Audio)));
         }
@@ -407,7 +407,7 @@ impl SessionModel {
                 },
             });
             nodes.extend(lane.effects.iter().map(|fx| effect_node(fx, lane.node)));
-            nodes.extend(lane.modulators.iter().map(|m| modulator_node(m, lane.node)));
+            nodes.extend(lane.modulators.iter().map(|m| modulator_node(m, Some(lane.node))));
             // Out of the instrument, through the lane's effects, to its group or the master (unless its way out is cut).
             let sink = match group {
                 Some(group) => (group.node, EdgeKind::Member),
@@ -415,6 +415,9 @@ impl SessionModel {
             };
             audio_chain(&mut edges, lane.node, lane.effects.iter().map(|fx| (fx.node, fx.fed)), (lane.route == Route::Out).then_some(sink));
         }
+
+        // The modulators that belong to no lane and no group have no parent.
+        nodes.extend(self.free_modulators.iter().map(|m| modulator_node(m, None)));
 
         nodes.push(Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master });
         // Where each of these nodes is drawn, if it has been placed (the table also has the places of nodes that have gone).
@@ -455,11 +458,12 @@ impl SessionModel {
     }
 
     /// One edge for each modulation target that still has something to drive: the
-    /// group modulators', then the lanes'.
+    /// group modulators', the lanes' and then the free modulators'.
     fn modulation_edges(&self, edges: &mut Vec<Edge>) {
         let groups = self.groups.iter().enumerate().map(|(g, group)| (ModulatorLocation::Group(g), &group.modulators));
         let lanes = self.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
-        for (at, rack) in groups.chain(lanes) {
+        let free = std::iter::once((ModulatorLocation::Free, &self.free_modulators));
+        for (at, rack) in groups.chain(lanes).chain(free) {
             for (index, modulator) in rack.iter().enumerate() {
                 for target in &modulator.targets {
                     // (What a rack does not reach is not drawn, as it is not told to the audio thread: the model has no such cable, and a test that makes one sees it.)
@@ -513,6 +517,7 @@ impl SessionModel {
         let param = |node: NodeId, index: u32| Endpoint { node, port: Port::Param { index } };
         let sibling = |mod_index: usize, port: Port| rack.get(mod_index).map(|m| Endpoint { node: m.node, port });
         match (at, kind) {
+            (ModulatorLocation::Free, K::FreeParam { plugin, param_index }) => self.plugin_slot(*plugin).map(|_| param(*plugin, *param_index)),
             (ModulatorLocation::Lane(inst), K::PluginParam { slot, param_index }) => {
                 Some(param(self.chain_node(inst, *slot)?, *param_index))
             }
@@ -594,7 +599,7 @@ fn effect_node(slot: &PluginSlot, parent: NodeId) -> Node {
     Node { id: slot.node, parent: Some(parent), name: slot.name.clone(), ui: None, kind: NodeKind::Effect { plugin: plugin(slot), mix: slot.mix, feed } }
 }
 
-fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
+fn modulator_node(modulator: &ModulatorSlot, parent: Option<NodeId>) -> Node {
     let source = match &modulator.source {
         ModSourceSlot::Lfo { waveform, rate, retrigger, fade, sync } => {
             ModulatorSource::Lfo { waveform: (*waveform).into(), rate: *rate, retrigger: *retrigger, fade: *fade, sync: *sync as u32 }
@@ -610,7 +615,7 @@ fn modulator_node(modulator: &ModulatorSlot, parent: NodeId) -> Node {
             ModulatorSource::Steps { values: values.to_vec(), length: *length as u32, rate: *rate, glide: *glide, retrigger: *retrigger, sync: *sync as u32 }
         }
     };
-    Node { id: modulator.node, parent: Some(parent), name: modulator.source.node_name(), ui: None, kind: NodeKind::Modulator { source } }
+    Node { id: modulator.node, parent, name: modulator.source.node_name(), ui: None, kind: NodeKind::Modulator { source } }
 }
 
 fn plugin(slot: &PluginSlot) -> Plugin {
@@ -726,6 +731,52 @@ mod tests {
             serde_json::to_value(&edges[links]).unwrap(),
             json!({"from": {"node": lane.0, "port": {"type": "audioOut"}}, "to": {"node": bus.0, "port": {"type": "audioIn"}}, "kind": "cable", "id": 4, "gain": 1.0})
         );
+    }
+
+    #[test]
+    fn a_free_modulator_is_a_node_with_no_parent_after_the_lanes_and_its_cables_are_edges_from_it_to_the_ports_they_drive() {
+        let model = load(crate::app::testutil::FREE_MODULATORS).model;
+        let graph = model.graph();
+        let modulators: Vec<&Node> = graph.nodes.iter().filter(|node| matches!(node.kind, NodeKind::Modulator { .. })).collect();
+        assert_eq!(modulators.len(), 2);
+        assert!(modulators.iter().all(|node| node.parent.is_none()), "in no lane and no group");
+        assert_eq!(modulators.iter().map(|node| node.id).collect::<Vec<_>>(), model.free_modulators.iter().map(|m| m.node).collect::<Vec<_>>());
+        let position = |id: NodeId| graph.nodes.iter().position(|node| node.id == id).unwrap();
+        assert!(position(modulators[0].id) > position(model.instruments[1].effects[0].node), "after the lanes' nodes");
+        assert_eq!(graph.nodes.last().map(|node| node.id), Some(NodeId::MASTER), "and before the master");
+        assert_eq!(
+            serde_json::to_value(modulators[0]).unwrap()["parent"],
+            serde_json::Value::Null,
+            "a client reads the lack of a parent as a node of its own"
+        );
+        let (osc, reverb, bus, filter) = (model.instruments[0].node, model.instruments[0].effects[0].node, model.groups[0].effects[0].node, model.instruments[1].effects[0].node);
+        let (lfo, envelope) = (&model.free_modulators[0], &model.free_modulators[1]);
+        let index = |slot: &PluginSlot, name: &str| slot.params.iter().find(|row| row.name == name).unwrap().index;
+        let cable = |from: &crate::app::model::ModulatorSlot, n: usize| (from.targets[n].edge, from.targets[n].depth);
+        let edge = |from: &crate::app::model::ModulatorSlot, n: usize, to: Endpoint| modulation(from.node, to, cable(from, n).0, cable(from, n).1);
+        let modulation_edges: Vec<Edge> = graph.edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::Modulation { .. })).cloned().collect();
+        assert_eq!(
+            modulation_edges,
+            [
+                edge(lfo, 0, param(osc, index(model.instruments[0].instrument.as_ref().unwrap(), "detune"))),
+                edge(lfo, 1, param(reverb, index(&model.instruments[0].effects[0], "damping"))),
+                edge(lfo, 2, param(bus, index(&model.groups[0].effects[0], "cutoff"))),
+                edge(lfo, 3, at(envelope.node, Port::Attack)),
+                edge(envelope, 0, param(filter, index(&model.instruments[1].effects[0], "cutoff"))),
+                edge(envelope, 1, at(lfo.node, Port::Depth { edge: lfo.targets[0].edge })),
+            ],
+            "a plugin's parameter by its node wherever the plugin is, and a setting or a depth of a sibling free modulator"
+        );
+    }
+
+    #[test]
+    fn a_free_modulator_has_no_audio_ports_and_its_node_says_what_it_is() {
+        let model = load("[[modulator]]\ntype = \"macro\"\nvalue = 0.5\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let graph = model.graph();
+        let node = graph.nodes.iter().find(|node| matches!(node.kind, NodeKind::Modulator { .. })).unwrap();
+        assert_eq!(node.name, "Macro");
+        assert!(matches!(&node.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value } } if *value == 0.5));
+        assert!(graph.edges.iter().all(|edge| edge.from.node != node.id && edge.to.node != node.id), "a modulator with no cable has no edge");
     }
 
     fn events(from: Endpoint, to: Endpoint, id: u32) -> Edge {

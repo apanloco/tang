@@ -35,6 +35,13 @@ pub enum Edit {
     MoveEffect { lane: usize, effect: usize, to: usize },
     RemoveEffect { lane: usize, effect: usize },
     AddModulator { lane: usize, kind: ModulatorKind },
+    /// A modulator that is in no lane and no group (P5b-2), at the end of the session's own rack.
+    AddFreeModulator { kind: ModulatorKind },
+    /// A cable from a free modulator (a place among them) to a parameter (a place among those that are not separators) of a plugin of the session (a place among every plugin there is:
+    /// each lane's instrument, if it has one, and its effects, and then each group's bus effects), all wrapped round the ones there are.
+    FreeCable { modulator: usize, plugin: usize, param: usize },
+    /// A free modulator, by its place among them, taken out with its cables.
+    RemoveFreeModulator { index: usize },
     /// A modulator of `kind` for a parameter, and a cable to it (the `~` menu of a knob).
     Modulate { lane: usize, slot: usize, param: usize, kind: ModulatorKind },
     RemoveModulator { lane: usize, index: usize },
@@ -128,6 +135,12 @@ fn param_at(plugin: &PluginSlot, place: usize) -> Option<&crate::app::model::Par
     (!params.is_empty()).then(|| params[place % params.len()])
 }
 
+/// Every plugin of the session in the order of the model: each lane's instrument (if it has one) and then its effects, then each group's bus effects.
+fn plugins_of(model: &crate::app::model::SessionModel) -> Vec<&PluginSlot> {
+    let lanes = model.instruments.iter().flat_map(|lane| lane.instrument.iter().chain(lane.effects.iter()));
+    lanes.chain(model.groups.iter().flat_map(|group| group.effects.iter())).collect()
+}
+
 /// The outputs of audio that a cable can start at, in the order of the model: each lane's instrument and then its effects, then each group and then its bus effects.
 fn cable_starts(model: &crate::app::model::SessionModel) -> Vec<Endpoint> {
     let out = |node| Endpoint { node, port: Port::AudioOut };
@@ -192,6 +205,24 @@ impl Edit {
                 Intent::RemoveNode { node: effects[effect % effects.len()].node }
             }
             Edit::AddModulator { lane: l, kind } => Intent::AddModulator { parent: lane(*l)?.node, kind: *kind },
+            Edit::AddFreeModulator { kind } => Intent::AddFreeModulator { kind: *kind },
+            Edit::FreeCable { modulator, plugin, param } => {
+                let modulators = &model.free_modulators;
+                let plugins = plugins_of(model);
+                if modulators.is_empty() || plugins.is_empty() {
+                    return None;
+                }
+                let target = plugins[plugin % plugins.len()];
+                let p = param_at(target, *param)?;
+                Intent::AddModEdge { modulator: modulators[modulator % modulators.len()].node, to: Endpoint { node: target.node, port: Port::Param { index: p.index } } }
+            }
+            Edit::RemoveFreeModulator { index } => {
+                let modulators = &model.free_modulators;
+                if modulators.is_empty() {
+                    return None;
+                }
+                Intent::RemoveNode { node: modulators[index % modulators.len()].node }
+            }
             Edit::Modulate { lane: l, slot, param, kind } => {
                 let plugin = plugin_at(lane(*l)?, *slot)?;
                 let p = param_at(plugin, *param)?;
@@ -417,6 +448,9 @@ plugin = "builtin:osc"
             Edit::RemoveEffect { lane: 1, effect: 0 },
             Edit::MoveEffect { lane: 1, effect: 0, to: 1 },
             Edit::RemoveModulator { lane: 1, index: 0 },
+            // (No free modulator to draw a cable from or take out.)
+            Edit::FreeCable { modulator: 0, plugin: 0, param: 0 },
+            Edit::RemoveFreeModulator { index: 0 },
         ] {
             assert_eq!(edit.make(&mut ctl), Outcome::Skipped, "{edit:?}");
         }
@@ -547,6 +581,7 @@ plugin = "builtin:osc"
         expect(Edit::AddBusEffect { group: 0, plugin: "builtin:drive" }, Intent::AddEffect { parent: bus, plugin: "builtin:drive".to_string() });
         expect(Edit::RemoveEffect { lane: 0, effect: 0 }, Intent::RemoveNode { node: reverb });
         expect(Edit::AddModulator { lane: 0, kind: ModulatorKind::Steps }, Intent::AddModulator { parent: lane0, kind: ModulatorKind::Steps });
+        expect(Edit::AddFreeModulator { kind: ModulatorKind::Envelope }, Intent::AddFreeModulator { kind: ModulatorKind::Envelope });
         expect(Edit::Range { lane: 1, range: Some((36, 71)) }, Intent::SetRange { node: lane1, range: Some(NoteRange { low: 36, high: 71 }) });
         expect(Edit::Range { lane: 1, range: None }, Intent::SetRange { node: lane1, range: None });
         expect(Edit::LaneGroup { lane: 1, group: Some(0) }, Intent::SetLaneGroup { node: lane1, group: Some(bus) });

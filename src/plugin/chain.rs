@@ -460,6 +460,9 @@ pub enum ModTargetKind {
         mod_index: usize,
         field: CrossModField,
     },
+    /// (Free modulators) Target a parameter of any plugin of the session, by the node of the plugin: a free modulator is in no lane and no group, so it has no slot and no member
+    /// ordinal to name the plugin by.
+    FreeParam { plugin: NodeId, param_index: u32 },
     /// Target a sibling modulator's LFO rate.
     ModulatorRate { mod_index: usize },
     /// Target a sibling modulator's target depth.
@@ -1246,6 +1249,62 @@ fn apply_modulators_to_chain(
     }
 }
 
+/// Where a plugin that a free modulator's cable drives is, as places worked out for this buffer: a plugin of a lane's chain (the lane's place and the slot, 0 for the instrument) or one
+/// of a group's bus effects.
+enum Anywhere {
+    Lane { lane: usize, slot: usize },
+    Bus { group: usize, effect: usize },
+}
+
+/// Find the plugin of node `plugin` anywhere in the graph: in the chain of a lane or on the bus of a group. `None` if it is in neither (it went): a cable to it drives nothing.
+fn locate_anywhere(instruments: &[InstrumentLane], groups: &[Group], plugin: NodeId) -> Option<Anywhere> {
+    instruments
+        .iter()
+        .enumerate()
+        .find_map(|(lane, l)| slot_in_chain(l.node, &l.effect_nodes, plugin).map(|slot| Anywhere::Lane { lane, slot }))
+        .or_else(|| groups.iter().enumerate().find_map(|(group, g)| g.effect_nodes.iter().position(|node| *node == plugin).map(|effect| Anywhere::Bus { group, effect })))
+}
+
+/// Apply the free modulators' cables to the parameters they drive, as `apply_modulators_to_chain` does for a lane's: the plugin of each cable is found by its node anywhere in the
+/// graph (`locate_anywhere`), what the cables that drive one parameter offset it by is summed (two free modulators on one parameter add up) and the parameter is set to its base
+/// and the sum. A cable whose plugin is nowhere drives nothing and publishes nothing. `drives` is scratch space that the caller keeps between buffers.
+fn apply_free_modulators(
+    modulators: &[Modulator],
+    instruments: &mut [InstrumentLane],
+    groups: &mut [Group],
+    drives: &mut Vec<ParamDrive>,
+    telemetry: Option<&Telemetry>,
+) {
+    drives.clear();
+    for m in modulators {
+        for target in &m.targets {
+            let Driven::Param { plugin, index: param_index } = target.aim else { continue };
+            let offset = m.target_offset(target);
+            if let Some(entry) = drives.iter_mut().find(|e| e.0 == plugin && e.1 == param_index) {
+                entry.5 += offset;
+            } else {
+                drives.push((plugin, param_index, target.base_value, target.param_min, target.param_max, offset));
+            }
+        }
+    }
+    for &(plugin, param_index, base_value, min, max, total_offset) in drives.iter() {
+        let Some(place) = locate_anywhere(instruments, groups, plugin) else { continue };
+        let modulated = (base_value + total_offset).clamp(min, max);
+        if let Some(telemetry) = telemetry {
+            publish_effective(modulators, telemetry, modulated, |aim| {
+                matches!(aim, Driven::Param { plugin: p, index } if *p == plugin && *index == param_index)
+            });
+        }
+        let target: Option<&mut Box<dyn Plugin>> = match place {
+            Anywhere::Lane { lane, slot } => instruments[lane].plugin_mut(slot),
+            Anywhere::Bus { group, effect } => groups[group].effects.get_mut(effect),
+        };
+        if let Some(p) = target {
+            let _ = p.set_parameter(param_index, modulated);
+        }
+    }
+}
+
 /// Hand `plugin`, which was taken out of the graph, back to the main thread without dropping it here: to `keep`, the channel that the main thread made
 /// for this plugin when it wants the very plugin to put it back (the controller's history of what was taken out), or by `return_tx`, where the main
 /// thread drops what comes, when it made none, when nobody listens to it any more or when it is full. Never blocks.
@@ -1664,9 +1723,7 @@ fn collect_group_member_mod_writes(
     for (gi, g) in groups.iter().enumerate() {
         for m in &g.modulators {
             for t in &m.targets {
-                if matches!(t.aim, Driven::Param { .. }) || sibling_field(&g.modulators, &t.aim).is_some() {
-                    continue;
-                }
+                // (A cable to a parameter, or to a setting of a sibling, names no modulator of a member: `member_modulator_field` finds none.)
                 let Some((lane, mod_index, field)) = member_modulator_field(instruments, gi, &t.aim) else {
                     continue;
                 };
@@ -2156,13 +2213,13 @@ pub enum CableTo {
     Master,
 }
 
-/// Which modulator rack a modulator lives in: an instrument lane's or a
-/// submix group's. Named by learn notifications, the session model and the
-/// front-ends' popups alike.
+/// Which modulator rack a modulator lives in: an instrument lane's, a submix group's or the session's own (`Free`: the modulators that belong to no lane and no group, which hear
+/// every note and drive what their cables say wherever it is). Named by learn notifications, the session model and the front-ends' popups alike.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModulatorLocation {
     Lane(usize),
     Group(usize),
+    Free,
 }
 
 /// Sent from the audio thread to the TUI when a `MidiLearn` modulator captures
@@ -2933,6 +2990,11 @@ impl InstrumentLane {
         }
     }
 
+    /// The plugin in `slot` of the lane's chain (0 is the instrument), if it is there.
+    fn plugin_mut(&mut self, slot: usize) -> Option<&mut Box<dyn Plugin>> {
+        if slot == 0 { self.instrument.as_mut() } else { self.effects.get_mut(slot - 1) }
+    }
+
     /// The node of the plugin in `slot` of the lane's chain: the lane's own for the instrument (0), an effect's for the others. `None` for a place that the chain has not.
     fn plugin_node(&self, slot: usize) -> Option<NodeId> {
         if slot == 0 { Some(self.node) } else { self.effect_nodes.get(slot - 1).copied() }
@@ -3534,6 +3596,11 @@ pub struct AudioGraph {
     group_member_mod_writes: Vec<GroupMemberModWrite>,
     /// Reusable scratch for the cross-mod writes within one group's rack.
     group_cross_mod_scratch: Vec<CrossModWrite>,
+    /// The modulators that belong to no lane and no group (`ModulatorLocation::Free`): each hears every event, and drives what its cables say anywhere in the session.
+    free_modulators: Vec<Modulator>,
+    /// Reusable scratch for the cross-mod writes within the free rack, and for the sums of what the free modulators drive on each parameter.
+    free_cross_mod_scratch: Vec<CrossModWrite>,
+    free_drives: Vec<ParamDrive>,
     /// Where what the graph measures is published; `None` publishes nothing.
     telemetry: Option<Arc<Telemetry>>,
     /// The output mix: its meter, and what it writes to the output.
@@ -3571,6 +3638,9 @@ impl AudioGraph {
             group_bus_drives: Vec::with_capacity(SCRATCH_CAPACITY),
             group_member_mod_writes: Vec::with_capacity(32),
             group_cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
+            free_modulators: Vec::new(),
+            free_cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
+            free_drives: Vec::with_capacity(SCRATCH_CAPACITY),
             telemetry: None,
             master: Master::new(),
             modulator_seeds: 0,
@@ -3752,8 +3822,8 @@ impl AudioGraph {
         Some((attack, decay, sustain, release))
     }
 
-    /// Every modulator's cables, for a test to compare with the model's: the lanes' racks
-    /// and then the groups', each modulator with its node and its cables' ids, what they drive and their depths, in order.
+    /// Every modulator's cables, for a test to compare with the model's: the lanes' racks,
+    /// the groups' and then the free modulators', each modulator with its node and its cables' ids, what they drive and their depths, in order.
     #[cfg(test)]
     pub fn cables(&self) -> RackCables {
         let rack = |at: fn(usize) -> ModulatorLocation, i: usize, modulators: &[Modulator]| -> Vec<_> {
@@ -3765,10 +3835,11 @@ impl AudioGraph {
         };
         let lanes = self.instruments.iter().enumerate().flat_map(|(i, lane)| rack(ModulatorLocation::Lane, i, &lane.modulators));
         let groups = self.groups.iter().enumerate().flat_map(|(i, group)| rack(ModulatorLocation::Group, i, &group.modulators));
-        lanes.chain(groups).collect()
+        let free = rack(|_| ModulatorLocation::Free, 0, &self.free_modulators);
+        lanes.chain(groups).chain(free).collect()
     }
 
-    /// The value each cable is centred on (its `base_value`), for a test: the lanes' racks and then the groups', each
+    /// The value each cable is centred on (its `base_value`), for a test: the lanes' racks, the groups' and then the free modulators', each
     /// modulator's cables in order, with their ids and what they drive.
     #[cfg(test)]
     pub fn cable_bases(&self) -> Vec<(ModulatorLocation, usize, EdgeId, Driven, f32)> {
@@ -3781,7 +3852,8 @@ impl AudioGraph {
         };
         let lanes = self.instruments.iter().enumerate().flat_map(|(i, lane)| rack(ModulatorLocation::Lane, i, &lane.modulators));
         let groups = self.groups.iter().enumerate().flat_map(|(i, group)| rack(ModulatorLocation::Group, i, &group.modulators));
-        lanes.chain(groups).collect()
+        let free = rack(|_| ModulatorLocation::Free, 0, &self.free_modulators);
+        lanes.chain(groups).chain(free).collect()
     }
 
     /// Set a parameter of an effect of a lane's chain on the plugin itself, for a test: what the model does not know, as a plugin has state apart from its
@@ -3840,13 +3912,14 @@ impl AudioGraph {
     }
 
     /// Every modulator as it is, for a test: its source, what it drives (each cable's kind, depth and telemetry slot; what each is centred on is
-    /// `cable_bases`) and the slot it publishes to; the lanes' racks, then the groups'.
+    /// `cable_bases`) and the slot it publishes to; the lanes' racks, then the groups' and then the free modulators'.
     #[cfg(test)]
     pub fn modulator_dump(&self) -> Vec<String> {
         let lanes = self.instruments.iter().flat_map(|lane| lane.modulators.iter());
         let groups = self.groups.iter().flat_map(|group| group.modulators.iter());
         lanes
             .chain(groups)
+            .chain(self.free_modulators.iter())
             .map(|m| format!("{:?} {:?} -> {:?} @{:?}", m.node, m.source, m.targets.iter().map(|t| (t.edge, &t.aim, t.depth, t.effective)).collect::<Vec<_>>(), m.output))
             .collect()
     }
@@ -4328,7 +4401,7 @@ impl AudioGraph {
                     // (A lane's modulators run at the rate of its instrument, a group's at the graph's.)
                     let sample_rate = match location {
                         ModulatorLocation::Lane(inst) => self.instruments.get(inst).map(|lane| lane.sample_rate()),
-                        ModulatorLocation::Group(_) => Some(self.graph_sample_rate()),
+                        ModulatorLocation::Group(_) | ModulatorLocation::Free => Some(self.graph_sample_rate()),
                     };
                     if let (Some(sample_rate), Some(rack)) = (sample_rate, self.rack_mut(location)) {
                         let m = Modulator::new(source, sample_rate).with_seed(seed).with_node(node);
@@ -4578,6 +4651,7 @@ impl AudioGraph {
         match location {
             ModulatorLocation::Lane(inst) => self.instruments.get_mut(inst).map(|lane| &mut lane.modulators),
             ModulatorLocation::Group(group) => self.groups.get_mut(group).map(|g| &mut g.modulators),
+            ModulatorLocation::Free => Some(&mut self.free_modulators),
         }
     }
 
@@ -4586,11 +4660,11 @@ impl AudioGraph {
         self.rack_mut(location)?.get_mut(index)
     }
 
-    /// Every cable of every modulator of the graph, the lanes' racks and then the groups'.
+    /// Every cable of every modulator of the graph, the lanes' racks, the groups' and then the free modulators'.
     fn targets_mut(&mut self) -> impl Iterator<Item = &mut ModTarget> {
         let lanes = self.instruments.iter_mut().flat_map(|lane| lane.modulators.iter_mut());
         let groups = self.groups.iter_mut().flat_map(|group| group.modulators.iter_mut());
-        lanes.chain(groups).flat_map(|modulator| modulator.targets.iter_mut())
+        lanes.chain(groups).chain(self.free_modulators.iter_mut()).flat_map(|modulator| modulator.targets.iter_mut())
     }
 
     /// The user has set what `aim` is (a parameter, a rate or a stage, a depth): every cable that drives it, whichever rack it is in, is centred on the new value, so that it
@@ -4671,6 +4745,20 @@ impl AudioGraph {
         // lane modulator hitting the same parameter is applied later inside the
         // lane's own process() and therefore wins.
         if frames > 0 {
+            // The free modulators come first: they belong to no lane and no group, hear every event whatever its source or its note, and drive what their cables say wherever it is (a
+            // plugin of any lane or bus, a setting of another free modulator, the depth of one of its cables). What a group's modulators and a lane's drive is written after, so that
+            // the nearer to the plugin wins, as a lane's own wins over a group's.
+            if !self.free_modulators.is_empty() {
+                for m in &mut self.free_modulators {
+                    m.tick(frames, midi_events.all(), self.bpm);
+                }
+                apply_cross_mod(&mut self.free_modulators, &mut self.free_cross_mod_scratch, self.telemetry.as_deref());
+                if let Some(telemetry) = &self.telemetry {
+                    publish_outputs(&self.free_modulators, telemetry);
+                }
+                Self::drain_learned(self.learn_tx.as_ref(), &mut self.free_modulators, |_| ModulatorLocation::Free);
+                apply_free_modulators(&self.free_modulators, &mut self.instruments, &mut self.groups, &mut self.free_drives, self.telemetry.as_deref());
+            }
             for gi in 0..self.groups.len() {
                 if self.groups[gi].modulators.is_empty() {
                     continue;
@@ -5169,6 +5257,7 @@ mod tests {
         match at {
             ModulatorLocation::Lane(lane) => NodeId(300 + (lane * 10 + index) as u32),
             ModulatorLocation::Group(group) => NodeId(400 + (group * 10 + index) as u32),
+            ModulatorLocation::Free => NodeId(450 + index as u32),
         }
     }
     /// The id of cable `target` of modulator `index` of the rack at `at`, as the tests that aim a cable at the depth of one make them (a cable that no other drives has any id).
@@ -5176,6 +5265,7 @@ mod tests {
         match at {
             ModulatorLocation::Lane(lane) => EdgeId(500 + (lane * 100 + index * 10 + target) as u32),
             ModulatorLocation::Group(group) => EdgeId(800 + (group * 100 + index * 10 + target) as u32),
+            ModulatorLocation::Free => EdgeId(950 + (index * 10 + target) as u32),
         }
     }
     /// What a cable drives when it is the parameter `index` of the plugin in `slot` of lane `inst` (0 is the instrument), whose nodes are `lane_node` and `effect_node`.
@@ -11867,24 +11957,26 @@ mod tests {
         bus: Slot,
     }
 
+    /// Two lanes in group 0, each with a constant instrument (0.1, while a note is held) and a `ParamScaleEffect`, and a bus effect of the same kind: no modulator.
+    fn two_lanes_in_a_group() -> Rig {
+        let (graph, cmd_tx, return_rx) = make_graph(2);
+        let telemetry = Arc::new(Telemetry::new());
+        let mut rig = Rig { graph, cmd_tx, telemetry: telemetry.clone(), slots: SlotAllocator::default(), _return_rx: return_rx };
+        rig.graph.set_telemetry(telemetry);
+        rig.cmd_tx.send(GraphCommand::AddInstrument { range: None, node: lane_node(1) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::AddGroup { node: group_node(0) }).unwrap();
+        for inst in [0, 1] {
+            rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
+            swap_instrument_at(&rig.cmd_tx, inst, ConstInstrument::new(0.1));
+            rig.cmd_tx.send(GraphCommand::InsertEffect { inst, index: 0, effect: scale_effect(), mix: 1.0, node: effect_node(inst, 0) }).unwrap();
+        }
+        rig.cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: scale_effect(), mix: 1.0, node: bus_effect_node(0, 0) }).unwrap();
+        rig
+    }
+
     impl GroupRig {
         fn new() -> GroupRig {
-            let (graph, cmd_tx, return_rx) = make_graph(2);
-            let telemetry = Arc::new(Telemetry::new());
-            let mut rig = Rig { graph, cmd_tx, telemetry: telemetry.clone(), slots: SlotAllocator::default(), _return_rx: return_rx };
-            rig.graph.set_telemetry(telemetry);
-            rig.cmd_tx.send(GraphCommand::AddInstrument { range: None, node: lane_node(1) }).unwrap();
-            rig.cmd_tx.send(GraphCommand::AddGroup { node: group_node(0) }).unwrap();
-            for inst in [0, 1] {
-                rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: Some(0) }).unwrap();
-                swap_instrument_at(&rig.cmd_tx, inst, ConstInstrument::new(0.1));
-                rig.cmd_tx
-                    .send(GraphCommand::InsertEffect { inst, index: 0, effect: scale_effect(), mix: 1.0, node: effect_node(inst, 0) })
-                    .unwrap();
-            }
-            rig.cmd_tx
-                .send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: scale_effect(), mix: 1.0, node: bus_effect_node(0, 0) })
-                .unwrap();
+            let mut rig = two_lanes_in_a_group();
             let output = rig.slot();
             rig.cmd_tx
                 .send(GraphCommand::InsertModulator { location: ModulatorLocation::Group(0), index: 0, source: lfo(LfoWaveform::Square, 0.0), node: modulator_node(ModulatorLocation::Group(0), 0) })
@@ -12001,6 +12093,265 @@ mod tests {
         assert_eq!(g.rig.read(slot), 0.0);
     }
 
+    /// The session of `GroupRig` with no modulator in the group and a free one: an LFO (a square at phase 0: always +1) with a cable on lane 0's, lane 1's and the bus effect's `gain`,
+    /// each publishing its effective value, and its own output published. What the audio is with every `gain` at 1 is 0.2 for a held note (two lanes of 0.1).
+    struct FreeRig {
+        rig: Rig,
+        output: Slot,
+        lane0: Slot,
+        lane1: Slot,
+        bus: Slot,
+    }
+
+    impl FreeRig {
+        fn new() -> FreeRig {
+            let mut rig = two_lanes_in_a_group();
+            let output = rig.slot();
+            rig.cmd_tx
+                .send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 0, source: lfo(LfoWaveform::Square, 0.0), node: modulator_node(ModulatorLocation::Free, 0) })
+                .unwrap();
+            rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Free, index: 0, slot: output }).unwrap();
+            let mut free = FreeRig { rig, output, lane0: output, lane1: output, bus: output };
+            free.lane0 = free.target(0, param(0, 1, 0), 0.2);
+            free.lane1 = free.target(0, param(1, 1, 0), 0.3);
+            free.bus = free.target(0, bus_param(0, 0, 0), 0.4);
+            free
+        }
+
+        /// A cable of free modulator `mod_index`, base 0.5, publishing; its slot.
+        fn target(&mut self, mod_index: usize, aim: Driven, depth: f32) -> Slot {
+            let slot = self.rig.slot();
+            let target = ModTarget { edge: test_edge(), aim, depth, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: Some(slot) };
+            self.rig.cmd_tx.send(GraphCommand::AddModTarget { location: ModulatorLocation::Free, mod_index, target }).unwrap();
+            slot
+        }
+
+        /// A free modulator at `index`, a square LFO that is always +1.
+        fn another(&mut self, index: usize) {
+            self.rig
+                .cmd_tx
+                .send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index, source: lfo(LfoWaveform::Square, 0.0), node: modulator_node(ModulatorLocation::Free, index) })
+                .unwrap();
+        }
+
+        /// What the two lanes through the bus put out of one block with a note held, the left side's last sample: ((0.1 · gain 0) + (0.1 · gain 1)) · the bus's gain.
+        fn heard(&mut self) -> f32 {
+            let mut out = make_output();
+            self.rig.graph.process(&[note_on(60)], &mut out).unwrap();
+            out[0][FRAMES - 1]
+        }
+    }
+
+    #[test]
+    fn a_free_modulator_publishes_its_output() {
+        let mut free = FreeRig::new();
+        free.rig.process(&[]);
+        assert_eq!(free.rig.read(free.output), 1.0);
+    }
+
+    #[test]
+    fn free_targets_publish_the_value_the_parameter_they_drive_was_set_to_in_any_lane_or_on_any_bus() {
+        let mut free = FreeRig::new();
+        free.rig.process(&[]);
+        // Base 0.5 plus the LFO's +1 times the depth: a lane's two plugins and a bus effect, which a lane's or a group's modulator reaches only in its own part of the session.
+        assert!(close(free.rig.read(free.lane0), 0.7), "{}", free.rig.read(free.lane0));
+        assert!(close(free.rig.read(free.lane1), 0.8), "{}", free.rig.read(free.lane1));
+        assert!(close(free.rig.read(free.bus), 0.9), "{}", free.rig.read(free.bus));
+    }
+
+    #[test]
+    fn a_free_modulator_sets_the_parameters_it_drives_in_the_plugins_wherever_they_are() {
+        let mut free = FreeRig::new();
+        // Lane 0 at 0.7 and lane 1 at 0.8 of 0.1 each, through the bus at 0.9.
+        let heard = free.heard();
+        assert!(close(heard, (0.1 * 0.7 + 0.1 * 0.8) * 0.9), "{heard}");
+    }
+
+    #[test]
+    fn a_free_target_on_a_plugin_that_is_nowhere_publishes_nothing_and_the_others_are_unaffected() {
+        let mut free = FreeRig::new();
+        let ghost = free.target(0, Driven::Param { plugin: lane_node(9), index: 0 }, 0.3);
+        // (A lane's node is the instrument's: a lane that is there has an instrument of its own, so the ghost is a node that is not a plugin of any lane or bus.)
+        let modulator_not_a_plugin = free.target(0, Driven::Param { plugin: modulator_node(ModulatorLocation::Free, 0), index: 0 }, 0.3);
+        free.rig.process(&[]);
+        assert_eq!(free.rig.read(ghost), 0.0);
+        assert_eq!(free.rig.read(modulator_not_a_plugin), 0.0);
+        assert!(close(free.rig.read(free.lane0), 0.7), "the others are unaffected");
+    }
+
+    #[test]
+    fn two_free_modulators_on_one_parameter_add_up() {
+        let mut free = FreeRig::new();
+        free.another(1);
+        // The second is a square that is always +1 as well, with a depth of 0.1 on lane 0's gain: 0.5 + 0.2 + 0.1 for both, and the cables share what it ended as.
+        let second = free.target(1, param(0, 1, 0), 0.1);
+        free.rig.process(&[]);
+        assert!(close(free.rig.read(free.lane0), 0.8), "{}", free.rig.read(free.lane0));
+        assert_eq!(free.rig.read(free.lane0), free.rig.read(second));
+        assert!(close(free.rig.read(free.lane1), 0.8), "the other lane is not touched");
+    }
+
+    #[test]
+    fn a_group_modulator_on_a_parameter_that_a_free_one_drives_writes_it_after_and_wins() {
+        let mut g = GroupRig::new();
+        // A free modulator drives member 0's gain by 0.5 (and so wants 1.0); the group's LFO drives it by 0.2 from the value the user set: 0.7. The group's write is the later one.
+        g.rig.cmd_tx
+            .send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 0, source: lfo(LfoWaveform::Square, 0.0), node: modulator_node(ModulatorLocation::Free, 0) })
+            .unwrap();
+        let target = ModTarget { edge: test_edge(), aim: param(0, 1, 0), depth: 0.5, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: None };
+        g.rig.cmd_tx.send(GraphCommand::AddModTarget { location: ModulatorLocation::Free, mod_index: 0, target }).unwrap();
+        let mut out = make_output();
+        g.rig.graph.process(&[note_on(60)], &mut out).unwrap();
+        // Lane 0 at 0.7 (the group's), lane 1 at 0.8 (the group's, which the free one does not drive), the bus at 0.9: 1.0 for lane 0 would be 0.162.
+        assert!(close(out[0][FRAMES - 1], (0.1 * 0.7 + 0.1 * 0.8) * 0.9), "{}", out[0][FRAMES - 1]);
+    }
+
+    #[test]
+    fn a_lane_modulator_on_a_parameter_that_a_free_one_drives_writes_it_after_and_wins() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Square, 0.0)); // always +1
+        rig.gain_target(0, 0.1); // the lane's: 0.5 + 0.1
+        rig.cmd_tx
+            .send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 0, source: lfo(LfoWaveform::Square, 0.0), node: modulator_node(ModulatorLocation::Free, 0) })
+            .unwrap();
+        let target = ModTarget { edge: test_edge(), aim: param(0, 1, 0), depth: 0.4, base_value: 0.5, param_min: 0.0, param_max: 1.0, effective: None };
+        rig.cmd_tx.send(GraphCommand::AddModTarget { location: ModulatorLocation::Free, mod_index: 0, target }).unwrap();
+        let mut out = make_output();
+        rig.graph.process(&[note_on(60)], &mut out).unwrap();
+        // The instrument puts out 0.5 and the effect scales it by the parameter: 0.6 is the lane's, 0.9 would be the free one's and 1.0 the two added.
+        assert!(close(out[0][0], 0.5 * 0.6), "{}", out[0][0]);
+    }
+
+    #[test]
+    fn a_free_modulator_hears_every_note_whatever_the_range_and_the_sources_of_the_lanes_are() {
+        let mut rig = Rig::new();
+        let lane = rig.lane_modulator(0, adsr(0.01));
+        let free = rig.slot();
+        rig.cmd_tx
+            .send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 0, source: adsr(0.01), node: modulator_node(ModulatorLocation::Free, 0) })
+            .unwrap();
+        rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Free, index: 0, slot: free }).unwrap();
+        // The lane takes the notes up to 10 and hears the first device only; the note is 60, from the second.
+        rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((0, 10)) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[DEVICE_A]) }).unwrap();
+        process_from(&mut rig.graph, &[(DEVICE_B, [0x90, 60, 100])]);
+        assert_eq!(rig.read(lane), 0.0, "the lane's envelope does not open: the note is not the lane's");
+        let one_step = FRAMES as f32 / 48000.0 / 0.01;
+        assert!(close(rig.read(free), one_step), "the free one does: {}", rig.read(free));
+        // And the end of that note, from the same device, closes it.
+        process_from(&mut rig.graph, &[(DEVICE_B, [0x80, 60, 0])]);
+        assert!(rig.read(free) < 2.0 * one_step, "released: {}", rig.read(free));
+    }
+
+    #[test]
+    fn a_free_modulators_cable_to_another_free_ones_setting_publishes_the_setting_it_was_set_to() {
+        let mut free = FreeRig::new();
+        free.rig
+            .cmd_tx
+            .send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 1, source: lfo(LfoWaveform::Sine, 1.0), node: modulator_node(ModulatorLocation::Free, 1) })
+            .unwrap();
+        let slot = free.rig.slot();
+        let target = ModTarget { edge: test_edge(), aim: setting(ModulatorLocation::Free, 1, ModSetting::Rate), depth: 0.3, base_value: 1.0, param_min: 0.01, param_max: 50.0, effective: Some(slot) };
+        free.rig.cmd_tx.send(GraphCommand::AddModTarget { location: ModulatorLocation::Free, mod_index: 0, target }).unwrap();
+        free.rig.process(&[]);
+        // The first free LFO is a square at +1: the rate is turned on a log scale, and 0.3 of the knob's travel is a long way up it.
+        let expected = value_on_decades(place_on_decades(1.0, 0.01, 50.0) + 0.3, 0.01, 50.0);
+        assert!(near(free.rig.read(slot), expected), "{} for {expected}", free.rig.read(slot));
+    }
+
+    #[test]
+    fn a_free_modulators_cable_to_a_setting_of_a_lane_modulator_or_a_group_modulator_publishes_nothing() {
+        let mut free = FreeRig::new();
+        free.rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Lane(0), index: 0, source: lfo(LfoWaveform::Sine, 2.0), node: modulator_node(ModulatorLocation::Lane(0), 0) }).unwrap();
+        free.rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Group(0), index: 0, source: lfo(LfoWaveform::Sine, 2.0), node: modulator_node(ModulatorLocation::Group(0), 0) }).unwrap();
+        for at in [ModulatorLocation::Lane(0), ModulatorLocation::Group(0)] {
+            let slot = free.rig.slot();
+            let target = ModTarget { edge: test_edge(), aim: setting(at, 0, ModSetting::Rate), depth: 0.3, base_value: 2.0, param_min: 0.01, param_max: 50.0, effective: Some(slot) };
+            free.rig.cmd_tx.send(GraphCommand::AddModTarget { location: ModulatorLocation::Free, mod_index: 0, target }).unwrap();
+            free.rig.process(&[]);
+            assert_eq!(free.rig.read(slot), 0.0, "{at:?}: a free modulator's reach is the plugins and the free modulators");
+        }
+        // (And what the others drive is unaffected.)
+        assert!(close(free.rig.read(free.lane0), 0.7));
+    }
+
+    #[test]
+    fn a_free_modulator_that_learns_a_control_tells_the_main_thread_the_session_is_where_it_is() {
+        let mut rig = Rig::new();
+        let (learn_tx, learn_rx) = crossbeam_channel::bounded(8);
+        rig.graph.set_learn_tx(learn_tx);
+        for index in 0..2 {
+            rig.cmd_tx
+                .send(GraphCommand::InsertModulator {
+                    location: ModulatorLocation::Free,
+                    index,
+                    source: ModSource::MidiLearn { source: None, value: 0.0, learning: true },
+                    node: modulator_node(ModulatorLocation::Free, index),
+                })
+                .unwrap();
+        }
+        // (A control from a device that no lane hears: a free modulator hears every source.)
+        process_from(&mut rig.graph, &[(DEVICE_B, [0xB0, 74, 127])]);
+        let told: Vec<_> = learn_rx.try_iter().map(|n| (n.location, n.mod_index)).collect();
+        assert_eq!(told, [(ModulatorLocation::Free, 0), (ModulatorLocation::Free, 1)]);
+    }
+
+    #[test]
+    fn what_the_user_sets_a_parameter_to_is_what_a_free_cable_is_centred_on() {
+        let mut free = FreeRig::new();
+        free.rig.process(&[]);
+        assert!(close(free.rig.read(free.lane0), 0.7));
+        // The user sets lane 0's gain to 0.2: the free LFO's +0.2 is added to that, as a lane's cable's is to the value that its user set.
+        free.rig.cmd_tx.send(GraphCommand::SetParameter { inst: 0, slot: 1, param_index: 0, value: 0.2 }).unwrap();
+        free.rig.process(&[]);
+        assert!(close(free.rig.read(free.lane0), 0.4), "{}", free.rig.read(free.lane0));
+        // And a bus effect's, by its group.
+        free.rig.cmd_tx.send(GraphCommand::SetGroupParameter { group: 0, index: 0, param_index: 0, value: 0.1 }).unwrap();
+        free.rig.process(&[]);
+        assert!(close(free.rig.read(free.bus), 0.5), "{}", free.rig.read(free.bus));
+    }
+
+    #[test]
+    fn the_commands_of_a_rack_reach_the_free_modulators_too() {
+        let mut free = FreeRig::new();
+        free.another(1);
+        let at = ModulatorLocation::Free;
+        let second = free.target(1, param(1, 1, 0), 0.1);
+        free.rig.process(&[]);
+        assert!(close(free.rig.read(second), 0.9), "0.5, the first LFO's 0.3 and the second's 0.1, both on lane 1's gain: {}", free.rig.read(second));
+        // The depth of a cable, the cable out, and the modulator out, by the rack's place.
+        free.rig.cmd_tx.send(GraphCommand::SetModTargetDepth { location: at, mod_index: 1, target_index: 0, depth: 0.0 }).unwrap();
+        free.rig.process(&[]);
+        assert!(close(free.rig.read(second), 0.8), "{}", free.rig.read(second));
+        free.rig.cmd_tx.send(GraphCommand::RemoveModTarget { location: at, mod_index: 1, target_index: 0 }).unwrap();
+        free.rig.process(&[]);
+        assert_eq!(free.rig.graph.free_modulators[1].targets.len(), 0);
+        assert!(close(free.rig.read(free.lane1), 0.8), "the first one's cable is on its own again: {}", free.rig.read(free.lane1));
+        free.rig.cmd_tx.send(GraphCommand::RemoveModulator { location: at, index: 1 }).unwrap();
+        free.rig.process(&[]);
+        assert_eq!(free.rig.graph.free_modulators.len(), 1);
+        // A place that is not there changes nothing.
+        free.rig.cmd_tx.send(GraphCommand::RemoveModulator { location: at, index: 7 }).unwrap();
+        free.rig.cmd_tx.send(GraphCommand::SetModulatorRate { location: at, mod_index: 7, rate: 3.0 }).unwrap();
+        free.rig.process(&[]);
+        assert_eq!(free.rig.graph.free_modulators.len(), 1);
+    }
+
+    #[test]
+    fn a_free_modulators_cables_and_places_are_in_the_facts_the_oracle_holds_the_model_to() {
+        let mut free = FreeRig::new();
+        free.rig.process(&[]);
+        let racks = free.rig.graph.cables();
+        let free_racks: Vec<_> = racks.iter().filter(|(location, ..)| *location == ModulatorLocation::Free).collect();
+        assert_eq!(free_racks.len(), 1, "one modulator: {racks:?}");
+        assert_eq!(free_racks[0].3.len(), 3, "with three cables: {racks:?}");
+        let bases = free.rig.graph.cable_bases();
+        assert_eq!(bases.iter().filter(|(location, ..)| *location == ModulatorLocation::Free).count(), 3);
+        assert!(bases.iter().any(|&(location, _, _, aim, base)| location == ModulatorLocation::Free && aim == bus_param(0, 0, 0) && base == 0.5), "{bases:?}");
+        let node = format!("{:?} ", modulator_node(ModulatorLocation::Free, 0));
+        assert!(free.rig.graph.modulator_dump().iter().any(|line| line.starts_with(&node)), "the dump has it");
+    }
+
     #[test]
     fn publishing_modulator_telemetry_does_not_allocate() {
         let mut rig = Rig::new();
@@ -12037,6 +12388,24 @@ mod tests {
         g.rig.graph.drain_commands();
         let allocations = allocations_while_processing(&mut g.rig.graph, &[note_on(60)], 16);
         assert_eq!(allocations, 0, "a group: the audio thread asked the allocator for memory");
+
+        let mut free = FreeRig::new();
+        // (Free modulators: an envelope and a step sequencer that hear the notes, a cable of one to the rate of another, one to a plugin of a lane and one to a bus effect, a control that learns.)
+        free.rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 1, source: adsr(0.01), node: modulator_node(ModulatorLocation::Free, 1) }).unwrap();
+        free.rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 2, source: steps(&[0.1, -0.3, 0.9], 3, 40.0, 0.5, true), node: modulator_node(ModulatorLocation::Free, 2) }).unwrap();
+        let position = free.rig.slot();
+        free.rig.cmd_tx.send(GraphCommand::SetModulatorPosition { location: ModulatorLocation::Free, index: 2, slot: position }).unwrap();
+        free.rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 3, source: ModSource::MidiLearn { source: None, value: 0.0, learning: true }, node: modulator_node(ModulatorLocation::Free, 3) }).unwrap();
+        let (learn_tx, _learn_rx) = crossbeam_channel::bounded(8);
+        free.rig.graph.set_learn_tx(learn_tx);
+        free.target(1, param(0, 1, 0), 0.2);
+        free.target(2, bus_param(0, 0, 0), 0.2);
+        let slot = free.rig.slot();
+        let rate = ModTarget { edge: test_edge(), aim: setting(ModulatorLocation::Free, 2, ModSetting::Rate), depth: 0.2, base_value: 40.0, param_min: 0.01, param_max: 50.0, effective: Some(slot) };
+        free.rig.cmd_tx.send(GraphCommand::AddModTarget { location: ModulatorLocation::Free, mod_index: 0, target: rate }).unwrap();
+        free.rig.graph.drain_commands();
+        let allocations = allocations_while_processing(&mut free.rig.graph, &[note_on(60)], 16);
+        assert_eq!(allocations, 0, "free modulators: the audio thread asked the allocator for memory");
     }
 
     /// An effect with two parameters, `a` (0) and `b` (1), that passes its input
@@ -12407,22 +12776,17 @@ mod tests {
             let rack = match at {
                 ModulatorLocation::Lane(lane) => &graph.instruments[lane].modulators,
                 ModulatorLocation::Group(group) => &graph.groups[group].modulators,
+                ModulatorLocation::Free => &graph.free_modulators,
             };
             rack.iter().enumerate().flat_map(|(m, modulator)| modulator.targets.iter().cloned().enumerate().map(move |(t, target)| (m, t, target))).collect()
         };
         for (at, cables) in [(lane, cables_of(&g.rig.graph, lane)), (group, cables_of(&g.rig.graph, group))] {
             assert!(cables.len() >= 3, "{at:?}");
             for (modulator, target_index, target) in cables {
-                match at {
-                    ModulatorLocation::Lane(inst) => g.rig.cmd_tx.send(GraphCommand::RemoveModTarget { location: ModulatorLocation::Lane(inst), mod_index: modulator, target_index }).unwrap(),
-                    ModulatorLocation::Group(group) => g.rig.cmd_tx.send(GraphCommand::RemoveModTarget { location: ModulatorLocation::Group(group), mod_index: modulator, target_index }).unwrap(),
-                }
+                g.rig.cmd_tx.send(GraphCommand::RemoveModTarget { location: at, mod_index: modulator, target_index }).unwrap();
                 g.rig.graph.drain_commands();
                 assert_ne!(all_modulators(&g.rig.graph), before, "{at:?} {modulator} {target_index} taken out");
-                match at {
-                    ModulatorLocation::Lane(inst) => g.rig.cmd_tx.send(GraphCommand::InsertModTarget { location: ModulatorLocation::Lane(inst), mod_index: modulator, target_index, target }).unwrap(),
-                    ModulatorLocation::Group(group) => g.rig.cmd_tx.send(GraphCommand::InsertModTarget { location: ModulatorLocation::Group(group), mod_index: modulator, target_index, target }).unwrap(),
-                }
+                g.rig.cmd_tx.send(GraphCommand::InsertModTarget { location: at, mod_index: modulator, target_index, target }).unwrap();
                 g.rig.graph.drain_commands();
                 assert_eq!(all_modulators(&g.rig.graph), before, "{at:?} {modulator} {target_index} put back");
             }

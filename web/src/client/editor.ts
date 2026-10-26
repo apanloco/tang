@@ -42,6 +42,7 @@ const DOING: Record<Intent["type"], string> = {
   setEdgeDepth: "change the depth of a cable",
   removeEdge: "take out a cable",
   addModulator: "add a modulator",
+  addFreeModulator: "add a modulator of its own",
   addModEdge: "draw a cable",
   modulate: "modulate a parameter",
   addCable: "draw an audio cable",

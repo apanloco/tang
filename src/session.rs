@@ -171,6 +171,9 @@ pub struct SessionConfig {
     pub keys: Option<KeysConfig>,
     /// The MIDI devices that the session has a node for (`[[device]]`), in the order of the file, which is how a cable names them (`device[0]`).
     pub devices: Vec<DeviceConfig>,
+    /// The modulators that belong to no lane and no group (the top-level `[[modulator]]`), in the order of the file, which is how the cables of one of them name another (`mod_rate = 1`).
+    /// Each hears every note, and its cables name the plugin they drive by its place in the session (`to = "instrument[0].effect[1]"`).
+    pub free_modulators: Vec<ModulatorConfig>,
 }
 
 /// The keys as a source of notes: the computer's keys, the page's piano and keys and every browser's (`[keys]`).
@@ -429,6 +432,10 @@ pub struct ModTargetConfig {
     /// Plugin parameter name (mutually exclusive with mod_* fields).
     #[serde(default)]
     pub param: Option<String>,
+    /// (Free modulators) The plugin a `param` target drives, as the file names a place of the session: `instrument[0]` (the lane's instrument), `instrument[0].effect[1]` or
+    /// `group[0].effect[1]`. A free modulator is in no lane, so its cable names the plugin and not a chain slot, a member or a bus.
+    #[serde(default)]
+    pub to: Option<String>,
     /// Chain slot a `param` target lives on: 0 = instrument (default),
     /// 1..N = effects in order.
     #[serde(default)]
@@ -529,6 +536,8 @@ struct SessionRaw {
     instruments: Vec<InstrumentSlotRaw>,
     #[serde(default, rename = "group")]
     groups: Vec<GroupRaw>,
+    #[serde(default, rename = "modulator")]
+    modulators: Vec<ModulatorConfig>,
     #[serde(default, rename = "cable")]
     cables: Vec<CableRaw>,
     #[serde(default)]
@@ -735,7 +744,7 @@ impl ModulatorConfig {
     }
 }
 
-/// Refuse an LFO or a step sequencer whose rate is below 0, in a lane, in a group and in an effect of a lane (where older sessions kept a lane's modulators): the phase
+/// Refuse an LFO or a step sequencer whose rate is below 0, in a lane, in a group, among the free modulators and in an effect of a lane (where older sessions kept a lane's modulators): the phase
 /// of an LFO counts down from 0 towards -1 and the shapes leave the -1 to 1 that a cable's law assumes (a saw is from -3 to -1), where the knob
 /// stops at 0.01 and the controller holds to it, and a step sequencer would play its steps backwards. Zero is one that stands still, and a rate above the knob's end
 /// (50 Hz) is the file's to say. The error says where it is, as that of a number that is not one does.
@@ -745,7 +754,7 @@ fn reject_backwards_lfos(raw: &SessionRaw) -> anyhow::Result<()> {
         match backwards {
             Some((i, rate, lfo)) => {
                 let what = if lfo { "an LFO" } else { "a step sequencer" };
-                anyhow::bail!("{place}.modulator[{i}].rate is below 0 ({rate}): {what} cannot go round backwards")
+                anyhow::bail!("{}.rate is below 0 ({rate}): {what} cannot go round backwards", modulator_place(place, i))
             }
             None => Ok(()),
         }
@@ -759,8 +768,8 @@ fn reject_bad_steps(raw: &SessionRaw) -> anyhow::Result<()> {
     fn check(modulators: &[ModulatorConfig], place: &str) -> anyhow::Result<()> {
         for (i, m) in modulators.iter().enumerate().filter(|(_, m)| m.mod_type == "steps") {
             match m.steps.as_ref().map(Vec::len) {
-                Some(0) => anyhow::bail!("{place}.modulator[{i}].steps has no values: a step sequencer has 1 to {MAX_STEPS} steps"),
-                Some(n) if n > MAX_STEPS => anyhow::bail!("{place}.modulator[{i}].steps has {n} values: a step sequencer has {MAX_STEPS} steps at most"),
+                Some(0) => anyhow::bail!("{}.steps has no values: a step sequencer has 1 to {MAX_STEPS} steps", modulator_place(place, i)),
+                Some(n) if n > MAX_STEPS => anyhow::bail!("{}.steps has {n} values: a step sequencer has {MAX_STEPS} steps at most", modulator_place(place, i)),
                 _ => {}
             }
         }
@@ -769,9 +778,15 @@ fn reject_bad_steps(raw: &SessionRaw) -> anyhow::Result<()> {
     each_rack(raw, check)
 }
 
-/// Run `check` on every rack of modulators that a session file can have, with the place of the rack in the file: a group's, a lane's and an effect's of a lane
-/// (where older sessions kept a lane's modulators).
+/// Where modulator `index` of the rack at `place` is in the file: `group[0].modulator[1]`, and `modulator[1]` for the free modulators, whose rack is the file's own (`place` is empty).
+fn modulator_place(place: &str, index: usize) -> String {
+    if place.is_empty() { format!("modulator[{index}]") } else { format!("{place}.modulator[{index}]") }
+}
+
+/// Run `check` on every rack of modulators that a session file can have, with the place of the rack in the file: the free modulators' (an empty place), a group's, a lane's and an
+/// effect's of a lane (where older sessions kept a lane's modulators).
 fn each_rack(raw: &SessionRaw, check: fn(&[ModulatorConfig], &str) -> anyhow::Result<()>) -> anyhow::Result<()> {
+    check(&raw.modulators, "")?;
     for (g, group) in raw.groups.iter().enumerate() {
         check(&group.modulators, &format!("group[{g}]"))?;
     }
@@ -892,7 +907,7 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     let keys = raw.keys.map(|keys| KeysConfig { ui: keys.ui });
-    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), cables, keys, devices })
+    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), cables, keys, devices, free_modulators: raw.modulators })
 }
 
 /// Parse a note range like "C0-B3" into (low, high) MIDI note numbers
@@ -1133,11 +1148,14 @@ pub struct SaveCable {
     pub gain: f32,
 }
 
-/// The sources of notes that a session has a node for, as a save writes them: the keys, if it has them, and its devices in the order that a cable names them in.
+/// The nodes that stand outside the lanes and the groups, as a save writes them: the sources of notes (the keys, if it has them, and its devices in the order that a cable names them in)
+/// and the modulators that belong to no lane and no group.
 #[derive(Default)]
 pub struct SaveSources {
     pub keys: Option<SaveKeys>,
     pub devices: Vec<SaveDevice>,
+    /// The free modulators, in order: each cable names the plugin it drives by its place (`SaveModTarget::to`).
+    pub modulators: Vec<SaveModulator>,
 }
 
 /// The keys as a source (`[keys]`).
@@ -1195,6 +1213,8 @@ pub struct SaveModTarget {
     pub depth: f32,
     /// Chain slot the target lives on (0 = instrument, 1..N = effect).
     pub slot: usize,
+    /// (Free modulators) The place of the plugin the target drives, which is how the file names it.
+    pub to: Option<CablePlace>,
 }
 
 /// Data needed to serialize an instrument plugin for saving.
@@ -1237,6 +1257,9 @@ struct SessionOut {
     instruments: Vec<InstrumentSlotOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "group")]
     groups: Vec<GroupOut>,
+    /// The modulators that belong to no lane and no group come after the lanes and the groups that their cables drive.
+    #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
+    modulators: Vec<ModulatorOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "cable")]
     cables: Vec<CableOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1486,6 +1509,9 @@ fn is_lfo_type(s: &String) -> bool {
 struct ModTargetOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     param: Option<String>,
+    /// (Free modulators) The place of the plugin a `param` target drives.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
     /// Chain slot for a plugin-param target (omitted when 0 = instrument).
     #[serde(skip_serializing_if = "Option::is_none")]
     slot: Option<usize>,
@@ -1532,6 +1558,7 @@ fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
     use crate::plugin::chain::ModTargetKind;
     let mut out = ModTargetOut {
         param: None,
+        to: None,
         slot: None,
         member: None,
         bus: None,
@@ -1562,6 +1589,10 @@ fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
         ModTargetKind::GroupBus { effect_index, .. } => {
             out.param = Some(t.label.clone());
             out.bus = Some(*effect_index);
+        }
+        ModTargetKind::FreeParam { .. } => {
+            out.param = Some(t.label.clone());
+            out.to = t.to.map(|place| place.to_string());
         }
         ModTargetKind::GroupMemberMod { member, mod_index, field } => {
             use crate::plugin::chain::CrossModField;
@@ -1724,6 +1755,7 @@ pub fn to_toml(
         cables: cables.iter().map(|cable| CableOut { from: cable.from.to_string(), to: cable.to.to_string(), gain: cable.gain }).collect(),
         piano: piano.map(|p| PianoOut { scale: p.scale.clone(), locked: p.locked }),
         ui: master_ui.map(|ui| UiOut { master: ui.into() }),
+        modulators: mods_to_out(&sources.modulators),
         groups: groups
             .iter()
             .map(|g| GroupOut {
@@ -2204,6 +2236,9 @@ mod tests {
             (format!("{osc}[[instrument.modulator]]\ntype = \"wobble\"\nrate = -2.0\n"), "instrument[0].modulator[0].rate", "-2"),
             (format!("[[group]]\n[[group.modulator]]\nrate = -2.5\n{osc}"), "group[0].modulator[0].rate", "-2.5"),
             (format!("[[group]]\n[[group]]\n[[group.modulator]]\n[[group.modulator]]\nrate = -4.0\n{osc}"), "group[1].modulator[1].rate", "-4"),
+            // The free modulators, which are the file's own (no lane and no group in their place).
+            (format!("[[modulator]]\nrate = -1.5\n{osc}"), "modulator[0].rate", "-1.5"),
+            (format!("[[modulator]]\n[[modulator]]\nwaveform = \"square\"\nrate = -2.0\n{osc}"), "modulator[1].rate", "-2"),
             // Older sessions nested the modulators of an effect in it, and the loader moves them into the lane.
             (format!("{osc}{reverb}[[instrument.effect.modulator]]\nrate = -3.0\n"), "instrument[0].effect[0].modulator[0].rate", "-3"),
             (format!("{osc}{reverb}{reverb}[[instrument.effect.modulator]]\n[[instrument.effect.modulator]]\nrate = -3.5\n"), "instrument[0].effect[1].modulator[1].rate", "-3.5"),
@@ -2214,12 +2249,30 @@ mod tests {
     }
 
     #[test]
+    fn the_free_modulators_of_a_file_are_read_with_the_places_their_cables_name_and_a_session_with_none_has_none() {
+        let config = parse(
+            "[[modulator]]\ntype = \"envelope\"\n[[modulator.target]]\nto = \"instrument[0].effect[1]\"\nparam = \"cutoff\"\ndepth = 0.25\n[[modulator.target]]\nmod_attack = 1\n[[modulator]]\nrate = 2.0\nui = { x = 3, y = 4 }\n[[instrument]]\nplugin = \"builtin:osc\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.free_modulators.len(), 2);
+        assert_eq!(config.free_modulators[0].mod_type, "envelope");
+        assert_eq!(config.free_modulators[0].targets[0].to.as_deref(), Some("instrument[0].effect[1]"));
+        assert_eq!(config.free_modulators[0].targets[0].param.as_deref(), Some("cutoff"));
+        assert_eq!(config.free_modulators[0].targets[1].mod_attack, Some(1));
+        assert_eq!(config.free_modulators[1].rate, Some(2.0));
+        assert_eq!(config.free_modulators[1].ui, Some(NodeUi { x: 3.0, y: 4.0 }));
+        assert!(config.instruments[0].modulators.is_empty(), "the lane has none of them");
+        assert!(parse("[[instrument]]\nplugin = \"builtin:osc\"\n").unwrap().free_modulators.is_empty());
+    }
+
+    #[test]
     fn a_step_sequencer_with_a_rate_below_zero_is_refused_wherever_it_is_and_the_error_says_where() {
         let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
         for (text, place, rate) in [
             (format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\nrate = -1.0\n"), "instrument[0].modulator[0].rate", "-1"),
             (format!("{osc}[[instrument.modulator]]\n[[instrument.modulator]]\ntype = \"steps\"\nrate = -0.25\n"), "instrument[0].modulator[1].rate", "-0.25"),
             (format!("[[group]]\n[[group.modulator]]\ntype = \"steps\"\nrate = -2.5\n{osc}"), "group[0].modulator[0].rate", "-2.5"),
+            (format!("[[modulator]]\ntype = \"steps\"\nrate = -3.0\n{osc}"), "modulator[0].rate", "-3"),
         ] {
             let error = parse(&text).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
             assert_eq!(error, format!("{place} is below 0 ({rate}): a step sequencer cannot go round backwards"), "for:\n{text}");
@@ -2234,6 +2287,8 @@ mod tests {
             (format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\nsteps = []\n"), "instrument[0].modulator[0].steps", "has no values: a step sequencer has 1 to 16 steps"),
             (format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\nsteps = [{seventeen}]\n"), "instrument[0].modulator[0].steps", "has 17 values: a step sequencer has 16 steps at most"),
             (format!("[[group]]\n[[group.modulator]]\ntype = \"steps\"\nsteps = []\n{osc}"), "group[0].modulator[0].steps", "has no values: a step sequencer has 1 to 16 steps"),
+            (format!("[[modulator]]\ntype = \"steps\"\nsteps = []\n{osc}"), "modulator[0].steps", "has no values: a step sequencer has 1 to 16 steps"),
+            (format!("[[modulator]]\n[[modulator]]\ntype = \"steps\"\nsteps = [{seventeen}]\n{osc}"), "modulator[1].steps", "has 17 values: a step sequencer has 16 steps at most"),
         ] {
             let error = parse(&text).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
             assert_eq!(error, format!("{place} {what}"), "for:\n{text}");
@@ -2745,7 +2800,7 @@ range = "C4-C8"
                     kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
                     label: "cutoff".into(),
                     depth: 0.75,
-                    slot: 0,
+                    slot: 0, to: None,
                 }],
                 ui: None,
             }],
@@ -2799,7 +2854,7 @@ range = "C4-C8"
                     kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
                     label: "cutoff".into(),
                     depth: 1.0,
-                    slot: 0,
+                    slot: 0, to: None,
                 }],
                 ui: None,
             }],
@@ -2853,7 +2908,7 @@ range = "C4-C8"
                     kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
                     label: "cutoff".into(),
                     depth: 1.0,
-                    slot: 0,
+                    slot: 0, to: None,
                 }],
                 ui: None,
             }],
@@ -2947,7 +3002,7 @@ range = "C4-C8"
                     kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 1, param_index: 0 },
                     label: "cutoff".into(),
                     depth: 0.5,
-                    slot: 1,
+                    slot: 1, to: None,
                 }],
                 ui: None,
             }],
@@ -3102,13 +3157,13 @@ range = "C4-C8"
                         kind: ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 0 },
                         label: "cutoff".into(),
                         depth: 0.5,
-                        slot: 0,
+                        slot: 0, to: None,
                     },
                     SaveModTarget {
                         kind: ModTargetKind::GroupBus { effect_index: 0, param_index: 0 },
                         label: "cutoff".into(),
                         depth: 0.25,
-                        slot: 0,
+                        slot: 0, to: None,
                     },
                     // Group→member-modulator cross-mod: member 0's modulator 0 rate.
                     SaveModTarget {
@@ -3119,7 +3174,7 @@ range = "C4-C8"
                         },
                         label: "M0 Mod0 rate".into(),
                         depth: 0.3,
-                        slot: 0,
+                        slot: 0, to: None,
                     },
                 ],
                 ui: None,
@@ -3858,7 +3913,7 @@ to = "instrument[1]"
     }
 
     fn sources(keys: Option<Option<NodeUi>>, devices: &[(&str, Option<NodeUi>)]) -> SaveSources {
-        SaveSources { keys: keys.map(|ui| SaveKeys { ui }), devices: devices.iter().map(|(name, ui)| SaveDevice { name: name.to_string(), ui: *ui }).collect() }
+        SaveSources { keys: keys.map(|ui| SaveKeys { ui }), devices: devices.iter().map(|(name, ui)| SaveDevice { name: name.to_string(), ui: *ui }).collect(), modulators: Vec::new() }
     }
 
     #[test]

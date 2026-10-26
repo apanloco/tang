@@ -469,7 +469,7 @@ impl Controller {
             // (As an effect that goes in a chain: the words of the button that adds one. Undo takes the lane that holds it out with it.)
             Intent::AddFreeEffect { plugin } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name}"))),
             Intent::AddInstrument { plugin } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name} as an instrument"))),
-            Intent::AddModulator { kind, .. } => added(format!("add {}", kind.label())),
+            Intent::AddModulator { kind, .. } | Intent::AddFreeModulator { kind } => added(format!("add {}", kind.label())),
             Intent::AddModEdge { .. } => added("draw a cable".to_string()),
             Intent::AddCable { from, to, .. } => {
                 let of_notes = from.port == Port::EventsOut || to.port == Port::EventsIn;
@@ -3236,6 +3236,7 @@ depth = 0.9
             ("CROSS_MOD_RACKS", testutil::CROSS_MOD_RACKS),
             ("LANES_IN_GROUPS", testutil::LANES_IN_GROUPS),
             ("CABLES_THAT_DRIVE_CABLES", testutil::CABLES_THAT_DRIVE_CABLES),
+            ("FREE_MODULATORS", testutil::FREE_MODULATORS),
         ];
         for (name, session) in sessions {
             let (put_back, forgotten) = every_modulator_is_put_back(name, session);
@@ -3781,6 +3782,7 @@ plugin = "builtin:reverb"
             ("GROUPS", testutil::GROUPS),
             ("LANES_IN_GROUPS", testutil::LANES_IN_GROUPS),
             ("CROSS_MOD_RACKS", testutil::CROSS_MOD_RACKS),
+            ("FREE_MODULATORS", testutil::FREE_MODULATORS),
         ];
         let mut total = 0;
         for (name, session) in sessions {
@@ -4576,6 +4578,7 @@ depth = 0.6
             ("LANES_IN_GROUPS", testutil::LANES_IN_GROUPS),
             ("CROSS_MOD_RACKS", testutil::CROSS_MOD_RACKS),
             ("SOURCES", testutil::SOURCES),
+            ("FREE_MODULATORS", testutil::FREE_MODULATORS),
         ];
         let mut total = 0;
         for (name, session) in sessions {
@@ -5167,6 +5170,7 @@ plugin = "builtin:osc"
             ("GROUPS", testutil::GROUPS),
             ("LANES_IN_GROUPS", testutil::LANES_IN_GROUPS),
             ("CROSS_MOD_RACKS", testutil::CROSS_MOD_RACKS),
+            ("FREE_MODULATORS", testutil::FREE_MODULATORS),
         ];
         let mut total = 0;
         for (name, session) in sessions {

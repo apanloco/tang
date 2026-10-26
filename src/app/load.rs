@@ -657,6 +657,14 @@ pub fn load_session(
         groups[g_idx].modulators = mods;
     }
 
+    // The free modulators come last: their cables name plugins of any lane or group by place, so all of them are loaded by now (and a session that has none uses no id for them).
+    let free_modulators = load_free_modulators(
+        &config.free_modulators,
+        &FreeSession { lane_params: &lane_params, lanes: &instruments, bus_params: &bus_params, groups: &groups },
+        cmd_tx,
+        &mut Allocators { ids: &mut ids, slots: &mut slots, ui: &mut ui },
+    )?;
+
     // The tempo of a session is its `bpm`, or that of its first recorded pattern if it has none, held to the tempos there can be.
     // The audio thread is told it once, and only if the session says one (it starts at `DEFAULT_BPM`): each pattern says the
     // tempo that it was recorded at, and the last of them was what the audio thread was left with.
@@ -664,7 +672,7 @@ pub fn load_session(
     if config.bpm.is_some() || instruments.iter().any(|lane| lane.pattern.is_some()) {
         let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGlobalBpm { bpm });
     }
-    let mut model = SessionModel { instruments, groups, ids, slots, ui, bpm, cables: Vec::new(), sources: Vec::new(), event_cables: Vec::new() };
+    let mut model = SessionModel { instruments, groups, ids, slots, ui, bpm, cables: Vec::new(), sources: Vec::new(), event_cables: Vec::new(), free_modulators };
     // The sources of notes, and then the cables: every lane, group, effect and source that one of them is at is there by now.
     load_sources(config, &mut model);
     load_cables(&config.cables, &mut model, cmd_tx)?;
@@ -823,33 +831,34 @@ fn load_lane_modulators(
     }
     let rack = resolve_rack(&plans, alloc.ids);
 
+    make_rack(ModulatorLocation::Lane(inst_idx), &siblings, &nodes, &plans, &rack, cmd_tx, alloc)
+}
+
+/// Make the modulators of the rack at `location` from their configs (`nodes` are their nodes, and `plans` and `rack` say which of their cables are made), and tell the audio thread of each, in
+/// the order of the file: the modulator, the slots it publishes to, and its cables. A lane's rack, a group's and the free modulators' are made the same way.
+fn make_rack(
+    location: ModulatorLocation,
+    configs: &[&session::ModulatorConfig],
+    nodes: &[NodeId],
+    plans: &[Vec<Option<Plan>>],
+    rack: &Rack,
+    cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
+    alloc: &mut Allocators,
+) -> anyhow::Result<Vec<ModulatorSlot>> {
     let mut loaded = Vec::new();
-    let mut lane_index = 0usize;
-    for (mod_configs, _) in &groups {
-        for mod_config in mod_configs.iter() {
-            let mod_idx = lane_index;
-            let (source_slot, desc) = build_mod_source(mod_config);
-
-            cmd_tx
-                .send(plugin::chain::GraphCommand::InsertModulator {
-                    location: ModulatorLocation::Lane(inst_idx),
-                    index: mod_idx,
-                    source: mod_source_slot_to_graph(&source_slot),
-                    node: nodes[mod_idx],
-                })
-                .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-            let (output, position) = ModulatorSlot::alloc_slots(alloc.slots, &source_slot);
-            for command in modulator_slot_commands(ModulatorLocation::Lane(inst_idx), mod_idx, output, position) {
-                send(cmd_tx, command)?;
-            }
-
-            let targets = make_cables(ModulatorLocation::Lane(inst_idx), mod_idx, &mod_config.targets, &plans, &rack, cmd_tx, alloc)?;
-            place(alloc.ui, nodes[mod_idx], mod_config.ui);
-            loaded.push(ModulatorSlot { node: nodes[mod_idx], source: source_slot, targets, output, position });
-
-            log::info!("Loaded lane modulator {mod_idx} for inst={inst_idx}: {desc}");
-            lane_index += 1;
+    for (mod_idx, mod_config) in configs.iter().enumerate() {
+        let (source_slot, desc) = build_mod_source(mod_config);
+        cmd_tx
+            .send(plugin::chain::GraphCommand::InsertModulator { location, index: mod_idx, source: mod_source_slot_to_graph(&source_slot), node: nodes[mod_idx] })
+            .map_err(|_| anyhow::anyhow!("command channel closed"))?;
+        let (output, position) = ModulatorSlot::alloc_slots(alloc.slots, &source_slot);
+        for command in modulator_slot_commands(location, mod_idx, output, position) {
+            send(cmd_tx, command)?;
         }
+        let targets = make_cables(location, mod_idx, &mod_config.targets, plans, rack, cmd_tx, alloc)?;
+        place(alloc.ui, nodes[mod_idx], mod_config.ui);
+        loaded.push(ModulatorSlot { node: nodes[mod_idx], source: source_slot, targets, output, position });
+        log::info!("Loaded modulator {mod_idx} of {location:?}: {desc}");
     }
     Ok(loaded)
 }
@@ -1202,28 +1211,8 @@ fn load_group_modulators(
     let plans: Vec<Vec<Option<Plan>>> =
         group_config.modulators.iter().enumerate().map(|(me, mod_config)| mod_config.targets.iter().map(|config| plan_group_target(config, me, &group)).collect()).collect();
     let rack = resolve_rack(&plans, alloc.ids);
-    let mut loaded = Vec::new();
-    for (mod_idx, mod_config) in group_config.modulators.iter().enumerate() {
-        let (source_slot, desc) = build_mod_source(mod_config);
-        cmd_tx
-            .send(plugin::chain::GraphCommand::InsertModulator {
-                location: ModulatorLocation::Group(g_idx),
-                index: mod_idx,
-                source: mod_source_slot_to_graph(&source_slot),
-                node: nodes[mod_idx],
-            })
-            .map_err(|_| anyhow::anyhow!("command channel closed"))?;
-        let (output, position) = ModulatorSlot::alloc_slots(alloc.slots, &source_slot);
-        for command in modulator_slot_commands(ModulatorLocation::Group(g_idx), mod_idx, output, position) {
-            send(cmd_tx, command)?;
-        }
-
-        let targets = make_cables(ModulatorLocation::Group(g_idx), mod_idx, &mod_config.targets, &plans, &rack, cmd_tx, alloc)?;
-        place(alloc.ui, nodes[mod_idx], mod_config.ui);
-        loaded.push(ModulatorSlot { node: nodes[mod_idx], source: source_slot, targets, output, position });
-        log::info!("Loaded group modulator {mod_idx} for group={g_idx}: {desc}");
-    }
-    Ok(loaded)
+    let configs: Vec<&session::ModulatorConfig> = group_config.modulators.iter().collect();
+    make_rack(ModulatorLocation::Group(g_idx), &configs, &nodes, &plans, &rack, cmd_tx, alloc)
 }
 
 /// What a group has for the cables of its modulators to name: its members' plugins and modulators (what is loaded of them), its bus effects, and its own modulators.
@@ -1331,6 +1320,99 @@ fn plan_group_target(config: &session::ModTargetConfig, me: usize, group: &Group
     // A sibling group modulator's field, or the depth of one of its cables.
     let info = |index: usize, field| sibling_field_info(group.siblings.get(index), field);
     plan_sibling_target(config, me, 0, group.nodes, "Group modulator target has no param/member/bus/mod_* field, skipping", info)
+}
+
+/// The plugins of a session, for the cables of its free modulators to name by their places: each lane's chain (slot 0 the instrument, then its effects) and each group's bus, with the
+/// parameters that the cables resolve names against.
+struct FreeSession<'a> {
+    lane_params: &'a [Vec<Vec<plugin::ParameterInfo>>],
+    lanes: &'a [InstrumentNode],
+    bus_params: &'a [Vec<Vec<plugin::ParameterInfo>>],
+    groups: &'a [GroupNode],
+}
+
+/// The parameters of the plugin at place `slot` of chain `of` (a lane's chain has its instrument at 0; a lane that has none has an empty list there), or none.
+fn params_at(chains: &[Vec<Vec<plugin::ParameterInfo>>], of: usize, slot: usize) -> &[plugin::ParameterInfo] {
+    chains.get(of).and_then(|chain| chain.get(slot)).map_or(&[], Vec::as_slice)
+}
+
+impl FreeSession<'_> {
+    /// The plugin that `place` names, with its node and its parameters: `instrument[0]` is a lane's instrument, `instrument[0].effect[1]` an effect of its chain and `group[0].effect[1]` an
+    /// effect of a group's bus. `Err` says why a place is not one.
+    fn plugin_at(&self, place: session::CablePlace) -> Result<(NodeId, &[plugin::ParameterInfo]), String> {
+        use session::CablePlace as Place;
+        let missing = || format!("{place} is not in the session");
+        match place {
+            Place::Instrument(lane) => {
+                let slot = self.lanes.get(lane).ok_or_else(missing)?.instrument.as_ref().ok_or_else(|| format!("{place} has no instrument"))?;
+                Ok((slot.node, params_at(self.lane_params, lane, 0)))
+            }
+            Place::Effect { instrument, effect } => {
+                let slot = self.lanes.get(instrument).and_then(|lane| lane.effects.get(effect)).ok_or_else(missing)?;
+                Ok((slot.node, params_at(self.lane_params, instrument, effect + 1)))
+            }
+            Place::BusEffect { group, effect } => {
+                let slot = self.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?;
+                Ok((slot.node, params_at(self.bus_params, group, effect)))
+            }
+            Place::Group(_) | Place::Master | Place::Keys | Place::Device(_) => Err(format!("{place} is not a plugin")),
+        }
+    }
+}
+
+/// What a free modulator's cable can name: the plugins of the session (by place) and the free modulators (their nodes and configs).
+struct FreeTargets<'a> {
+    session: &'a FreeSession<'a>,
+    nodes: &'a [NodeId],
+    siblings: &'a [session::ModulatorConfig],
+}
+
+/// What the cable `config` of the free modulator `me` is: a parameter of a plugin anywhere in the session (`to` says where, as a cable's places are written: `instrument[0].effect[1]`), or a
+/// field of another free modulator, or the depth of one of its cables. `None`, and the log says why, for a cable that cannot be made.
+fn plan_free_target(config: &session::ModTargetConfig, me: usize, free: &FreeTargets) -> Option<Plan> {
+    let Some(ref param_name) = config.param else {
+        let info = |index: usize, field| sibling_field_info(free.siblings.get(index), field);
+        return plan_sibling_target(config, me, 0, free.nodes, "Free modulator target has no param or mod_* field, skipping", info);
+    };
+    let Some(place) = config.to.as_deref().and_then(session::CablePlace::parse) else {
+        log::warn!("Free modulator target param '{param_name}' has no `to` that names a plugin of the session: left out");
+        return None;
+    };
+    let (plugin, params) = match free.session.plugin_at(place) {
+        Ok(found) => found,
+        Err(why) => {
+            log::warn!("Free modulator target param '{param_name}': {why}: left out");
+            return None;
+        }
+    };
+    let Some(info) = params.iter().find(|p| p.name == *param_name) else {
+        log::warn!("Free modulator target param '{param_name}' not found at {place}");
+        return None;
+    };
+    Some(Plan {
+        drives: Drives::Known { aim: Driven::Param { plugin, index: info.index } },
+        label: info.name.clone(),
+        param_min: info.min,
+        param_max: info.max,
+        base_value: info.default,
+    })
+}
+
+/// Build the session's free modulators (the top-level `[[modulator]]` tables: in no lane and no group) and send them to the audio thread. Their cables name a plugin by its place in the
+/// session (`to`) and a parameter by its name, or a field of a sibling free modulator (`mod_*`), and every lane and group is loaded by now, so a place is found whatever it is.
+fn load_free_modulators(
+    configs: &[session::ModulatorConfig],
+    session: &FreeSession,
+    cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
+    alloc: &mut Allocators,
+) -> anyhow::Result<Vec<ModulatorSlot>> {
+    // The nodes of all of them now, so that the cable of one can name another that comes after it.
+    let nodes: Vec<NodeId> = configs.iter().map(|_| alloc.ids.alloc()).collect();
+    let free = FreeTargets { session, nodes: &nodes, siblings: configs };
+    let plans: Vec<Vec<Option<Plan>>> = configs.iter().enumerate().map(|(me, mod_config)| mod_config.targets.iter().map(|config| plan_free_target(config, me, &free)).collect()).collect();
+    let rack = resolve_rack(&plans, alloc.ids);
+    let configs: Vec<&session::ModulatorConfig> = configs.iter().collect();
+    make_rack(ModulatorLocation::Free, &configs, &nodes, &plans, &rack, cmd_tx, alloc)
 }
 
 #[cfg(test)]
@@ -2993,6 +3075,189 @@ to = "master"
         assert_eq!(again.cables, model.cables, "the cables are the same, under the same ids");
         let (instruments, groups, cables, sources) = crate::app::save::to_save(&again);
         assert_eq!(session::to_toml(&instruments, &groups, &cables, &sources, None, again.master_ui(), again.bpm_to_save()).unwrap(), saved, "and the file is the same");
+    }
+
+    // -- free modulators (`[[modulator]]`, P5b-2) --
+
+    /// What a file's saved text is, as `Ctrl+S` writes it.
+    fn saved(model: &SessionModel) -> String {
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(model);
+        session::to_toml(&instruments, &groups, &cables, &sources, None, model.master_ui(), model.bpm_to_save()).unwrap()
+    }
+
+    #[test]
+    fn the_free_modulators_of_a_file_are_the_sessions_own_with_cables_to_the_plugins_they_name_and_the_audio_thread_is_told_by_the_node() {
+        use crate::plugin::chain::ModTargetKind as K;
+        let run = load(testutil::FREE_MODULATORS);
+        let model = &run.model;
+        assert_eq!(model.free_modulators.len(), 2);
+        assert!(matches!(model.free_modulators[0].source, ModSourceSlot::Lfo { rate, .. } if rate == 0.5));
+        assert!(matches!(model.free_modulators[1].source, ModSourceSlot::Envelope { attack, .. } if attack == 0.05));
+        assert!(model.instruments.iter().all(|lane| lane.modulators.is_empty()) && model.groups[0].modulators.is_empty(), "no lane and no group has one");
+        let (osc, reverb, bus, filter) = (model.instruments[0].node, model.instruments[0].effects[0].node, model.groups[0].effects[0].node, model.instruments[1].effects[0].node);
+        let kinds_of = |index: usize| testutil::kinds_at(model, ModulatorLocation::Free, index);
+        let param_index = |plugin: &PluginSlot, name: &str| plugin.params.iter().find(|row| row.name == name).unwrap().index;
+        assert_eq!(
+            kinds_of(0),
+            [
+                K::FreeParam { plugin: osc, param_index: param_index(model.instruments[0].instrument.as_ref().unwrap(), "detune") },
+                K::FreeParam { plugin: reverb, param_index: param_index(&model.instruments[0].effects[0], "damping") },
+                K::FreeParam { plugin: bus, param_index: param_index(&model.groups[0].effects[0], "cutoff") },
+                K::ModulatorAttack { mod_index: 1 },
+            ]
+        );
+        assert_eq!(
+            kinds_of(1),
+            [K::FreeParam { plugin: filter, param_index: param_index(&model.instruments[1].effects[0], "cutoff") }, K::ModulatorDepth { mod_index: 0, target_index: 0 }]
+        );
+        // (Each cable is told to the audio thread after its modulator, in the order of the file, with the node that it drives.)
+        let commands: Vec<&String> = run.commands.iter().filter(|c| c.contains("Free")).collect();
+        let inserts: Vec<&&String> = commands.iter().filter(|c| c.starts_with("InsertFreeModulator")).collect();
+        assert!(inserts[0].starts_with("InsertFreeModulator index=0 source=Lfo"), "{commands:?}");
+        assert!(inserts[1].starts_with("InsertFreeModulator index=1 source=Envelope"), "{commands:?}");
+        let cable_commands: Vec<&&String> = commands.iter().filter(|c| c.starts_with("AddFreeModTarget")).collect();
+        assert_eq!(cable_commands.len(), 6, "{commands:?}");
+        assert!(cable_commands[0].starts_with(&format!("AddFreeModTarget mod=0 aim=Param {{ plugin: NodeId({}), index:", osc.0)), "{cable_commands:?}");
+        assert!(cable_commands[3].starts_with(&format!("AddFreeModTarget mod=0 aim=Setting {{ modulator: NodeId({}), field: Attack }}", model.free_modulators[1].node.0)), "{cable_commands:?}");
+        assert!(cable_commands[5].starts_with(&format!("AddFreeModTarget mod=1 aim=Depth(EdgeId({}))", model.free_modulators[0].targets[0].edge.0)), "{cable_commands:?}");
+        model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_free_modulators_take_the_nodes_after_the_lanes_and_the_groups_and_the_sources_the_nodes_after_them() {
+        let run = load(&format!("[keys]\n{}", testutil::FREE_MODULATORS));
+        let model = &run.model;
+        let last_lane_node = model.instruments.iter().flat_map(|lane| std::iter::once(lane.node).chain(lane.effects.iter().map(|e| e.node))).max().unwrap();
+        let last_bus_node = model.groups[0].effects.iter().map(|e| e.node).max().unwrap();
+        assert!(model.free_modulators.iter().all(|m| m.node > last_lane_node.max(last_bus_node)), "after every lane and group");
+        assert!(model.sources[0].node > model.free_modulators[1].node, "and before the sources, which are made when the model is");
+        // A session with none uses no node for them: its sources are where they were.
+        let without = load("[keys]\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        assert_eq!(without.sources[0].node, NodeId(without.instruments[0].node.0 + 1));
+    }
+
+    #[test]
+    fn a_free_cable_is_centred_on_what_the_session_sets_the_parameter_it_drives_to() {
+        let run = load(
+            r#"
+[[modulator]]
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "damping"
+depth = 0.5
+[[modulator.target]]
+to = "instrument[0]"
+param = "detune"
+
+[[instrument]]
+plugin = "builtin:osc"
+[instrument.params]
+detune = 7.0
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[instrument.effect.params]
+damping = 0.9
+"#,
+        );
+        let model = &run.model;
+        assert_eq!(model.centre_of(model.free_modulators[0].targets[0].aim), Some(0.9), "an override of the file");
+        assert_eq!(model.centre_of(model.free_modulators[0].targets[1].aim), Some(7.0));
+        let cables: Vec<&String> = run.commands.iter().filter(|c| c.starts_with("AddFreeModTarget")).collect();
+        assert!(cables[0].contains("depth=0.500 base=0.900"), "{cables:?}");
+        assert!(cables[1].contains("depth=0.500 base=7.000"), "a depth that the file does not say is half: {cables:?}");
+    }
+
+    #[test]
+    fn a_free_cable_that_names_what_is_not_there_is_left_out_and_the_others_are_made() {
+        let run = load(
+            r#"
+[[modulator]]
+[[modulator.target]]
+param = "damping"
+depth = 0.1
+[[modulator.target]]
+to = "master"
+param = "damping"
+[[modulator.target]]
+to = "group[0]"
+param = "damping"
+[[modulator.target]]
+to = "instrument[7]"
+param = "damping"
+[[modulator.target]]
+to = "instrument[2]"
+param = "detune"
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "no such parameter"
+[[modulator.target]]
+to = "not a place"
+param = "damping"
+[[modulator.target]]
+mod_rate = 5
+[[modulator.target]]
+mod_rate = 0
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "damping"
+depth = 0.25
+
+[[group]]
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument]]
+"#,
+        );
+        let cables = &run.model.free_modulators[0].targets;
+        assert_eq!(cables.len(), 1, "of ten, the one that names a plugin that is there and a parameter that it has");
+        assert_eq!((cables[0].param_name.as_str(), cables[0].depth), ("damping", 0.25));
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_session_with_free_modulators_is_saved_as_the_same_modulators_and_cables_and_the_same_file() {
+        let model = load(testutil::FREE_MODULATORS).model;
+        let text = saved(&model);
+        assert_eq!(text.matches("[[modulator]]").count(), 2, "{text}");
+        assert!(text.contains("to = \"instrument[0].effect[0]\""), "a cable says which plugin by its place: {text}");
+        assert!(text.contains("to = \"group[0].effect[0]\""), "{text}");
+        assert!(text.find("[[group]]").unwrap() < text.find("[[modulator]]").unwrap(), "after the lanes and the groups that its cables drive: {text}");
+        let again = load(&text).model;
+        assert_eq!(again.free_modulators.len(), 2);
+        for (a, b) in again.free_modulators.iter().zip(&model.free_modulators) {
+            assert_eq!(format!("{:?}", a.source), format!("{:?}", b.source));
+            let cable = |t: &ModTargetSlot| (t.param_name.clone(), t.depth, t.param_min, t.param_max);
+            assert_eq!(a.targets.iter().map(cable).collect::<Vec<_>>(), b.targets.iter().map(cable).collect::<Vec<_>>());
+        }
+        assert_eq!(testutil::kinds_at(&again, ModulatorLocation::Free, 0).len(), 4);
+        assert_eq!(saved(&again), text, "and the file is the same");
+    }
+
+    #[test]
+    fn a_session_with_no_free_modulator_writes_no_table_for_one_and_the_place_of_a_free_modulator_is_kept() {
+        let model = load("[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        assert!(!saved(&model).contains("[[modulator]]"));
+        let placed = load("[[modulator]]\nui = { x = 12.5, y = -40 }\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        assert_eq!(placed.ui.get(&placed.free_modulators[0].node), Some(&NodeUi { x: 12.5, y: -40.0 }));
+        let text = saved(&placed);
+        assert!(text.contains("ui = { x = 12.5, y = -40 }"), "saved as typed: {text}");
+        assert_eq!(load(&text).model.ui.values().filter(|ui| **ui == NodeUi { x: 12.5, y: -40.0 }).count(), 1);
+    }
+
+    #[test]
+    fn a_free_modulator_has_a_slot_for_its_output_and_for_where_each_cable_is_and_the_audio_thread_is_told_them() {
+        let run = load(testutil::FREE_MODULATORS);
+        let model = &run.model;
+        for modulator in &model.free_modulators {
+            assert!(modulator.output.is_some(), "its output is published");
+            for cable in &modulator.targets {
+                assert!(cable.effective.is_some(), "so is what each cable drives");
+            }
+        }
+        assert!(run.telemetry.iter().any(|c| c.starts_with("SetModulatorOutput Free index=0")), "{:?}", run.telemetry);
+        assert!(run.telemetry.iter().any(|c| c.starts_with("SetModulatorOutput Free index=1")), "{:?}", run.telemetry);
     }
 
     // -- cables of notes (P4b of docs/patch-graph.md §11.6) --

@@ -179,6 +179,11 @@ impl<'a> Events<'a> {
         self.events.is_empty()
     }
 
+    /// The frame and the bytes of every event, whatever its source: for what hears every source (the modulators that belong to no lane).
+    pub fn all(&self) -> &'a [(u64, [u8; 3])] {
+        self.events
+    }
+
     /// The source, the frame and the bytes of each event, in order.
     pub fn iter(&self) -> impl Iterator<Item = (Source, u64, [u8; 3])> + 'a {
         let sources = self.sources;

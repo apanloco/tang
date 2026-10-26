@@ -83,21 +83,35 @@ fn sources_to_save(model: &SessionModel) -> SaveSources {
                 SourceKind::Keys => None,
             })
             .collect(),
+        modulators: modulators_to_save(model, ModulatorLocation::Free),
     }
+}
+
+/// Where the effect in `node` is, as the file names a place: an effect of a lane's chain or of a group's bus.
+fn effect_place_of(model: &SessionModel, node: NodeId) -> Option<CablePlace> {
+    model
+        .instruments
+        .iter()
+        .enumerate()
+        .find_map(|(instrument, lane)| lane.effects.iter().position(|effect| effect.node == node).map(|effect| CablePlace::Effect { instrument, effect }))
+        .or_else(|| model.groups.iter().enumerate().find_map(|(group, bus)| bus.effects.iter().position(|effect| effect.node == node).map(|effect| CablePlace::BusEffect { group, effect })))
+}
+
+/// Where the lane in `node` is, as the file names a place (a lane's instrument shares its node).
+fn lane_place_of(model: &SessionModel, node: NodeId) -> Option<CablePlace> {
+    model.instruments.iter().position(|lane| lane.node == node).map(CablePlace::Instrument)
+}
+
+/// Where the plugin in `node` is, as the file names a place: a lane's instrument, an effect of a lane's chain or of a group's bus. It is how a free modulator's cable names what it drives.
+fn plugin_place_of(model: &SessionModel, node: NodeId) -> Option<CablePlace> {
+    lane_place_of(model, node).or_else(|| effect_place_of(model, node))
 }
 
 /// The cables of a session as the file names their places: by the place of a lane, a group or an effect among those of the session, the keys or a device among the sources, in the order of
 /// the cables' ids (an audio cable and a cable of notes are of one series).
 fn cables_to_save(model: &SessionModel) -> Vec<SaveCable> {
-    let effect_place = |node: NodeId| -> Option<CablePlace> {
-        model
-            .instruments
-            .iter()
-            .enumerate()
-            .find_map(|(instrument, lane)| lane.effects.iter().position(|effect| effect.node == node).map(|effect| CablePlace::Effect { instrument, effect }))
-            .or_else(|| model.groups.iter().enumerate().find_map(|(group, bus)| bus.effects.iter().position(|effect| effect.node == node).map(|effect| CablePlace::BusEffect { group, effect })))
-    };
-    let lane_place = |node: NodeId| model.instruments.iter().position(|lane| lane.node == node).map(CablePlace::Instrument);
+    let effect_place = |node: NodeId| effect_place_of(model, node);
+    let lane_place = |node: NodeId| lane_place_of(model, node);
     let group_place = |node: NodeId| model.groups.iter().position(|group| group.node == node).map(CablePlace::Group);
     let source_place = |node: NodeId| {
         let at = model.sources.iter().position(|source| source.node == node)?;
@@ -199,7 +213,12 @@ fn modulators_to_save(model: &SessionModel, at: ModulatorLocation) -> Vec<SaveMo
                             ModTargetKind::PluginParam { slot, .. } | ModTargetKind::GroupMember { slot, .. } => slot,
                             _ => 0,
                         };
-                        Some(SaveModTarget { kind, label: t.param_name.clone(), depth: t.depth, slot })
+                        // (A free modulator's cable names the plugin by its place in the session.)
+                        let to = match kind {
+                            ModTargetKind::FreeParam { plugin, .. } => Some(plugin_place_of(model, plugin)?),
+                            _ => None,
+                        };
+                        Some(SaveModTarget { kind, label: t.param_name.clone(), depth: t.depth, slot, to })
                     })
                     .collect(),
                 ui: ui.get(&m.node).copied(),

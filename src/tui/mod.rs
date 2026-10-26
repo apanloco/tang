@@ -39,7 +39,7 @@ use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, PatternField, Taper};
 use crate::app::model::{
-    BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, EdgeId, FREE, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId,
+    BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, Driven, EdgeId, FREE, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId, NodePath,
     ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, SYNC_DIVISIONS, SessionModel, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
@@ -85,6 +85,8 @@ enum TreeAddress {
     /// A group-scoped modulator. `index` is its position in the group's
     /// modulator list.
     GroupModulator { group: usize, index: usize },
+    /// A free modulator: in no lane and no group. `index` is its position in the session's own rack.
+    FreeModulator { index: usize },
 }
 
 impl TreeAddress {
@@ -97,7 +99,8 @@ impl TreeAddress {
             TreeAddress::Modulator { inst, .. } => Some(inst),
             TreeAddress::Group(_)
             | TreeAddress::GroupEffect { .. }
-            | TreeAddress::GroupModulator { .. } => None,
+            | TreeAddress::GroupModulator { .. }
+            | TreeAddress::FreeModulator { .. } => None,
         }
     }
 
@@ -112,6 +115,7 @@ impl TreeAddress {
             TreeAddress::Group(_) => 0,
             TreeAddress::GroupEffect { index, .. } => index + 1,
             TreeAddress::GroupModulator { .. } => 0,
+            TreeAddress::FreeModulator { .. } => 0,
         }
     }
 }
@@ -173,6 +177,12 @@ fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> 
             ("t", "add target"),
             ("d", "delete"),
         ],
+        // (A free modulator is in no lane: `F` makes another, and is only said here.)
+        Some(TreeAddress::FreeModulator { .. }) => vec![
+            ("F", "new free"),
+            ("t", "add target"),
+            ("d", "delete"),
+        ],
         Some(TreeAddress::Group(_)) => vec![
             ("a", "add fx"),
             ("m", "modulate"),
@@ -213,7 +223,7 @@ fn param_actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static 
         ],
         // Modulator pseudo-params (rate/ADSR/depth): edit, cross-modulate, or
         // MIDI-learn the row.
-        Some(TreeAddress::Modulator { .. }) | Some(TreeAddress::GroupModulator { .. }) => {
+        Some(TreeAddress::Modulator { .. }) | Some(TreeAddress::GroupModulator { .. }) | Some(TreeAddress::FreeModulator { .. }) => {
             vec![("Enter", "edit"), ("m", "modulate"), ("l", "learn")]
         }
         // Group Volume/Pan and pattern settings: edit only.
@@ -641,6 +651,7 @@ impl State {
                 TreeAddress::GroupModulator { group, index } => {
                     self.group_modulator(group, index).map_or(0, modulator_param_len)
                 }
+                TreeAddress::FreeModulator { index } => self.free_modulator(index).map_or(0, modulator_param_len),
                 // A group's bus pane shows two host-side params: Volume + Pan.
                 TreeAddress::Group(_) => 2,
                 _ => self.plugin_at(addr).map_or(0, |p| p.params.len()),
@@ -720,6 +731,10 @@ impl State {
                 let m = self.group_modulator(group, index)?;
                 modulator_param_range(m, self.param_state.selected)
             }
+            TreeAddress::FreeModulator { index } => {
+                let m = self.free_modulator(index)?;
+                modulator_param_range(m, self.param_state.selected)
+            }
             TreeAddress::Group(_) => match self.param_state.selected {
                 0 => Some((0.0, 4.0)),  // volume
                 1 => Some((-1.0, 1.0)), // pan
@@ -749,6 +764,10 @@ impl State {
                 let Some(m) = self.group_modulator(group, index) else { return false };
                 modulator_param_is_enum(m, self.param_state.selected)
             }
+            TreeAddress::FreeModulator { index } => {
+                let Some(m) = self.free_modulator(index) else { return false };
+                modulator_param_is_enum(m, self.param_state.selected)
+            }
             _ => {
                 if let Some(pa) = self.real_param_index() {
                     self.plugin_at(&addr)
@@ -767,7 +786,8 @@ impl State {
             TreeAddress::Pattern(_)
             | TreeAddress::Modulator { .. }
             | TreeAddress::Group(_)
-            | TreeAddress::GroupModulator { .. } => None,
+            | TreeAddress::GroupModulator { .. }
+            | TreeAddress::FreeModulator { .. } => None,
             TreeAddress::Instrument(inst) => {
                 self.ctl.model.instruments.get(inst)?.instrument.as_ref()
             }
@@ -807,7 +827,7 @@ impl State {
                 Some((g.node, g.name.clone().unwrap_or_else(|| format!("Group {}", group + 1))))
             }
             TreeAddress::GroupEffect { group, index } => model.groups.get(group)?.effects.get(index).map(|fx| (fx.node, fx.name.clone())),
-            TreeAddress::Pattern(_) | TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } => None,
+            TreeAddress::Pattern(_) | TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } | TreeAddress::FreeModulator { .. } => None,
         }
     }
 
@@ -826,6 +846,11 @@ impl State {
     /// A group-scoped modulator by group + index.
     fn group_modulator(&self, group: usize, mod_index: usize) -> Option<&ModulatorSlot> {
         self.ctl.model.groups.get(group)?.modulators.get(mod_index)
+    }
+
+    /// A free modulator (in no lane and no group) by its place in the session's own rack.
+    fn free_modulator(&self, index: usize) -> Option<&ModulatorSlot> {
+        self.ctl.model.free_modulators.get(index)
     }
 
     fn selector_items(&self, mode: SelectorMode) -> Vec<FilterListItem> {
@@ -1079,15 +1104,13 @@ impl State {
         let (scope, mod_index) = match self.tree_entries[sel].address {
             TreeAddress::Modulator { inst, index } => (ModulatorLocation::Lane(inst), index),
             TreeAddress::GroupModulator { group, index } => (ModulatorLocation::Group(group), index),
+            TreeAddress::FreeModulator { index } => (ModulatorLocation::Free, index),
             _ => return,
         };
         let pa = self.param_state.selected;
         // Resolve the cross-mod target kind (+ range / base / label) for this row.
         let resolved = {
-            let m = match scope {
-                ModulatorLocation::Lane(inst) => self.modulator(inst, mod_index),
-                ModulatorLocation::Group(group) => self.group_modulator(group, mod_index),
-            };
+            let m = self.ctl.model.modulators(scope).and_then(|rack| rack.get(mod_index));
             m.and_then(|m| modulator_row_to_cross_mod(m, mod_index, pa))
         };
         let Some((kind, _, _, _, param_name)) = resolved else {
@@ -1097,18 +1120,12 @@ impl State {
         // Choices: new LFO / envelope, then each sibling modulator in the same
         // rack except this one (no self-modulation).
         let (mut choices, mut items) = new_modulator_choices(&param_name);
-        let rack_len = match scope {
-            ModulatorLocation::Lane(inst) => self.ctl.model.instruments.get(inst).map_or(0, |n| n.modulators.len()),
-            ModulatorLocation::Group(group) => self.ctl.model.groups.get(group).map_or(0, |g| g.modulators.len()),
-        };
+        let rack_len = self.ctl.model.modulators(scope).map_or(0, |rack| rack.len());
         for i in 0..rack_len {
             if i == mod_index {
                 continue; // can't modulate itself
             }
-            let label = match scope {
-                ModulatorLocation::Lane(inst) => self.modulator(inst, i).map(|m| m.source.label()),
-                ModulatorLocation::Group(group) => self.group_modulator(group, i).map(|m| m.source.label()),
-            };
+            let label = self.ctl.model.modulators(scope).and_then(|rack| rack.get(i)).map(|m| m.source.label());
             if let Some(label) = label {
                 let idx = choices.len();
                 choices.push(ModulateChoice::Existing(i));
@@ -1216,6 +1233,43 @@ impl State {
         });
     }
 
+    /// Open the target selector for a free modulator. It reaches the whole session: every parameter of every plugin (each labelled by the lane or the group the plugin is in, as the
+    /// Patch tab tags them, and by its name), and the settings of the sibling free modulators and the depths of their cables (cross-mod).
+    fn open_free_target_selector(&mut self, mod_index: usize) {
+        if self.free_modulator(mod_index).is_none() {
+            return;
+        }
+        let mut entries = Vec::new();
+        let mut items = Vec::new();
+        for t in self.ctl.model.param_targets(ModulatorLocation::Free) {
+            let idx = entries.len();
+            let owner = plugin_tag(&self.ctl.model, t.node);
+            items.push(FilterListItem { cells: vec![format!("{owner} {}", t.plugin_name), t.param_name], index: idx });
+            entries.push(TargetEntry { kind: t.kind });
+        }
+        for t in self.ctl.model.field_targets(ModulatorLocation::Free, mod_index) {
+            let idx = entries.len();
+            items.push(FilterListItem { cells: vec!["Mod".into(), t.label], index: idx });
+            entries.push(TargetEntry { kind: t.kind });
+        }
+        let mut filter = FilterListState::new();
+        filter.apply_filter(&items);
+        self.target_selector = Some(TargetSelectorState { filter, items, entries, scope: ModulatorLocation::Free, mod_index });
+    }
+
+    /// Add a free modulator (an LFO, as `m` adds to a lane) at the end of the session's own rack, and put the cursor on it. It is made by the intent that a browser's "+ Modulator"
+    /// asks, a step of the history.
+    fn add_free_modulator(&mut self) {
+        if self.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }).is_none() {
+            return;
+        }
+        let last = self.ctl.model.free_modulators.len().saturating_sub(1);
+        if let Some(position) = self.tree_entries.iter().position(|e| matches!(e.address, TreeAddress::FreeModulator { index } if index == last)) {
+            self.chain_state.selected = position;
+            self.sync_param_state();
+        }
+    }
+
     /// Open the "modulate <param>" popup for a group bus-effect parameter.
     /// Lets the user create a new group modulator or attach to an existing one.
     fn open_group_modulate(&mut self) {
@@ -1312,6 +1366,13 @@ impl State {
                         return;
                     };
                     (ModulatorLocation::Group(group), kind)
+                }
+                TreeAddress::FreeModulator { index } => {
+                    let Some(m) = self.free_modulator(index) else { return };
+                    let Some((kind, ..)) = modulator_row_to_cross_mod(m, index, self.param_state.selected) else {
+                        return;
+                    };
+                    (ModulatorLocation::Free, kind)
                 }
                 _ => return,
             };
@@ -1509,8 +1570,8 @@ impl State {
             return;
         }
 
-        // The rows of a modulator, a lane's or a group's.
-        if let TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } = addr {
+        // The rows of a modulator, a lane's, a group's or a free one.
+        if let TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } | TreeAddress::FreeModulator { .. } = addr {
             self.step_modulator_row(addr, self.param_state.selected, direction, step_fraction(modifiers));
             return;
         }
@@ -1613,11 +1674,12 @@ impl State {
         }
     }
 
-    /// The modulator at `addr`, if the address is one: a lane's or a group's.
+    /// The modulator at `addr`, if the address is one: a lane's, a group's or a free one.
     fn modulator_at(&self, addr: TreeAddress) -> Option<&ModulatorSlot> {
         match addr {
             TreeAddress::Modulator { inst, index } => self.modulator(inst, index),
             TreeAddress::GroupModulator { group, index } => self.group_modulator(group, index),
+            TreeAddress::FreeModulator { index } => self.free_modulator(index),
             _ => None,
         }
     }
@@ -1682,6 +1744,7 @@ impl State {
         let (at, index) = match addr {
             TreeAddress::Modulator { inst, index } => (ModulatorLocation::Lane(inst), index),
             TreeAddress::GroupModulator { group, index } => (ModulatorLocation::Group(group), index),
+            TreeAddress::FreeModulator { index } => (ModulatorLocation::Free, index),
             _ => return,
         };
         let Some(m) = self.ctl.model.modulators_mut(at).and_then(|rack| rack.get_mut(index)) else { return };
@@ -1731,8 +1794,8 @@ impl State {
             return;
         }
 
-        // The rows of a modulator, a lane's or a group's.
-        if let TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } = addr {
+        // The rows of a modulator, a lane's, a group's or a free one.
+        if let TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } | TreeAddress::FreeModulator { .. } = addr {
             self.set_modulator_row(addr, self.param_state.selected, value);
             return;
         }
@@ -2612,6 +2675,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 Some(TreeAddress::Pattern(_)) => {}
                 Some(TreeAddress::Modulator { .. }) => {}
                 Some(TreeAddress::GroupModulator { .. }) => {}
+                Some(TreeAddress::FreeModulator { .. }) => {}
                 None => {}
             }
         }
@@ -2629,7 +2693,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 }
                 // A modulator's own param (rate / ADSR / a target depth) →
                 // cross-modulate it with a sibling modulator.
-                Some(TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. }) => {
+                Some(TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } | TreeAddress::FreeModulator { .. }) => {
                     s.open_modulate_cross_mod();
                 }
                 _ => {}
@@ -2645,6 +2709,10 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // 'm' (chain focus) — add an empty LFO modulator to the instrument's
         // lane rack. (In param focus, `m` modulates the selected parameter —
         // handled above.)
+        KeyCode::Char('m') if s.active_tab == TAB_SESSION && !s.focus_params && matches!(s.selected_address(), Some(TreeAddress::FreeModulator { .. })) => {
+            // On a free modulator, add another one to the session's own rack.
+            s.add_free_modulator();
+        }
         KeyCode::Char('m') if s.active_tab == TAB_SESSION && !s.focus_params => {
             // On a group / group-bus node, add a group-scoped modulator; on an
             // instrument-side node, add a lane modulator.
@@ -2662,11 +2730,17 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             let owner = match rack {
                 Some(ModulatorLocation::Lane(inst)) => s.ctl.model.instruments.get(inst).map(|lane| lane.node),
                 Some(ModulatorLocation::Group(group)) => s.ctl.model.groups.get(group).map(|bus| bus.node),
-                None => None,
+                Some(ModulatorLocation::Free) | None => None,
             };
             if let Some(parent) = owner {
                 s.apply(Intent::AddModulator { parent, kind: ModulatorKind::Lfo });
             }
+        }
+
+        // 'F' (chain focus) — add a free modulator: in no lane and no group, wherever the cursor is, and the cursor goes onto it (`AddFreeModulator`, a step of
+        // the history). Its cables (`t`) go to a parameter of any plugin of the session.
+        KeyCode::Char('F') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            s.add_free_modulator();
         }
 
         // 'g' (chain focus) — assign the selected instrument to a group
@@ -2699,6 +2773,9 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 }
                 Some(TreeAddress::GroupModulator { group, index }) => {
                     s.open_group_target_selector(group, index);
+                }
+                Some(TreeAddress::FreeModulator { index }) => {
+                    s.open_free_target_selector(index);
                 }
                 _ => {}
             }
@@ -2836,6 +2913,10 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         let node = s.ctl.model.groups.get(group).and_then(|bus| bus.modulators.get(index)).map(|m| m.node);
                         s.remove_node(node);
                     }
+                    TreeAddress::FreeModulator { index } => {
+                        let node = s.ctl.model.free_modulators.get(index).map(|m| m.node);
+                        s.remove_node(node);
+                    }
                     TreeAddress::Group(group) => {
                         // Delete the group: members become ungrouped, higher
                         // group indices shift down.
@@ -2866,6 +2947,12 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                             let edit = s.ctl.model.groups.get(group)
                                 .and_then(|g| g.modulators.get(index))
                                 .and_then(|m| modulator_edit_state(m, pa));
+                            if edit.is_some() {
+                                s.editing = edit;
+                            }
+                        }
+                        TreeAddress::FreeModulator { index } => {
+                            let edit = s.ctl.model.free_modulators.get(index).and_then(|m| modulator_edit_state(m, pa));
                             if edit.is_some() {
                                 s.editing = edit;
                             }
@@ -3335,6 +3422,7 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
                 &s.chain_state,
                 &s.ctl.model.instruments,
                 &s.ctl.model.groups,
+                &s.ctl.model.free_modulators,
                 &s.param_state,
                 s.focus_params,
                 &s.param_filter_input,
@@ -3455,6 +3543,7 @@ fn render_session(
     chain_state: &ListState,
     instruments: &[InstrumentNode],
     groups: &[GroupNode],
+    free_modulators: &[ModulatorSlot],
     param_state: &ListState,
     focus_params: bool,
     param_filter_input: &TextInputState,
@@ -3505,7 +3594,7 @@ fn render_session(
     let (plugin_name, plugin_params) = if selected < tree_entries.len() {
         let addr = &tree_entries[selected].address;
         match addr {
-            TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } => {
+            TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } | TreeAddress::FreeModulator { .. } => {
                 let m = match addr {
                     TreeAddress::Modulator { inst, index } => {
                         instruments.get(*inst).and_then(|n| n.modulators.get(*index))
@@ -3513,6 +3602,7 @@ fn render_session(
                     TreeAddress::GroupModulator { group, index } => {
                         groups.get(*group).and_then(|g| g.modulators.get(*index))
                     }
+                    TreeAddress::FreeModulator { index } => free_modulators.get(*index),
                     _ => None,
                 };
                 match m {
@@ -4583,11 +4673,47 @@ fn push_instrument_entries(
     }
 }
 
+/// Where the plugin in `node` is, as the Patch tab tags a lane and a group: `L1` for a plugin of the first lane (its instrument or an effect of its chain) and `G1` for an effect of the
+/// first group's bus; nothing for a node that is neither.
+fn plugin_tag(model: &SessionModel, node: NodeId) -> String {
+    match model.locate(node) {
+        Some(NodePath::Instrument(inst) | NodePath::Effect { inst, .. }) => format!("L{}", inst + 1),
+        Some(NodePath::GroupEffect { group, .. }) => format!("G{}", group + 1),
+        _ => String::new(),
+    }
+}
+
+/// What a cable of a free modulator drives, as the tree says it: a parameter by the lane or the group its plugin is in (`L1 Oscillator: detune`, `G1 Filter (bus): cutoff`, as the Patch tab
+/// tags them), and the setting of another free modulator by its label (`Mod 1 attack`).
+fn free_target_label(model: &SessionModel, target: &ModTargetSlot) -> String {
+    let Driven::Param { plugin, .. } = target.aim else { return target.param_name.clone() };
+    let Some(slot) = model.plugin_slot(plugin) else { return target.param_name.clone() };
+    let bus = if matches!(model.locate(plugin), Some(NodePath::GroupEffect { .. })) { " (bus)" } else { "" };
+    format!("{} {}{bus}: {}", plugin_tag(model, plugin), slot.name, target.param_name)
+}
+
 fn build_tree_entries(model: &SessionModel) -> Vec<TreeEntry> {
     let (instruments, groups) = (&model.instruments[..], &model.groups[..]);
     let mut entries = Vec::new();
 
-    // Groups first: a header, the member instruments nested under it, then the
+    // The free modulators first (magenta): they are in no lane and no group, so they are the session's own, and each says what its cables drive wherever it is.
+    for (mod_idx, m) in model.free_modulators.iter().enumerate() {
+        let targets = if m.targets.is_empty() {
+            String::new()
+        } else {
+            let list = m.targets.iter().map(|t| format!("{} ({})", free_target_label(model, t), depth_percent(t.depth))).collect::<Vec<_>>().join(", ");
+            format!(" \u{2192} {list}")
+        };
+        entries.push(TreeEntry {
+            label: format!("~ {}{targets}  (free)", m.source.label()),
+            address: TreeAddress::FreeModulator { index: mod_idx },
+            node: m.node,
+            color: Some(Color::Magenta),
+            indent: 0,
+        });
+    }
+
+    // Groups: a header, the member instruments nested under it, then the
     // group's bus effects.
     for (g_idx, group) in groups.iter().enumerate() {
         let name = group.display_name(g_idx);
@@ -4774,14 +4900,15 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  a          Add effect after selected".into(),
         "  N          Add an effect that stands by itself (in a lane of its own; cables feed it)".into(),
         "  d          Delete selected".into(),
-        "  m          Add modulator (lane rack; group rack on a group node)".into(),
+        "  m          Add modulator (lane rack; group rack on a group node; free on a free one)".into(),
+        "  F          Add a free modulator (in no lane and no group: its cables reach any plugin)".into(),
         "  g          Assign instrument to a group (submix bus)".into(),
         "  x          Set effect / group-bus dry/wet mix".into(),
         "  r          Record/stop pattern".into(),
         "  Ctrl+R     Clear pattern".into(),
         "  b          Set BPM".into(),
         "".into(),
-        "Modulator (chain focus, lane or group):".into(),
+        "Modulator (chain focus, lane, group or free):".into(),
         "  t          Add modulation target".into(),
         "  d          Delete modulator".into(),
         "".into(),

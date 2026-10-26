@@ -56,6 +56,11 @@ pub enum Intent {
     /// lane (its instrument's, which an empty lane has too) or of the group; any other node is
     /// refused. It drives nothing yet.
     AddModulator { parent: NodeId, kind: ModulatorKind },
+    /// Add a modulator that is in no lane and no group (P5b-2): a **free modulator**, at the end of the session's own rack. It drives nothing yet. It hears every note and every
+    /// source (it is in no lane to take a range or a source from), and a cable from it can end at a parameter of any plugin of the session, an instrument's or an effect's, a lane's
+    /// or a bus's, and at a setting of another free modulator (`AddModEdge`, `Modulate`). A step of the history, in the words of the button that adds a modulator ("add LFO"): undo
+    /// takes it out. Refused, with nothing changed, for no kind of modulator (a kind is always one).
+    AddFreeModulator { kind: ModulatorKind },
     /// Draw a modulation cable from the modulator `modulator` to the port `to` of a node: a plugin's parameter,
     /// or a setting of another modulator. A parameter has to be one that modulator reaches: a lane's modulator
     /// reaches the plugins in its lane (the instrument and its effects), a group's reaches those of the lanes
@@ -776,6 +781,7 @@ mod tests {
                 Intent::AddModulator { parent: NodeId(2), kind: ModulatorKind::MidiLearn },
                 json!({"type": "addModulator", "parent": 2, "kind": "midiLearn"}),
             ),
+            (Intent::AddFreeModulator { kind: ModulatorKind::Steps }, json!({"type": "addFreeModulator", "kind": "steps"})),
             (Intent::RemoveNode { node: NodeId(8) }, json!({"type": "removeNode", "node": 8})),
             (Intent::AddSource { source: SourceInfo::Keys }, json!({"type": "addSource", "source": {"type": "keys"}})),
             (

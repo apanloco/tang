@@ -272,10 +272,12 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
   const added = (label: string): Plan => ({ added: { label, intent, at: now } });
   const catalogName = (plugin: string): string | undefined => catalog.find((entry) => entry.id === plugin)?.name;
   switch (intent.type) {
-    // (What is done to a pattern is no step: it is not put back by undo, and does not forget what was done before it.)
+    // (What is done to a pattern is no step: it is not put back by undo, and does not forget what was done before it. Nor is the free modulator that the mock engine has none of yet, which it
+    // refuses: P5b-3 gives the page its "+ Modulator", and the mock engine the step.)
     case "setRecording":
     case "clearPattern":
     case "setPatternField":
+    case "addFreeModulator":
     case "save":
     case "saveAs":
     case "undo":

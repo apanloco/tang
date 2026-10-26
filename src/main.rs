@@ -301,6 +301,7 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
         cables: vec![],
         keys: None,
         devices: vec![],
+        free_modulators: vec![],
     };
 
     log::info!("New session (will save to {} on Ctrl+S)", path.display());

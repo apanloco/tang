@@ -170,6 +170,9 @@ pub struct SessionModel {
     pub sources: Vec<SourceNode>,
     /// The event cables that have been drawn, in the order of their ids: the notes of a source go to a lane.
     pub event_cables: Vec<EventCable>,
+    /// The modulators that belong to no lane and no group (P5b-2 of `docs/patch-graph.md` §11.6), in the order they were made: each hears every note, and its cables drive any plugin
+    /// of the session and the settings of the other free modulators and the depths of their cables.
+    pub free_modulators: Vec<ModulatorSlot>,
 }
 
 impl Default for SessionModel {
@@ -184,6 +187,7 @@ impl Default for SessionModel {
             cables: Vec::new(),
             sources: Vec::new(),
             event_cables: Vec::new(),
+            free_modulators: Vec::new(),
         }
     }
 }
@@ -597,8 +601,8 @@ impl SessionModel {
     }
 
     /// Every node and where it sits: the groups with their bus effects and
-    /// modulators, then the lanes with their effects and modulators. (A lane's
-    /// instrument plugin shares the lane's id.)
+    /// modulators, then the lanes with their effects and modulators, the sources of notes
+    /// and the free modulators. (A lane's instrument plugin shares the lane's id.)
     pub fn nodes(&self) -> impl Iterator<Item = (NodeId, NodePath)> + '_ {
         let groups = self.groups.iter().enumerate().flat_map(|(group, g)| {
             std::iter::once((g.node, NodePath::Group(group)))
@@ -619,7 +623,8 @@ impl SessionModel {
                 }))
         });
         let sources = self.sources.iter().enumerate().map(|(index, source)| (source.node, NodePath::Source(index)));
-        groups.chain(lanes).chain(sources)
+        let free = self.free_modulators.iter().enumerate().map(|(index, m)| (m.node, NodePath::Modulator { at: ModulatorLocation::Free, index }));
+        groups.chain(lanes).chain(sources).chain(free)
     }
 
     /// Where the node `id` sits, if it is still in the session.
@@ -641,7 +646,10 @@ impl SessionModel {
                 m.targets.iter().enumerate().map(move |(target, t)| (t.edge, ModulatorLocation::Lane(inst), index, target))
             })
         });
-        groups.chain(lanes).find(|(edge, ..)| *edge == id).map(|(_, at, index, target)| (at, index, target))
+        let free = self.free_modulators.iter().enumerate().flat_map(|(index, m)| {
+            m.targets.iter().enumerate().map(move |(target, t)| (t.edge, ModulatorLocation::Free, index, target))
+        });
+        groups.chain(lanes).chain(free).find(|(edge, ..)| *edge == id).map(|(_, at, index, target)| (at, index, target))
     }
 
     /// Check that every node has an id of its own, that ids were allocated here,
@@ -674,7 +682,8 @@ impl SessionModel {
             .iter()
             .enumerate()
             .map(|(g, group)| (format!("group {g}"), &group.modulators))
-            .chain(self.instruments.iter().enumerate().map(|(i, lane)| (format!("lane {i}"), &lane.modulators)));
+            .chain(self.instruments.iter().enumerate().map(|(i, lane)| (format!("lane {i}"), &lane.modulators)))
+            .chain(std::iter::once(("the free modulators".to_string(), &self.free_modulators)));
         let mut edges = std::collections::HashSet::new();
         let mut taken = std::collections::HashSet::new();
         let mut claim = |slot: Option<Slot>, whose: String| -> Result<(), String> {
@@ -771,19 +780,21 @@ impl SessionModel {
         Ok(())
     }
 
-    /// The modulator rack at `at`: a lane's or a group's, if it exists.
+    /// The modulator rack at `at`: a lane's, a group's or the free modulators', if it exists.
     pub fn modulators_mut(&mut self, at: ModulatorLocation) -> Option<&mut Vec<ModulatorSlot>> {
         match at {
             ModulatorLocation::Lane(inst) => self.instruments.get_mut(inst).map(|n| &mut n.modulators),
             ModulatorLocation::Group(group) => self.groups.get_mut(group).map(|g| &mut g.modulators),
+            ModulatorLocation::Free => Some(&mut self.free_modulators),
         }
     }
 
-    /// The modulator rack at `at`: a lane's or a group's, if it exists.
+    /// The modulator rack at `at`: a lane's, a group's or the free modulators', if it exists.
     pub fn modulators(&self, at: ModulatorLocation) -> Option<&Vec<ModulatorSlot>> {
         match at {
             ModulatorLocation::Lane(inst) => self.instruments.get(inst).map(|n| &n.modulators),
             ModulatorLocation::Group(group) => self.groups.get(group).map(|g| &g.modulators),
+            ModulatorLocation::Free => Some(&self.free_modulators),
         }
     }
 
@@ -856,11 +867,11 @@ impl SessionModel {
         Some(going)
     }
 
-    /// How the audio thread's racks name what the cable `aim`, of the modulator at `source` in the rack at `at`, drives: a place (a chain slot, a member's ordinal in a group, a sibling's
-    /// index, a cable's place in its modulator), which the engine keeps in step by its own fix-ups as the structure changes, where the model keeps the node and the port (`Driven`).
-    /// This is the one place that turns one into the other, for the commands that the controller sends and for the file. `None` if what the cable drives is not there or is not in
-    /// reach of the rack (a lane's rack drives its own chain and its own siblings; a group's, its members' chains and modulators, its bus and its siblings), or is the modulator
-    /// itself (a cable like that does nothing).
+    /// How a rack names what the cable `aim`, of the modulator at `source` in the rack at `at`, drives: a place (a chain slot, a member's ordinal in a group, a sibling's index, a
+    /// cable's place in its modulator, or for a free modulator the plugin's node), where the model keeps the node and the port (`Driven`). This is the one place that turns one into
+    /// the other, for the file and the terminal's popups, and it says what a rack reaches. `None` if what the cable drives is not there or is not in reach of the rack (a lane's rack
+    /// drives its own chain and its own siblings; a group's, its members' chains and modulators, its bus and its siblings; the free modulators', any plugin of the session and their
+    /// own siblings), or is the modulator itself (a cable like that does nothing).
     pub fn kind_of(&self, at: ModulatorLocation, source: usize, aim: Driven) -> Option<ModTargetKind> {
         use ModTargetKind as K;
         // The place of lane `inst` among the members of group `group`, when it is one.
@@ -882,6 +893,8 @@ impl SessionModel {
                 }
                 (ModulatorLocation::Group(group), NodePath::Effect { inst, index }) => member(group, inst).map(|member| K::GroupMember { member, slot: index + 1, param_index }),
                 (ModulatorLocation::Group(group), NodePath::GroupEffect { group: of, index }) if of == group => Some(K::GroupBus { effect_index: index, param_index }),
+                (ModulatorLocation::Free, NodePath::Instrument(inst)) if self.instruments[inst].instrument.is_some() => Some(K::FreeParam { plugin, param_index }),
+                (ModulatorLocation::Free, NodePath::Effect { .. } | NodePath::GroupEffect { .. }) => Some(K::FreeParam { plugin, param_index }),
                 _ => None,
             },
             Driven::Setting { modulator, field } => {
@@ -912,11 +925,11 @@ impl SessionModel {
         self.racks().any(|(_, rack)| rack.iter().any(|m| m.targets.iter().any(|t| t.aim == driven)))
     }
 
-    /// Every modulator rack there is, with where it is: the lanes' and then the groups'.
+    /// Every modulator rack there is, with where it is: the lanes', the groups' and then the free modulators'.
     fn racks(&self) -> impl Iterator<Item = (ModulatorLocation, &Vec<ModulatorSlot>)> {
         let lanes = self.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
         let groups = self.groups.iter().enumerate().map(|(i, group)| (ModulatorLocation::Group(i), &group.modulators));
-        lanes.chain(groups)
+        lanes.chain(groups).chain(std::iter::once((ModulatorLocation::Free, &self.free_modulators)))
     }
 
     /// Put the lanes at `a` and `b` in each other's places, each with everything it has (its
@@ -967,6 +980,13 @@ impl SessionModel {
             .filter(|t| matches!(t.aim, Driven::Param { plugin: driven, .. } if driven == plugin))
             .map(|t| t.edge)
             .collect()
+    }
+
+    /// The cables of the free modulators that drive a parameter of a plugin in any of `nodes`: the plugins of a lane or a group that goes out. The cables of a lane's own modulators go
+    /// with the lane, and a group's with the group; a free modulator is in neither and stays, so what it drives there is taken out first, each by itself.
+    pub fn free_cables_into(&self, nodes: &[NodeId]) -> Vec<EdgeId> {
+        let drives_one = |t: &&ModTargetSlot| matches!(t.aim, Driven::Param { plugin, .. } if nodes.contains(&plugin));
+        self.free_modulators.iter().flat_map(|m| &m.targets).filter(drives_one).map(|t| t.edge).collect()
     }
 
     /// The cables that drive the depth of cable `edge`: in the rack of its modulator, and, if
@@ -1075,6 +1095,17 @@ impl SessionModel {
                     push_params(&mut targets, effect, 0, |param_index| ModTargetKind::GroupBus { effect_index, param_index });
                 }
             }
+            ModulatorLocation::Free => {
+                for lane in &self.instruments {
+                    push_chain(&mut targets, lane, |slot, param_index| {
+                        let plugin = if slot == 0 { lane.node } else { lane.effects[slot - 1].node };
+                        ModTargetKind::FreeParam { plugin, param_index }
+                    });
+                }
+                for effect in self.groups.iter().flat_map(|bus| &bus.effects) {
+                    push_params(&mut targets, effect, 0, |param_index| ModTargetKind::FreeParam { plugin: effect.node, param_index });
+                }
+            }
         }
         targets
     }
@@ -1103,6 +1134,7 @@ impl SessionModel {
                 }
                 push_siblings(&mut targets, &bus.modulators, mod_index);
             }
+            ModulatorLocation::Free => push_siblings(&mut targets, &self.free_modulators, mod_index),
         }
         targets
     }
@@ -1123,6 +1155,7 @@ impl SessionModel {
                 reach.extend(others(&bus.modulators));
                 reach
             }
+            ModulatorLocation::Free => others(&self.free_modulators),
         }
     }
 
@@ -3122,6 +3155,158 @@ plugin = "builtin:drive"
         assert!(model.cables_into_plugin(model.groups[0].node).is_empty());
         assert!(model.cables_into_plugin(first.modulators[1].node).is_empty());
         assert!(model.cables_into_plugin(NodeId(9999)).is_empty());
+    }
+
+    #[test]
+    fn a_free_modulators_cables_are_among_the_cables_into_a_plugin_and_the_free_cables_into_the_plugins_of_a_lane_or_a_group_are_found_by_themselves() {
+        use crate::app::testutil::FREE_MODULATORS;
+        let model = load(FREE_MODULATORS).model;
+        let cable = |modulator: usize, target: usize| model.free_modulators[modulator].targets[target].edge;
+        let (first, second) = (&model.instruments[0], &model.instruments[1]);
+        assert_eq!(model.cables_into_plugin(first.node), [cable(0, 0)]);
+        assert_eq!(model.cables_into_plugin(first.effects[0].node), [cable(0, 1)]);
+        assert_eq!(model.cables_into_plugin(model.groups[0].effects[0].node), [cable(0, 2)]);
+        assert_eq!(model.cables_into_plugin(second.effects[0].node), [cable(1, 0)]);
+        assert!(model.cables_into_plugin(second.node).is_empty(), "nothing drives the second lane's oscillator");
+        // What goes with a lane or a group that goes out, which a free modulator is not part of (its nodes are the lane's own and its effects', or the group's own and its bus effects').
+        assert_eq!(model.free_cables_into(&model.audio_nodes_of_lane(0)), [cable(0, 0), cable(0, 1)]);
+        assert_eq!(model.free_cables_into(&model.audio_nodes_of_lane(1)), [cable(1, 0)]);
+        assert_eq!(model.free_cables_into(&model.audio_nodes_of_group(0)), [cable(0, 2)]);
+        assert!(model.free_cables_into(&[]).is_empty());
+        assert!(model.free_cables_into(&[NodeId(9_999)]).is_empty());
+        // The cables that address a free modulator: the LFO's to the envelope's attack, and the envelope's to the depth of the LFO's first cable.
+        assert_eq!(model.cables_into(ModulatorLocation::Free, 1), [cable(0, 3)]);
+        assert_eq!(model.cables_into(ModulatorLocation::Free, 0), [cable(1, 1)]);
+        // (And a rack that is not there has none to take out; the free rack is always there.)
+        assert!(model.cables_into(ModulatorLocation::Lane(9), 0).is_empty());
+        assert!(model.cables_into(ModulatorLocation::Free, 9).is_empty());
+    }
+
+    /// A session with a free LFO and a free envelope, a modulator in a lane and one in a group, and a lane that has no instrument.
+    const FREE_AMONG_OTHERS: &str = r#"
+[[group]]
+[[group.modulator]]
+type = "lfo"
+
+[[modulator]]
+type = "lfo"
+[[modulator]]
+type = "envelope"
+[[modulator.target]]
+to = "instrument[0]"
+param = "detune"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:reverb"
+[[instrument.modulator]]
+type = "lfo"
+[[instrument.modulator.target]]
+param = "detune"
+
+[[instrument]]
+"#;
+
+    #[test]
+    fn a_free_modulators_reach_is_every_plugin_of_the_session_and_its_free_siblings_and_nothing_that_a_lane_or_a_group_owns() {
+        let model = load(FREE_AMONG_OTHERS).model;
+        let free = ModulatorLocation::Free;
+        let (osc, reverb, empty_lane, group) = (model.instruments[0].node, model.instruments[0].effects[0].node, model.instruments[1].node, model.groups[0].node);
+        let detune = model.instruments[0].instrument.as_ref().unwrap().params.iter().find(|row| row.name == "detune").unwrap().index;
+        let (lane_lfo, group_lfo) = (model.instruments[0].modulators[0].node, model.groups[0].modulators[0].node);
+        let (lane_cable, free_lfo, free_envelope) = (model.instruments[0].modulators[0].targets[0].edge, model.free_modulators[0].node, model.free_modulators[1].node);
+        let param = |plugin: NodeId| Driven::Param { plugin, index: 0 };
+        let setting = |modulator: NodeId| Driven::Setting { modulator, field: ModSetting::Rate };
+        // A plugin: any of them, an instrument's and an effect's; not a lane that has no instrument, a group, or a node that is not there.
+        assert_eq!(model.kind_of(free, 0, Driven::Param { plugin: osc, index: detune }), Some(K::FreeParam { plugin: osc, param_index: detune }));
+        assert_eq!(model.kind_of(free, 0, param(reverb)), Some(K::FreeParam { plugin: reverb, param_index: 0 }));
+        for plugin in [empty_lane, group, NodeId(9_999), free_lfo] {
+            assert_eq!(model.kind_of(free, 0, param(plugin)), None, "{plugin:?}");
+        }
+        // A setting: a free sibling's, not its own, and not that of a modulator of a lane or a group, or the depth of one's cable.
+        assert_eq!(model.kind_of(free, 0, setting(free_envelope)), Some(K::ModulatorRate { mod_index: 1 }));
+        assert_eq!(model.kind_of(free, 1, setting(free_lfo)), Some(K::ModulatorRate { mod_index: 0 }));
+        assert_eq!(model.kind_of(free, 0, setting(free_lfo)), None, "its own");
+        assert_eq!(model.kind_of(free, 0, setting(lane_lfo)), None);
+        assert_eq!(model.kind_of(free, 0, setting(group_lfo)), None);
+        assert_eq!(model.kind_of(free, 0, Driven::Depth(lane_cable)), None);
+        assert_eq!(model.kind_of(free, 0, Driven::Depth(model.free_modulators[1].targets[0].edge)), Some(K::ModulatorDepth { mod_index: 1, target_index: 0 }));
+        // The other way: a lane's rack and a group's do not reach a free modulator.
+        assert_eq!(model.kind_of(ModulatorLocation::Lane(0), 0, setting(free_lfo)), None);
+        assert_eq!(model.kind_of(ModulatorLocation::Group(0), 0, setting(free_lfo)), None);
+        assert_eq!(model.kind_of(ModulatorLocation::Lane(0), 0, param(osc)), Some(K::PluginParam { slot: 0, param_index: 0 }), "(and a lane's own reach is what it was)");
+        // What can be listed to draw: every parameter of every plugin, lanes first, and the other free modulators.
+        let targets = model.param_targets(free);
+        let mut nodes: Vec<NodeId> = Vec::new();
+        for target in &targets {
+            assert!(matches!(target.kind, K::FreeParam { plugin, param_index } if plugin == target.node && param_index == target.param), "{target:?}");
+            if !nodes.contains(&target.node) {
+                nodes.push(target.node);
+            }
+        }
+        assert_eq!(nodes, [osc, reverb], "the lane that has no instrument has none");
+        assert_eq!(model.modulators_in_reach(free, 0), [free_envelope]);
+        assert_eq!(model.modulators_in_reach(free, 1), [free_lfo]);
+        let fields: Vec<(NodeId, CrossModField)> = model.field_targets(free, 0).into_iter().map(|t| (t.node, t.field)).collect();
+        assert!(fields.iter().all(|(node, _)| *node == free_envelope), "{fields:?}");
+        assert!(fields.contains(&(free_envelope, CrossModField::Attack)) && fields.contains(&(free_envelope, CrossModField::Depth(0))), "{fields:?}");
+        assert!(!fields.iter().any(|(_, field)| *field == CrossModField::Rate), "an envelope has no rate");
+    }
+
+    #[test]
+    fn the_free_modulators_are_nodes_after_the_sources_and_their_cables_are_found_like_any_others() {
+        let mut model = load(FREE_AMONG_OTHERS).model;
+        let free: Vec<(NodeId, NodePath)> = model.nodes().filter(|(_, path)| matches!(path, NodePath::Modulator { at: ModulatorLocation::Free, .. })).collect();
+        assert_eq!(free.len(), 2);
+        assert_eq!(free[1].1, NodePath::Modulator { at: ModulatorLocation::Free, index: 1 });
+        let order: Vec<NodeId> = model.nodes().map(|(id, _)| id).collect();
+        assert!(order.iter().position(|id| *id == free[0].0).unwrap() > order.iter().position(|id| *id == model.instruments[1].node).unwrap(), "after the lanes");
+        assert_eq!(model.locate(free[0].0), Some(NodePath::Modulator { at: ModulatorLocation::Free, index: 0 }));
+        let cable = model.free_modulators[1].targets[0].edge;
+        assert_eq!(model.locate_edge(cable), Some((ModulatorLocation::Free, 1, 0)));
+        assert_eq!(model.driven_by_edge(cable), Some(model.free_modulators[1].targets[0].aim));
+        assert!(model.edge_in_use(cable));
+        assert!(model.is_driven(model.free_modulators[1].targets[0].aim));
+        assert_eq!(model.centre_of(model.free_modulators[1].targets[0].aim), Some(0.0), "the oscillator's detune, as set");
+        model.check_ids().unwrap();
+        // A node that two of them share, or a cable that is not alone in its id, is told.
+        let node = model.free_modulators[0].node;
+        model.free_modulators[1].node = node;
+        assert!(model.check_ids().is_err(), "two free modulators with one node");
+        model.free_modulators[1].node = free[1].0;
+        let twin = {
+            let cable = &model.free_modulators[1].targets[0];
+            ModTargetSlot { edge: cable.edge, param_name: cable.param_name.clone(), aim: cable.aim, depth: cable.depth, param_min: cable.param_min, param_max: cable.param_max, effective: cable.effective }
+        };
+        model.free_modulators[0].targets.push(twin);
+        assert!(model.check_ids().is_err(), "two cables with one id");
+    }
+
+    #[test]
+    fn a_plugin_taken_out_of_the_model_takes_the_free_cables_that_drove_it_and_a_free_modulator_taken_out_those_that_drove_its_settings() {
+        let mut model = load(crate::app::testutil::FREE_MODULATORS).model;
+        assert_eq!(model.free_modulators[0].targets.len(), 4);
+        model.remove_effect(0, 0).unwrap();
+        // (The cable to the lane's reverb is gone, the rest of the LFO's are there.)
+        assert_eq!(model.free_modulators[0].targets.len(), 3);
+        assert!(model.free_modulators[0].targets.iter().all(|t| t.param_name != "damping"));
+        model.check_ids().unwrap();
+        // The envelope goes: the LFO's cable to its attack goes with it, and what the envelope drove is no longer driven.
+        let envelope = model.remove_modulator_at(ModulatorLocation::Free, 1).unwrap();
+        assert_eq!(envelope.targets.len(), 2);
+        assert!(model.free_modulators[0].targets.iter().all(|t| !matches!(t.aim, Driven::Setting { .. })), "no cable left that drives nothing");
+        assert_eq!(model.free_modulators[0].targets.len(), 2);
+        model.check_ids().unwrap();
+        // And a lane that goes with its plugins.
+        let mut model = load(crate::app::testutil::FREE_MODULATORS).model;
+        model.remove_lane(0).unwrap();
+        assert_eq!(model.free_modulators[0].targets.len(), 2, "the bus effect's cable and the attack's");
+        // (The envelope's cable to the depth of the LFO's first one, which drove the first lane's oscillator, went with it; its cable to the second lane's filter is untouched.)
+        assert_eq!(model.free_modulators[1].targets.len(), 1);
+        assert!(matches!(model.free_modulators[1].targets[0].aim, Driven::Param { plugin, .. } if plugin == model.instruments[0].effects[0].node));
+        model.check_ids().unwrap();
     }
 
     /// What a rack's modulators can drive, one run per plugin: its node and the kind of target, with the

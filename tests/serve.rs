@@ -953,6 +953,80 @@ async fn a_browser_draws_a_cable_from_one_modulator_to_the_rate_of_another_and_t
     assert!(!cables_of(told).iter().any(|(_, to, port)| *to == lfo && port["type"] == "rate"), "{:?}", cables_of(told));
 }
 
+/// The modulators of a snapshot message that are in no lane and no group: the nodes of kind `modulator` that have no parent.
+fn free_modulators_of(snapshot: &Value) -> Vec<u64> {
+    let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();
+    nodes.iter().filter(|n| n["kind"] == "modulator" && n["parent"].is_null()).map(|n| n["id"].as_u64().unwrap()).collect()
+}
+
+#[tokio::test]
+async fn a_browser_makes_a_modulator_that_is_in_no_lane_and_draws_a_cable_from_it_to_a_parameter_and_the_saved_file_has_it_and_a_program_started_on_it_draws_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("free.toml");
+    std::fs::copy(TRACER, &file).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, _, snapshot) = listening(&tang).await;
+    let (osc, volume) = param_of(&snapshot, "Oscillator", "volume");
+    let (filter, cutoff) = param_of(&snapshot, "Filter", "cutoff");
+    assert!(free_modulators_of(&snapshot).is_empty(), "the tracer has none in no lane");
+
+    // A modulator of its own: told as a snapshot, since a node came, with no parent.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addFreeModulator", "kind": "envelope"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("the structure is told as a snapshot");
+    let free = free_modulators_of(told);
+    assert_eq!(free.len(), 1, "{told}");
+    let free = free[0];
+    let history = said.iter().rfind(|m| m["type"] == "history").cloned().expect("a message of the history");
+    assert_eq!(history, json!({"type": "history", "undo": "add an envelope", "redo": null}));
+
+    // It drives a parameter of the oscillator and one of the filter (the tracer's filter is in the same lane: a free modulator reaches any plugin of the session).
+    for (req, node, param) in [(2, osc, volume), (3, filter, cutoff)] {
+        tell(&mut client, json!({"type": "request", "reqId": req, "intent": {"type": "addModEdge", "modulator": free, "to": {"node": node, "port": {"type": "param", "index": param}}}})).await;
+        let (answered, said) = answer_with_what_came_before(&mut client, req).await;
+        assert_eq!(answered["type"], "ack", "{answered}");
+        let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("the cable is told as a snapshot");
+        assert!(cables_of(told).contains(&(free, node, json!({"type": "param", "index": param}))), "{:?}", cables_of(told));
+    }
+    // The same parameter twice, a group's node and a modulator of a lane are refused, in the controller's words, and nothing changes.
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "addModEdge", "modulator": free, "to": {"node": osc, "port": {"type": "param", "index": volume}}}})).await;
+    let refused = answer(&mut client, 4).await;
+    assert_eq!((refused["type"].clone(), refused["error"]["message"].clone()), (json!("rejected"), json!("that modulator drives that parameter already")), "{refused}");
+
+    // What is saved has the modulator among the tables of the file, and its cables name the plugins by their places.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 5).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("[[modulator]]") && saved.contains("to = \"instrument[0]\"") && saved.contains("param = \"volume\""), "{saved}");
+    assert!(saved.contains("to = \"instrument[0].effect[0]\"") && saved.contains("param = \"cutoff\""), "{saved}");
+
+    // A program started on that file draws it again: the modulator with no parent, and its two cables.
+    drop(client);
+    drop(tang);
+    let again = Tang::start_on(&file);
+    let (mut browser, _, snapshot) = listening(&again).await;
+    let free = free_modulators_of(&snapshot);
+    assert_eq!(free.len(), 1, "{snapshot}");
+    let to_the_oscillator = cables_of(&snapshot).iter().filter(|(from, to, _)| *from == free[0] && *to == osc).count();
+    let to_the_filter = cables_of(&snapshot).iter().filter(|(from, to, _)| *from == free[0] && *to == filter).count();
+    assert_eq!((to_the_oscillator, to_the_filter), (1, 1), "{:?}", cables_of(&snapshot));
+
+    // It is taken out by the intent that takes any node out, and Undo puts it back with its cables; the history of this program begins with that.
+    tell(&mut browser, json!({"type": "request", "reqId": 1, "intent": {"type": "removeNode", "node": free[0]}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut browser, 1).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("told as a snapshot");
+    assert!(free_modulators_of(told).is_empty());
+    assert!(!cables_of(told).iter().any(|(from, ..)| *from == free[0]));
+    tell(&mut browser, json!({"type": "request", "reqId": 2, "intent": {"type": "undo"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut browser, 2).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("told as a snapshot");
+    assert_eq!(free_modulators_of(told), free, "the very node");
+    assert_eq!(cables_of(told).iter().filter(|(from, ..)| *from == free[0]).count(), 2, "with its cables");
+}
+
 /// The audio cables of a snapshot message (the edges of kind `cable`), in the order of its graph.
 fn audio_cables_of(snapshot: &Value) -> Vec<Value> {
     snapshot["snapshot"]["graph"]["edges"].as_array().unwrap().iter().filter(|e| e["kind"] == "cable").cloned().collect()

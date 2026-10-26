@@ -24,6 +24,8 @@ fn rack_word(location: ModulatorLocation, lane: &str, group: &str) -> String {
     match location {
         ModulatorLocation::Lane(inst) => format!("{lane} inst={inst}"),
         ModulatorLocation::Group(of) => format!("{group} group={of}"),
+        // (The words of the free modulators' commands are the group's, with `Free` for `Group` and no place: they have none.)
+        ModulatorLocation::Free => group.replacen("Group", "Free", 1),
     }
 }
 
@@ -717,6 +719,55 @@ depth = 0.5
 [[instrument.modulator.target]]
 mod_release = 1
 depth = 0.6
+"#;
+
+/// Free modulators (`[[modulator]]`: in no lane and no group): an LFO that drives a parameter of a lane's instrument, of an effect of its chain and of a bus effect, and the attack of the
+/// envelope after it, and the envelope, which drives the filter of another lane and the depth of the LFO's first cable.
+pub const FREE_MODULATORS: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+
+[[modulator]]
+type = "lfo"
+rate = 0.5
+[[modulator.target]]
+to = "instrument[0]"
+param = "detune"
+depth = 0.3
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "damping"
+depth = 0.2
+[[modulator.target]]
+to = "group[0].effect[0]"
+param = "cutoff"
+depth = 0.4
+[[modulator.target]]
+mod_attack = 1
+depth = 0.25
+
+[[modulator]]
+type = "envelope"
+attack = 0.05
+[[modulator.target]]
+to = "instrument[1].effect[0]"
+param = "cutoff"
+depth = 0.5
+[[modulator.target]]
+mod_depth = [0, 0]
+depth = 0.1
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:reverb"
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
 "#;
 
 /// A lane with three modulators: the first drives three parameters, the second the depth of the
@@ -1540,8 +1591,8 @@ pub fn model_audio_cables(model: &SessionModel) -> Vec<crate::plugin::chain::Cab
     model.cables.iter().map(|cable| crate::plugin::chain::CableFacts { id: cable.id, from: cable.from, to: cable.to, gain: cable.gain }).collect()
 }
 
-/// Every modulator's cables as the model has them, in the terms and the order of `AudioGraph::cables`: the lanes' racks and then the groups', each modulator with its node and its
-/// cables' ids, what they drive and their depths.
+/// Every modulator's cables as the model has them, in the terms and the order of `AudioGraph::cables`: the lanes' racks, the groups' and then the free modulators', each modulator with
+/// its node and its cables' ids, what they drive and their depths.
 pub fn model_racks(model: &SessionModel) -> crate::plugin::chain::RackCables {
     use crate::plugin::chain::ModulatorLocation;
     let racks = |at: fn(usize) -> ModulatorLocation, i: usize, rack: &[crate::app::model::ModulatorSlot]| -> Vec<_> {
@@ -1558,7 +1609,8 @@ pub fn model_racks(model: &SessionModel) -> crate::plugin::chain::RackCables {
     };
     let lanes = model.instruments.iter().enumerate().flat_map(|(i, lane)| racks(ModulatorLocation::Lane, i, &lane.modulators));
     let groups = model.groups.iter().enumerate().flat_map(|(i, group)| racks(ModulatorLocation::Group, i, &group.modulators));
-    lanes.chain(groups).collect()
+    let free = racks(|_| ModulatorLocation::Free, 0, &model.free_modulators);
+    lanes.chain(groups).chain(free).collect()
 }
 
 /// How the audio thread's racks name what each cable of the modulator at `mod_index` in the rack at `at` drives (`SessionModel::kind_of_target`), for a test that says it.

@@ -2516,6 +2516,7 @@ fn selector_rows(h: &Harness) -> Vec<String> {
             crate::plugin::chain::ModTargetKind::PluginParam { .. }
                 | crate::plugin::chain::ModTargetKind::GroupMember { .. }
                 | crate::plugin::chain::ModTargetKind::GroupBus { .. }
+                | crate::plugin::chain::ModTargetKind::FreeParam { .. }
         );
         let row = if is_param {
             format!("params of {}", item.cells[0])
@@ -2574,6 +2575,219 @@ fn the_target_selector_of_a_group_modulator_lists_the_members_the_members_modula
         "Mod | Mod 2 volume depth | ModulatorDepth { mod_index: 2, target_index: 0 }",
     ];
     assert_eq!(selector_rows(&h), expected);
+}
+
+// -- Free modulators (`F`, P5b-2) --
+
+#[test]
+fn session_free_modulator() {
+    // A free LFO selected: in no lane and no group, it is the first of the tree (magenta), and its pane is a modulator's, with a depth row for each of its four cables (three
+    // parameters of plugins in two lanes and on a bus, and the attack of the free envelope).
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    assert_golden("session_free_modulator", &mut h);
+}
+
+#[test]
+fn the_free_modulators_are_the_first_entries_of_the_tree_and_say_what_their_cables_drive_by_the_lane_and_the_group_of_the_plugin() {
+    let h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    let tree = h.tree();
+    assert!(tree[0].starts_with("~ LFO 0.5Hz sine \u{2192} "), "{tree:?}");
+    assert_eq!(
+        tree[0],
+        "~ LFO 0.5Hz sine \u{2192} L1 Oscillator: detune (30%), L1 Reverb: damping (20%), G1 Filter (bus): cutoff (40%), Mod 1 attack (25%)  (free)"
+    );
+    assert_eq!(tree[1], "~ ADSR \u{2192} L2 Filter: cutoff (50%), Mod 0 depth 0 (10%)  (free)");
+    assert_eq!(h.s.tree_entries[0].address, TreeAddress::FreeModulator { index: 0 });
+    assert_eq!(h.s.tree_entries[1].address, TreeAddress::FreeModulator { index: 1 });
+    assert!(tree[2].starts_with("\u{25a6} Group 1"), "the group comes after them: {tree:?}");
+    assert_eq!(h.s.tree_entries[0].color, Some(Color::Magenta));
+}
+
+#[test]
+fn f_adds_a_free_modulator_in_the_sessions_own_rack_and_puts_the_cursor_on_it() {
+    let mut h = Harness::new(scene_split());
+    h.commands();
+    h.press(KeyCode::Char('F'));
+    assert_eq!(h.s.ctl.model.free_modulators.len(), 1);
+    assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::FreeModulator { index: 0 });
+    assert_eq!(h.tree()[0], "~ LFO 1.0Hz sine  (free)");
+    assert_eq!(h.commands(), ["InsertFreeModulator index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]);
+    // A second one goes after it, and `m` on a free modulator adds one as well.
+    h.press(KeyCode::Char('m'));
+    assert_eq!(h.s.ctl.model.free_modulators.len(), 2);
+    assert_eq!(h.s.tree_entries[h.s.chain_state.selected].address, TreeAddress::FreeModulator { index: 1 });
+    assert!(h.s.ctl.dirty);
+    // Undo takes the last of them out, by the history of what a browser adds too.
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(h.s.ctl.model.free_modulators.len(), 1);
+    h.press_with(KeyCode::Char('y'), KeyModifiers::CONTROL);
+    assert_eq!(h.s.ctl.model.free_modulators.len(), 2);
+}
+
+#[test]
+fn f_in_the_parameter_pane_is_not_a_key() {
+    let mut h = Harness::new(scene_split());
+    h.press(KeyCode::Enter).press(KeyCode::Char('F'));
+    assert!(h.s.ctl.model.free_modulators.is_empty());
+}
+
+#[test]
+fn the_target_selector_of_a_free_modulator_lists_every_plugin_of_the_session_and_the_siblings_settings() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.press(KeyCode::Char('t'));
+    let expected: Vec<&str> = vec![
+        "params of L1 Oscillator",
+        "params of L1 Reverb",
+        "params of L2 Oscillator",
+        "params of L2 Filter",
+        "params of G1 Filter",
+        "Mod | Mod 1 attack | ModulatorAttack { mod_index: 1 }",
+        "Mod | Mod 1 decay | ModulatorDecay { mod_index: 1 }",
+        "Mod | Mod 1 sustain | ModulatorSustain { mod_index: 1 }",
+        "Mod | Mod 1 release | ModulatorRelease { mod_index: 1 }",
+        "Mod | Mod 1 cutoff depth | ModulatorDepth { mod_index: 1, target_index: 0 }",
+        "Mod | Mod 1 Mod 0 depth 0 depth | ModulatorDepth { mod_index: 1, target_index: 1 }",
+    ];
+    assert_eq!(selector_rows(&h), expected);
+}
+
+#[test]
+fn the_target_selector_binds_the_chosen_parameter_to_the_free_modulator() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 1 });
+    h.commands();
+    // The first row: the first parameter of the first lane's oscillator (`waveform`).
+    h.press(KeyCode::Char('t')).press(KeyCode::Enter);
+    let osc = h.s.ctl.model.instruments[0].node;
+    assert_eq!(h.commands(), [format!("AddFreeModTarget mod=1 aim=Param {{ plugin: NodeId({}), index: 0 }} depth=0.500 base=0.000 range=[0.000, 4.000]", osc.0)]);
+    let cables = &h.s.ctl.model.free_modulators[1].targets;
+    assert_eq!(cables.len(), 3, "the envelope had two");
+    assert_eq!(cables[2].param_name, "waveform");
+    assert_eq!(h.s.ctl.model.kind_of_target(ModulatorLocation::Free, 1, 2), Some(crate::plugin::chain::ModTargetKind::FreeParam { plugin: osc, param_index: 0 }));
+    assert!(h.tree()[1].contains("L1 Oscillator: waveform (50%)"), "{:?}", h.tree());
+    // A parameter that it drives already is not drawn again (the controller refuses it, and nothing is sent).
+    h.goto(TreeAddress::FreeModulator { index: 1 });
+    h.press(KeyCode::Char('t')).press(KeyCode::Enter);
+    assert_eq!(h.s.ctl.model.free_modulators[1].targets.len(), 3);
+    assert!(h.commands().is_empty());
+}
+
+#[test]
+fn the_rows_of_a_free_modulators_pane_are_edited_as_a_lanes_are_and_the_audio_thread_is_told_by_the_free_rack() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.press(KeyCode::Enter);
+    h.commands();
+    // Rows: Type, Waveform, Rate, Sync, Retrigger, Fade, Targets, then the cables' depths. The rate is the third.
+    h.press_n(KeyCode::Down, 2).press(KeyCode::Right);
+    let commands = h.commands();
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert!(commands[0].starts_with("SetFreeModulatorRate mod=0 rate="), "{commands:?}");
+    assert!(matches!(h.s.ctl.model.free_modulators[0].source, ModSourceSlot::Lfo { rate, .. } if rate > 0.5));
+    // A number typed for the first cable's depth (the eighth row), by Enter.
+    h.press_n(KeyCode::Down, 5).press(KeyCode::Enter).press_n(KeyCode::Backspace, 6).type_chars("0.8").press(KeyCode::Enter);
+    assert!(h.commands().iter().any(|c| c.starts_with("SetFreeModTargetDepth mod=0 target=0 depth=0.800")), "the depth is told by the free rack");
+    assert_eq!(h.s.ctl.model.free_modulators[0].targets[0].depth, 0.8);
+    // The waveform, one along.
+    h.press(KeyCode::Esc);
+    on_modulator_row(&mut h, TreeAddress::FreeModulator { index: 0 }, 1);
+    h.press(KeyCode::Right);
+    assert!(matches!(h.s.ctl.model.free_modulators[0].source, ModSourceSlot::Lfo { waveform, .. } if waveform != crate::plugin::chain::LfoWaveform::Sine));
+}
+
+#[test]
+fn the_type_row_of_a_free_modulator_switches_it_with_the_commands_of_the_free_rack() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.press(KeyCode::Enter);
+    h.commands();
+    h.press(KeyCode::Right);
+    assert!(matches!(h.s.ctl.model.free_modulators[0].source, ModSourceSlot::Envelope { .. }));
+    let commands = h.commands();
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert!(commands[0].starts_with("SetFreeModulatorSource mod=0 source=Envelope"), "{commands:?}");
+}
+
+#[test]
+fn d_on_a_free_modulator_takes_it_out_with_its_cables_and_undo_puts_it_back() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.commands();
+    h.press(KeyCode::Char('d'));
+    assert_eq!(h.s.ctl.model.free_modulators.len(), 1);
+    assert!(h.tree()[0].starts_with("~ ADSR"), "{:?}", h.tree());
+    // (The envelope's cable to the depth of the LFO's first cable went with it, and what the LFO drove has the value that was set.)
+    assert_eq!(h.s.ctl.model.free_modulators[0].targets.len(), 1);
+    let commands = h.commands();
+    assert!(commands.iter().any(|c| c.starts_with("RemoveFreeModulator index=0")), "{commands:?}");
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(h.s.ctl.model.free_modulators.len(), 2);
+    assert_eq!(h.s.ctl.model.free_modulators[0].targets.len(), 4);
+    assert_eq!(h.s.ctl.model.free_modulators[1].targets.len(), 2);
+}
+
+#[test]
+fn a_plugin_that_goes_takes_the_cable_of_a_free_modulator_out_of_the_tree() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    assert!(h.tree()[0].contains("L1 Reverb: damping"));
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 }).press(KeyCode::Char('d'));
+    assert!(!h.tree()[0].contains("Reverb"), "{:?}", h.tree());
+    assert_eq!(h.s.ctl.model.free_modulators[0].targets.len(), 3);
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!(h.tree()[0].contains("L1 Reverb: damping (20%)"), "{:?}", h.tree());
+}
+
+#[test]
+fn m_in_the_pane_of_a_free_modulators_rate_opens_the_popup_that_lists_the_other_free_modulators() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.press(KeyCode::Enter).press_n(KeyCode::Down, 2);
+    h.press(KeyCode::Char('m'));
+    let popup = h.s.modulate.as_ref().expect("the popup is open");
+    assert_eq!(popup.scope, ModulatorLocation::Free);
+    assert!(popup.items.iter().any(|item| item.cells[0].starts_with("attach \u{2192} ADSR")), "the envelope, which is a sibling and no other");
+    assert!(!popup.items.iter().any(|item| item.cells[0].contains("LFO") && item.cells[0].starts_with("attach")), "not itself");
+}
+
+#[test]
+fn learning_the_rate_of_a_free_modulator_arms_a_midi_modulator_in_the_free_rack() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.press(KeyCode::Enter).press_n(KeyCode::Down, 2);
+    h.commands();
+    h.press(KeyCode::Char('l'));
+    assert_eq!(h.s.ctl.model.free_modulators.len(), 3);
+    assert!(matches!(h.s.ctl.model.free_modulators[2].source, ModSourceSlot::MidiLearn { source: None, learning: true }));
+    assert_eq!(h.s.ctl.model.kind_of_target(ModulatorLocation::Free, 2, 0), Some(crate::plugin::chain::ModTargetKind::ModulatorRate { mod_index: 0 }));
+    let commands = h.commands();
+    assert!(commands[0].starts_with("InsertFreeModulator index=2 source=MidiLearn"), "{commands:?}");
+}
+
+#[test]
+fn a_control_that_a_free_modulator_learns_is_bound_and_shown_in_the_tree() {
+    let mut h = Harness::new("[[modulator]]\ntype = \"midi\"\n[[instrument]]\nplugin = \"builtin:osc\"\n");
+    assert_eq!(h.tree()[0], "~ MIDI (learning\u{2026})  (free)");
+    h.learn_tx
+        .send(MidiLearnedNotification { location: ModulatorLocation::Free, mod_index: 0, source: MidiBindSource::Cc(74) })
+        .unwrap();
+    h.press(KeyCode::Down).press(KeyCode::Up);
+    h.s.ctl.poll();
+    h.s.rebuild_tree();
+    assert!(matches!(h.s.ctl.model.free_modulators[0].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(74)), learning: false }));
+    assert!(h.tree()[0].starts_with("~ CC 74"), "{:?}", h.tree());
+}
+
+#[test]
+fn a_free_modulator_has_no_signal_to_look_at_and_a_lane_that_goes_does_not_leave_the_cursor_on_it() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    assert!(h.s.selected_signal().is_none());
+    assert_eq!(h.s.selected_lane_or_group(), None, "no lane and no group: M, S and w have nothing to do");
+    h.press(KeyCode::Char('M')).press(KeyCode::Char('a')).press(KeyCode::Char('g')).press(KeyCode::Char('x')).press(KeyCode::Char('p'));
+    assert!(h.s.selector.is_none() && h.s.group_assign.is_none() && h.s.gain_editing.is_none() && h.s.preset_selector.is_none());
+    assert!(h.s.ctl.model.instruments.iter().all(|lane| !lane.muted));
 }
 
 /// `(slot, param_name, kind, depth, min, max)` of every target of a modulator.
