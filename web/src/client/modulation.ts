@@ -5,14 +5,16 @@
 // parameter's base value, the offsets add up, and the sum is clamped to the parameter's range.
 // A lane in a group can have cables to one parameter from its own modulators and from its group's: the
 // group's are applied before the lane renders and the lane's later, each from the value the user set, so
-// those of the lane stand alone (`modulationsOn`).
+// those of the lane stand alone (`modulationsOn`). A modulator that is in no lane and no group (the session's own, step 91) is applied before
+// both, so that the nearer to the plugin wins: a lane's, else a group's, else the free ones', which add up among themselves.
 // A setting of a modulator (an LFO's rate, a stage of an envelope, the depth of a cable) is
 // different: its cables each write it from the value the user set, and the last stands
 // (`apply_cross_mod`), so `settingExtent` is the extent of the last cable alone. And one that is turned on a
 // log scale (a rate, an attack, a decay, a release) is moved a fraction of the knob's travel, in ratios, as the
 // knob shows it (`Modulator::modulated_value`).
 import type { Graph, ModulatorSource, NodeId, Port } from "../protocol";
-import { samePort } from "./reach";
+import { NEARNESS, ownerOf, samePort } from "./reach";
+import type { Owner } from "./reach";
 import { fractionOf, isLog, valueAt } from "./travel";
 import type { Scale } from "./travel";
 
@@ -22,10 +24,10 @@ export interface Modulation {
   amount: number;
 }
 
-/** A modulator that drives a place, with whose it is: a group's or a lane's. */
+/** A modulator that drives a place, with whose it is: a lane's, a group's or the session's. */
 interface Driver {
   modulation: Modulation;
-  ofGroup: boolean;
+  owner: Owner;
 }
 
 /** The modulators that drive the place `port` of `node`, in the order of the graph's edges, each with whose it is. */
@@ -35,8 +37,7 @@ function driversAt(graph: Graph, node: NodeId, port: Port): Driver[] {
     if (edge.kind !== "modulation" || edge.to.node !== node || !samePort(edge.to.port, port)) continue;
     const modulator = graph.nodes.find((candidate) => candidate.id === edge.from.node);
     if (modulator?.kind !== "modulator") continue;
-    const owner = graph.nodes.find((candidate) => candidate.id === modulator.parent);
-    found.push({ modulation: { source: modulator.source, amount: edge.amount }, ofGroup: owner?.kind === "group" });
+    found.push({ modulation: { source: modulator.source, amount: edge.amount }, owner: ownerOf(graph.nodes, modulator) });
   }
   return found;
 }
@@ -52,15 +53,15 @@ export function modulationsAt(graph: Graph, node: NodeId, port: Port): Modulatio
 
 /**
  * The modulators that drive parameter `index` of the plugin in `node`, in the order of the graph's edges, and whose offsets add up. A lane
- * that is in a group can be driven by its own modulators and by its group's. The engine applies the group's before the lane renders and the
- * lane's later, each from the value the user set (`apply_group_mod_writes`, then `apply_modulators_to_chain`), so that a parameter that any
- * modulator of the lane drives, one whose control is not bound yet too, is the lane's alone: the group's offsets are not added to its. A bus
- * effect has the group's only.
+ * that is in a group can be driven by its own modulators and by its group's, and any plugin by the session's own (a modulator that is in no lane and no group). The engine applies the
+ * session's first, then the group's before the lane renders and the lane's later, each from the value the user set (`apply_free_modulators`, `apply_group_mod_writes`, then
+ * `apply_modulators_to_chain`), so that a parameter that any modulator of the lane drives, one whose control is not bound yet too, is the lane's alone: the group's and the session's offsets are
+ * not added to its; and one that a group's modulator drives is the group's, and the session's are not added to it. A bus effect has the group's, else the session's.
  */
 export function modulationsOn(graph: Graph, node: NodeId, index: number): Modulation[] {
   const drivers = driversAt(graph, node, { type: "param", index });
-  const lanes = drivers.filter((driver) => !driver.ofGroup);
-  return (lanes.length > 0 ? lanes : drivers).map((driver) => driver.modulation);
+  const nearest = Math.min(...drivers.map((driver) => NEARNESS[driver.owner]));
+  return drivers.filter((driver) => NEARNESS[driver.owner] === nearest).map((driver) => driver.modulation);
 }
 
 /** The lowest and highest offset one modulator can add to `base` on a parameter of range `min`…`max`; null if it adds none. */

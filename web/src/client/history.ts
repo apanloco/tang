@@ -272,12 +272,10 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
   const added = (label: string): Plan => ({ added: { label, intent, at: now } });
   const catalogName = (plugin: string): string | undefined => catalog.find((entry) => entry.id === plugin)?.name;
   switch (intent.type) {
-    // (What is done to a pattern is no step: it is not put back by undo, and does not forget what was done before it. Nor is the free modulator that the mock engine has none of yet, which it
-    // refuses: P5b-3 gives the page its "+ Modulator", and the mock engine the step.)
+    // (What is done to a pattern is no step: it is not put back by undo, and does not forget what was done before it.)
     case "setRecording":
     case "clearPattern":
     case "setPatternField":
-    case "addFreeModulator":
     case "save":
     case "saveAs":
     case "undo":
@@ -399,7 +397,9 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       const name = catalogName(intent.plugin);
       return name === undefined ? "nothing" : added(`add ${name}`);
     }
+    // (A modulator that is in no lane and no group is added in the words of the button that adds one to a lane: undo takes it out, with its cables.)
     case "addModulator":
+    case "addFreeModulator":
       return added(`add ${MODULATOR_LABELS[intent.kind]}`);
     case "addModEdge":
       return added("draw a cable");

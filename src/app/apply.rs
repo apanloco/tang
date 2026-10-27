@@ -4479,6 +4479,22 @@ type = "midi"
         (engine, ctl)
     }
 
+    /// `reaching()` and the session's own rack: an LFO and an envelope that are in no lane and no group, the LFO with a cable to the first lane's detune and the envelope with one to its filter's resonance (so that each has a cable whose
+    /// depth the other can drive, and neither drives a setting or the first parameter of a plugin, which the fixture's cables are tried to: the page's `reachFrom` and `fieldsOf` do not look at what a modulator drives already, as the
+    /// controller does): every kind of rack in one session, for what the page's rules say of a
+    /// modulator that has no parent (`web/src/client/fixtures/freeReach.json`).
+    fn reaching_with_free() -> (StubEngine, Controller) {
+        let (engine, mut ctl) = reaching();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }).unwrap();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope }).unwrap();
+        let (lfo, envelope) = (ctl.model.free_modulators[0].node, ctl.model.free_modulators[1].node);
+        let (osc, (detune, _)) = (ctl.model.instruments[0].node, param(&ctl, NodePath::Instrument(0), "detune"));
+        ctl.apply(cable_to(lfo, osc, detune)).unwrap();
+        let (filter, (resonance, _)) = (ctl.model.instruments[0].effects[0].node, param(&ctl, NodePath::Effect { inst: 0, index: 0 }, "resonance"));
+        ctl.apply(cable_to(envelope, filter, resonance)).unwrap();
+        (engine, ctl)
+    }
+
     fn cable_to(modulator: NodeId, node: NodeId, param: u32) -> Intent {
         Intent::AddModEdge { modulator, to: Endpoint { node, port: Port::Param { index: param } } }
     }
@@ -4568,10 +4584,16 @@ type = "midi"
     }
 
     /// Where a client may draw a cable from a modulator, as it can tell from the graph alone, by the `parent` of
-    /// each node (`reachFrom` in `web/src/app/patch/reach.ts` is the same rule): a lane's modulator reaches the
-    /// plugins in its lane, a group's the plugins of the lanes that are its members and its own bus effects.
+    /// each node (`reachFrom` in `web/src/client/reach.ts` is the same rule): a lane's modulator reaches the
+    /// plugins in its lane, a group's the plugins of the lanes that are its members and its own bus effects, and
+    /// one that has no parent (it is in no lane and no group) every plugin of the session.
     fn reach_by_parent(graph: &Graph, modulator: NodeId) -> Vec<NodeId> {
         let node = |id: NodeId| graph.nodes.iter().find(|n| n.id == id).unwrap();
+        if node(modulator).parent.is_none() {
+            let mut every: Vec<NodeId> = graph.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Effect { .. } | NodeKind::Instrument { plugin: Some(_), .. })).map(|n| n.id).collect();
+            every.sort();
+            return every;
+        }
         let children = |id: NodeId| graph.nodes.iter().filter(move |n| n.parent == Some(id));
         let is_effect = |n: &&crate::app::graph::Node| matches!(n.kind, NodeKind::Effect { .. });
         // The chain of a lane: its instrument, if it has one (the lane's own node), and the effects whose parent it is.
@@ -4579,7 +4601,7 @@ type = "midi"
             let instrument = matches!(lane.kind, NodeKind::Instrument { plugin: Some(_), .. }).then_some(lane.id);
             instrument.into_iter().chain(children(lane.id).filter(is_effect).map(|n| n.id)).collect()
         };
-        let owner = node(node(modulator).parent.expect("a modulator sits in a lane or a group"));
+        let owner = node(node(modulator).parent.expect("a modulator that has a parent sits in a lane or a group"));
         let mut found: Vec<NodeId> = match owner.kind {
             NodeKind::Group { .. } => {
                 let bus = children(owner.id).filter(is_effect).map(|n| n.id);
@@ -4610,10 +4632,15 @@ type = "midi"
 
     /// The plugins the controller lets `modulator` draw a cable to: a cable to each is tried on a session of its own.
     fn reach_by_controller(modulator: NodeId, plugins: &[(NodeId, u32)]) -> Vec<NodeId> {
+        reach_by_controller_on(reaching, modulator, plugins)
+    }
+
+    /// The plugins the controller lets `modulator` draw a cable to, in the session that `make` makes (each cable is tried in a session of its own).
+    fn reach_by_controller_on(make: fn() -> (StubEngine, Controller), modulator: NodeId, plugins: &[(NodeId, u32)]) -> Vec<NodeId> {
         let mut reached: Vec<NodeId> = plugins
             .iter()
             .filter(|&&(node, param)| {
-                let (_engine, mut fresh) = reaching();
+                let (_engine, mut fresh) = make();
                 fresh.apply(cable_to(modulator, node, param)).is_ok()
             })
             .map(|&(node, _)| node)
@@ -4665,6 +4692,62 @@ type = "midi"
         let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
 
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/reach.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what the session reaches now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn add_mod_edge_reaches_what_a_client_can_tell_from_the_graph_for_a_modulator_that_is_in_no_lane_and_no_group_too() {
+        let (_engine, ctl) = reaching_with_free();
+        let graph = ctl.model.graph();
+        let plugins = plugins_to_try(&ctl);
+        let modulators = modulators_of(&ctl);
+        assert_eq!(modulators.len(), 8, "six in lanes and groups, and two that are in neither");
+        let mut reached = Vec::new();
+        for modulator in modulators {
+            let by_controller = reach_by_controller_on(reaching_with_free, modulator, &plugins);
+            assert_eq!(by_controller, reach_by_parent(&graph, modulator), "{modulator:?}");
+            reached.push(by_controller.len());
+        }
+        // The six that are in a lane or a group reach what they did; the two that are in neither reach every plugin there is (the lane that has none has nothing to draw a cable to).
+        assert_eq!(reached, [4, 3, 2, 1, 2, 0, 9, 9]);
+    }
+
+    /// The session of `reaching_with_free()`, and what the controller lets each of its modulators draw a cable to: the plugins (`reach`), and the settings and cable depths of other modulators (`fields`), as the
+    /// web client's tests read it (`web/src/client/fixtures/freeReach.json`): they pin the rules the client draws its valid targets by (`reachFrom`, `fieldsOf`) to the controller's for a modulator that is in no lane
+    /// and no group, which reaches every plugin and the other modulators like it. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_modulator_that_is_in_no_lane_reaches_is_current() {
+        let (_engine, ctl) = reaching_with_free();
+        let plugins = plugins_to_try(&ctl);
+        let to_try = every_field_to_try(&ctl);
+        let modulators = modulators_of(&ctl);
+        let reach: std::collections::BTreeMap<String, Vec<NodeId>> =
+            modulators.iter().map(|&modulator| (modulator.0.to_string(), reach_by_controller_on(reaching_with_free, modulator, &plugins))).collect();
+        let fields: std::collections::BTreeMap<String, Vec<serde_json::Value>> = modulators
+            .iter()
+            .map(|&modulator| {
+                let reached = fields_reached_by_the_controller_on(reaching_with_free, modulator, &to_try);
+                (modulator.0.to_string(), reached.into_iter().map(|(node, port)| serde_json::json!({ "node": node, "port": port })).collect())
+            })
+            .collect();
+        // Through the text the wire carries, so that the numbers read as they do there.
+        let wire = serde_json::to_string(&ctl.snapshot()).unwrap();
+        let mut snapshot: serde_json::Value = serde_json::from_str(&wire).unwrap();
+        // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let fixture = serde_json::json!({ "snapshot": snapshot, "reach": reach, "fields": fields });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/freeReach.json");
         if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
             std::fs::write(&path, &fresh).unwrap();
             return;
@@ -4947,17 +5030,22 @@ type = "midi"
     /// The settings and the cable depths the controller lets `modulator` draw a cable to, on the session of `racks()`: a cable to each
     /// is tried on a session of its own, and the ones that are drawn are (the node of the modulator that has it, and the port).
     fn fields_reached_by_the_controller(modulator: NodeId, ports: &[(NodeId, Port)]) -> Vec<(NodeId, Port)> {
+        fields_reached_by_the_controller_on(racks, modulator, ports)
+    }
+
+    /// The same on the session that `make` makes.
+    fn fields_reached_by_the_controller_on(make: fn() -> (StubEngine, Controller), modulator: NodeId, ports: &[(NodeId, Port)]) -> Vec<(NodeId, Port)> {
         ports
             .iter()
             .copied()
             .filter(|&(node, port)| {
-                let (_engine, mut fresh) = racks();
+                let (_engine, mut fresh) = make();
                 fresh.apply(cable_to_field(modulator, node, port)).is_ok()
             })
             .collect()
     }
 
-    /// Every setting and every cable depth of every modulator of the session of `racks()`, that a cable could be tried to.
+    /// Every setting and every cable depth of every modulator of a session (that of `racks()`, or of `reaching_with_free()`), that a cable could be tried to.
     fn every_field_to_try(ctl: &Controller) -> Vec<(NodeId, Port)> {
         let mut ports = Vec::new();
         for (node, path) in ctl.model.nodes() {

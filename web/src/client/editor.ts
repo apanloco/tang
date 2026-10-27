@@ -110,6 +110,18 @@ export class Editor {
   }
 
   /**
+   * Add a modulator of `kind` that is in no lane and no group, the session's own: a cable from it can end at a parameter of any plugin, and at the settings of the other modulators like it. Resolves
+   * with the id of the node it made, which the canvas is asked to show, or with null if it was refused (the page says why). As for `addModulator`: the node is the last modulator with no parent that the
+   * session did not have before.
+   */
+  async addFreeModulator(kind: ModulatorKind): Promise<NodeId | null> {
+    const before = new Set(this.#graph?.nodes.map((node) => node.id));
+    if (!(await this.#attempt(`add ${MODULATOR_LABELS[kind]} of its own`, { type: "addFreeModulator", kind }))) return null;
+    const added = this.#graph?.nodes.filter((node) => node.kind === "modulator" && node.parent === null && !before.has(node.id));
+    return this.#shown(added?.at(-1)?.id);
+  }
+
+  /**
    * Add a source of notes to the session: the keys (the computer's keys and the page's piano), or a device, called by the name of the MIDI input it stands for (or as much of it as tells it:
    * the server tidies the name). Every lane that no cable of notes ends at hears it. Resolves with the id of the node it made, which the canvas is asked to show, or with null if it was refused
    * (the page says why). The node is the last source there is (a source goes after the others): two clients adding at once may be given each other's, which is as good.

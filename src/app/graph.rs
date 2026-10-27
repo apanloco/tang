@@ -356,9 +356,9 @@ impl From<MidiBindSource> for MidiControl {
 
 impl SessionModel {
     /// The session as a graph: the sources of notes first, then groups (each followed by its bus effects and
-    /// modulators), then lanes (each followed by its effects and modulators), then
-    /// the master. The edges are the audio path, the sources' links to the lanes that hear every source, the audio cables, the event cables, then the modulation targets in the
-    /// order of the nodes that own them.
+    /// modulators), then lanes (each followed by its effects and modulators), then the modulators that are in no lane and
+    /// no group (they have no parent), then the master. The edges are the audio path, the sources' links to the lanes that hear every source, the audio cables, the event cables, then the
+    /// modulation targets in the order of the nodes that own them: the groups' modulators', the lanes' and the free ones'.
     pub fn graph(&self) -> Graph {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();

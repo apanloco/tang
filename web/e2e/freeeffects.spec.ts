@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { expect, test as mock } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-import { audioIn, audioOut, drag, node, nodeBoxes, open, output, port, sends, showAll } from "./canvas";
+import { audioIn, audioOut, drag, flowBoxes, node, nodeBoxes, open, output, port, sends, showAll } from "./canvas";
 import { test } from "./own";
 import { heardAt, silentAt } from "./sound";
 
@@ -13,17 +13,6 @@ import { heardAt, silentAt } from "./sound";
 
 /** The button in the bar that adds an effect. */
 const addEffect = (page: Page) => page.getByRole("button", { name: "Add an effect", exact: true });
-
-/** Where each node is on the canvas in the canvas's own units, from its transform (the view, which moves to show a node that was added and may zoom, changes none of them). */
-async function flowBoxes(page: Page): Promise<{ name: string; x: number; y: number; width: number; height: number }[]> {
-  return page.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>(".react-flow__node")].flatMap((element) => {
-      const found = /translate\((-?[\d.e-]+)px,\s*(-?[\d.e-]+)px\)/.exec(element.style.transform);
-      if (!found) return [];
-      return [{ name: element.querySelector(".tang-node__name")?.textContent ?? "?", x: Number(found[1]), y: Number(found[2]), width: element.offsetWidth, height: element.offsetHeight }];
-    }),
-  );
-}
 
 /** Add the effect `name` that stands by itself, from the bar. */
 async function add(page: Page, name: string): Promise<void> {

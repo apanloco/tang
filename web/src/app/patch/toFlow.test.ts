@@ -2337,8 +2337,8 @@ describe("a lane that only holds effects", () => {
     for (const id of [1, 2, 3, 4, 5]) expect(at(back, id).position, String(id)).toEqual(at(first, id).position);
   });
 
-  test("lays a modulator that is in no lane and no group out as a node of its own, and draws its cables, until the page has a place of its own for it", () => {
-    // (A free modulator: the server says it has no parent. The page draws it in the row below the strips, as it does a node whose parent is not there, and its cable runs to the parameter.)
+  test("lays a modulator that is in no lane and no group out as a node of its own, and draws its cables", () => {
+    // (A free modulator: the server says it has no parent. The page draws it in a row above the first lane's, and its cable runs down to the parameter.)
     const free: Node = { ...modulator(30, 1), parent: null };
     const graph: Graph = { nodes: [instrument(1), effect(2, 1), free, master], edges: [audio(1, 2), audio(2, MASTER), cable(0, 30, 2, 1)] };
     const flow = toFlow(graph);
@@ -2348,6 +2348,57 @@ describe("a lane that only holds effects", () => {
     // And it stays where it was while the canvas is not arranged, as every node does.
     const again = toFlow({ ...graph, nodes: [...graph.nodes.slice(0, 2), { ...free }, master] }, flow.places);
     expect(at(again, 30).position).toEqual(at(flow, 30).position);
+  });
+
+  test("puts the modulators that are in no lane and no group in a row above the lanes, a column each from the first, and the lanes below it with the room that a cable needs", () => {
+    const free = (id: NodeId): Node => ({ ...modulator(id, 1), parent: null });
+    const graph: Graph = {
+      nodes: [instrument(1), effect(2, 1), instrument(3), free(30), free(31), master],
+      edges: [audio(1, 2), audio(2, MASTER), audio(3, MASTER), cable(0, 30, 2, 1), cable(1, 31, 1, 1)],
+    };
+    const bare: Graph = { nodes: [instrument(1), effect(2, 1), instrument(3), master], edges: [audio(1, 2), audio(2, MASTER), audio(3, MASTER)] };
+    const flow = toFlow(graph);
+    expect([30, 31].map((id) => at(flow, id).position)).toEqual([
+      { x: 0, y: 0 },
+      { x: COLUMN, y: 0 },
+    ]);
+    // The lanes are as far down as the row of them and the room for a cable to leave it (CABLE_GAP) make, and no more: the lane that was first is the first, and the strips keep their gaps.
+    const room = Math.max(tall(graph, 30), tall(graph, 31)) + CABLE_GAP;
+    for (const id of [1, 2, 3]) expect(at(flow, id).position.y, String(id)).toBe(at(toFlow(bare), id).position.y + room);
+    for (const id of [1, 2, 3]) expect(at(flow, id).position.x, String(id)).toBe(at(toFlow(bare), id).position.x);
+    expect(overlapsIn(graph, flow)).toBeNull();
+    // A session that has none has no room for them: the lanes are where they were.
+    expect(at(toFlow(bare), 1).position.y).toBe(0);
+  });
+
+  test("puts a modulator that is in no lane and no group, and drives a setting of another, a row above it, in its column, as it does in a lane's rack", () => {
+    const free = (id: NodeId): Node => ({ ...modulator(id, 1), parent: null });
+    const drives: Edge = { kind: "modulation", id: 2, amount: 0.5, from: { node: 30, port: { type: "modOut" } }, to: { node: 31, port: { type: "rate" } } };
+    const graph: Graph = { nodes: [instrument(1), effect(2, 1), free(30), free(31), master], edges: [audio(1, 2), audio(2, MASTER), cable(0, 31, 2, 1), drives] };
+    const flow = toFlow(graph);
+    expect(at(flow, 30).position.x).toBe(at(flow, 31).position.x);
+    expect(at(flow, 31).position.y - at(flow, 30).position.y).toBe(tall(graph, 30) + CABLE_GAP);
+    // The lane is below both rows: the room of the one that drives and of the one it drives.
+    expect(at(flow, 1).position.y).toBe(tall(graph, 30) + CABLE_GAP + tall(graph, 31) + CABLE_GAP);
+    expect(overlapsIn(graph, flow)).toBeNull();
+  });
+
+  test("puts a modulator that is added to a canvas that has been laid out above the first lane, where that lane stayed, and moves nothing", () => {
+    const lanes: Graph = { nodes: [instrument(1), effect(2, 1), instrument(3), master], edges: [audio(1, 2), audio(2, MASTER), audio(3, MASTER)] };
+    const first = toFlow(lanes);
+    const free: Node = { ...modulator(30, 1), parent: null };
+    const added: Graph = { nodes: [instrument(1), effect(2, 1), instrument(3), free, master], edges: [...lanes.edges, cable(0, 30, 2, 1)] };
+    const next = toFlow(added, first.places);
+    for (const id of [1, 2, 3, MASTER]) expect(at(next, id).position, String(id)).toEqual(at(first, id).position);
+    // It is above the first lane with the room that a cable needs between them, and not on the lane (where the layout from nothing would have put the lane below it).
+    expect(at(next, 30).position).toEqual({ x: 0, y: at(first, 1).position.y - tall(added, 30) - CABLE_GAP });
+    expect(overlapsIn(added, next)).toBeNull();
+    // The canvas laid out from nothing has the lanes below it instead (what "Arrange" does).
+    expect(at(toFlow(added), 30).position).toEqual({ x: 0, y: 0 });
+    expect(at(toFlow(added), 1).position.y).toBe(tall(added, 30) + CABLE_GAP);
+    // And it stays where it was when the canvas is laid out again with the lanes and it where they are.
+    const again = toFlow(added, next.places);
+    for (const id of [1, 2, 3, 30]) expect(at(again, id).position, String(id)).toEqual(at(next, id).position);
   });
 
   test("is not among the nodes that the layout puts in a row below because it has no place for them: a node whose parent is not there is first in that row", () => {

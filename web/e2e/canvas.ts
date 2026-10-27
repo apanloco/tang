@@ -117,6 +117,17 @@ export async function nodeBoxes(page: Page): Promise<{ name: string; left: numbe
   );
 }
 
+/** Where each node is on the canvas in the canvas's own units, from its transform (the view, which moves to show a node that was added and may zoom, changes none of them). */
+export async function flowBoxes(page: Page): Promise<{ name: string; x: number; y: number; width: number; height: number }[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>(".react-flow__node")].flatMap((element) => {
+      const found = /translate\((-?[\d.e-]+)px,\s*(-?[\d.e-]+)px\)/.exec(element.style.transform);
+      if (!found) return [];
+      return [{ name: element.querySelector(".tang-node__name")?.textContent ?? "?", x: Number(found[1]), y: Number(found[2]), width: element.offsetWidth, height: element.offsetHeight }];
+    }),
+  );
+}
+
 /** No node of the canvas lies over another (a pixel of slack: the browser rounds). */
 export async function expectNodesApart(page: Page): Promise<void> {
   const nodes = await nodeBoxes(page);

@@ -11,6 +11,7 @@ import builtins from "./fixtures/builtins.catalog.json";
 import builtinInstrumentNodes from "./fixtures/builtins.instruments.json";
 import fields from "./fixtures/fields.json";
 import filenames from "./fixtures/filenames.json";
+import freeReach from "./fixtures/freeReach.json";
 import groups from "./fixtures/groups.json";
 import history from "./fixtures/history.json";
 import inputs from "./fixtures/inputs.json";
@@ -47,6 +48,13 @@ export const audibleCablesFixture = audibleCables as unknown as { groups: number
  * the controller (`the_web_clients_fixture_of_what_a_modulator_reaches_is_current`).
  */
 export const reachFixture = reach as unknown as { snapshot: Snapshot; reach: Record<string, number[]> };
+
+/**
+ * The session of `reachFixture` with the session's own rack in it: two modulators that are in no lane and no group (an LFO and an envelope, the LFO with a cable to the first lane's detune and the envelope with one to
+ * its filter's resonance), and, for each modulator (by its node id), the plugin nodes (`reach`) and the settings and cable depths of other modulators (`fields`) that the controller let a cable be drawn to: written by the
+ * controller (`the_web_clients_fixture_of_what_a_modulator_that_is_in_no_lane_reaches_is_current`).
+ */
+export const freeReachFixture = freeReach as unknown as { snapshot: Snapshot; reach: Record<string, number[]>; fields: Record<string, { node: NodeId; port: Port }[]> };
 
 /**
  * A session with a group of three modulators whose first member has three of its own (an envelope with two cables among them), a

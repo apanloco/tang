@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Graph, Node, Port } from "../protocol";
-import { MASTER, fieldsFixture, reachFixture, tracerSnapshot } from "./fixtures";
+import { MASTER, fieldsFixture, freeReachFixture, reachFixture, tracerSnapshot } from "./fixtures";
 import { displayNames, portName } from "./names";
-import { drivablesOf, driversOf, fieldsOf, reachFrom } from "./reach";
+import { NEARNESS, drivablesOf, driversOf, fieldsOf, modulatorsInReach, ownerOf, reachFrom } from "./reach";
 
 const sorted = (nodes: Iterable<number>): number[] => [...nodes].sort((a, b) => a - b);
 
@@ -44,8 +44,142 @@ describe("where a cable from a modulator may end", () => {
     const orphan: Node = { id: 50, parent: 60, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
     const graph: Graph = { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, orphan] };
     expect(reachFrom(graph, 50).size).toBe(0);
-    const homeless: Node = { ...orphan, id: 51, parent: null };
-    expect(reachFrom({ ...graph, nodes: [...graph.nodes, homeless] }, 51).size).toBe(0);
+  });
+});
+
+/** The tracer's lane (the oscillator 0 and the filter 1), a group with a bus effect, a lane in it that has no instrument, and three modulators that are in no lane and no group (an LFO, an envelope and a macro). */
+function withFreeModulators(): { graph: Graph; free: Node[]; bus: Node } {
+  const lfo = (id: number, parent: number | null): Node => ({ id, parent, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } });
+  const free: Node[] = [
+    lfo(80, null),
+    { id: 81, parent: null, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.2, sustain: 0.3, release: 0.4 } },
+    { id: 82, parent: null, name: "Macro", kind: "modulator", source: { type: "macro", value: 0.5 } },
+  ];
+  const group: Node = { id: 70, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" };
+  const filter = tracerSnapshot.graph.nodes.find((node) => node.kind === "effect");
+  if (filter?.kind !== "effect") throw new Error("the tracer lacks a filter");
+  const bus: Node = { ...filter, id: 71, parent: group.id, name: "Filter" };
+  const empty: Node = { id: 72, parent: group.id, name: "(empty)", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, route: "out", pattern: null };
+  const nodes = [group, bus, empty, ...tracerSnapshot.graph.nodes.filter((node) => node.kind !== "master"), ...free, ...tracerSnapshot.graph.nodes.filter((node) => node.kind === "master")];
+  return { graph: { ...tracerSnapshot.graph, nodes }, free, bus };
+}
+
+describe("where a cable from a modulator that is in no lane and no group may end", () => {
+  test("is told by the parent: none is the session's own rack, a group is a group's and any other node a lane's", () => {
+    const { graph, free } = withFreeModulators();
+    expect(free.map((node) => ownerOf(graph.nodes, node))).toEqual(["free", "free", "free"]);
+    const [first] = free;
+    const lane = graph.nodes.find((node) => node.kind === "modulator" && node.parent === 0);
+    if (!first || !lane) throw new Error("the graph lacks a modulator");
+    expect(ownerOf(graph.nodes, lane)).toBe("lane");
+    const inGroup: Node = { ...first, id: 90, parent: 70 };
+    expect(ownerOf(graph.nodes, inGroup)).toBe("group");
+    // (A parent that is not there is a lane's, which reaches nothing: `reachFrom`.)
+    expect(ownerOf(graph.nodes, { ...inGroup, parent: 12_345 })).toBe("lane");
+    // The nearer to the plugin, the lower: a lane's is written last and stands.
+    expect([NEARNESS.lane, NEARNESS.group, NEARNESS.free]).toEqual([0, 1, 2]);
+  });
+
+  test("is every plugin of the session: the instruments that have one and every effect, a bus's too, and not a lane that has no instrument or a node that is no plugin", () => {
+    const { graph, free, bus } = withFreeModulators();
+    const plugins = graph.nodes.filter((node) => (node.kind === "instrument" && node.plugin !== null) || node.kind === "effect").map((node) => node.id);
+    expect(plugins).toContain(bus.id);
+    expect(plugins).not.toContain(72);
+    for (const modulator of free) expect(sorted(reachFrom(graph, modulator.id)), `${modulator.name} ${String(modulator.id)}`).toEqual(sorted(plugins));
+    // The oscillator and the filter of the tracer's lane, and the filter on the bus.
+    expect(sorted(reachFrom(graph, 80))).toEqual([0, 1, 71]);
+  });
+
+  test("is what the tracer's lane modulator reaches and no more, which the session's own are not in the way of", () => {
+    const { graph } = withFreeModulators();
+    const tracerLfo = graph.nodes.find((node) => node.kind === "modulator" && node.parent === 0);
+    expect(sorted(reachFrom(graph, tracerLfo?.id ?? -1))).toEqual([0, 1]);
+  });
+
+  test("is the settings of the other modulators like it, in the order of the graph, and never its own: a lane's and a group's do not reach it, nor it theirs", () => {
+    const { graph } = withFreeModulators();
+    expect(modulatorsInReach(graph, 80).map((node) => node.id)).toEqual([81, 82]);
+    expect(modulatorsInReach(graph, 81).map((node) => node.id)).toEqual([80, 82]);
+    const tracerLfo = graph.nodes.find((node) => node.kind === "modulator" && node.parent === 0);
+    expect(modulatorsInReach(graph, tracerLfo?.id ?? -1).map((node) => node.id)).not.toContain(80);
+    const inGroup: Node = { id: 90, parent: 70, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
+    const grouped: Graph = { ...graph, nodes: [...graph.nodes, inGroup] };
+    expect(modulatorsInReach(grouped, 90).map((node) => node.id)).toEqual([]);
+    expect(modulatorsInReach(grouped, 80).map((node) => node.id)).toEqual([81, 82]);
+  });
+
+  test("lists the settings and the depths of the cables of the others that it can drive: an LFO's rate, an envelope's four stages, nothing of a macro", () => {
+    const { graph } = withFreeModulators();
+    const cable: Edge = { kind: "modulation", id: 500, amount: 0.5, from: { node: 81, port: { type: "modOut" } }, to: { node: 0, port: { type: "param", index: 1 } } };
+    const withCable: Graph = { ...graph, edges: [...graph.edges, cable] };
+    expect(fieldsOf(withCable, 80).map((found) => `${String(found.node)} ${found.port.type}`)).toEqual(["81 attack", "81 decay", "81 sustain", "81 release", "81 depth"]);
+    expect(fieldsOf(withCable, 81).map((found) => `${String(found.node)} ${found.port.type}`)).toEqual(["80 rate"]);
+    expect(fieldsOf(withCable, 82).map((found) => `${String(found.node)} ${found.port.type}`)).toEqual(["80 rate", "81 attack", "81 decay", "81 sustain", "81 release", "81 depth"]);
+  });
+
+  test("is every parameter of every plugin and the settings of the others, for a list of what can still be drawn to", () => {
+    const { graph } = withFreeModulators();
+    const names = displayNames(graph);
+    const listed = drivablesOf(graph, 80, names);
+    // The parameters of the plugins, node by node in the order of the graph (the bus effect, then the tracer's lane), and then the settings of the other two.
+    expect(listed.map((group) => group.node)).toEqual([71, 0, 1, 81]);
+    expect(listed.find((group) => group.node === 81)?.fields.map((field) => field.port.type)).toEqual(["attack", "decay", "sustain", "release"]);
+    // A parameter that it drives is not offered again, and another of the session's own that drives it does not take it away.
+    const cable: Edge = { kind: "modulation", id: 501, amount: 0.5, from: { node: 80, port: { type: "modOut" } }, to: { node: 71, port: { type: "param", index: 0 } } };
+    const driven: Graph = { ...graph, edges: [...graph.edges, cable] };
+    expect(drivablesOf(driven, 80, names).find((group) => group.node === 71)?.params.some((param) => param.index === 0)).toBe(false);
+    expect(drivablesOf(driven, 81, names).find((group) => group.node === 71)?.params.some((param) => param.index === 0)).toBe(true);
+  });
+
+  test("can drive what a knob asks for, from the other side: every one of them, but not one that drives it already", () => {
+    const { graph, bus } = withFreeModulators();
+    const tracerLfo = graph.nodes.find((node) => node.kind === "modulator" && node.parent === 0);
+    // The bus effect's knob: the three of the session's own (and no lane's, which does not reach a bus), as a group's would.
+    expect(driversOf(graph, bus.id, { type: "param", index: 0 }).map((node) => node.id)).toEqual([80, 81, 82]);
+    // The oscillator's: the lane's own and the three of the session's own.
+    expect(driversOf(graph, 0, { type: "param", index: 0 }).map((node) => node.id)).toEqual([tracerLfo?.id, 80, 81, 82]);
+    const cable: Edge = { kind: "modulation", id: 502, amount: 0.5, from: { node: 81, port: { type: "modOut" } }, to: { node: bus.id, port: { type: "param", index: 0 } } };
+    expect(driversOf({ ...graph, edges: [...graph.edges, cable] }, bus.id, { type: "param", index: 0 }).map((node) => node.id)).toEqual([80, 82]);
+    // The rate of one of them: the others like it, and no lane's.
+    expect(driversOf(graph, 80, { type: "rate" }).map((node) => node.id)).toEqual([81, 82]);
+  });
+});
+
+describe("where a modulator that is in no lane and no group may draw a cable, as the controller says", () => {
+  const { snapshot, reach, fields } = freeReachFixture;
+  const modulators = snapshot.graph.nodes.filter((node) => node.kind === "modulator");
+  const free = modulators.filter((node) => node.parent === null);
+  /** A node and a port as a line of text, so that lists of them can be compared as sets. */
+  const lines = (found: readonly { node: number; port: object }[]): string[] => found.map((f) => `${String(f.node)} ${JSON.stringify(f.port, Object.keys(f.port).sort())}`).sort();
+
+  test("is told of a session with the session's own rack in it: two modulators that have no parent, beside the six of the lanes and the groups", () => {
+    expect(free.map((node) => node.source.type)).toEqual(["lfo", "envelope"]);
+    expect(modulators).toHaveLength(8);
+  });
+
+  test("is, for the plugins, what the controller accepts, for every modulator: the session's own reach what a lane's and a group's do not, and theirs are as they were", () => {
+    expect(sorted(Object.keys(reach).map(Number))).toEqual(sorted(modulators.map((node) => node.id)));
+    for (const modulator of modulators) {
+      expect(sorted(reachFrom(snapshot.graph, modulator.id)), `${modulator.name} ${String(modulator.id)}`).toEqual(reach[String(modulator.id)]);
+    }
+    // Every plugin there is, nine (the lane that has no instrument has nothing to draw a cable to), for the two; the others keep to their lane or group.
+    expect(free.map((node) => reach[String(node.id)]?.length)).toEqual([9, 9]);
+    expect(sorted(Object.values(reach).map((nodes) => nodes.length))).toEqual([0, 1, 2, 2, 3, 4, 9, 9]);
+  });
+
+  test("is, for the settings of modulators and the depths of their cables, what the controller accepts, for every modulator: the others like it, and none of its own", () => {
+    for (const modulator of modulators) {
+      expect(lines(fieldsOf(snapshot.graph, modulator.id)), `${modulator.name} ${String(modulator.id)}`).toEqual(lines(fields[String(modulator.id)] ?? []));
+    }
+    const [lfo, envelope] = free;
+    if (!lfo || !envelope) throw new Error("the session has no two modulators of its own");
+    // The LFO reaches the envelope's four stages and the depth of its cable (the envelope drives the LFO's rate); the envelope reaches the LFO's rate and the depth of its cable (the LFO drives a detune).
+    expect(fields[String(lfo.id)]?.map((found) => `${String(found.node === envelope.id)} ${found.port.type}`)).toEqual(["true attack", "true decay", "true sustain", "true release", "true depth"]);
+    expect(fields[String(envelope.id)]?.map((found) => `${String(found.node === lfo.id)} ${found.port.type}`)).toEqual(["true rate", "true depth"]);
+    // And the modulators of the lanes and the groups reach none of them (their lists are the ones they had).
+    for (const modulator of modulators.filter((node) => node.parent !== null)) {
+      expect(fieldsOf(snapshot.graph, modulator.id).some((found) => free.some((node) => node.id === found.node)), `${modulator.name} ${String(modulator.id)}`).toBe(false);
+    }
   });
 });
 

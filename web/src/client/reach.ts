@@ -13,14 +13,31 @@ import { endLabel } from "./names";
 /** Whether a node has a plugin, whose parameters a cable can end at. */
 const hasPlugin = (node: Node): boolean => (node.kind === "instrument" && node.plugin !== null) || node.kind === "effect";
 
+/** Whose a modulator is: a lane's, a group's, or the session's own (a modulator that is in no lane and no group has no parent). */
+export type Owner = "lane" | "group" | "free";
+
+/** How near to the plugin a rack is: the engine writes a lane's last, a group's before it and the session's own before those, and what is written last stands (`apply_free_modulators`, `apply_group_mod_writes`, `apply_modulators_to_chain`). */
+export const NEARNESS: Readonly<Record<Owner, number>> = { lane: 0, group: 1, free: 2 };
+
+/**
+ * Whose the modulator `modulator` is, as the graph says it by its `parent`: the session's if it has none, a group's if its parent is a group, a lane's otherwise (a parent that is not
+ * there is none that a modulator reaches anything from: `reachFrom`). (The controller's rack: `ModulatorLocation`.)
+ */
+export function ownerOf(nodes: readonly Node[], modulator: Node): Owner {
+  if (modulator.parent === null) return "free";
+  return nodes.find((node) => node.id === modulator.parent)?.kind === "group" ? "group" : "lane";
+}
+
 /**
  * The nodes with a plugin that the modulator `modulator` can draw a cable to. A lane's modulator reaches the
  * plugins in its lane: the instrument (the lane's own node) and the effects whose parent the lane is. A
- * group's reaches the plugins in the lanes that are its members, and its own bus effects. Nothing else does:
+ * group's reaches the plugins in the lanes that are its members, and its own bus effects. A modulator that is in no lane and no group
+ * (it has no parent: `ModulatorLocation::Free`) reaches every plugin of the session. Nothing else does:
  * not another lane, not another group's bus. A node that is not a modulator reaches nothing.
  */
 export function reachFrom(graph: Graph, modulator: NodeId): Set<NodeId> {
   const from = graph.nodes.find((node) => node.id === modulator);
+  if (from?.kind === "modulator" && ownerOf(graph.nodes, from) === "free") return new Set(graph.nodes.filter(hasPlugin).map((node) => node.id));
   const owner = from?.kind === "modulator" ? graph.nodes.find((node) => node.id === from.parent) : undefined;
   if (!owner) return new Set();
   const children = (parent: Node): Node[] => graph.nodes.filter((node) => node.parent === parent.id);
@@ -47,11 +64,15 @@ const rackOf = (graph: Graph, parent: Node): Node[] => graph.nodes.filter((node)
 /**
  * The modulators whose settings the modulator `modulator` can be drawn to, in the order of the controller's list
  * (`SessionModel::modulators_in_reach`): a lane's modulator reaches the others of its lane; a group's reaches
- * its members' modulators, member by member, and then the others of its own rack. Never itself. A node that is
+ * its members' modulators, member by member, and then the others of its own rack; one that is in no lane and no group reaches the others like it (the session's own
+ * rack, and not the racks of the lanes and the groups: they do not reach it either). Never itself. A node that is
  * not a modulator, or whose lane or group is not there, reaches none.
  */
 export function modulatorsInReach(graph: Graph, modulator: NodeId): Node[] {
   const from = graph.nodes.find((node) => node.id === modulator);
+  if (from?.kind === "modulator" && ownerOf(graph.nodes, from) === "free") {
+    return graph.nodes.filter((node) => node.kind === "modulator" && node.id !== modulator && ownerOf(graph.nodes, node) === "free");
+  }
   const owner = from?.kind === "modulator" ? graph.nodes.find((node) => node.id === from.parent) : undefined;
   if (!owner) return [];
   const others = (parent: Node): Node[] => rackOf(graph, parent).filter((node) => node.id !== modulator);

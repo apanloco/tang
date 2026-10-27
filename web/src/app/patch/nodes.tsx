@@ -60,8 +60,8 @@ function Header({ name, badge, sub, children, field }: { name: string; badge?: s
   );
 }
 
-/** The kinds of modulator a lane or a group can be given, as the menu offers them. */
-const MODULATOR_KINDS: readonly MenuItem<ModulatorKind>[] = [
+/** The kinds of modulator a lane or a group can be given, as the menu offers them (and the bar's, for one that is in no lane and no group). */
+export const MODULATOR_KINDS: readonly MenuItem<ModulatorKind>[] = [
   { id: "lfo", label: "LFO" },
   { id: "envelope", label: "Envelope" },
   { id: "macro", label: "Macro" },
@@ -73,6 +73,9 @@ const MODULATOR_KINDS: readonly MenuItem<ModulatorKind>[] = [
 
 /** The `id` of the button that adds a modulator to the lane or group `node`, which what takes a modulator out gives the focus to. */
 const addModulatorId = (node: NodeId): string => `add-modulator-${String(node)}`;
+
+/** The `id` of the button in the bar that adds a modulator that is in no lane and no group, which what takes one out gives the focus to. */
+export const ADD_FREE_MODULATOR_ID = "add-free-modulator";
 
 /** The button of a lane or a group that adds a modulator to it: a menu of the kinds. */
 function AddModulatorMenu({ node, name }: { node: NodeId; name: string }) {
@@ -531,7 +534,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
       <Header name={data.name} badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind}>
         {/* (The note length that an LFO or a step sequencer follows the tempo by: no other kind has one, and the control is nothing for it.) */}
         <SyncControl node={data.node} />
-        <RemoveNodeButton node={data.node} name={data.name} focusTo={node?.parent != null ? addModulatorId(node.parent) : null} />
+        <RemoveNodeButton node={data.node} name={data.name} focusTo={node ? (node.parent !== null ? addModulatorId(node.parent) : ADD_FREE_MODULATOR_ID) : null} />
       </Header>
       {settings.length > 0 ? (
         <div className="tang-node__controls nodrag nopan nowheel">

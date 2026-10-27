@@ -6262,6 +6262,67 @@ size = 0.5
                 redo(),
             ],
         ));
+        // A modulator that is in no lane and no group (the session's own rack): a node with no parent that the graph lists after the lanes', and whose cables go to plugins of any lane or bus.
+        scripts.push((
+            "a modulator that is in no lane is added with cables to plugins of two lanes and of a bus, and to the settings of another like it, and each of them goes back under its id",
+            {
+                let mut script = vec![
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }),
+                    cable(fresh(0), lane0, detune),
+                    cable(fresh(0), lane1, detune),
+                    cable(fresh(0), bus, bus_resonance),
+                    cable(fresh(0), filter_fx, resonance),
+                    Op::Do(Intent::SetEdgeDepth { edge: fresh_edge(1), depth: -0.25 }),
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Envelope }),
+                    Op::Do(Intent::AddModEdge { modulator: fresh(1), to: Endpoint { node: fresh(0), port: Port::Rate } }),
+                    Op::Do(Intent::RemoveNode { node: fresh(0) }),
+                ];
+                // (Nine steps: the LFO, its four cables, the depth of one, the envelope, its cable to the LFO's rate, and the LFO's removal with all its cables.)
+                script.extend(n_of(9, undo));
+                script.extend(n_of(9, redo));
+                script
+            },
+        ));
+        scripts.push((
+            "modulators that are in no lane are refused what a rack cannot reach, and a modulator made for the rate of one is another that is in no lane",
+            {
+                let mut script = vec![
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Steps }),
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::MidiLearn }),
+                    cable(fresh(0), lane1, volume),
+                    // Refused, and no step, no id and no slot for any: its own settings, the settings of a modulator of a lane (and a lane's of its), a group (which has no plugin) and a cable that is there.
+                    Op::Do(Intent::AddModEdge { modulator: fresh(0), to: Endpoint { node: fresh(0), port: Port::Rate } }),
+                    Op::Do(Intent::AddModEdge { modulator: fresh(0), to: Endpoint { node: lfo, port: Port::Rate } }),
+                    Op::Do(Intent::AddModEdge { modulator: lfo, to: Endpoint { node: fresh(0), port: Port::Rate } }),
+                    Op::Do(Intent::AddModEdge { modulator: fresh(0), to: Endpoint { node: g0, port: Port::Param { index: 0 } } }),
+                    cable(fresh(0), lane1, volume),
+                    // The rate of a modulator that is in no lane is driven by one that is in no lane.
+                    Op::Do(Intent::Modulate { to: Endpoint { node: fresh(0), port: Port::Rate }, kind: ModulatorKind::Lfo, depth: None }),
+                ];
+                // (Four steps and then one that finds nothing: the steps, the control, the cable and the modulator made for the rate.)
+                script.extend(n_of(5, undo));
+                script.extend(n_of(4, redo));
+                script
+            },
+        ));
+        scripts.push((
+            "what a modulator that is in no lane drives goes with the plugin when the plugin, its lane or its group is taken out, and comes back with it",
+            {
+                let mut script = vec![
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }),
+                    cable(fresh(0), filter_fx, resonance),
+                    cable(fresh(0), bus, bus_resonance),
+                    cable(fresh(0), lane1, detune),
+                    Op::Do(Intent::RemoveNode { node: filter_fx }),
+                    Op::Do(Intent::RemoveNode { node: lane1 }),
+                    Op::Do(Intent::RemoveNode { node: g0 }),
+                ];
+                // (Seven steps: the LFO, its three cables, and the three removals, each with the free cable that went with it.)
+                script.extend(n_of(7, undo));
+                script.extend(n_of(7, redo));
+                script
+            },
+        ));
         scripts.push((
             "an instrument is added and taken out as a lane, and put back with its id",
             vec![
