@@ -516,7 +516,7 @@ function carryOver(
     }
   }
   const isChild = (node: Node): boolean => node.kind === "effect" || node.kind === "modulator";
-  // (What is in the session's own rack goes by the first lane, above which its rows are: one that is new is above the first lane where it stayed, and not where the layout would have the lane.)
+  // (What has no parent, the session's own modulators, goes by the first lane, above which its rows are: one that is new is above the first lane where it stayed, and not where the layout would have the lane.)
   const firstLane = graph.nodes.find((node) => node.kind === "instrument")?.id ?? null;
   // The strips' heads and the rest first, and then what is in a strip, which goes by where its head is.
   for (const node of graph.nodes.filter((candidate) => !isChild(candidate))) {
@@ -529,7 +529,7 @@ function carryOver(
     if (node.ui || kept.has(node.id)) continue;
     const at = fresh.get(node.id) ?? ORIGIN;
     // (What the strip goes by: its card, or for a lane that has none its first effect, which is where the strip's row is.)
-    const parent = node.parent ?? (node.kind === "modulator" ? firstLane : null);
+    const parent = node.parent ?? firstLane;
     const anchor = parent !== null ? (anchors.get(parent) ?? parent) : null;
     const where = anchor !== null ? positions.get(anchor) : undefined;
     const would = anchor !== null ? fresh.get(anchor) : undefined;

@@ -667,6 +667,22 @@ describe("adding a modulator", () => {
     return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [group, ...nodes] } };
   }
 
+  test("puts a modulator that is in no lane after the nodes of the lanes and before the master, and the next after the last of its own, whether or not the last lane has a modulator", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    // A second lane, which has nothing in it: the last node before the master is its own, and no modulator's.
+    await client.request({ type: "addInstrument", plugin: "builtin:osc" });
+    await client.request({ type: "addFreeModulator", kind: "envelope" });
+    await until(() => nodesOf(client).some((n) => n.id === 4), "the modulator");
+    expect(nodesOf(client).map((n) => n.id)).toEqual([0, 1, 2, 3, 4, MASTER]);
+    expect(nodesOf(client).find((n) => n.id === 4)).toMatchObject({ kind: "modulator", parent: null, name: "ADSR" });
+    // Another modulator of the lane's: it goes with the lane's, and the one that is in no lane is after both.
+    await client.request({ type: "addModulator", parent: lane.id, kind: "macro" });
+    await client.request({ type: "addFreeModulator", kind: "lfo" });
+    await until(() => nodesOf(client).some((n) => n.id === 6), "the second");
+    expect(nodesOf(client).map((n) => n.id)).toEqual([0, 1, 2, 5, 3, 4, 6, MASTER]);
+  });
+
   test("puts a node of that kind after what the lane has, and the client is told by a snapshot, the revision after the intent's", async () => {
     const server = new MockServer();
     const client = await open(server);
@@ -3545,6 +3561,33 @@ describe("what a velocity and a key put out and do in the mock engine: they foll
     const client = await open(new MockServer({ telemetryPeriod: 2, snapshot: withNotes(velocity, { transpose: 12 }) }), { telemetry: ["modulation"] });
     client.noteOn(60, 100);
     await until(() => near(outputOf(client), 100 / 127), "the velocity");
+  });
+
+  describe("of the session's own rack", () => {
+    /** The tracer with its lane given the keys 60 to 71 and the transpose of an octave, and a control that follows the notes that is in no lane and no group. */
+    async function freeWith(kind: "key" | "velocity"): Promise<{ client: Client; output: number }> {
+      const server = new MockServer({ telemetryPeriod: 2, snapshot: withNotes({ type: "cc", number: 1 }, { range: { low: 60, high: 71 }, transpose: 12 }) });
+      const client = await open(server, { telemetry: ["modulation"] });
+      await client.request({ type: "addFreeModulator", kind });
+      const made = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "modulator" && n.parent === null).at(-1);
+      if (!made) throw new Error("the session has a control of its own");
+      return { client, output: made.id };
+    }
+    const outputOfFree = (client: Client, node: number): number | undefined => client.telemetry.value("modulation", node, { type: "modOut" }, "modOutput");
+
+    test("hears every note, as it is played, whatever the keys and the transpose of the lane are: no lane stands between it and the keyboard (`Events::all`)", async () => {
+      const { client, output } = await freeWith("key");
+      client.noteOn(40, 100);
+      await until(() => near(outputOfFree(client, output), 40 / 127), "a note that the lane does not take");
+      client.noteOn(120, 100);
+      await until(() => near(outputOfFree(client, output), 120 / 127), "a note that the lane's transpose takes off the keyboard");
+    });
+
+    test("hears the velocity of every note, those that the lane does not take too", async () => {
+      const { client, output } = await freeWith("velocity");
+      client.noteOn(40, 90);
+      await until(() => near(outputOfFree(client, output), 90 / 127), "the velocity of a note that the lane does not take");
+    });
   });
 
   describe("of a group", () => {

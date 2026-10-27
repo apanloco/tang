@@ -112,6 +112,38 @@ describe("adding a modulator", () => {
   });
 });
 
+describe("adding a modulator that is in no lane and no group", () => {
+  test("resolves with the node it made, which has no parent, is in the session then and is shown, and says nothing", async () => {
+    const { client, notices, shown, editor } = await open();
+    const id = await editor.addFreeModulator("envelope");
+    expect(id).toBe(3);
+    expect(client.state.snapshot?.graph.nodes.find((n) => n.id === id)).toMatchObject({ kind: "modulator", parent: null, name: "ADSR" });
+    expect(shown).toEqual([3]);
+    expect(said(notices)).toEqual([]);
+    // The next is the next.
+    expect(await editor.addFreeModulator("lfo")).toBe(4);
+    expect(shown).toEqual([3, 4]);
+  });
+
+  test("takes the one that is new to the session's own rack, which is its own, when another front-end added one just before, and not one that was added to a lane", async () => {
+    const { server, editor } = await open();
+    server.apply({ type: "addFreeModulator", kind: "envelope" });
+    const id = await editor.addFreeModulator("lfo");
+    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.parent === null).map((n) => [n.id, n.name])).toEqual([[3, "ADSR"], [4, "LFO"]]);
+    expect(id).toBe(4);
+    server.apply({ type: "addModulator", parent: oscillator.id, kind: "macro" });
+    expect(await editor.addFreeModulator("steps")).toBe(6);
+  });
+
+  test("with no connection says so, and shows nothing", async () => {
+    const { client, notices, shown, editor } = await open();
+    client.stop();
+    expect(await editor.addFreeModulator("lfo")).toBeNull();
+    expect(said(notices)).toEqual(["Could not add an LFO of its own: Not connected to the server."]);
+    expect(shown).toEqual([]);
+  });
+});
+
 describe("modulating a parameter", () => {
   /** The cables of the session that end at the port `to` of `node`. */
   const cablesTo = (cables: readonly Edge[], node: number, to: Port): Edge[] => cables.filter((e) => e.kind === "modulation" && e.to.node === node && samePort(e.to.port, to));
