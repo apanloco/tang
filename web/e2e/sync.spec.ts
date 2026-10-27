@@ -4,7 +4,7 @@ import { expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
 import { node } from "./canvas";
-import { test } from "./own";
+import { modulatorsIn, test } from "./own";
 
 // The note length that an LFO follows the tempo by, from the page, on the real program (a program of its own: the file it saves is read, and the history is the program's): a choice in the LFO's
 // node that the program applies (the file it saves has it by its name, and the rate the LFO keeps), a knob of the rate that shows what the tempo makes of it and follows the tempo, and an undo.
@@ -15,8 +15,8 @@ const save = async (page: Page, file: string): Promise<string> => {
   return readFileSync(file, "utf8");
 };
 
-/** The text of the first modulator of the saved lane. */
-const firstModulator = (saved: string): string => (saved.split("[[instrument.modulator]]\n")[1] ?? "").split("[[instrument.effect]]")[0] ?? "";
+/** The text of the first modulator of the saved session: the tracer's LFO. */
+const firstModulator = (saved: string): string => modulatorsIn(saved)[0] ?? "";
 
 test("an LFO's note length is chosen from its node, makes its rate the tempo's and follows the tempo, is saved by its name with the rate it keeps, and is put back by undo", async ({ page, own }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });

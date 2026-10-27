@@ -5,8 +5,8 @@ import { historyFixture } from "./fixtures";
 import { MockServer } from "./mock";
 
 // A knob modulated in one intent (`Intent::Modulate`, `src/app/apply.rs`): the mock engine makes the modulator for what a port is and draws the cable to it, as
-// the controller does. The words of its history and the shape of what it makes are pinned to the controller's by the history's fixture (`history.test.ts`); what is
-// checked here is what a person relies on.
+// the controller does. The new modulator is the session's own (step 94) and hears the lane or the group of what it is made for. The words of its history and the
+// shape of what it makes are pinned to the controller's by the history's fixture (`history.test.ts`); what is checked here is what a person relies on.
 const { snapshot } = historyFixture;
 const fresh = (): MockServer => new MockServer({ snapshot });
 
@@ -35,6 +35,9 @@ const param = (node: Node, name: string): Port => {
 
 const modulate = (node: NodeId, port: Port, kind: ModulatorKind = "lfo", depth: number | null = null): Intent => ({ type: "modulate", to: { node, port }, kind, depth });
 
+/** Whom a modulator hears: a lane's or a group's node, or none for every note. */
+const hearsOf = (node: Node): NodeId | undefined => (node.kind === "modulator" ? node.hears : undefined);
+
 /** The nodes and the cables a session has that another has not. */
 function made(before: MockServer["snapshot"], after: MockServer["snapshot"]): { node: Node; cable: Edge & { kind: "modulation" } } {
   const had = new Set(before.graph.nodes.map((n) => n.id));
@@ -47,13 +50,13 @@ function made(before: MockServer["snapshot"], after: MockServer["snapshot"]): { 
 }
 
 describe("the mock engine's modulate", () => {
-  test("makes a modulator in the lane of the plugin and a cable from it to the parameter, at half depth, in one change of the structure", () => {
+  test("makes a modulator of the session's own that hears the lane of the plugin, and a cable from it to the parameter, at half depth, in one change of the structure", () => {
     const server = fresh();
     const to = param(filter, "resonance");
     const told = server.apply(modulate(filter.id, to));
     expect(told).toEqual({ events: [], restructured: true });
     const { node, cable } = made(snapshot, server.snapshot);
-    expect([node.kind, node.parent, node.name]).toEqual(["modulator", lane0.id, "LFO"]);
+    expect([node.kind, node.parent, node.name, hearsOf(node)]).toEqual(["modulator", null, "LFO", lane0.id]);
     expect(node.kind === "modulator" ? node.source : null).toEqual({ type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 });
     expect([cable.from, cable.to, cable.amount]).toEqual([{ node: node.id, port: { type: "modOut" } }, { node: filter.id, port: to }, 0.5]);
     // One intent is one revision, as for any change of the structure: the one it was, and the snapshot that tells it.
@@ -73,20 +76,32 @@ describe("the mock engine's modulate", () => {
     }
   });
 
-  test("goes in the rack of the lane for the instrument and for an effect of its chain, and in the group's for a bus effect", () => {
-    const racks: [Node, string, string][] = [
-      [lane0, "detune", "the instrument"],
-      [filter, "resonance", "an effect of the lane"],
-      [bus, "resonance", "a bus effect"],
+  test("hears the lane for the instrument and for an effect of its chain, and the group for a bus effect, and is in no rack", () => {
+    const heard: [Node, string, string, NodeId][] = [
+      [lane0, "detune", "the instrument", lane0.id],
+      [filter, "resonance", "an effect of the lane", lane0.id],
+      [bus, "resonance", "a bus effect", group.id],
     ];
-    for (const [target, name, what] of racks) {
+    for (const [target, name, what, ear] of heard) {
       const server = fresh();
       server.apply(modulate(target.id, param(target, name)));
-      expect(made(snapshot, server.snapshot).node.parent, what).toBe(target === bus ? group.id : lane0.id);
+      const { node } = made(snapshot, server.snapshot);
+      expect([node.parent, hearsOf(node)], what).toEqual([null, ear]);
     }
   });
 
-  test("goes in the rack of a modulator, a sibling that drives it, for its rate, its stages and the depth of its cables", () => {
+  test("hears the lane of the plugin whether or not the lane is in a group: what it hears is the lane, and not the group that the lane is in", () => {
+    const alone = nodes.find((n) => n.kind === "instrument" && n.parent === null);
+    if (!alone) throw new Error("the fixture has a lane that is in no group");
+    expect(lane0.parent, "the first lane is in a group").toBe(group.id);
+    for (const lane of [lane0, alone]) {
+      const server = fresh();
+      server.apply(modulate(lane.id, param(lane, "detune")));
+      expect(hearsOf(made(snapshot, server.snapshot).node), lane.name).toBe(lane.id);
+    }
+  });
+
+  test("goes in the rack of a modulator that is in a lane's rack, a sibling that drives it, for its rate, its stages and the depth of its cables", () => {
     const rate: Port = { type: "rate" };
     const attack: Port = { type: "attack" };
     const depth: Port = { type: "depth", edge: cableOfLfo.id };
@@ -102,12 +117,32 @@ describe("the mock engine's modulate", () => {
     }
   });
 
-  test("goes after the nodes of the lane it joins, where the graph lists a lane's nodes together", () => {
+  test("goes after the session's own modulators, and before the master, where the graph lists them", () => {
     const server = fresh();
     server.apply(modulate(filter.id, param(filter, "resonance")));
     const { node } = made(snapshot, server.snapshot);
-    const lastOfLane = nodes.findLastIndex((n) => n.id === lane0.id || (n.parent === lane0.id && (n.kind === "effect" || n.kind === "modulator")));
-    expect(server.snapshot.graph.nodes.findIndex((n) => n.id === node.id)).toBe(lastOfLane + 1);
+    const list = server.snapshot.graph.nodes;
+    expect(list.findIndex((n) => n.id === node.id)).toBe(list.findIndex((n) => n.kind === "master") - 1);
+    // A second one goes after the first.
+    server.apply(modulate(filter.id, param(filter, "cutoff")));
+    const free = server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.parent === null);
+    expect(free.length).toBe(2);
+    const [, second] = free;
+    expect(server.snapshot.graph.nodes.findIndex((n) => n.id === second?.id)).toBe(server.snapshot.graph.nodes.findIndex((n) => n.kind === "master") - 1);
+  });
+
+  test("for a setting of a modulator of the session's own makes a sibling that hears what it hears, and for one that hears nothing in particular a sibling that does not either", () => {
+    const rate: Port = { type: "rate" };
+    for (const hears of [lane0.id, group.id, null] as const) {
+      const server = fresh();
+      server.apply({ type: "addFreeModulator", kind: "lfo", hears });
+      const free = server.snapshot.graph.nodes.find((n) => n.kind === "modulator" && n.parent === null);
+      if (!free) throw new Error("a modulator of the session's own was made");
+      const before = server.snapshot;
+      server.apply(modulate(free.id, rate));
+      const { node, cable } = made(before, server.snapshot);
+      expect([node.parent, hearsOf(node), cable.to], String(hears)).toEqual([null, hears ?? undefined, { node: free.id, port: rate }]);
+    }
   });
 
   test("starts the cable at the depth that is asked for, clamped as a depth that is set is", () => {

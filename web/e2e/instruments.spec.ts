@@ -94,21 +94,23 @@ test("the instrument of a lane is taken out alone and its filter stays and runs:
   await expect(link).toHaveCount(0);
   await heardAt(page, "the first lane");
 
-  // The instrument of the first lane is taken out alone: the lane is left with its filter and its LFO, which stand by themselves, and nothing is heard (the second lane has no way out).
+  // The instrument of the first lane is taken out alone: the lane is left with its filter, and the LFO that hears it (the session's own: it is not in the lane) stays too, and nothing is heard (the second lane has no way out).
   // (The canvas moved to show the lane that was added, and the first is above it: the view is fitted to all of it.)
   await showAll(page);
   await page.getByRole("button", { name: "Remove the lane of Oscillator 1" }).click();
-  await page.getByRole("menuitem", { name: /^Remove Oscillator 1 only: its 1 effect and 1 modulator stay in the lane$/ }).click();
+  await page.getByRole("menuitem", { name: /^Remove Oscillator 1 only: its 1 effect stays in the lane$/ }).click();
   await expect(node(page, "\\(empty\\)")).toHaveCount(0);
   await expect(node(page, "Filter")).toBeVisible();
   await expect(node(page, "LFO")).toBeVisible();
   await silentAt(page, "a session whose lane that has a way out has no instrument");
-  // The file has the lane, with its filter and its LFO and no instrument, and the other lane with its.
-  const lanes = (await saved()).split("[[instrument]]").slice(1);
+  // The file has the lane, with its filter and no instrument, and the other lane with its; and the LFO, a table of its own after the lanes, that hears the lane that has no instrument.
+  const file = await saved();
+  const lanes = file.split("[[instrument]]").slice(1);
   expect(lanes).toHaveLength(2);
   expect(lanes[0]).not.toContain("builtin:osc");
   expect(lanes[0]).toContain('plugin = "builtin:filter"');
-  expect(lanes[0]).toContain("[[instrument.modulator]]");
+  expect(lanes[0]).not.toContain("modulator");
+  expect(file).toMatch(/\[\[modulator\]\]\n[^[]*hears = "instrument\[0\]"/);
   expect(lanes[1]).toContain('plugin = "builtin:osc"');
 
   // The second lane sends its sound into the filter that stands by itself (the other lane is called what it is now): the filter runs, and it is heard through it.

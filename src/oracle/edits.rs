@@ -41,6 +41,7 @@ pub enum Edit {
     /// The effect at a place of a chain, put at another place of it.
     MoveEffect { lane: usize, effect: usize, to: usize },
     RemoveEffect { lane: usize, effect: usize },
+    /// A modulator of `kind` for a lane (the "+" of a lane): since step 94 one of the session's own that hears the lane, as the page and the terminal make it.
     AddModulator { lane: usize, kind: ModulatorKind },
     /// A modulator that is in no lane and no group (P5b-2), at the end of the session's own rack.
     AddFreeModulator { kind: ModulatorKind },
@@ -51,8 +52,9 @@ pub enum Edit {
     RemoveFreeModulator { index: usize },
     /// A free modulator (a place among them) made to hear a lane or a group (a place among them), or every event (step 93).
     Ear { modulator: usize, to: Option<Hears> },
-    /// A modulator of `kind` for a parameter, and a cable to it (the `~` menu of a knob).
+    /// A modulator of `kind` for a parameter, and a cable to it (the `~` menu of a knob): one of the session's own that hears the lane of the knob (step 94).
     Modulate { lane: usize, slot: usize, param: usize, kind: ModulatorKind },
+    /// One of a lane's modulators, by its place among them, taken out: the ones in its rack (a session that was built by intents has some) and then the ones of the session's own that hear it.
     RemoveModulator { lane: usize, index: usize },
     Range { lane: usize, range: Option<(u8, u8)> },
     /// A lane put in a group (a place among the groups), or out of its group.
@@ -213,8 +215,8 @@ impl Edit {
                 }
                 Intent::RemoveNode { node: effects[effect % effects.len()].node }
             }
-            Edit::AddModulator { lane: l, kind } => Intent::AddModulator { parent: lane(*l)?.node, kind: *kind },
-            Edit::AddFreeModulator { kind } => Intent::AddFreeModulator { kind: *kind },
+            Edit::AddModulator { lane: l, kind } => Intent::AddFreeModulator { kind: *kind, hears: Some(lane(*l)?.node) },
+            Edit::AddFreeModulator { kind } => Intent::AddFreeModulator { kind: *kind, hears: None },
             Edit::FreeCable { modulator, plugin, param } => {
                 let modulators = &model.free_modulators;
                 let plugins = plugins_of(model);
@@ -250,7 +252,8 @@ impl Edit {
                 Intent::Modulate { to: Endpoint { node: plugin.node, port: Port::Param { index: p.index } }, kind: *kind, depth: None }
             }
             Edit::RemoveModulator { lane: l, index } => {
-                let modulators = &lane(*l)?.modulators;
+                let lane = lane(*l)?;
+                let modulators: Vec<_> = lane.modulators.iter().chain(model.free_modulators.iter().filter(|m| model.ear_of(m) == Some(lane.node))).collect();
                 if modulators.is_empty() {
                     return None;
                 }
@@ -445,6 +448,31 @@ plugin = "builtin:osc"
     }
 
     #[test]
+    fn a_lanes_modulator_is_one_in_its_rack_and_then_one_of_the_sessions_own_that_hears_it_by_a_place_that_wraps_round() {
+        let mut ctl = controller(TWO_LANES);
+        let (lane0, lane1) = (ctl.model.instruments[0].node, ctl.model.instruments[1].node);
+        // A session that was built by intents can have a modulator in a lane's rack (the controller's own method makes one): it is the only one of the first lane, to begin with.
+        ctl.add_modulator(crate::plugin::chain::ModulatorLocation::Lane(0), crate::app::model::ModSourceSlot::new_lfo()).unwrap();
+        let own = ctl.model.instruments[0].modulators.iter().map(|m| m.node).collect::<Vec<_>>();
+        assert_eq!(own.len(), 1);
+        assert_eq!(Edit::RemoveModulator { lane: 0, index: 5 }.resolve(&ctl), Some(Intent::RemoveNode { node: own[0] }));
+        // The "+" of the lane makes one of the session's own that hears it, and that is the lane's next after those that its rack has.
+        assert_eq!(Edit::AddModulator { lane: 0, kind: ModulatorKind::Envelope }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddModulator { lane: 1, kind: ModulatorKind::Lfo }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.free_modulators.iter().map(|m| m.ear).collect::<Vec<_>>(), [Some(lane0), Some(lane1)]);
+        let hearing = ctl.model.free_modulators[0].node;
+        let lane_modulators: Vec<NodeId> = own.iter().copied().chain([hearing]).collect();
+        for index in 0..7 {
+            assert_eq!(Edit::RemoveModulator { lane: 0, index }.resolve(&ctl), Some(Intent::RemoveNode { node: lane_modulators[index % lane_modulators.len()] }), "{index}");
+        }
+        // The second lane has the one that hears it and no other.
+        assert_eq!(Edit::RemoveModulator { lane: 1, index: 3 }.resolve(&ctl), Some(Intent::RemoveNode { node: ctl.model.free_modulators[1].node }));
+        assert_eq!(Edit::RemoveModulator { lane: 1, index: 0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.free_modulators.len(), 1, "it is taken out");
+        assert_eq!(Edit::RemoveModulator { lane: 1, index: 0 }.make(&mut ctl), Outcome::Skipped, "and then the lane has none");
+    }
+
+    #[test]
     fn a_free_modulator_is_made_to_hear_a_lane_or_a_group_or_every_event_by_places_that_wrap_round() {
         let mut ctl = controller(TWO_LANES);
         let (lane1, bus) = (ctl.model.instruments[1].node, ctl.model.groups[0].node);
@@ -621,8 +649,8 @@ plugin = "builtin:osc"
         expect(Edit::AddEffect { lane: 1, plugin: "builtin:delay" }, Intent::AddEffect { parent: lane1, plugin: "builtin:delay".to_string() });
         expect(Edit::AddBusEffect { group: 0, plugin: "builtin:drive" }, Intent::AddEffect { parent: bus, plugin: "builtin:drive".to_string() });
         expect(Edit::RemoveEffect { lane: 0, effect: 0 }, Intent::RemoveNode { node: reverb });
-        expect(Edit::AddModulator { lane: 0, kind: ModulatorKind::Steps }, Intent::AddModulator { parent: lane0, kind: ModulatorKind::Steps });
-        expect(Edit::AddFreeModulator { kind: ModulatorKind::Envelope }, Intent::AddFreeModulator { kind: ModulatorKind::Envelope });
+        expect(Edit::AddModulator { lane: 0, kind: ModulatorKind::Steps }, Intent::AddFreeModulator { kind: ModulatorKind::Steps, hears: Some(lane0) });
+        expect(Edit::AddFreeModulator { kind: ModulatorKind::Envelope }, Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: None });
         expect(Edit::Range { lane: 1, range: Some((36, 71)) }, Intent::SetRange { node: lane1, range: Some(NoteRange { low: 36, high: 71 }) });
         expect(Edit::Range { lane: 1, range: None }, Intent::SetRange { node: lane1, range: None });
         expect(Edit::LaneGroup { lane: 1, group: Some(0) }, Intent::SetLaneGroup { node: lane1, group: Some(bus) });

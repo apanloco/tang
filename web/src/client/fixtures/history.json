@@ -10017,6 +10017,7 @@
             "undo": "add an LFO"
           },
           "intent": {
+            "hears": null,
             "kind": "lfo",
             "type": "addFreeModulator"
           },
@@ -10386,6 +10387,7 @@
             "undo": "add an envelope"
           },
           "intent": {
+            "hears": null,
             "kind": "envelope",
             "type": "addFreeModulator"
           },
@@ -11666,6 +11668,7 @@
             "undo": "add a step sequencer"
           },
           "intent": {
+            "hears": null,
             "kind": "steps",
             "type": "addFreeModulator"
           },
@@ -11728,6 +11731,7 @@
             "undo": "add a MIDI control"
           },
           "intent": {
+            "hears": null,
             "kind": "midiLearn",
             "type": "addFreeModulator"
           },
@@ -12549,6 +12553,7 @@
             "undo": "add an LFO"
           },
           "intent": {
+            "hears": null,
             "kind": "lfo",
             "type": "addFreeModulator"
           },
@@ -13836,6 +13841,7 @@
             "undo": "add an envelope"
           },
           "intent": {
+            "hears": null,
             "kind": "envelope",
             "type": "addFreeModulator"
           },
@@ -29683,6 +29689,9 @@
               "#1 7>3 param2 @0.25",
               "#2 10>5 param1 @0.5"
             ],
+            "ears": [
+              "10 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -29698,8 +29707,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "15 10 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 5 param1 effective"
@@ -29713,9 +29722,9 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -29755,6 +29764,10 @@
               "#2 10>5 param1 @0.5",
               "#3 11>5 param0 @-0.25"
             ],
+            "ears": [
+              "10 3",
+              "11 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -29770,9 +29783,9 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "15 10 modOut modOutput",
               "17 11 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 5 param1 effective",
@@ -29787,10 +29800,10 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
-              "11 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
+              "11 - ADSR",
               "4294967295 - Master"
             ]
           }
@@ -29831,6 +29844,11 @@
               "#3 11>5 param0 @-0.25",
               "#4 12>3 param1 @0.75"
             ],
+            "ears": [
+              "10 3",
+              "11 3",
+              "12 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -29846,10 +29864,10 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "15 10 modOut modOutput",
               "17 11 modOut modOutput",
               "19 12 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 5 param1 effective",
@@ -29864,11 +29882,11 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
-              "11 3 ADSR",
-              "12 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
+              "11 - ADSR",
+              "12 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -29910,6 +29928,12 @@
               "#4 12>3 param1 @0.75",
               "#5 13>8 param1 @1"
             ],
+            "ears": [
+              "10 3",
+              "11 3",
+              "12 3",
+              "13 8"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -29925,10 +29949,10 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "15 10 modOut modOutput",
               "17 11 modOut modOutput",
               "19 12 modOut modOutput",
-              "14 9 modOut modOutput",
               "21 13 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
@@ -29945,12 +29969,12 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
-              "11 3 ADSR",
-              "12 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
-              "13 8 MIDI (learning…)",
+              "10 - LFO",
+              "11 - ADSR",
+              "12 - LFO",
+              "13 - MIDI (learning…)",
               "4294967295 - Master"
             ]
           }
@@ -29982,6 +30006,11 @@
               "#3 11>5 param0 @-0.25",
               "#4 12>3 param1 @0.75"
             ],
+            "ears": [
+              "10 3",
+              "11 3",
+              "12 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -29997,10 +30026,10 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "15 10 modOut modOutput",
               "17 11 modOut modOutput",
               "19 12 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 5 param1 effective",
@@ -30015,11 +30044,11 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
-              "11 3 ADSR",
-              "12 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
+              "11 - ADSR",
+              "12 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -30050,6 +30079,10 @@
               "#2 10>5 param1 @0.5",
               "#3 11>5 param0 @-0.25"
             ],
+            "ears": [
+              "10 3",
+              "11 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30065,9 +30098,9 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "15 10 modOut modOutput",
               "17 11 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 5 param1 effective",
@@ -30082,10 +30115,10 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
-              "11 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
+              "11 - ADSR",
               "4294967295 - Master"
             ]
           }
@@ -30115,6 +30148,9 @@
               "#1 7>3 param2 @0.25",
               "#2 10>5 param1 @0.5"
             ],
+            "ears": [
+              "10 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30130,8 +30166,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "15 10 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 5 param1 effective"
@@ -30145,9 +30181,9 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -30235,6 +30271,9 @@
               "#1 7>3 param2 @0.25",
               "#2 10>5 param1 @0.5"
             ],
+            "ears": [
+              "10 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30250,8 +30289,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "23 10 modOut modOutput",
               "14 9 modOut modOutput",
+              "23 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "24 5 param1 effective"
@@ -30265,9 +30304,9 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -30298,6 +30337,10 @@
               "#2 10>5 param1 @0.5",
               "#3 11>5 param0 @-0.25"
             ],
+            "ears": [
+              "10 3",
+              "11 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30313,9 +30356,9 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "23 10 modOut modOutput",
               "25 11 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "24 5 param1 effective",
@@ -30330,10 +30373,10 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
-              "11 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
+              "11 - ADSR",
               "4294967295 - Master"
             ]
           }
@@ -30365,6 +30408,11 @@
               "#3 11>5 param0 @-0.25",
               "#4 12>3 param1 @0.75"
             ],
+            "ears": [
+              "10 3",
+              "11 3",
+              "12 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30380,10 +30428,10 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "23 10 modOut modOutput",
               "25 11 modOut modOutput",
               "27 12 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "24 5 param1 effective",
@@ -30398,11 +30446,11 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
-              "11 3 ADSR",
-              "12 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
+              "11 - ADSR",
+              "12 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -30435,6 +30483,12 @@
               "#4 12>3 param1 @0.75",
               "#5 13>8 param1 @1"
             ],
+            "ears": [
+              "10 3",
+              "11 3",
+              "12 3",
+              "13 8"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30450,10 +30504,10 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "23 10 modOut modOutput",
               "25 11 modOut modOutput",
               "27 12 modOut modOutput",
-              "14 9 modOut modOutput",
               "29 13 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
@@ -30470,12 +30524,12 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
-              "11 3 ADSR",
-              "12 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
-              "13 8 MIDI (learning…)",
+              "10 - LFO",
+              "11 - ADSR",
+              "12 - LFO",
+              "13 - MIDI (learning…)",
               "4294967295 - Master"
             ]
           }
@@ -30507,6 +30561,11 @@
               "#3 11>5 param0 @-0.25",
               "#4 12>3 param1 @0.75"
             ],
+            "ears": [
+              "10 3",
+              "11 3",
+              "12 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30522,10 +30581,10 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "23 10 modOut modOutput",
               "25 11 modOut modOutput",
               "27 12 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "24 5 param1 effective",
@@ -30540,11 +30599,11 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
-              "11 3 ADSR",
-              "12 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
+              "11 - ADSR",
+              "12 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -30588,6 +30647,9 @@
               "#1 7>3 param2 @0.25",
               "#2 10>3 param2 @0.5"
             ],
+            "ears": [
+              "10 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30603,8 +30665,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "15 10 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective"
             ],
@@ -30617,9 +30679,9 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 Velocity",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - Velocity",
               "4294967295 - Master"
             ]
           }
@@ -30659,6 +30721,10 @@
               "#2 10>3 param2 @0.5",
               "#3 11>3 param7 @-0.5"
             ],
+            "ears": [
+              "10 3",
+              "11 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30674,9 +30740,9 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "15 10 modOut modOutput",
               "17 11 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "18 3 param7 effective"
@@ -30690,10 +30756,10 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 Velocity",
-              "11 3 Key",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - Velocity",
+              "11 - Key",
               "4294967295 - Master"
             ]
           }
@@ -30729,9 +30795,13 @@
             "cables": [
               "#0 6>3 param1 @0.5",
               "#1 7>3 param2 @0.25",
+              "#4 12>6 rate @0.5",
               "#2 10>3 param2 @0.5",
-              "#3 11>3 param7 @-0.5",
-              "#4 12>6 rate @0.5"
+              "#3 11>3 param7 @-0.5"
+            ],
+            "ears": [
+              "10 3",
+              "11 3"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -30748,14 +30818,14 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "15 10 modOut modOutput",
-              "17 11 modOut modOutput",
               "19 12 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "17 11 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
-              "18 3 param7 effective",
-              "20 6 rate effective"
+              "20 6 rate effective",
+              "18 3 param7 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -30766,11 +30836,11 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 Velocity",
-              "11 3 Key",
               "12 3 Key",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - Velocity",
+              "11 - Key",
               "4294967295 - Master"
             ]
           }
@@ -30801,6 +30871,10 @@
               "#2 10>3 param2 @0.5",
               "#3 11>3 param7 @-0.5"
             ],
+            "ears": [
+              "10 3",
+              "11 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30816,9 +30890,9 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "15 10 modOut modOutput",
               "17 11 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "18 3 param7 effective"
@@ -30832,10 +30906,10 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 Velocity",
-              "11 3 Key",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - Velocity",
+              "11 - Key",
               "4294967295 - Master"
             ]
           }
@@ -30865,6 +30939,9 @@
               "#1 7>3 param2 @0.25",
               "#2 10>3 param2 @0.5"
             ],
+            "ears": [
+              "10 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30880,8 +30957,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "15 10 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective"
             ],
@@ -30894,9 +30971,9 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 Velocity",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - Velocity",
               "4294967295 - Master"
             ]
           }
@@ -30984,6 +31061,9 @@
               "#1 7>3 param2 @0.25",
               "#2 10>3 param2 @0.5"
             ],
+            "ears": [
+              "10 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -30999,8 +31079,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "21 10 modOut modOutput",
               "14 9 modOut modOutput",
+              "21 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective"
             ],
@@ -31013,9 +31093,9 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 Velocity",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - Velocity",
               "4294967295 - Master"
             ]
           }
@@ -31046,6 +31126,10 @@
               "#2 10>3 param2 @0.5",
               "#3 11>3 param7 @-0.5"
             ],
+            "ears": [
+              "10 3",
+              "11 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -31061,9 +31145,9 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "21 10 modOut modOutput",
               "23 11 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "24 3 param7 effective"
@@ -31077,10 +31161,10 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 Velocity",
-              "11 3 Key",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - Velocity",
+              "11 - Key",
               "4294967295 - Master"
             ]
           }
@@ -31108,9 +31192,13 @@
             "cables": [
               "#0 6>3 param1 @0.5",
               "#1 7>3 param2 @0.25",
+              "#4 12>6 rate @0.5",
               "#2 10>3 param2 @0.5",
-              "#3 11>3 param7 @-0.5",
-              "#4 12>6 rate @0.5"
+              "#3 11>3 param7 @-0.5"
+            ],
+            "ears": [
+              "10 3",
+              "11 3"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -31127,14 +31215,14 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "21 10 modOut modOutput",
-              "23 11 modOut modOutput",
               "25 12 modOut modOutput",
               "14 9 modOut modOutput",
+              "21 10 modOut modOutput",
+              "23 11 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
-              "24 3 param7 effective",
-              "26 6 rate effective"
+              "26 6 rate effective",
+              "24 3 param7 effective"
             ],
             "nodes": [
               "0 - Pad",
@@ -31145,11 +31233,11 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 Velocity",
-              "11 3 Key",
               "12 3 Key",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - Velocity",
+              "11 - Key",
               "4294967295 - Master"
             ]
           }
@@ -31180,6 +31268,10 @@
               "#2 10>3 param2 @0.5",
               "#3 11>3 param7 @-0.5"
             ],
+            "ears": [
+              "10 3",
+              "11 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -31195,9 +31287,9 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
               "21 10 modOut modOutput",
               "23 11 modOut modOutput",
-              "14 9 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "24 3 param7 effective"
@@ -31211,10 +31303,10 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 Velocity",
-              "11 3 Key",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - Velocity",
+              "11 - Key",
               "4294967295 - Master"
             ]
           }
@@ -31254,9 +31346,12 @@
               "8>4294967295 audio"
             ],
             "cables": [
-              "#2 10>1 param1 @1",
               "#0 6>3 param1 @0.5",
-              "#1 7>3 param2 @0.25"
+              "#1 7>3 param2 @0.25",
+              "#2 10>1 param1 @1"
+            ],
+            "ears": [
+              "10 0"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -31271,10 +31366,10 @@
               "13 8 audioOut clips"
             ],
             "modulation": [
-              "15 10 modOut modOutput",
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective"
@@ -31282,7 +31377,6 @@
             "nodes": [
               "0 - Pad",
               "1 0 Filter",
-              "10 0 LFO",
               "2 - Group 2",
               "3 0 Oscillator",
               "4 3 Reverb",
@@ -31291,6 +31385,7 @@
               "7 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -31325,10 +31420,14 @@
               "8>4294967295 audio"
             ],
             "cables": [
-              "#2 10>1 param1 @1",
-              "#3 11>1 param1 @-1",
               "#0 6>3 param1 @0.5",
-              "#1 7>3 param2 @0.25"
+              "#1 7>3 param2 @0.25",
+              "#2 10>1 param1 @1",
+              "#3 11>1 param1 @-1"
+            ],
+            "ears": [
+              "10 0",
+              "11 0"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -31343,11 +31442,11 @@
               "13 8 audioOut clips"
             ],
             "modulation": [
-              "15 10 modOut modOutput",
-              "17 11 modOut modOutput",
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "17 11 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective"
@@ -31355,8 +31454,6 @@
             "nodes": [
               "0 - Pad",
               "1 0 Filter",
-              "10 0 LFO",
-              "11 0 ADSR",
               "2 - Group 2",
               "3 0 Oscillator",
               "4 3 Reverb",
@@ -31365,6 +31462,8 @@
               "7 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
+              "11 - ADSR",
               "4294967295 - Master"
             ]
           }
@@ -31390,9 +31489,12 @@
               "8>4294967295 audio"
             ],
             "cables": [
-              "#2 10>1 param1 @1",
               "#0 6>3 param1 @0.5",
-              "#1 7>3 param2 @0.25"
+              "#1 7>3 param2 @0.25",
+              "#2 10>1 param1 @1"
+            ],
+            "ears": [
+              "10 0"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -31407,10 +31509,10 @@
               "13 8 audioOut clips"
             ],
             "modulation": [
-              "15 10 modOut modOutput",
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 1 param1 effective"
@@ -31418,7 +31520,6 @@
             "nodes": [
               "0 - Pad",
               "1 0 Filter",
-              "10 0 LFO",
               "2 - Group 2",
               "3 0 Oscillator",
               "4 3 Reverb",
@@ -31427,6 +31528,7 @@
               "7 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -31510,9 +31612,12 @@
               "8>4294967295 audio"
             ],
             "cables": [
-              "#2 10>1 param1 @1",
               "#0 6>3 param1 @0.5",
-              "#1 7>3 param2 @0.25"
+              "#1 7>3 param2 @0.25",
+              "#2 10>1 param1 @1"
+            ],
+            "ears": [
+              "10 0"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -31527,10 +31632,10 @@
               "13 8 audioOut clips"
             ],
             "modulation": [
-              "19 10 modOut modOutput",
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
+              "19 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "20 1 param1 effective"
@@ -31538,7 +31643,6 @@
             "nodes": [
               "0 - Pad",
               "1 0 Filter",
-              "10 0 LFO",
               "2 - Group 2",
               "3 0 Oscillator",
               "4 3 Reverb",
@@ -31547,6 +31651,7 @@
               "7 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -31572,10 +31677,14 @@
               "8>4294967295 audio"
             ],
             "cables": [
-              "#2 10>1 param1 @1",
-              "#3 11>1 param1 @-1",
               "#0 6>3 param1 @0.5",
-              "#1 7>3 param2 @0.25"
+              "#1 7>3 param2 @0.25",
+              "#2 10>1 param1 @1",
+              "#3 11>1 param1 @-1"
+            ],
+            "ears": [
+              "10 0",
+              "11 0"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -31590,11 +31699,11 @@
               "13 8 audioOut clips"
             ],
             "modulation": [
-              "19 10 modOut modOutput",
-              "21 11 modOut modOutput",
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
+              "19 10 modOut modOutput",
+              "21 11 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "20 1 param1 effective"
@@ -31602,8 +31711,6 @@
             "nodes": [
               "0 - Pad",
               "1 0 Filter",
-              "10 0 LFO",
-              "11 0 ADSR",
               "2 - Group 2",
               "3 0 Oscillator",
               "4 3 Reverb",
@@ -31612,6 +31719,8 @@
               "7 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
+              "11 - ADSR",
               "4294967295 - Master"
             ]
           }
@@ -31637,9 +31746,12 @@
               "8>4294967295 audio"
             ],
             "cables": [
-              "#2 10>1 param1 @1",
               "#0 6>3 param1 @0.5",
-              "#1 7>3 param2 @0.25"
+              "#1 7>3 param2 @0.25",
+              "#2 10>1 param1 @1"
+            ],
+            "ears": [
+              "10 0"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -31654,10 +31766,10 @@
               "13 8 audioOut clips"
             ],
             "modulation": [
-              "19 10 modOut modOutput",
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
               "14 9 modOut modOutput",
+              "19 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "20 1 param1 effective"
@@ -31665,7 +31777,6 @@
             "nodes": [
               "0 - Pad",
               "1 0 Filter",
-              "10 0 LFO",
               "2 - Group 2",
               "3 0 Oscillator",
               "4 3 Reverb",
@@ -31674,6 +31785,7 @@
               "7 3 ADSR",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -32420,6 +32532,9 @@
               "#1 7>3 param2 @0.25",
               "#2 10>5 param1 @0.5"
             ],
+            "ears": [
+              "10 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -32435,8 +32550,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "15 10 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 5 param1 effective"
@@ -32450,9 +32565,9 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -32541,6 +32656,9 @@
               "#1 7>3 param2 @0.25",
               "#2 10>5 param1 @0.5"
             ],
+            "ears": [
+              "10 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -32556,8 +32674,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "15 10 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 5 param1 effective"
@@ -32571,9 +32689,9 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
               "4294967295 - Master"
             ]
           }
@@ -32661,6 +32779,9 @@
               "#1 7>3 param2 @0.25",
               "#2 10>5 param1 @0.5"
             ],
+            "ears": [
+              "10 3"
+            ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
@@ -32676,8 +32797,8 @@
             "modulation": [
               "8 6 modOut modOutput",
               "10 7 modOut modOutput",
-              "15 10 modOut modOutput",
               "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
               "9 3 param1 effective",
               "11 3 param2 effective",
               "16 5 param1 effective"
@@ -32691,9 +32812,9 @@
               "5 3 Filter",
               "6 3 LFO",
               "7 3 ADSR",
-              "10 3 LFO",
               "8 - Oscillator",
               "9 8 LFO",
+              "10 - LFO",
               "4294967295 - Master"
             ]
           }

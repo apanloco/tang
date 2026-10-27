@@ -133,7 +133,9 @@ test("a modulator added from the menu and a cable dragged to a parameter are in 
   const added = await sessionAccordingToTheServer(page);
   const adsr = added.graph.nodes.find((node) => node.name === "ADSR");
   expect(adsr?.source?.type).toBe("envelope");
-  expect(adsr?.parent).toBe(added.graph.nodes.find((node) => node.name === "Oscillator")?.id);
+  // (The session's own, which hears the lane that the "+" was on: step 94.)
+  expect(adsr?.parent).toBeNull();
+  expect(adsr?.hears).toBe(added.graph.nodes.find((node) => node.name === "Oscillator")?.id);
 
   // Drag its output to the resonance knob's port.
   const from = await envelope.locator('.react-flow__handle[data-handleid="modOut"]').boundingBox();

@@ -588,16 +588,36 @@ describe("which group a lane is in, and which there are to choose from", () => {
 describe("what goes when a lane or a group is taken out", () => {
   const groups = stateOf(groupsFixture.snapshot);
 
+  test("counts the modulators of the session's own that hear a lane or a group, which stay when it goes: not the ones that hear another or every note, and not the ones in its rack", () => {
+    const base = groupsFixture.snapshot;
+    const own = (id: number, hears?: number): Node => ({ id, parent: null, name: `LFO ${String(id)}`, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 }, ...(hears === undefined ? {} : { hears }) });
+    const master = base.graph.nodes.findIndex((node) => node.kind === "master");
+    const nodes = [...base.graph.nodes.slice(0, master), own(100, 5), own(101, 5), own(102, 0), own(103, 10), own(104), ...base.graph.nodes.slice(master)];
+    const heard = stateOf({ ...base, graph: { ...base.graph, nodes } });
+    expect(removalOf(heard, 5)).toMatchObject({ kind: "lane", modulators: 2, hearing: 2 });
+    expect(removalOf(heard, 10)).toMatchObject({ kind: "lane", modulators: 1, hearing: 1 });
+    expect(removalOf(heard, 0)).toMatchObject({ kind: "group", modulators: 2, hearing: 1 });
+    expect(removalOf(heard, 1)).toMatchObject({ kind: "group", modulators: 1, hearing: 0 });
+    expect(removalOf(heard, 3)).toMatchObject({ kind: "lane", hearing: 0 });
+  });
+
+  test("is not the same removal when the number that hear it is not", () => {
+    const base = removalOf(groups, 5);
+    if (!base) throw new Error("a lane");
+    expect(sameRemoval(base, { ...base })).toBe(true);
+    expect(sameRemoval(base, { ...base, hearing: base.hearing + 1 })).toBe(false);
+  });
+
   test("for a group: what it is called, the effects of its bus and its modulators that go with it, and the lanes that stay", () => {
-    expect(removalOf(groups, 0)).toEqual({ kind: "group", name: "Group 1", instrument: false, effects: 0, modulators: 2, lanes: 2, last: false });
-    expect(removalOf(groups, 1)).toEqual({ kind: "group", name: "Group 2", instrument: false, effects: 0, modulators: 1, lanes: 1, last: false });
-    expect(removalOf(groups, 2)).toEqual({ kind: "group", name: "Lead", instrument: false, effects: 0, modulators: 0, lanes: 0, last: false });
+    expect(removalOf(groups, 0)).toEqual({ kind: "group", name: "Group 1", instrument: false, effects: 0, modulators: 2, hearing: 0, lanes: 2, last: false });
+    expect(removalOf(groups, 1)).toEqual({ kind: "group", name: "Group 2", instrument: false, effects: 0, modulators: 1, hearing: 0, lanes: 1, last: false });
+    expect(removalOf(groups, 2)).toEqual({ kind: "group", name: "Lead", instrument: false, effects: 0, modulators: 0, hearing: 0, lanes: 0, last: false });
   });
 
   test("for a lane: what it is called, its effects and its modulators that go with it, whether it is in a group, and whether it is the last", () => {
-    expect(removalOf(groups, 5)).toEqual({ kind: "lane", name: "Oscillator 2", instrument: true, effects: 1, modulators: 2, lanes: 0, last: false });
-    expect(removalOf(groups, 10)).toEqual({ kind: "lane", name: "Oscillator 4", instrument: true, effects: 1, modulators: 1, lanes: 0, last: false });
-    expect(removalOf(state, oscillator.id)).toEqual({ kind: "lane", name: "Oscillator", instrument: true, effects: 1, modulators: 1, lanes: 0, last: true });
+    expect(removalOf(groups, 5)).toEqual({ kind: "lane", name: "Oscillator 2", instrument: true, effects: 1, modulators: 2, hearing: 0, lanes: 0, last: false });
+    expect(removalOf(groups, 10)).toEqual({ kind: "lane", name: "Oscillator 4", instrument: true, effects: 1, modulators: 1, hearing: 0, lanes: 0, last: false });
+    expect(removalOf(state, oscillator.id)).toEqual({ kind: "lane", name: "Oscillator", instrument: true, effects: 1, modulators: 1, hearing: 0, lanes: 0, last: true });
   });
 
   test("says whether a lane has an instrument, which can be taken out alone: a lane that has none does not, and a group never does", () => {
@@ -607,14 +627,14 @@ describe("what goes when a lane or a group is taken out", () => {
     });
     // (The lane keeps what else it has: its filter and its LFO are still what goes with it. It has nothing else that a card would show, so the canvas draws no card for it and it is called by its
     // filter; with a key range it has a card, and is called as the server calls a lane that has no instrument.)
-    expect(removalOf(emptied, oscillator.id)).toEqual({ kind: "lane", name: "Filter", instrument: false, effects: 1, modulators: 1, lanes: 0, last: true });
+    expect(removalOf(emptied, oscillator.id)).toEqual({ kind: "lane", name: "Filter", instrument: false, effects: 1, modulators: 1, hearing: 0, lanes: 0, last: true });
     const base = emptied.snapshot;
     if (base === null) throw new Error("the session is there");
     const keyed = stateOf({
       ...base,
       graph: { ...base.graph, nodes: base.graph.nodes.map((node) => (node.id === oscillator.id && node.kind === "instrument" ? { ...node, range: { low: 36, high: 60 } } : node)) },
     });
-    expect(removalOf(keyed, oscillator.id)).toEqual({ kind: "lane", name: "(empty)", instrument: false, effects: 1, modulators: 1, lanes: 0, last: true });
+    expect(removalOf(keyed, oscillator.id)).toEqual({ kind: "lane", name: "(empty)", instrument: false, effects: 1, modulators: 1, hearing: 0, lanes: 0, last: true });
     expect([0, 1, 2].map((group) => removalOf(groups, group)?.instrument)).toEqual([false, false, false]);
     expect([3, 5, 9, 10].map((lane) => removalOf(groups, lane)?.instrument)).toEqual([true, true, true, true]);
   });

@@ -92,13 +92,13 @@ mock("an effect that stands by itself has a \"+\" that adds a modulator to it, w
   await expect(page.locator(".tang-cable--modulation")).toHaveCount(2);
 });
 
-mock("a lane that has nothing but effects is drawn as them whichever way it came to be: the instrument of a lane taken out alone leaves its filter and its LFO, and a lane that keeps a modulator is a card again when its last effect goes", async ({ page }) => {
+mock("a lane that has nothing but effects is drawn as them whichever way it came to be: the instrument of a lane taken out alone leaves its filter (and the LFO that hears the lane), and the last lane of the session is a card again when its last effect goes", async ({ page }) => {
   await open(page);
   await page.getByRole("button", { name: "Remove the lane of Oscillator" }).click();
   await page.getByRole("menuitem", { name: /^Remove Oscillator only/ }).click();
   await expect(node(page, "\\(empty\\)")).toHaveCount(0);
   await expect(node(page, "Filter").getByRole("button", { name: "Mute Filter" })).toBeVisible();
-  // The lane has a LFO, which its removal would take with it: the filter's "×" takes the filter out and no more, and the lane that has nothing but the LFO has its card (and the LFO is on it).
+  // The lane is the only one of the session, which a session keeps: the filter's "×" takes the filter out and no more, and the lane that has nothing has its card. The LFO, which only hears the lane, is as it was.
   await node(page, "Filter").getByRole("button", { name: "Remove Filter" }).click();
   await expect(node(page, "Filter")).toHaveCount(0);
   await expect(node(page, "\\(empty\\)")).toBeVisible();

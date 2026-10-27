@@ -127,7 +127,7 @@ describe("adding a modulator that is in no lane and no group", () => {
 
   test("takes the one that is new to the session's own rack, which is its own, when another front-end added one just before, and not one that was added to a lane", async () => {
     const { server, editor } = await open();
-    server.apply({ type: "addFreeModulator", kind: "envelope" });
+    server.apply({ type: "addFreeModulator", kind: "envelope", hears: null });
     const id = await editor.addFreeModulator("lfo");
     expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.parent === null).map((n) => [n.id, n.name])).toEqual([[3, "ADSR"], [4, "LFO"]]);
     expect(id).toBe(4);
@@ -141,6 +141,32 @@ describe("adding a modulator that is in no lane and no group", () => {
     expect(await editor.addFreeModulator("lfo")).toBeNull();
     expect(said(notices)).toEqual(["Could not add an LFO of its own: Not connected to the server."]);
     expect(shown).toEqual([]);
+  });
+
+  test("asks for the ear with the modulator, in one request, and the node it made hears the lane (the '+' of a lane)", async () => {
+    const { client, server, notices, shown, editor } = await open();
+    const asked: unknown[] = [];
+    const request = client.request.bind(client);
+    client.request = (message) => {
+      asked.push(message);
+      return request(message);
+    };
+    const id = await editor.addFreeModulator("lfo", oscillator.id);
+    expect(id).toBe(3);
+    expect(asked).toEqual([{ type: "addFreeModulator", kind: "lfo", hears: oscillator.id }]);
+    expect(server.snapshot.graph.nodes.find((n) => n.id === id)).toMatchObject({ kind: "modulator", parent: null, hears: oscillator.id });
+    expect(shown).toEqual([3]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("says why when the ear is no lane or group, in the names the canvas shows, and makes nothing", async () => {
+    const { client, notices, shown, editor } = await open();
+    expect(await editor.addFreeModulator("lfo", filter.id)).toBeNull();
+    expect(said(notices)).toEqual(["Could not add an LFO that hears Filter: only a lane or a group can be heard"]);
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+    expect(shown).toEqual([]);
+    // (Nothing was used up: the next one has the id that this one would have had.)
+    expect(await editor.addFreeModulator("lfo", oscillator.id)).toBe(3);
   });
 });
 
@@ -201,13 +227,13 @@ describe("modulating a parameter", () => {
   const cablesTo = (cables: readonly Edge[], node: number, to: Port): Edge[] => cables.filter((e) => e.kind === "modulation" && e.to.node === node && samePort(e.to.port, to));
   const requests = (server: MockServer) => server.received.flatMap((message) => (message.type === "request" ? [message.intent] : []));
 
-  test("resolves with the node of the modulator it made, which is in the lane then, with a cable from it to the parameter at half depth, and says nothing; the canvas is asked to show it", async () => {
+  test("resolves with the node of the modulator it made, which is the session's own and hears the lane, with a cable from it to the parameter at half depth, and says nothing; the canvas is asked to show it", async () => {
     const { client, notices, shown, editor } = await open();
     const cutoff = paramPort(filter, "cutoff");
     const id = await editor.modulate(filter.id, cutoff, "envelope");
     expect(id).toBe(3);
     const graph = client.state.snapshot?.graph;
-    expect(graph?.nodes.find((n) => n.id === id)).toMatchObject({ kind: "modulator", parent: oscillator.id, name: "ADSR" });
+    expect(graph?.nodes.find((n) => n.id === id)).toMatchObject({ kind: "modulator", parent: null, hears: oscillator.id, name: "ADSR" });
     const [cable] = cablesTo(graph?.edges ?? [], filter.id, cutoff).filter((e) => e.kind === "modulation" && e.from.node === id);
     expect(cable).toMatchObject({ kind: "modulation", from: { node: id, port: { type: "modOut" } }, amount: 0.5 });
     expect(said(notices)).toEqual([]);

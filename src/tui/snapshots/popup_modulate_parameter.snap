@@ -11,7 +11,7 @@ source: src/tui/golden_tests.rs
 │  ╰ fx Filter  [Built-in]                       ││  drive                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     1.00│
 │  fx Reverb  [Built-in]  (bus)                  ││                                                                    │
 │  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)││                                                                    │
-│  ~ ADSR → Mod 0 rate (30%)  (bus)              ││                                                                    │
+│  ~ ADSR → Mod 1 rate (30%)  (bus)              ││                                                                    │
 │♪ Oscillator  [Built-in]  -B3┌ Modulate cutoff ─────────────────────────────────────────┐                             │
 │├ fx Filter  [Built-in]      │/                                                         │                             │
 │╰ ~ LFO 0.2Hz triangle → Filt│Modulator                                                 │                             │
@@ -21,9 +21,9 @@ source: src/tui/golden_tests.rs
 │                             │New velocity → cutoff                                     │                             │
 │                             │New key → cutoff                                          │                             │
 │                             │New step sequencer → cutoff                               │                             │
-│                             │attach → LFO 0.2Hz triangle                               │                             │
-│                             │                                                          │                             │
-│                             │                                                          │                             │
+│                             │attach → LFO 0.2Hz triangle (hears L3)                    │                             │
+│                             │attach → LFO 0.5Hz sine (hears G1)                        │                             │
+│                             │attach → ADSR (hears G1)                                  │                             │
 │                             │                                                          │                             │
 │                             └──────────────────────────────────────────────────────────┘                             │
 │                                                ││                                                                    │

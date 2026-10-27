@@ -529,8 +529,9 @@ async fn a_browser_adds_a_lane_with_an_instrument_and_hears_it_in_the_meter_and_
     let told = said.iter().find(|m| m["type"] == "snapshot").expect("the new structure is told as a snapshot");
     let nodes = told["snapshot"]["graph"]["nodes"].as_array().unwrap();
     let names: Vec<_> = nodes.iter().map(|n| n["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Oscillator", "Filter", "LFO", "Oscillator", "Master"]);
-    assert_eq!(nodes[3]["parent"], json!(null), "a lane of its own, in no group");
+    // (The tracer's LFO is the session's own: after the lanes' nodes, and before the master.)
+    assert_eq!(names, ["Oscillator", "Filter", "Oscillator", "LFO", "Master"]);
+    assert_eq!(nodes[2]["parent"], json!(null), "a lane of its own, in no group");
     assert_eq!(told["snapshot"]["telemetry"]["meters"].as_array().unwrap().len(), before_meters + 2, "a peak and a clip count for the lane");
 
     // The next note is heard through it: the oscillator is at its own volume, ten times the tracer's lane.
@@ -894,8 +895,8 @@ async fn a_browser_draws_a_cable_from_one_modulator_to_the_rate_of_another_and_t
     let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();
     let lfo = nodes.iter().find(|n| n["name"] == "LFO").unwrap()["id"].as_u64().unwrap();
 
-    // A second LFO in the lane: told as a snapshot, since a node came.
-    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addModulator", "parent": osc, "kind": "lfo"}})).await;
+    // A second LFO that hears the lane (what the "+" of the lane makes: the session's own, like the tracer's LFO, which the program has moved there when it loaded the file): told as a snapshot, since a node came.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addFreeModulator", "kind": "lfo", "hears": osc}})).await;
     let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
     assert_eq!(answered["type"], "ack", "{answered}");
     let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("the structure is told as a snapshot");
@@ -903,7 +904,7 @@ async fn a_browser_draws_a_cable_from_one_modulator_to_the_rate_of_another_and_t
         .as_array()
         .unwrap()
         .iter()
-        .find(|n| n["kind"] == "modulator" && n["parent"] == osc && n["id"] != lfo)
+        .find(|n| n["kind"] == "modulator" && n["parent"].is_null() && n["hears"] == osc && n["id"] != lfo)
         .expect("the new modulator")["id"]
         .as_u64()
         .unwrap();
@@ -929,7 +930,7 @@ async fn a_browser_draws_a_cable_from_one_modulator_to_the_rate_of_another_and_t
     let saved = std::fs::read_to_string(&file).unwrap();
     assert!(saved.contains("mod_rate = 0"), "{saved}");
 
-    // A program started on that file draws it: the first LFO is the first of the lane, and the second is after it.
+    // A program started on that file draws it: the first LFO is the first of the session's own, and the second is after it.
     drop(client);
     drop(tang);
     let again = Tang::start_on(&file);
@@ -968,16 +969,18 @@ async fn a_browser_makes_a_modulator_that_is_in_no_lane_and_draws_a_cable_from_i
     let (mut client, _, snapshot) = listening(&tang).await;
     let (osc, volume) = param_of(&snapshot, "Oscillator", "volume");
     let (filter, cutoff) = param_of(&snapshot, "Filter", "cutoff");
-    assert!(free_modulators_of(&snapshot).is_empty(), "the tracer has none in no lane");
+    // (The tracer's own LFO is the session's own: the program moves the modulators of a lane there when it loads the file.)
+    let tracers = free_modulators_of(&snapshot);
+    assert_eq!(tracers.len(), 1, "the tracer's LFO is in no lane since the program loaded it: {snapshot}");
 
     // A modulator of its own: told as a snapshot, since a node came, with no parent.
-    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addFreeModulator", "kind": "envelope"}})).await;
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addFreeModulator", "kind": "envelope", "hears": null}})).await;
     let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
     assert_eq!(answered["type"], "ack", "{answered}");
     let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("the structure is told as a snapshot");
-    let free = free_modulators_of(told);
-    assert_eq!(free.len(), 1, "{told}");
-    let free = free[0];
+    let both = free_modulators_of(told);
+    assert_eq!(both.len(), 2, "{told}");
+    let free = *both.iter().find(|id| !tracers.contains(id)).expect("the new one");
     let history = said.iter().rfind(|m| m["type"] == "history").cloned().expect("a message of the history");
     assert_eq!(history, json!({"type": "history", "undo": "add an envelope", "redo": null}));
 
@@ -1001,30 +1004,31 @@ async fn a_browser_makes_a_modulator_that_is_in_no_lane_and_draws_a_cable_from_i
     assert!(saved.contains("[[modulator]]") && saved.contains("to = \"instrument[0]\"") && saved.contains("param = \"volume\""), "{saved}");
     assert!(saved.contains("to = \"instrument[0].effect[0]\"") && saved.contains("param = \"cutoff\""), "{saved}");
 
-    // A program started on that file draws it again: the modulator with no parent, and its two cables.
+    // A program started on that file draws it again: the modulators with no parent (the tracer's, and this one after it), and the two cables of this one.
     drop(client);
     drop(tang);
     let again = Tang::start_on(&file);
     let (mut browser, _, snapshot) = listening(&again).await;
-    let free = free_modulators_of(&snapshot);
-    assert_eq!(free.len(), 1, "{snapshot}");
-    let to_the_oscillator = cables_of(&snapshot).iter().filter(|(from, to, _)| *from == free[0] && *to == osc).count();
-    let to_the_filter = cables_of(&snapshot).iter().filter(|(from, to, _)| *from == free[0] && *to == filter).count();
+    let both = free_modulators_of(&snapshot);
+    assert_eq!(both.len(), 2, "{snapshot}");
+    let free = both[1];
+    let to_the_oscillator = cables_of(&snapshot).iter().filter(|(from, to, _)| *from == free && *to == osc).count();
+    let to_the_filter = cables_of(&snapshot).iter().filter(|(from, to, _)| *from == free && *to == filter).count();
     assert_eq!((to_the_oscillator, to_the_filter), (1, 1), "{:?}", cables_of(&snapshot));
 
     // It is taken out by the intent that takes any node out, and Undo puts it back with its cables; the history of this program begins with that.
-    tell(&mut browser, json!({"type": "request", "reqId": 1, "intent": {"type": "removeNode", "node": free[0]}})).await;
+    tell(&mut browser, json!({"type": "request", "reqId": 1, "intent": {"type": "removeNode", "node": free}})).await;
     let (answered, said) = answer_with_what_came_before(&mut browser, 1).await;
     assert_eq!(answered["type"], "ack", "{answered}");
     let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("told as a snapshot");
-    assert!(free_modulators_of(told).is_empty());
-    assert!(!cables_of(told).iter().any(|(from, ..)| *from == free[0]));
+    assert_eq!(free_modulators_of(told), vec![both[0]], "the tracer's LFO is left");
+    assert!(!cables_of(told).iter().any(|(from, ..)| *from == free));
     tell(&mut browser, json!({"type": "request", "reqId": 2, "intent": {"type": "undo"}})).await;
     let (answered, said) = answer_with_what_came_before(&mut browser, 2).await;
     assert_eq!(answered["type"], "ack", "{answered}");
     let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("told as a snapshot");
-    assert_eq!(free_modulators_of(told), free, "the very node");
-    assert_eq!(cables_of(told).iter().filter(|(from, ..)| *from == free[0]).count(), 2, "with its cables");
+    assert_eq!(free_modulators_of(told), both, "the very node");
+    assert_eq!(cables_of(told).iter().filter(|(from, ..)| *from == free).count(), 2, "with its cables");
 }
 
 /// The audio cables of a snapshot message (the edges of kind `cable`), in the order of its graph.
@@ -1343,14 +1347,14 @@ async fn a_browser_moves_an_effect_along_its_chain_and_a_second_one_is_told_and_
         assert_eq!((refused["type"].clone(), refused["error"]["message"].clone()), (json!("rejected"), json!(message)), "{refused}");
     }
 
-    // What is saved has the effects in the new order, and the LFO's cable on the filter's new slot.
+    // What is saved has the effects in the new order, and the LFO's cable on the filter's new place in the chain.
     tell(&mut client, json!({"type": "request", "reqId": 8, "intent": {"type": "save"}})).await;
     let saved_answer = answer(&mut client, 8).await;
     assert_eq!((saved_answer["type"].clone(), saved_answer["rev"].clone()), (json!("ack"), json!(5)), "the refusals used no revision: {saved_answer}");
     let saved = std::fs::read_to_string(&file).unwrap();
     let (reverb_at, filter_at) = (saved.find("plugin = \"builtin:reverb\"").expect("a reverb"), saved.find("plugin = \"builtin:filter\"").expect("a filter"));
     assert!(reverb_at < filter_at, "the reverb comes first in the file: {saved}");
-    assert!(saved.contains("slot = 2"), "the cable is on the second slot of the lane, which is the filter's: {saved}");
+    assert!(saved.contains("to = \"instrument[0].effect[1]\""), "the cable is on the second effect of the lane, which is the filter's: {saved}");
 
     // A program started on that file draws the chain in that order, and the cable on the filter.
     drop((client, other));

@@ -45,11 +45,11 @@ test("an effect is moved before another from its button, the program has the new
   expect(await leftOf(effect("Reverb"), effect("Filter"))).toBe(true);
   await expect(page.getByText("Unsaved changes")).toBeVisible();
 
-  // What is saved has the reverb before the filter, and the LFO's cable on the filter's new slot, the second of the lane.
+  // What is saved has the reverb before the filter, and the LFO's cable on the filter, which the file names by its place in the lane's chain (the second now, after the reverb).
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const saved = readFileSync(own.file, "utf8");
   expect(saved.indexOf('plugin = "builtin:reverb"')).toBeGreaterThan(-1);
   expect(saved.indexOf('plugin = "builtin:reverb"')).toBeLessThan(saved.indexOf('plugin = "builtin:filter"'));
-  expect(saved).toContain("slot = 2");
+  expect(saved).toMatch(/param = "cutoff"\nto = "instrument\[0\]\.effect\[1\]"\n/);
 });

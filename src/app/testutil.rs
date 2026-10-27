@@ -223,7 +223,21 @@ pub struct Run {
 }
 
 pub fn try_load(text: &str) -> anyhow::Result<Run> {
-    let config = session::parse(text)?;
+    try_load_as(text, false)
+}
+
+/// `try_load`, for a session whose modulators are moved to the session's own first, as the program loads one (`SessionConfig::move_modulators_to_the_session`, step 94). The rest of
+/// the tests load a file as it is written, with the modulators that it has in its lanes and its groups in them: those racks are still in the engine and the model, and what a test
+/// of them says is no less so.
+pub fn try_load_moved(text: &str) -> anyhow::Result<Run> {
+    try_load_as(text, true)
+}
+
+fn try_load_as(text: &str, moved: bool) -> anyhow::Result<Run> {
+    let mut config = session::parse(text)?;
+    if moved {
+        config.move_modulators_to_the_session();
+    }
     let (tx, rx) = crossbeam_channel::unbounded();
     let mut progress = Vec::new();
     let model = load_session(
@@ -257,6 +271,11 @@ pub fn load_onto(text: &str, cmd_tx: &Sender<GraphCommand>) -> SessionModel {
 
 pub fn load(text: &str) -> Run {
     try_load(text).unwrap_or_else(|e| panic!("load failed: {e:#}"))
+}
+
+/// `load`, with the modulators moved to the session's own (`try_load_moved`).
+pub fn load_moved(text: &str) -> Run {
+    try_load_moved(text).unwrap_or_else(|e| panic!("load failed: {e:#}"))
 }
 
 /// The audio thread's side of the channels a controller is built around.

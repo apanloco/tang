@@ -75,19 +75,21 @@ test("a cable dropped where it does not belong is not drawn: on the empty canvas
   await expect(cables(page)).toHaveCount(1);
 });
 
-test("a cable cannot be dropped on a lane the modulator does not belong to", async ({ page }) => {
+test("a cable can be dropped on a parameter of any lane: a modulator hears one lane and reaches every plugin of the session", async ({ page }) => {
   await open(page, "lanes");
   const lane = (n: number) => node(page, `Oscillator ${String(n)}`);
   await expect(page.locator(".tang-cable--modulation")).toHaveCount(2);
   const lfo = (n: number) => page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: `LFO ${String(n)}` }) });
-  // The first LFO to the first lane's oscillator, which is its own, and to the second's, which is not.
+  // The first LFO (which hears the first lane) to the first lane's oscillator and to the second's, and the second LFO to the second's too.
   await drag(page, output(lfo(1)), port(lane(1), "decay"));
   await expect(cables(page)).toHaveCount(3);
   await drag(page, output(lfo(1)), port(lane(2), "decay"));
-  await expect(cables(page)).toHaveCount(3);
-  await drag(page, output(lfo(2)), port(lane(2), "decay"));
   await expect(cables(page)).toHaveCount(4);
-  // (Dropped out of reach, a cable is not even asked for: there is nothing for the page to say it was refused.)
+  await drag(page, output(lfo(2)), port(lane(2), "decay"));
+  await expect(cables(page)).toHaveCount(5);
+  // (A modulator that drives a parameter already is not drawn to it again, but that is the one thing left out of reach.)
+  await drag(page, output(lfo(1)), port(lane(2), "decay"));
+  await expect(cables(page)).toHaveCount(5);
   await expect(page.locator(".tang-notice")).toHaveCount(0);
 });
 
@@ -161,14 +163,14 @@ test("a cable dropped on a setting where it does not belong is not drawn: the mo
   await expect(cables(page)).toHaveCount(2);
 });
 
-test("a cable cannot be dropped on a modulator of another lane", async ({ page }) => {
+test("a cable can be dropped on a modulator that hears another lane: every modulator reaches the settings of the others", async ({ page }) => {
   await open(page, "lanes");
   const lfo = (n: number) => page.locator(".react-flow__node").filter({ has: page.locator(".tang-node__name", { hasText: `LFO ${String(n)}` }) });
   await expect(cables(page)).toHaveCount(2);
   await drag(page, output(lfo(1)), setting(lfo(2), "rate"));
-  await expect(cables(page)).toHaveCount(2);
+  await expect(cables(page)).toHaveCount(3);
   await drag(page, output(lfo(2)), setting(lfo(1), "rate"));
-  await expect(cables(page)).toHaveCount(2);
+  await expect(cables(page)).toHaveCount(4);
   await expect(page.locator(".tang-notice")).toHaveCount(0);
 });
 

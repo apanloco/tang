@@ -503,7 +503,7 @@ impl Controller {
             // (As an effect that goes in a chain: the words of the button that adds one. Undo takes the lane that holds it out with it.)
             Intent::AddFreeEffect { plugin } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name}"))),
             Intent::AddInstrument { plugin } => self.catalog_name(plugin).map_or(Plan::Nothing, |name| added(format!("add {name} as an instrument"))),
-            Intent::AddModulator { kind, .. } | Intent::AddFreeModulator { kind } => added(format!("add {}", kind.label())),
+            Intent::AddModulator { kind, .. } | Intent::AddFreeModulator { kind, .. } => added(format!("add {}", kind.label())),
             Intent::AddModEdge { .. } => added("draw a cable".to_string()),
             Intent::AddCable { from, to, .. } => {
                 let of_notes = from.port == Port::EventsOut || to.port == Port::EventsIn;
@@ -1016,7 +1016,7 @@ rate = 3.0
     #[test]
     fn what_a_free_modulator_hears_is_a_step_in_words_that_say_whom_and_undo_and_redo_set_it_in_the_model_and_the_engine() {
         let (engine, mut ctl, _clock) = controller();
-        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope }).unwrap();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: None }).unwrap();
         let envelope = ctl.model.free_modulators[0].node;
         let (first, second) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Instrument(1)));
         let ear = |ctl: &Controller| ctl.model.free_modulators[0].ear;
@@ -1052,7 +1052,7 @@ rate = 3.0
     #[test]
     fn a_free_modulator_that_hears_a_lane_is_put_back_by_undo_hearing_it_and_what_is_refused_is_no_step() {
         let (engine, mut ctl, _clock) = controller();
-        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }).unwrap();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: None }).unwrap();
         let lfo = ctl.model.free_modulators[0].node;
         let (first, plugin) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Effect { inst: 0, index: 0 }));
         ctl.apply(Intent::SetModulatorEar { node: lfo, ear: Some(first) }).unwrap();
@@ -1069,6 +1069,38 @@ rate = 3.0
         assert_eq!(ctl.model.free_modulators[0].ear, Some(first));
         let told = sent(&engine);
         assert!(told.iter().any(|c| *c == format!("SetModulatorEar Free index=0 ear={}", first.0)), "{told:?}");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_modulator_that_is_made_to_hear_a_lane_is_one_step_that_undo_takes_out_and_redo_makes_again_under_its_id_hearing_the_same() {
+        use crate::app::graph::{Endpoint, Port};
+        let (engine, mut ctl, _clock) = controller_with_plugins();
+        let first = node(&ctl, NodePath::Instrument(0));
+        // The "+" of a lane: one intent, one step, in the words of the button.
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: Some(first) }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("add an envelope"));
+        let envelope = ctl.model.free_modulators[0].node;
+        // The knob's "~": a modulator and its cable, one step, hearing the lane of the plugin.
+        let filter = node(&ctl, NodePath::Effect { inst: 0, index: 1 });
+        let (resonance, _) = ctl.model.instruments[0].effects[1].params.iter().find(|row| row.name == "resonance").map(|row| (row.index, ())).unwrap();
+        ctl.apply(Intent::Modulate { to: Endpoint { node: filter, port: Port::Param { index: resonance } }, kind: ModulatorKind::Lfo, depth: None }).unwrap();
+        assert_eq!(undo_label(&ctl).as_deref(), Some("modulate resonance"));
+        let lfo = ctl.model.free_modulators[1].node;
+        assert_eq!(ctl.model.free_modulators[1].ear, Some(first));
+        let after = ctl.model.graph();
+        sent(&engine);
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        assert!(ctl.model.free_modulators.is_empty(), "both are taken out");
+        ctl.redo().unwrap();
+        let told = sent(&engine);
+        assert!(told.iter().any(|c| *c == format!("SetModulatorEar Free index=0 ear={}", first.0)), "the ear goes with the modulator that redo makes: {told:?}");
+        ctl.redo().unwrap();
+        assert_eq!(ctl.model.graph(), after, "the graph is what it was, whole");
+        // (A telemetry slot is not given again, so the graph is compared by what a client reads: the nodes, the ears and the cables.)
+        assert_eq!((ctl.model.free_modulators[0].node, ctl.model.free_modulators[0].ear), (envelope, Some(first)));
+        assert_eq!((ctl.model.free_modulators[1].node, ctl.model.free_modulators[1].ear), (lfo, Some(first)));
         ctl.model.check_ids().unwrap();
     }
 
@@ -2552,7 +2584,7 @@ rate = 3.0
         ctl.undo().unwrap();
         ctl.redo().unwrap();
         assert_eq!(ctl.model.graph(), after, "the depth is the one it was asked for, not the one a new cable has");
-        let rack = &ctl.model.instruments[0].modulators;
+        let rack = &ctl.model.free_modulators;
         assert_eq!(rack.last().map(|m| m.targets[0].depth), Some(1.0));
     }
 
@@ -6362,13 +6394,13 @@ size = 0.5
             "a modulator that is in no lane is added with cables to plugins of two lanes and of a bus, and to the settings of another like it, and each of them goes back under its id",
             {
                 let mut script = vec![
-                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }),
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: None }),
                     cable(fresh(0), lane0, detune),
                     cable(fresh(0), lane1, detune),
                     cable(fresh(0), bus, bus_resonance),
                     cable(fresh(0), filter_fx, resonance),
                     Op::Do(Intent::SetEdgeDepth { edge: fresh_edge(1), depth: -0.25 }),
-                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Envelope }),
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: None }),
                     Op::Do(Intent::AddModEdge { modulator: fresh(1), to: Endpoint { node: fresh(0), port: Port::Rate } }),
                     Op::Do(Intent::RemoveNode { node: fresh(0) }),
                 ];
@@ -6382,8 +6414,8 @@ size = 0.5
             "modulators that are in no lane are refused what a rack cannot reach, and a modulator made for the rate of one is another that is in no lane",
             {
                 let mut script = vec![
-                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Steps }),
-                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::MidiLearn }),
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Steps, hears: None }),
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::MidiLearn, hears: None }),
                     cable(fresh(0), lane1, volume),
                     // Refused, and no step, no id and no slot for any: its own settings, the settings of a modulator of a lane (and a lane's of its), a group (which has no plugin) and a cable that is there.
                     Op::Do(Intent::AddModEdge { modulator: fresh(0), to: Endpoint { node: fresh(0), port: Port::Rate } }),
@@ -6404,7 +6436,7 @@ size = 0.5
             "what a modulator that is in no lane drives goes with the plugin when the plugin, its lane or its group is taken out, and comes back with it",
             {
                 let mut script = vec![
-                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }),
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: None }),
                     cable(fresh(0), filter_fx, resonance),
                     cable(fresh(0), bus, bus_resonance),
                     cable(fresh(0), lane1, detune),
@@ -6423,7 +6455,7 @@ size = 0.5
             {
                 let ear = |node: NodeId, ear: Option<NodeId>| Op::Do(Intent::SetModulatorEar { node, ear });
                 let mut script = vec![
-                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Envelope }),
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: None }),
                     ear(fresh(0), Some(lane1)),
                     ear(fresh(0), Some(g0)),
                     // As it is: applied, and no step.

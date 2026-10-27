@@ -172,7 +172,8 @@ pub struct SessionConfig {
     /// The MIDI devices that the session has a node for (`[[device]]`), in the order of the file, which is how a cable names them (`device[0]`).
     pub devices: Vec<DeviceConfig>,
     /// The modulators that belong to no lane and no group (the top-level `[[modulator]]`), in the order of the file, which is how the cables of one of them name another (`mod_rate = 1`).
-    /// Each hears every note, and its cables name the plugin they drive by its place in the session (`to = "instrument[0].effect[1]"`).
+    /// Each hears every note unless it says whose (`hears`), and its cables name the plugin they drive by its place in the session (`to = "instrument[0].effect[1]"`).
+    /// `move_modulators_to_the_session` puts the modulators of the lanes and of the groups here too.
     pub free_modulators: Vec<ModulatorConfig>,
 }
 
@@ -912,6 +913,119 @@ pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
         .collect::<anyhow::Result<Vec<_>>>()?;
     let keys = raw.keys.map(|keys| KeysConfig { ui: keys.ui });
     Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), cables, keys, devices, free_modulators: raw.modulators })
+}
+
+/// A place in a rack that no modulator is at: a cable that names it is left out by the loader, as one that names a modulator that is not there is.
+const NOT_THERE: usize = usize::MAX;
+
+/// Where the plugin in chain slot `slot` of lane `lane` is, as a free modulator's cable names it: `instrument[0]` for the instrument (slot 0) and `instrument[0].effect[1]` for the effect in slot 2.
+pub(crate) fn lane_plugin_place(lane: usize, slot: usize) -> String {
+    if slot == 0 { format!("instrument[{lane}]") } else { format!("instrument[{lane}].effect[{}]", slot - 1) }
+}
+
+/// Where modulator `index` of a rack of `count` that begins at `base` in the new list is: there, or nowhere if the rack has no such modulator.
+fn place_in_rack(base: usize, count: usize, index: usize) -> usize {
+    if index < count { base + index } else { NOT_THERE }
+}
+
+/// Put `map` of the index of every modulator that the cable `target` names (the rate of a sibling, a stage of its envelope, or the depth of one of its cables) in place of it.
+fn remap_siblings(target: &mut ModTargetConfig, map: impl Fn(usize) -> usize) {
+    for field in [&mut target.mod_rate, &mut target.mod_attack, &mut target.mod_decay, &mut target.mod_sustain, &mut target.mod_release].into_iter().flatten() {
+        *field = map(*field);
+    }
+    if let Some(pair) = &mut target.mod_depth {
+        // (The loader reads the modulator of a pair that has none as the first.)
+        match pair.first_mut() {
+            Some(first) => *first = map(*first),
+            None => pair.push(map(0)),
+        }
+    }
+}
+
+impl SessionConfig {
+    /// Make every modulator of the session one of its own (step 94 of `docs/web-ui.md`, P5c-2 of `docs/patch-graph.md` §11.6: "all modulators should be global"): the modulators of each lane (and,
+    /// for older files, of each of its effects) and of each group are moved to `free_modulators`, in front of the ones that the file has there, each hearing what its rack heard (`hears = "instrument[N]"`
+    /// for a lane's, `"group[N]"` for a group's), and every cable of theirs is written as a free modulator's is: a plugin by its place in the session (`to`) and a modulator by its place in the new list.
+    /// They are in the order that the loader made them in (each lane's merged rack in the order of the lanes, then each group's), so that a random LFO has the seed that it had, and a place among
+    /// the modulators is the modulator it was.
+    ///
+    /// A cable that the loader leaves out for what it names (a modulator that is not there, a member that is not, a slot that the chain has not) is left out after it as well: such a place is
+    /// moved to one that no modulator is at, and not to the modulator that is at its number in the longer list. A group's cable to the depth of a cable of a member's modulator names the cable by
+    /// the place it has among those that the loader made, and this by the place it has in the file: the two are the same unless a cable of that modulator before it is left out (a save writes none).
+    pub fn move_modulators_to_the_session(&mut self) {
+        // The merged rack of each lane, as the loader makes it: its own modulators, and then those that an older file nested in each of its effects (which drive their effect, whatever slot their cable
+        // says), with the slot of that effect and the place that the modulator's own list begins at in the rack, which is what a cable between siblings counts from.
+        let mut lane_racks: Vec<Vec<(ModulatorConfig, Option<usize>, usize)>> = Vec::new();
+        for lane in &mut self.instruments {
+            let mut lists = vec![(std::mem::take(&mut lane.modulators), None)];
+            lists.extend(lane.effects.iter_mut().enumerate().map(|(at, effect)| (std::mem::take(&mut effect.modulators), Some(at + 1))));
+            let mut rack = Vec::new();
+            for (list, own_slot) in lists {
+                let begins = rack.len();
+                rack.extend(list.into_iter().map(|modulator| (modulator, own_slot, begins)));
+            }
+            lane_racks.push(rack);
+        }
+        let group_racks: Vec<Vec<ModulatorConfig>> = self.groups.iter_mut().map(|group| std::mem::take(&mut group.modulators)).collect();
+        let members: Vec<Vec<usize>> = (0..self.groups.len()).map(|group| (0..self.instruments.len()).filter(|lane| self.instruments[*lane].group == Some(group)).collect()).collect();
+
+        // Where each rack begins in the new list: the lanes' in order, then the groups', and then the modulators that the file has of its own.
+        let lane_counts: Vec<usize> = lane_racks.iter().map(Vec::len).collect();
+        let lane_at: Vec<usize> = lane_counts.iter().scan(0, |next, count| Some(std::mem::replace(next, *next + count))).collect();
+        let group_start = lane_counts.iter().sum::<usize>();
+        let group_at: Vec<usize> = group_racks.iter().scan(group_start, |next, rack| Some(std::mem::replace(next, *next + rack.len()))).collect();
+        let moved = group_start + group_racks.iter().map(Vec::len).sum::<usize>();
+
+        let mut free: Vec<ModulatorConfig> = Vec::with_capacity(moved + self.free_modulators.len());
+        for (lane, rack) in lane_racks.into_iter().enumerate() {
+            for (mut modulator, own_slot, begins) in rack {
+                for target in &mut modulator.targets {
+                    if target.param.is_some() {
+                        target.to = Some(lane_plugin_place(lane, own_slot.unwrap_or(target.slot)));
+                    } else {
+                        remap_siblings(target, |index| place_in_rack(lane_at[lane], lane_counts[lane], index.saturating_add(begins)));
+                    }
+                }
+                modulator.hears = Some(format!("instrument[{lane}]"));
+                free.push(modulator);
+            }
+        }
+        for (group, rack) in group_racks.into_iter().enumerate() {
+            let count = rack.len();
+            for mut modulator in rack {
+                for target in &mut modulator.targets {
+                    if let Some(member) = target.member {
+                        // A member's plugin, or a field of one of the member's modulators (by its place in the member's rack): a member that is not there has no plugin and no modulator.
+                        let lane = members[group].get(member).copied();
+                        if target.param.is_some() {
+                            target.to = lane.map(|lane| lane_plugin_place(lane, target.slot));
+                        } else {
+                            remap_siblings(target, |index| lane.map_or(NOT_THERE, |lane| place_in_rack(lane_at[lane], lane_counts[lane], index)));
+                        }
+                    } else if let Some(bus) = target.bus {
+                        if target.param.is_some() {
+                            target.to = Some(format!("group[{group}].effect[{bus}]"));
+                        } else {
+                            // (A bus with no parameter is a cable that the loader leaves out, whatever else it says.)
+                            remap_siblings(target, |_| NOT_THERE);
+                        }
+                    } else {
+                        remap_siblings(target, |index| place_in_rack(group_at[group], count, index));
+                    }
+                }
+                modulator.hears = Some(format!("group[{group}]"));
+                free.push(modulator);
+            }
+        }
+        // The file's own are after them, and name each other by their places in the file, which are `moved` places further on now.
+        for mut modulator in std::mem::take(&mut self.free_modulators) {
+            for target in &mut modulator.targets {
+                remap_siblings(target, |index| index.saturating_add(moved));
+            }
+            free.push(modulator);
+        }
+        self.free_modulators = free;
+    }
 }
 
 /// Parse a note range like "C0-B3" into (low, high) MIDI note numbers
@@ -4068,5 +4182,182 @@ depth = 0.3
         assert_eq!(m.targets.len(), 1);
         assert_eq!(m.targets[0].param.as_deref(), Some("frequency"));
         assert!((m.targets[0].depth - 0.3).abs() < 0.01);
+    }
+
+    // -- Every modulator the session's own (step 94) --
+
+    const RACKS: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+
+[[group.modulator]]
+[[group.modulator.target]]
+member = 1
+slot = 1
+param = "cutoff"
+[[group.modulator.target]]
+member = 5
+param = "detune"
+[[group.modulator.target]]
+bus = 0
+param = "damping"
+[[group.modulator.target]]
+member = 0
+mod_rate = 1
+[[group.modulator.target]]
+member = 9
+mod_attack = 0
+[[group.modulator.target]]
+mod_rate = 1
+[[group.modulator.target]]
+mod_rate = 2
+[[group.modulator.target]]
+bus = 0
+mod_rate = 0
+[[group.modulator]]
+type = "envelope"
+[[group.modulator.target]]
+mod_depth = []
+[[group.modulator.target]]
+mod_depth = [0, 3]
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+[[instrument.modulator.target]]
+param = "detune"
+[[instrument.modulator.target]]
+param = "cutoff"
+slot = 2
+[[instrument.modulator]]
+[[instrument.modulator.target]]
+mod_rate = 0
+[[instrument.modulator.target]]
+mod_rate = 7
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect.modulator]]
+[[instrument.effect.modulator.target]]
+param = "cutoff"
+slot = 9
+[[instrument.effect.modulator.target]]
+mod_rate = 0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.modulator]]
+hears = "group[0]"
+ui = { x = 4, y = 5 }
+[[instrument.modulator.target]]
+param = "cutoff"
+slot = 1
+[[instrument.modulator.target]]
+mod_release = 0
+
+[[modulator]]
+hears = "instrument[1]"
+[[modulator.target]]
+to = "instrument[0]"
+param = "detune"
+[[modulator.target]]
+mod_rate = 1
+[[modulator]]
+[[modulator.target]]
+mod_rate = 0
+[[modulator.target]]
+mod_depth = [0, 1]
+[[modulator.target]]
+mod_rate = 2
+"#;
+
+    fn moved() -> SessionConfig {
+        let mut config = parse(RACKS).unwrap();
+        config.move_modulators_to_the_session();
+        config
+    }
+
+    #[test]
+    fn the_modulators_of_the_lanes_and_the_groups_are_moved_in_front_of_the_sessions_own_each_hearing_the_rack_it_was_in() {
+        let config = moved();
+        // The first lane has three (its own two, and the one that an older file nested in its filter), the second has one, the group has two, and the file has two of its own.
+        assert!(config.instruments.iter().all(|lane| lane.modulators.is_empty() && lane.effects.iter().all(|effect| effect.modulators.is_empty())));
+        assert!(config.groups.iter().all(|group| group.modulators.is_empty()));
+        let hears: Vec<Option<&str>> = config.free_modulators.iter().map(|m| m.hears.as_deref()).collect();
+        assert_eq!(hears, [Some("instrument[0]"), Some("instrument[0]"), Some("instrument[0]"), Some("instrument[1]"), Some("group[0]"), Some("group[0]"), Some("instrument[1]"), None]);
+        // (A lane's modulator is read as the lane's: the `hears` that this one says is not read.)
+        assert_eq!(config.free_modulators[3].ui.map(|ui| (ui.x, ui.y)), Some((4.0, 5.0)), "it keeps its place on the canvas");
+    }
+
+    #[test]
+    fn a_lanes_cables_name_the_plugins_of_the_lane_by_their_places_and_its_siblings_by_their_places_in_the_new_list() {
+        let config = moved();
+        let target = |m: usize, t: usize| &config.free_modulators[m].targets[t];
+        assert_eq!((target(0, 0).to.as_deref(), target(0, 0).param.as_deref()), (Some("instrument[0]"), Some("detune")));
+        assert_eq!(target(0, 1).to.as_deref(), Some("instrument[0].effect[1]"), "slot 2 is the second effect");
+        // The second modulator of the lane drives the first; the one after the end of the rack is where no modulator is.
+        assert_eq!((target(1, 0).mod_rate, target(1, 1).mod_rate), (Some(0), Some(NOT_THERE)));
+
+        // The one that an older file nested in the filter drives the filter (slot 1, the effect, whatever its cable says), and its sibling is its own first.
+        assert_eq!(target(2, 0).to.as_deref(), Some("instrument[0].effect[0]"));
+        assert_eq!(target(2, 1).mod_rate, Some(2), "the third of the new list, which is the one that the cable is in: a cable to itself, which is left out");
+        // The second lane's modulator drives its own filter, and (every field of an envelope that a cable can drive is a place, as the rate is) the stage of its own first: the fourth of the new list.
+        assert_eq!(target(3, 0).to.as_deref(), Some("instrument[1].effect[0]"));
+        assert_eq!(target(3, 1).mod_release, Some(3));
+    }
+
+    #[test]
+    fn a_groups_cables_name_the_members_plugins_and_the_bus_and_the_modulators_of_the_members_by_their_places() {
+        let config = moved();
+        let target = |t: usize| &config.free_modulators[4].targets[t];
+        assert_eq!(target(0).to.as_deref(), Some("instrument[1].effect[0]"), "member 1 is the second lane of the group, slot 1 its filter");
+        assert_eq!(target(1).to, None, "member 5 is not there: the cable names no plugin and is left out");
+        assert_eq!(target(2).to.as_deref(), Some("group[0].effect[0]"));
+        // A member's modulator (the first lane's second, which is the second of the new list), and one that the member does not have, and a member that is not there.
+        assert_eq!(target(3).mod_rate, Some(1));
+        assert_eq!(target(4).mod_attack, Some(NOT_THERE));
+        // A sibling of the group (the group's second, which is the sixth of the list), and one that is not there.
+        assert_eq!((target(5).mod_rate, target(6).mod_rate), (Some(5), Some(NOT_THERE)));
+        // A bus with no parameter is left out whatever else it says.
+        assert_eq!(target(7).mod_rate, Some(NOT_THERE));
+        // A pair that has no modulator in it names the first, as the loader reads it.
+        let envelope = &config.free_modulators[5];
+        assert_eq!(envelope.targets[0].mod_depth, Some(vec![4]));
+        assert_eq!(envelope.targets[1].mod_depth, Some(vec![4, 3]), "the place of the cable is the file's, which is the same");
+    }
+
+    #[test]
+    fn the_modulators_the_file_has_of_its_own_name_each_other_by_their_places_in_the_file_which_are_further_on_now() {
+        let config = moved();
+        let (first, second) = (&config.free_modulators[6], &config.free_modulators[7]);
+        assert_eq!(first.targets[1].mod_rate, Some(7), "the file's second one, which is the last of eight");
+        assert_eq!((second.targets[0].mod_rate, second.targets[1].mod_depth.clone(), second.targets[2].mod_rate), (Some(6), Some(vec![6, 1]), Some(8)));
+        // (A cable of its own to its plugin is as it was.)
+        assert_eq!(first.targets[0].to.as_deref(), Some("instrument[0]"));
+    }
+
+    #[test]
+    fn a_groups_member_is_counted_among_the_lanes_of_that_group_and_not_among_the_lanes_that_are_in_some_group() {
+        // The second group's modulator drives member 0 of that group, which is the second lane: the first lane is in the first group.
+        let text = "[[group]]\n[[group]]\n[[group.modulator]]\n[[group.modulator.target]]\nmember = 0\nparam = \"detune\"\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 1\n";
+        let mut config = parse(text).unwrap();
+        config.move_modulators_to_the_session();
+        assert_eq!(config.free_modulators.len(), 1);
+        assert_eq!(config.free_modulators[0].hears.as_deref(), Some("group[1]"));
+        assert_eq!(config.free_modulators[0].targets[0].to.as_deref(), Some("instrument[1]"));
+    }
+
+    #[test]
+    fn a_session_with_no_modulator_in_a_lane_or_a_group_is_moved_to_itself() {
+        let text = "[[instrument]]\nplugin = \"builtin:osc\"\n[[modulator]]\nhears = \"instrument[0]\"\n[[modulator.target]]\nmod_rate = 0\n[[modulator]]\n[[modulator.target]]\nmod_rate = 0\n";
+        let mut config = parse(text).unwrap();
+        config.move_modulators_to_the_session();
+        assert_eq!(config.free_modulators.len(), 2);
+        assert_eq!(config.free_modulators[0].hears.as_deref(), Some("instrument[0]"));
+        assert_eq!((config.free_modulators[0].targets[0].mod_rate, config.free_modulators[1].targets[0].mod_rate), (Some(0), Some(0)));
     }
 }

@@ -99,7 +99,10 @@ export interface HeldIn {
   lane: NodeId;
   /** Whether it is the first of the lane's effects, which has what the card said of the lane as a whole: the mute, the solo and the way out, and the "+" that adds a modulator to the lane. */
   first: boolean;
-  /** Whether it is on its own in the lane (its only effect, and the lane has no modulator): taking it out takes the lane out with it, and a lane that keeps modulators is not taken out with it. */
+  /**
+   * Whether it is on its own in the lane (its only effect, and the lane has no modulator in its rack, which a modulator that only hears the lane is not in): taking it out takes the lane out with it. A lane that keeps a modulator is not taken out with
+   * it, and neither is the last lane of the session, which a session keeps.
+   */
   alone: boolean;
 }
 
@@ -277,11 +280,23 @@ interface Strip {
 }
 
 /**
- * A strip of the instrument or group `head`: its nodes, and the modulators that belong to it. A lane that only holds effects has no card (`drawn` is false): its row is its effects, from the first
+ * Whose strip a node is in: the lane or group that an effect is in, and that a modulator is in or, for a modulator of the session's own (it has no parent), the lane or group that it hears (step 94: what the page and the
+ * terminal make is of the session's own and hears the knob's lane or group, and is laid out above that lane's or group's row as a lane's modulator always was). None for a modulator that hears every note, which is in a
+ * row of its own above the first lane, and for the nodes that are strips themselves. An ear that is not a lane or a group of the graph is no ear (the server tells none, but a graph can be anything).
+ */
+type OwnerOf = (node: Node) => NodeId | null;
+
+function ownersOf(graph: Graph): OwnerOf {
+  const heads = new Set(graph.nodes.flatMap((node) => (node.kind === "instrument" || node.kind === "group" ? [node.id] : [])));
+  return (node) => (node.kind === "modulator" && node.parent === null && node.hears !== undefined && heads.has(node.hears) ? node.hears : node.parent);
+}
+
+/**
+ * A strip of the instrument or group `head`: its nodes, and the modulators that belong to it, those in its rack and those that hear it. A lane that only holds effects has no card (`drawn` is false): its row is its effects, from the first
  * column, and its modulators are above them as for any lane.
  */
-function stripOf(graph: Graph, head: Node, drawn = true): Strip {
-  const children = graph.nodes.filter((node) => node.parent === head.id);
+function stripOf(graph: Graph, head: Node, ownerOf: OwnerOf, drawn = true): Strip {
+  const children = graph.nodes.filter((node) => ownerOf(node) === head.id);
   const row = [...(drawn ? [head] : []), ...children.filter((node) => node.kind === "effect")];
   const tiers = tiersOf(graph, children.filter((node) => node.kind === "modulator"));
   return { head, row, tiers, columns: modulatorColumns(graph, row, tiers) };
@@ -356,7 +371,7 @@ function modulatorColumns(graph: Graph, row: readonly Node[], tiers: readonly No
 }
 
 /** Where each node of the graph goes on the canvas, as tall as `heightOfNode` says each is. The lanes that only hold effects (`holders`) have a strip and no card: nothing is placed for them. */
-function layout(graph: Graph, heightOfNode: (node: Node) => number, holders: ReadonlyMap<NodeId, readonly Node[]>): Map<NodeId, { x: number; y: number }> {
+function layout(graph: Graph, heightOfNode: (node: Node) => number, holders: ReadonlyMap<NodeId, readonly Node[]>, ownerOf: OwnerOf): Map<NodeId, { x: number; y: number }> {
   const placed = new Map<NodeId, { x: number; y: number }>();
   const place = (node: Node, column: number, y: number): void => {
     placed.set(node.id, { x: column * COLUMN, y });
@@ -381,12 +396,14 @@ function layout(graph: Graph, heightOfNode: (node: Node) => number, holders: Rea
     return rowTop + Math.max(...strip.row.map(heightOfNode)) + ROW_GAP;
   };
 
-  // The session's own modulators (a modulator that has no parent is in no lane and no group: step 91) in rows at the top, above the first lane's, the nearest the lanes first: what a
-  // cable from one drives is in the lanes, below it, so that the cable runs down to it. A session that has none has no room for them.
-  const free = graph.nodes.filter((node) => node.kind === "modulator" && node.parent === null);
+  // The session's own modulators that hear every note (a modulator that has no parent is in no lane and no group: step 91; one that hears a lane or a group is in that strip, step 94) in rows at the top, above the first lane's,
+  // the nearest the lanes first: what a cable from one drives is in the lanes, below it, so that the cable runs down to it. A session that has none has no room for them.
+  const free = graph.nodes.filter((node) => node.kind === "modulator" && ownerOf(node) === null);
   const freeTiers = tiersOf(graph, free);
   const freeColumns = modulatorColumns(graph, [], freeTiers);
   let y = freeTiers.reduce((room, tier) => room + roomOf(tier), 0);
+  const freeRoom = y;
+  const freeColumnsTaken = new Set(freeColumns.values());
   let freeBelow = y;
   for (const tier of freeTiers) {
     freeBelow -= roomOf(tier);
@@ -394,7 +411,7 @@ function layout(graph: Graph, heightOfNode: (node: Node) => number, holders: Rea
   }
 
   // One strip for each instrument, from there: modulators above, the row below them.
-  const lanes = graph.nodes.filter((node) => node.kind === "instrument").map((lane) => stripOf(graph, lane, !holders.has(lane.id)));
+  const lanes = graph.nodes.filter((node) => node.kind === "instrument").map((lane) => stripOf(graph, lane, ownerOf, !holders.has(lane.id)));
   const rowTops = new Map<NodeId, number>();
   for (const lane of lanes) {
     const rowTop = y + aboveOf(lane);
@@ -403,7 +420,7 @@ function layout(graph: Graph, heightOfNode: (node: Node) => number, holders: Rea
   }
 
   // A strip for each group, to the right of the longest lane, its row level with the middle of its members'.
-  const groups = graph.nodes.filter((node) => node.kind === "group").map((group) => stripOf(graph, group));
+  const groups = graph.nodes.filter((node) => node.kind === "group").map((group) => stripOf(graph, group, ownerOf));
   const lanesWidth = Math.max(0, ...lanes.map(widthOf));
   const wanted = groups.map((group) => {
     const tops = lanes.filter((lane) => lane.head.parent === group.head.id).map((lane) => rowTops.get(lane.head.id) ?? 0);
@@ -412,7 +429,9 @@ function layout(graph: Graph, heightOfNode: (node: Node) => number, holders: Rea
   wanted.sort((a, b) => a.rowTop - b.rowTop);
   let groupsBottom = 0;
   for (const { group, rowTop } of wanted) {
-    groupsBottom = placeStrip(group, lanesWidth, Math.max(rowTop, groupsBottom + aboveOf(group)));
+    // (The modulators above a group's row keep below the row of the session's own that hear every note, where they are in the same column as one of them: a group is level with its members, which can be as high as the first lane.)
+    const floor = [...group.columns.values()].some((column) => freeColumnsTaken.has(lanesWidth + column)) ? freeRoom + aboveOf(group) : 0;
+    groupsBottom = placeStrip(group, lanesWidth, Math.max(rowTop, groupsBottom + aboveOf(group), floor));
   }
 
   // The master at the end, in the middle of everything.
@@ -468,10 +487,11 @@ const over = (a: Box, b: Box): boolean => a.left < b.right && b.left < a.right &
  * What a node is in, as far as its place goes: the slot that its place was made for, so that it stays where it is until it is in another. An effect is in the place of
  * its chain that it is at (a chain that has an effect taken out closes up, and one that has two moved past each other has them change places); a modulator is in its
  * rack, and not at a place in it (nothing that is drawn to or from it moves it, and nothing that is taken out of the rack does); both are in the slot of the node they are
- * of, so that what is in a group's strip goes along with the group when it changes column; a lane and a source are in the session; and a group and the master are in the column that the
+ * of, so that what is in a group's strip goes along with the group when it changes column; a modulator of the session's own that hears a lane or a group is in the slot of the one it hears, by its id too, so that it is
+ * laid out again above the other strip when it is made to hear another (and stays where it was while it hears the same); a lane and a source are in the session; and a group and the master are in the column that the
  * layout puts them in, which is to the right of the longest lane (a lane that grows, with an effect added to it, moves them along).
  */
-function slotsOf(graph: Graph, fresh: ReadonlyMap<NodeId, Position>): Map<NodeId, string> {
+function slotsOf(graph: Graph, fresh: ReadonlyMap<NodeId, Position>, ownerOf: OwnerOf): Map<NodeId, string> {
   const slots = new Map<NodeId, string>();
   for (const node of graph.nodes) {
     if (node.kind === "group" || node.kind === "master") slots.set(node.id, `${node.kind}:${String(fresh.get(node.id)?.x ?? 0)}`);
@@ -479,13 +499,15 @@ function slotsOf(graph: Graph, fresh: ReadonlyMap<NodeId, Position>): Map<NodeId
   }
   const effects = new Map<NodeId | null, number>();
   for (const node of graph.nodes) {
-    const of = node.parent !== null ? (slots.get(node.parent) ?? String(node.parent)) : "";
+    const owner = ownerOf(node);
+    const of = owner !== null ? (slots.get(owner) ?? String(owner)) : "";
     if (node.kind === "effect") {
       const index = effects.get(node.parent) ?? 0;
       effects.set(node.parent, index + 1);
       slots.set(node.id, `effect ${String(index)} of ${of}`);
     } else if (node.kind === "modulator") {
-      slots.set(node.id, `modulator of ${of}`);
+      // (One of the session's own that hears a lane or a group has the id of what it hears in its slot, since a lane's slot is the same for every lane.)
+      slots.set(node.id, node.parent === null && owner !== null ? `modulator hearing ${of} ${String(owner)}` : `modulator of ${of}`);
     }
   }
   return slots;
@@ -505,6 +527,7 @@ function carryOver(
   slots: ReadonlyMap<NodeId, string>,
   remembered: Places,
   anchors: ReadonlyMap<NodeId, NodeId>,
+  ownerOf: OwnerOf,
 ): { positions: Map<NodeId, Position>; kept: Set<NodeId> } {
   const positions = new Map<NodeId, Position>();
   const kept = new Set<NodeId>();
@@ -516,7 +539,8 @@ function carryOver(
     }
   }
   const isChild = (node: Node): boolean => node.kind === "effect" || node.kind === "modulator";
-  // (What has no parent, the session's own modulators, goes by the first lane, above which its rows are: one that is new is above the first lane where it stayed, and not where the layout would have the lane.)
+  // (What has no strip, the session's own modulators that hear every note, goes by the first lane, above which its rows are: one that is new is above the first lane where it stayed, and not where the layout would have the lane.
+  // One that hears a lane or a group goes by that strip, as a lane's modulator does.)
   const firstLane = graph.nodes.find((node) => node.kind === "instrument")?.id ?? null;
   // The strips' heads and the rest first, and then what is in a strip, which goes by where its head is.
   for (const node of graph.nodes.filter((candidate) => !isChild(candidate))) {
@@ -529,7 +553,7 @@ function carryOver(
     if (node.ui || kept.has(node.id)) continue;
     const at = fresh.get(node.id) ?? ORIGIN;
     // (What the strip goes by: its card, or for a lane that has none its first effect, which is where the strip's row is.)
-    const parent = node.parent ?? firstLane;
+    const parent = ownerOf(node) ?? firstLane;
     const anchor = parent !== null ? (anchors.get(parent) ?? parent) : null;
     const where = anchor !== null ? positions.get(anchor) : undefined;
     const would = anchor !== null ? fresh.get(anchor) : undefined;
@@ -690,12 +714,13 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
   const cableCounts = new Map(graph.nodes.map((node) => [node.id, node.kind === "modulator" ? (listed.get(node.id)?.length ?? 0) : 0]));
   const withScope = new Set(graph.nodes.filter((node) => scopes.has(node.id) && canScope(node)).map((node) => node.id));
   const heightOf = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0, withScope.has(node.id), carriers.has(node.id));
-  const fresh = layout(graph, heightOf, holders);
-  const slots = slotsOf(shown, fresh);
+  const ownerOf = ownersOf(graph);
+  const fresh = layout(graph, heightOf, holders, ownerOf);
+  const slots = slotsOf(shown, fresh, ownerOf);
   // Where a layout that remembers nothing puts the nodes, to say whether these are arranged.
   const arrangedAt = new Map(fresh);
   clearOfPlaced(shown, arrangedAt, heightOf);
-  const { positions, kept } = carryOver(shown, fresh, slots, remembered, anchors);
+  const { positions, kept } = carryOver(shown, fresh, slots, remembered, anchors, ownerOf);
   clearOfKept(shown, positions, kept, heightOf);
   makeRoom(shown, positions, heightOf);
   clearOfPlaced(shown, positions, heightOf);
@@ -709,9 +734,10 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
   );
   /** What the module of an effect has of the lane that holds it, if the canvas draws no card for that lane. */
   const racks = new Set(graph.nodes.flatMap((node) => (node.kind === "modulator" && node.parent !== null ? [node.parent] : [])));
+  const lanes = graph.nodes.filter((node) => node.kind === "instrument").length;
   const heldIn = (node: Node): HeldIn | null => {
     const held = node.kind === "effect" && node.parent !== null ? holders.get(node.parent) : undefined;
-    return held === undefined || node.parent === null ? null : { lane: node.parent, first: held[0]?.id === node.id, alone: held.length === 1 && !racks.has(node.parent) };
+    return held === undefined || node.parent === null ? null : { lane: node.parent, first: held[0]?.id === node.id, alone: held.length === 1 && !racks.has(node.parent) && lanes > 1 };
   };
 
   const nodes: PatchNode[] = shown.nodes.map((node) => ({

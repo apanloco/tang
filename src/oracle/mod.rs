@@ -127,6 +127,10 @@ pub struct Scenario {
     pub script: Vec<(u64, [u8; 3])>,
     /// What a front-end asks of the controller while it plays, `(frame, edit)` in the order they are made: each is made before the first block that has its frame in it.
     pub edits: Vec<(u64, Edit)>,
+    /// Whether the session's modulators are moved to the session's own rack when it is loaded, as the program does since step 94 (`SessionConfig::move_modulators_to_the_session`): each of a lane's
+    /// and a group's is one of the session's own that hears what its rack heard. The corpus is moved; the loop that the plan replaced, which has no free modulators, is held to the scenarios as they are
+    /// written (`unmoved`), and a moved scenario is held to its unmoved one (`a_moved_session_renders_what_it_was_moved_from`).
+    pub moved: bool,
 }
 
 impl Scenario {
@@ -142,6 +146,11 @@ impl Scenario {
     /// The scenario at another sample rate (not a corpus member: it has no fixtures).
     pub fn at_rate(&self, rate: f32) -> Scenario {
         Scenario { rate, ..self.clone() }
+    }
+
+    /// The scenario loaded as the file is written, with the modulators that it has in its lanes and its groups in them.
+    pub fn unmoved(&self) -> Scenario {
+        Scenario { moved: false, ..self.clone() }
     }
 
     /// Whether it has audio cables, in its file or drawn by its edits. The loop that the plan replaced (`AudioGraph::process_legacy`) is from before there were any and does not
@@ -165,7 +174,8 @@ impl Scenario {
     /// Whether it has free modulators (modulators that are in no lane and no group: P5b-2), in its file or made by its edits. The loop that the plan replaced does not tick them, which
     /// are from after it, so a scenario that has some is not held to it.
     pub fn has_free_modulators(&self) -> bool {
-        self.session.contains("[[modulator]]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddFreeModulator { .. }))
+        // (Since step 94 what a front-end asks for a lane or a knob is a modulator of the session's own too: `AddModulator` and `Modulate`.)
+        self.session.contains("[[modulator]]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddFreeModulator { .. } | Edit::AddModulator { .. } | Edit::Modulate { .. }))
     }
 
     /// Whether it has a plugin that is late (the built-in drive, in its file or put in by an edit). Where the paths that are added are not in step by the plugins' latencies, the engine is
@@ -178,7 +188,7 @@ impl Scenario {
 
     /// Whether the loop that the plan replaced can run it: it has no audio cables, no way out that is cut, no link of a chain that is cut and no free modulator, which that loop is from before.
     pub fn is_in_the_old_loop(&self) -> bool {
-        !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds() && !self.has_free_modulators()
+        !self.moved && !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds() && !self.has_free_modulators()
     }
 }
 
@@ -221,6 +231,7 @@ pub fn sessions() -> Vec<Scenario> {
             frames: SESSION_FRAMES,
             script: performance(),
             edits: Vec::new(),
+            moved: true,
         })
         .collect()
 }
@@ -488,6 +499,7 @@ pub fn edited() -> Vec<Scenario> {
         frames: SESSION_FRAMES,
         script: performance(),
         edits: edits.to_vec(),
+        moved: true,
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
     vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS)]
@@ -504,6 +516,7 @@ pub fn generated(seeds: std::ops::Range<u64>) -> Vec<Scenario> {
             frames: GENERATED_FRAMES,
             script: generate::script(seed, GENERATED_FRAMES),
             edits: generate::edits(seed, GENERATED_FRAMES),
+            moved: true,
         })
         .collect()
 }
@@ -592,7 +605,10 @@ impl Rig {
         let (learn_tx, learn_rx) = crossbeam_channel::bounded(64);
         handles.pattern_rx = pattern_rx;
         handles.learn_rx = learn_rx;
-        let config = session::parse(&scenario.session).unwrap_or_else(|e| panic!("{}: the session does not parse: {e:#}", scenario.id));
+        let mut config = session::parse(&scenario.session).unwrap_or_else(|e| panic!("{}: the session does not parse: {e:#}", scenario.id));
+        if scenario.moved {
+            config.move_modulators_to_the_session();
+        }
         let model = load_session(&config, Path::new("."), scenario.rate, scenario.block, &Runtime::default(), &handles.cmd_tx, &mut |_| {})
             .unwrap_or_else(|e| panic!("{}: the session does not load: {e:#}", scenario.id));
         let telemetry = handles.telemetry.clone();
@@ -961,9 +977,302 @@ mod tests {
         check_against_the_fixtures(always_on_renders(), false);
     }
 
+    // -- A session whose modulators are moved to the session's own (step 94) --
+
+    /// Where a cable that is neutralized is: the rack that it is in, in the order of the file's tables, and its place among the cables of its modulator (which is kept, since a cable between
+    /// two modulators names a cable by its place).
+    #[derive(Debug)]
+    struct Neutral {
+        /// `(table, index)` from the top: `("instrument", 1), ("modulator", 0), ("target", 2)`.
+        path: Vec<(&'static str, usize)>,
+        /// What the cable does that the new rule changes: it drives a parameter that a rack nearer to the plugin drives too (the nearest one wins when a file is loaded as it is written, and
+        /// all of them are added when it is moved), or it drives a modulator of a lane's from a group's (it is made before the lane renders where it was, and in the order of the rack where it is moved).
+        param: bool,
+    }
+
+    /// The cables of `config` that make a moved session sound other than the one it was moved from, on purpose (the two decisions of step 94): a cable of a group's or of the session's own to a
+    /// parameter that a rack nearer to the plugin drives as well (a lane's, then a group's), and a group's cable to a setting of one of its members' modulators. What a farther rack writes where a
+    /// nearer one does is written over, so that without those cables the session that is written as it is sounds as it did, and the moved session as the same.
+    fn the_decisions_of_the_move(config: &session::SessionConfig) -> Vec<Neutral> {
+        let members: Vec<Vec<usize>> = (0..config.groups.len()).map(|group| (0..config.instruments.len()).filter(|lane| config.instruments[*lane].group == Some(group)).collect()).collect();
+        // What each parameter of each plugin is driven by, the rack that drives it (0 a lane's, 1 a group's, 2 the session's own) and where the cable is.
+        let mut drives: Vec<(String, usize, Neutral)> = Vec::new();
+        let mut across = Vec::new();
+        // (A rack: the path to its table in the file, its modulators, and the slot of the chain that it is the effect's of, for an older file's, which nested them in the effect.)
+        type Rack<'a> = (Vec<(&'static str, usize)>, &'a [session::ModulatorConfig], Option<usize>);
+        for (lane, slot) in config.instruments.iter().enumerate() {
+            let mut racks: Vec<Rack> = vec![(vec![("instrument", lane)], &slot.modulators, None)];
+            racks.extend(slot.effects.iter().enumerate().map(|(e, effect)| (vec![("instrument", lane), ("effect", e)], effect.modulators.as_slice(), Some(e + 1))));
+            for (head, modulators, own_slot) in racks {
+                for (m, modulator) in modulators.iter().enumerate() {
+                    for (t, target) in modulator.targets.iter().enumerate() {
+                        if let Some(param) = &target.param {
+                            let place = session::lane_plugin_place(lane, own_slot.unwrap_or(target.slot));
+                            let mut path = head.clone();
+                            path.extend([("modulator", m), ("target", t)]);
+                            drives.push((format!("{place}/{param}"), 0, Neutral { path, param: true }));
+                        }
+                    }
+                }
+            }
+        }
+        for (group, node) in config.groups.iter().enumerate() {
+            for (m, modulator) in node.modulators.iter().enumerate() {
+                for (t, target) in modulator.targets.iter().enumerate() {
+                    let path = vec![("group", group), ("modulator", m), ("target", t)];
+                    match (target.member, target.bus, &target.param) {
+                        (Some(member), _, Some(param)) => {
+                            if let Some(lane) = members[group].get(member) {
+                                drives.push((format!("{}/{param}", session::lane_plugin_place(*lane, target.slot)), 1, Neutral { path, param: true }));
+                            }
+                        }
+                        (Some(_), _, None) => across.push(Neutral { path, param: false }),
+                        (None, Some(bus), Some(param)) => drives.push((format!("group[{group}].effect[{bus}]/{param}"), 1, Neutral { path, param: true })),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for (m, modulator) in config.free_modulators.iter().enumerate() {
+            for (t, target) in modulator.targets.iter().enumerate() {
+                if let (Some(param), Some(place)) = (&target.param, target.to.as_deref().and_then(session::CablePlace::parse)) {
+                    drives.push((format!("{place}/{param}"), 2, Neutral { path: vec![("modulator", m), ("target", t)], param: true }));
+                }
+            }
+        }
+        let nearest = |key: &str| drives.iter().filter(|(other, ..)| other == key).map(|(_, rack, _)| *rack).min().unwrap_or(0);
+        let farther: Vec<usize> = drives.iter().enumerate().filter(|(_, (key, rack, _))| *rack > nearest(key)).map(|(at, _)| at).collect();
+        let mut neutral: Vec<Neutral> = drives.into_iter().enumerate().filter(|(at, _)| farther.contains(at)).map(|(_, (_, _, neutral))| neutral).collect();
+        neutral.extend(across);
+        neutral
+    }
+
+    /// `session` with the cables that the move changes on purpose pointed at nothing (the parameter named so that no plugin has it, or a member that is not there: the loader leaves such a cable
+    /// out, and a cable keeps its place among its modulator's), and how many there were.
+    fn without_the_decisions(session: &str) -> (String, usize) {
+        let neutral = the_decisions_of_the_move(&session::parse(session).expect("the session parses"));
+        let mut document: toml_edit::DocumentMut = session.parse().expect("a document");
+        for cable in &neutral {
+            let mut table: Option<&mut toml_edit::Table> = None;
+            for (key, index) in &cable.path {
+                let array = match table.take() {
+                    None => document.get_mut(key),
+                    Some(parent) => parent.get_mut(key),
+                };
+                table = array.and_then(toml_edit::Item::as_array_of_tables_mut).and_then(|tables| tables.get_mut(*index));
+            }
+            let table = table.unwrap_or_else(|| panic!("{:?} is a table of the file", cable.path));
+            if cable.param {
+                table.insert("param", toml_edit::value("a parameter that no plugin has"));
+            } else {
+                table.insert("member", toml_edit::value(999_999));
+            }
+        }
+        (document.to_string(), neutral.len())
+    }
+
+    /// The values that the modulators of a rig publish after a block, in the order of the racks (the lanes', the groups', the session's own): what each puts out, where it is, and what each of its cables
+    /// has set what it drives to.
+    fn what_the_modulators_publish(rig: &Rig) -> Vec<f32> {
+        let model = &rig.ctl.model;
+        let cell = |slot: Option<crate::telemetry::Slot>| slot.map_or(f32::NAN, |slot| rig.telemetry.load_index(slot.index()));
+        let racks = model.instruments.iter().map(|lane| &lane.modulators).chain(model.groups.iter().map(|group| &group.modulators)).chain(std::iter::once(&model.free_modulators));
+        racks.flat_map(|rack| rack.iter()).flat_map(|m| [cell(m.output), cell(m.position)].into_iter().chain(m.targets.iter().map(|t| cell(t.effective)))).collect()
+    }
+
+    /// Whether an edit is one that the move changes the meaning of, besides the cables that are neutralized: it makes, names or takes out a modulator of a lane or of a knob (which is one of the
+    /// session's own now, and a place among them is another), or it changes what a group is to its modulators (a group taken out, a lane put in a group or out of one, a group made of lanes: a
+    /// group's modulators were its own and went with it, or let go of the lane, where a modulator of the session's own, which a group's is since the move, keeps the cables that it has to the
+    /// plugins of the session by their nodes, whatever happens to the group).
+    fn depends_on_whose_modulator_it_is(edit: &Edit) -> bool {
+        matches!(edit, Edit::AddModulator { .. } | Edit::Modulate { .. } | Edit::RemoveModulator { .. } | Edit::RemoveGroup { .. } | Edit::LaneGroup { .. } | Edit::AddGroup { .. })
+    }
+
+    /// Where a moved scenario and the unmoved one first render differently, block by block: the samples, and what each modulator publishes (the telemetry as a hash is another, since the cells
+    /// are in another order), or `None`. Its edits are made too, but for those that depend on whose a modulator is (`depends_on_whose_modulator_it_is`).
+    fn what_moving_changes(scenario: &Scenario) -> Option<String> {
+        let (session, _) = without_the_decisions(&scenario.session);
+        let edits: Vec<(u64, Edit)> = scenario.edits.iter().filter(|(_, edit)| !depends_on_whose_modulator_it_is(edit)).cloned().collect();
+        // (A lane that is taken out takes the modulators of its rack with it, and leaves those of the session's own that hear it, with no cable to what it had: nothing is heard of them, but they are
+        // modulators more that publish, so that what the modulators publish is not compared where a lane goes.)
+        let published = !edits.iter().any(|(_, edit)| matches!(edit, Edit::RemoveLane { .. }));
+        let plain = Scenario { session, edits, ..scenario.clone() };
+        let frames = plain.frames.div_ceil(plain.block as u64) as usize;
+        let (mut kept, mut moved) = (Rig::new(&plain.unmoved(), &engine), Rig::new(&plain, &engine));
+        for block in 0..frames {
+            let (a, b) = (kept.block().samples.to_vec(), moved.block().samples.to_vec());
+            if let Some(at) = a.iter().zip(&b).position(|(x, y)| x.to_bits() != y.to_bits()) {
+                return Some(format!("{}: block {block}, frame {}, channel {}: {} against {}", scenario.id, at / 2, at % 2, a[at], b[at]));
+            }
+            moved.assert_the_engine_has_the_nodes_of_the_model(&format!("{}, block {block}", scenario.id));
+            let (a, b) = if published { (what_the_modulators_publish(&kept), what_the_modulators_publish(&moved)) } else { (Vec::new(), Vec::new()) };
+            if a.len() != b.len() || a.iter().zip(&b).any(|(x, y)| x.to_bits() != y.to_bits() && !(x.is_nan() && y.is_nan())) {
+                return Some(format!("{}: block {block}: what the modulators publish differs: {a:?} against {b:?}", scenario.id));
+            }
+            kept.poll();
+            moved.poll();
+        }
+        None
+    }
+
+    #[test]
+    fn a_moved_session_renders_what_it_was_moved_from() {
+        let mut checked = 0;
+        let mut with_modulators = 0;
+        let mut decided = 0;
+        for scenario in always_on() {
+            if let Some(difference) = what_moving_changes(&scenario) {
+                panic!("moving the modulators of a session to the session's own changed what it renders: {difference}");
+            }
+            checked += 1;
+            let (config, neutralised) = (session::parse(&scenario.session).unwrap(), without_the_decisions(&scenario.session).1);
+            with_modulators += usize::from(config.instruments.iter().any(|lane| !lane.modulators.is_empty()) || config.groups.iter().any(|group| !group.modulators.is_empty()));
+            decided += usize::from(neutralised > 0);
+        }
+        eprintln!("oracle: {checked} sessions, {with_modulators} with modulators in a lane or a group, {decided} where the move changes what a cable does on purpose (those cables are left out of both)");
+        assert!(with_modulators >= 15, "the corpus has sessions with modulators in their lanes and groups: {with_modulators}");
+        assert!(decided >= 1, "and some where the two racks drive one parameter, which is what the neutralizing is for: {decided}");
+    }
+
+    #[test]
+    #[ignore = "the whole corpus at three block sizes: cargo test --release oracle -- --ignored"]
+    fn the_whole_corpus_of_moved_sessions_renders_what_it_was_moved_from() {
+        let scenarios = whole();
+        let differences: Vec<String> = scenarios.iter().filter_map(what_moving_changes).collect();
+        let decided = scenarios.iter().filter(|scenario| without_the_decisions(&scenario.session).1 > 0).count();
+        eprintln!("oracle: {} renders, {decided} of them in sessions where the move changes what a cable does on purpose", scenarios.len());
+        assert!(differences.is_empty(), "{} renders differ:\n{}", differences.len(), differences.join("\n"));
+    }
+
+    /// A scenario of the session `text`, played with the chord and the rest of `performance`, moved as the program moves a session or as it is written.
+    fn decided(text: &str, moved: bool) -> Scenario {
+        Scenario { id: "decision".to_string(), session: text.to_string(), block: BLOCK, rate: RATE, frames: SESSION_FRAMES, script: performance(), edits: Vec::new(), moved }
+    }
+
+    /// A saw through a filter whose cutoff a lane's LFO and one of the session's own both drive, a quarter of the range each, at the same rate (so with the same wave).
+    const TWO_LFOS_ON_ONE_CUTOFF: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[instrument.params]
+waveform = 3.0
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+[instrument.effect.params]
+cutoff = 0.5
+[[instrument.modulator]]
+rate = 0.5
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.25
+[[modulator]]
+rate = 0.5
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "cutoff"
+depth = 0.25
+"#;
+
+    /// The same session with the lane's LFO alone, as a quarter or as a half (a quarter and a quarter, which are a half exactly).
+    fn one_lfo_on_the_cutoff(depth: &str) -> String {
+        format!("[[instrument]]\nplugin = \"builtin:osc\"\n[instrument.params]\nwaveform = 3.0\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nmix = 1.0\n[instrument.effect.params]\ncutoff = 0.5\n[[instrument.modulator]]\nrate = 0.5\n[[instrument.modulator.target]]\nslot = 1\nparam = \"cutoff\"\ndepth = {depth}\n")
+    }
+
+    #[test]
+    fn a_moved_session_adds_up_a_lanes_modulator_and_one_of_the_sessions_own_on_one_parameter_where_the_lanes_won_in_the_one_that_was_not() {
+        let samples = |text: &str, moved: bool| render(&decided(text, moved), &engine).samples;
+        // Not moved, the lane's LFO writes the cutoff from the value that the user set and its own offset, over what the session's own wrote: it sounds as the lane's alone.
+        assert_eq!(samples(TWO_LFOS_ON_ONE_CUTOFF, false), samples(&one_lfo_on_the_cutoff("0.25"), false), "the lane's modulator wins");
+        // Moved, both are the session's own and their offsets are added: it sounds as one LFO of both depths.
+        assert_eq!(samples(TWO_LFOS_ON_ONE_CUTOFF, true), samples(&one_lfo_on_the_cutoff("0.5"), false), "the two are added");
+        // And the two are not the same sound (the decision of step 94).
+        assert_ne!(samples(TWO_LFOS_ON_ONE_CUTOFF, true), samples(TWO_LFOS_ON_ONE_CUTOFF, false));
+    }
+
+    /// A group whose macro, at its top, drives the rate of the LFO of the lane that is its member, by half the knob's travel (and `without` the cable, the same session that has none).
+    fn a_group_that_drives_its_members_lfo(with_the_cable: bool) -> String {
+        let cable = if with_the_cable { "[[group.modulator.target]]\nmember = 0\nmod_rate = 0\ndepth = 0.5\n" } else { "" };
+        format!("[[group]]\n[[group.modulator]]\ntype = \"macro\"\nvalue = 1.0\n{cable}[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument.modulator]]\nrate = 0.5\n")
+    }
+
+    #[test]
+    fn a_moved_session_has_a_group_modulators_cable_to_a_members_modulator_take_effect_a_block_later_where_it_took_effect_in_the_same_block_in_the_one_that_was_not() {
+        // What the member's LFO puts out after block `block`: the first modulator's output, in the order of the racks (the lane's LFO, then the group's macro, moved or not).
+        let output = |with_the_cable: bool, moved: bool, block: usize| {
+            let mut rig = Rig::new(&decided(&a_group_that_drives_its_members_lfo(with_the_cable), moved), &engine);
+            for _ in 0..=block {
+                rig.block();
+            }
+            what_the_modulators_publish(&rig)[0]
+        };
+        // Not moved, the group's modulators are applied before its members' tick, so that the new rate is the one that the LFO's first block goes by.
+        assert_ne!(output(true, false, 0), output(false, false, 0), "the cable is in the first block");
+        // Moved, the cables between the session's own are resolved after they have all ticked: the first block is the LFO's own rate, and the cable is in the next.
+        assert_eq!(output(true, true, 0), output(false, true, 0), "the cable is not in the first block");
+        assert_ne!(output(true, true, 1), output(false, true, 1), "and is in the second");
+    }
+
+    #[test]
+    fn the_cables_that_the_move_changes_on_purpose_are_found_where_two_racks_drive_a_parameter_and_where_a_group_drives_a_members_modulator() {
+        let text = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+[[group.modulator]]
+[[group.modulator.target]]
+member = 0
+param = "detune"
+[[group.modulator.target]]
+member = 0
+param = "volume"
+[[group.modulator.target]]
+bus = 0
+param = "damping"
+[[group.modulator.target]]
+member = 0
+mod_rate = 0
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+[[instrument.modulator.target]]
+param = "detune"
+[[modulator]]
+[[modulator.target]]
+to = "instrument[0]"
+param = "volume"
+[[modulator.target]]
+to = "group[0].effect[0]"
+param = "damping"
+[[modulator.target]]
+to = "instrument[0]"
+param = "detune"
+"#;
+        let found = the_decisions_of_the_move(&session::parse(text).unwrap());
+        let paths: Vec<String> = found.iter().map(|n| format!("{:?}{}", n.path, if n.param { "" } else { " across" })).collect();
+        // The group's detune (the lane's wins), the free modulator's volume (the group's wins), its damping (the group's wins) and its detune (the lane's wins), and the group's cable to its member's
+        // modulator. The group's volume and its damping, which the free modulator drives too, are the nearer, and are left alone.
+        assert_eq!(
+            paths,
+            [
+                r#"[("group", 0), ("modulator", 0), ("target", 0)]"#,
+                r#"[("modulator", 0), ("target", 0)]"#,
+                r#"[("modulator", 0), ("target", 1)]"#,
+                r#"[("modulator", 0), ("target", 2)]"#,
+                r#"[("group", 0), ("modulator", 0), ("target", 3)] across"#,
+            ]
+        );
+        let (neutralised, count) = without_the_decisions(text);
+        assert_eq!(count, 5);
+        assert_eq!(neutralised.matches("a parameter that no plugin has").count(), 4);
+        assert_eq!(neutralised.matches("member = 999999").count(), 1);
+        session::parse(&neutralised).expect("it parses still");
+    }
+
     #[test]
     fn the_plan_gives_what_the_loop_it_replaced_gave_bit_for_bit() {
-        let differences: Vec<String> = always_on().iter().filter(|scenario| scenario.is_in_the_old_loop()).filter_map(|scenario| agree(scenario, &legacy, &engine_uncompensated)).collect();
+        let differences: Vec<String> = always_on().iter().map(Scenario::unmoved).filter(|scenario| scenario.is_in_the_old_loop()).filter_map(|scenario| agree(&scenario, &legacy, &engine_uncompensated)).collect();
         assert!(differences.is_empty(), "the engine on the plan is not the engine of the loop:\n{}", differences.join("\n"));
     }
 
@@ -1029,12 +1338,17 @@ mod tests {
     #[test]
     fn the_scenarios_that_have_free_modulators_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
         let with: Vec<String> = always_on().iter().filter(|scenario| scenario.has_free_modulators()).map(|scenario| scenario.id.clone()).collect();
-        assert_eq!(with, ["session:freeear@256", "session:freemod@256", "edited:freemods@256", "edited:freeears@256"]);
-        assert!(always_on().iter().filter(|scenario| scenario.has_free_modulators()).all(|scenario| !scenario.is_in_the_old_loop()));
-        // (A session that has none, and the scenarios of the generator, which draw none, are.)
-        assert!(always_on().iter().filter(|scenario| scenario.id.starts_with("generated:")).all(|scenario| !scenario.has_free_modulators()));
+        let named: Vec<&String> = with.iter().filter(|id| !id.starts_with("generated:")).collect();
+        assert_eq!(named, ["session:freeear@256", "session:freemod@256", "edited:freemods@256", "edited:freeears@256"]);
+        assert!(always_on().iter().filter(|scenario| scenario.has_free_modulators()).all(|scenario| !scenario.unmoved().is_in_the_old_loop()));
+        // (A scenario of the generator has them where its edits are a lane's "+" or a knob's "~", which make a modulator of the session's own since step 94.)
+        for scenario in always_on().iter().filter(|scenario| scenario.id.starts_with("generated:")) {
+            let asks = scenario.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddModulator { .. } | Edit::Modulate { .. }));
+            assert_eq!(scenario.has_free_modulators(), asks, "{}", scenario.id);
+        }
+        assert!(with.iter().any(|id| id.starts_with("generated:")), "some of the generated sessions do");
         let plain = Scenario { session: "[[instrument]]\nplugin = \"builtin:osc\"\n".to_string(), edits: Vec::new(), ..sessions().remove(0) };
-        assert!(!plain.has_free_modulators() && plain.is_in_the_old_loop());
+        assert!(!plain.has_free_modulators() && plain.unmoved().is_in_the_old_loop() && !plain.is_in_the_old_loop(), "a moved scenario is not held to the loop: it has free modulators, if it has any");
         assert!(Scenario { edits: vec![(1_000, Edit::AddFreeModulator { kind: ModulatorKind::Lfo })], ..plain.clone() }.has_free_modulators());
         assert!(Scenario { session: format!("{}[[modulator]]\n", plain.session), ..plain }.has_free_modulators());
     }
@@ -1081,7 +1395,7 @@ mod tests {
         assert_eq!(cut, ["session:unfed@256", "edited:feeds@256"]);
         // (A cut that is given back is not a cut: only the edits that cut count, and a file that says `chain` has none.)
         let given_back = Scenario { session: "[[instrument]]\nplugin = \"builtin:osc\"\n".to_string(), edits: vec![(1_000, Edit::Feed { effect: 0, feed: Feed::Chain })], ..sessions().remove(0) };
-        assert!(!given_back.has_cut_feeds() && given_back.is_in_the_old_loop());
+        assert!(!given_back.has_cut_feeds() && given_back.unmoved().is_in_the_old_loop());
         assert!(Scenario { session: "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\nfeed = \"none\"\n".to_string(), ..given_back.clone() }.has_cut_feeds());
         assert!(Scenario { edits: vec![(1_000, Edit::Feed { effect: 0, feed: Feed::None })], ..given_back }.has_cut_feeds());
     }
@@ -1130,9 +1444,13 @@ mod tests {
     fn the_scenarios_that_cut_a_way_out_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
         let cut: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cut_routes()).map(|scenario| scenario.id.clone()).collect();
         assert_eq!(cut, ["session:free@256", "session:routed@256", "edited:routes@256", "edited:free@256"]);
-        // (A scenario that has no cable and no cut is what the loop can run: there are many of them, and every generated session is one.)
-        assert!(always_on().iter().filter(|scenario| scenario.is_in_the_old_loop()).count() > 20);
-        assert!(always_on().iter().filter(|scenario| scenario.id.starts_with("generated:")).all(|scenario| scenario.is_in_the_old_loop()));
+        // (A scenario that has no cable and no cut is what the loop can run, as the file is written: there are many of them, and every generated session is one that has no modulator that is
+        // made for a lane or a knob.)
+        assert!(always_on().iter().map(Scenario::unmoved).filter(|scenario| scenario.is_in_the_old_loop()).count() > 20);
+        assert!(always_on()
+            .iter()
+            .filter(|scenario| scenario.id.starts_with("generated:") && !scenario.has_free_modulators())
+            .all(|scenario| scenario.unmoved().is_in_the_old_loop()));
     }
 
     #[test]
@@ -1219,6 +1537,7 @@ mod tests {
                 frames: 12_000,
                 script: vec![(0, [0x90, 60, 100])],
                 edits: Vec::new(),
+                moved: true,
             };
             let muted = Scenario { edits: vec![(5_000, Edit::Mute { lane: 0, muted: true })], ..plain.clone() };
             let (a, b) = (render(&plain, &engine), render(&muted, &engine));
@@ -1343,7 +1662,7 @@ mod tests {
     #[test]
     #[ignore = "the whole corpus at three block sizes: cargo test --release oracle -- --ignored"]
     fn the_whole_corpus_is_the_same_under_the_plan_and_under_the_loop_it_replaced() {
-        let differences: Vec<String> = whole().iter().filter(|scenario| scenario.is_in_the_old_loop()).filter_map(|scenario| agree(scenario, &legacy, &engine_uncompensated)).collect();
+        let differences: Vec<String> = whole().iter().map(Scenario::unmoved).filter(|scenario| scenario.is_in_the_old_loop()).filter_map(|scenario| agree(&scenario, &legacy, &engine_uncompensated)).collect();
         assert!(differences.is_empty(), "{} of the {} renders differ:\n{}", differences.len(), whole().len(), differences.join("\n"));
     }
 
@@ -1401,6 +1720,7 @@ mod tests {
             frames: 0,
             script: Vec::new(),
             edits: Vec::new(),
+            moved: true,
         }
     }
 
@@ -1448,8 +1768,10 @@ mod tests {
 
     /// The `cross` session of the corpus at 256 frames: a group's cables to a member's parameter, a member's modulator and the depth of one of its cables, a bus effect and a sibling, an
     /// envelope on an LFO's rate in a lane, and a cable on the depth of another.
+    /// The session with a group's modulators and a lane's, as the file is written: the tests below tamper with the model's racks of a lane and of a group and say what the engine says of them, which a
+    /// session that is moved has none of.
     fn cross() -> Scenario {
-        sessions().into_iter().find(|scenario| scenario.id.starts_with("session:cross")).expect("the cross session")
+        sessions().into_iter().find(|scenario| scenario.id.starts_with("session:cross")).expect("the cross session").unmoved()
     }
 
     #[test]

@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import { afterEach, describe, expect, test } from "vitest";
 
 import { MASTER, groupsFixture, tracerSnapshot } from "../../client/fixtures";
+import type { Node } from "../../protocol";
 import { NoticeBoard } from "../../ui/NoticeBoard";
 import { useNotices } from "../ClientProvider";
 import { rig } from "../testing";
@@ -373,6 +374,36 @@ describe("taking a lane or a group out", () => {
     expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Keep Lead", "Remove Lead for good"]);
     await settle();
     expect(requests()).toEqual([]);
+  });
+
+  test("says that the modulators that hear a lane or a group stay, hearing every note, as well as what goes with it", async () => {
+    const own = (id: number, hears: number): Node => ({ id, parent: null, name: `LFO ${String(id)}`, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 }, hears });
+    const base = groupsFixture.snapshot;
+    const master = base.graph.nodes.findIndex((node) => node.kind === "master");
+    const nodes = [...base.graph.nodes.slice(0, master), own(100, 5), own(101, 5), own(102, 9), own(103, 0), ...base.graph.nodes.slice(master)];
+    await rig(<PatchView />, { snapshot: { ...base, graph: { ...base.graph, nodes } } });
+    // A lane: its 1 effect and 2 modulators go with it, and the 2 that hear it stay (a lane that is taken out alone leaves its instrument's hearers as they were: they hear the lane still).
+    fireEvent.click(await removeButton(5, "Remove the lane of Oscillator 2"));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Keep Oscillator 2",
+      "Remove Oscillator 2 only: its 1 effect and 2 modulators stay in the lane",
+      "Remove the lane of Oscillator 2 for good: its 1 effect and 2 modulators go with it, and 2 modulators that hear it stay, hearing every note",
+    ]);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    // One of them: "hears it stays"; and a lane that has nothing else of its own says only that.
+    fireEvent.click(await removeButton(9, "Remove the lane of Oscillator 3"));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Keep Oscillator 3",
+      "Remove Oscillator 3 only: the lane stays, empty",
+      "Remove the lane of Oscillator 3 for good: 1 modulator that hears it stays, hearing every note",
+    ]);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    // A group: its own, its lanes that stay, and the one that hears it.
+    fireEvent.click(await removeButton(0, "Remove Group 1"));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Keep Group 1",
+      "Remove Group 1 for good: its 2 modulators go with it, and its 2 lanes stay, in no group, and 1 modulator that hears it stays, hearing every note",
+    ]);
   });
 
   test("keeps what it is asked to keep, and asks the server nothing", async () => {

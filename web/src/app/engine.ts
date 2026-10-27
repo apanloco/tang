@@ -1,8 +1,10 @@
 // Which server the page talks to: the one it came from, or the mock engine that runs in
 // the page (`?engine=mock`), which needs nothing but the page itself.
 import { Client } from "../client/connection";
+import { tracerSnapshot } from "../client/fixtures";
 import { MockServer } from "../client/mock";
 import type { MockOptions } from "../client/mock";
+import { moved } from "../client/moved";
 import { stressSnapshot } from "../client/stress";
 import { serverUrl, tokenFromHash, webSocketTransport } from "../client/websocket";
 
@@ -28,15 +30,15 @@ export function sceneFor(search: string): SceneKind {
   return scene === "stress" || scene === "lanes" ? scene : "tracer";
 }
 
-/** The snapshot of a scene, or nothing for the tracer, which the mock serves by default. */
+/** The snapshot of a scene, as the program has the session once it has loaded it: the modulators of its lanes and groups are the session's own and hear them (`moved`, step 94). */
 function snapshotOf(scene: SceneKind): MockOptions {
   switch (scene) {
     case "stress":
-      return { snapshot: stressSnapshot() };
+      return { snapshot: moved(stressSnapshot()) };
     case "lanes":
-      return { snapshot: stressSnapshot({ lanes: 2, lfosPerLane: 1, targetsPerLfo: 1 }) };
+      return { snapshot: moved(stressSnapshot({ lanes: 2, lfosPerLane: 1, targetsPerLfo: 1 })) };
     case "tracer":
-      return {};
+      return { snapshot: moved(tracerSnapshot) };
   }
 }
 

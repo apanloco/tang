@@ -10,6 +10,18 @@ import { createInterface } from "node:readline";
 
 import { test as base } from "@playwright/test";
 
+/**
+ * What a saved file has for each modulator of the session, in the order of the file, as it is written: the text of each top-level `[[modulator]]` table (its keys, the place of the lane or group it hears, and its
+ * `[[modulator.target]]` tables) up to the next table that is not one of its own targets. Every modulator is the session's own since step 94, and a session that is loaded has the modulators of its lanes and groups moved
+ * there, so that the first is the tracer's LFO and a modulator that is made after it is the one after it.
+ */
+export function modulatorsIn(saved: string): string[] {
+  return saved
+    .split(/^\[\[modulator\]\]\n/m)
+    .slice(1)
+    .map((part) => part.split(/^\[(?!\[modulator\.target\]\])/m)[0] ?? "");
+}
+
 export interface OwnTang {
   /** Where the program serves the page. */
   url: string;

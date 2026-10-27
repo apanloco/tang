@@ -380,8 +380,10 @@ enum Driver {
 
 /// State for the "modulate <param>" popup.
 struct ModulateState {
-    /// Which modulator rack a created/attached modulator lives in.
+    /// The rack that names what is modulated: the lane's for a parameter of its plugins, the group's for a bus effect's, the modulator's own for one of its settings.
     scope: ModulatorLocation,
+    /// The rack that the modulators of "attach →" are in: the session's own for a parameter of a plugin (any modulator of it can drive any plugin), the modulator's own for one of its settings.
+    rack: ModulatorLocation,
     /// The target kind to bind (PluginParam for lanes, GroupBus for groups).
     target_kind: crate::plugin::chain::ModTargetKind,
     param_name: String,
@@ -1051,7 +1053,7 @@ impl State {
             None => return,
         };
         let entry = &ts.entries[chosen];
-        self.bind(ts.scope, Driver::Existing(ts.mod_index), &entry.kind);
+        self.bind(ts.scope, ts.scope, Driver::Existing(ts.mod_index), &entry.kind);
     }
 
     /// Open the "modulate <param>" popup for the parameter currently selected
@@ -1077,21 +1079,15 @@ impl State {
         };
         let (param_index, param_name) = (param.index, param.name.clone());
 
-        // Choices: new LFO, new envelope, then each existing lane modulator.
+        // Choices: the new ones (made for the parameter: one of the session's own that hears the lane), then each modulator of the session's own, which can drive any plugin.
         let (mut choices, mut items) = new_modulator_choices(&param_name);
-        if let Some(node) = self.ctl.model.instruments.get(inst) {
-            for (i, m) in node.modulators.iter().enumerate() {
-                let label = m.source.label();
-                let idx = choices.len();
-                choices.push(ModulateChoice::Existing(i));
-                items.push(FilterListItem { cells: vec![format!("attach → {label}")], index: idx });
-            }
-        }
+        self.push_the_sessions_own_modulators(&mut choices, &mut items);
 
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
         self.modulate = Some(ModulateState {
             scope: ModulatorLocation::Lane(inst),
+            rack: ModulatorLocation::Free,
             target_kind: crate::plugin::chain::ModTargetKind::PluginParam {
                 slot,
                 param_index,
@@ -1149,6 +1145,7 @@ impl State {
         filter.apply_filter(&items);
         self.modulate = Some(ModulateState {
             scope,
+            rack: scope,
             target_kind: kind,
             param_name,
             choices,
@@ -1172,20 +1169,35 @@ impl State {
             ModulateChoice::New(kind) => Driver::New(kind, None),
             ModulateChoice::Existing(i) => Driver::Existing(i),
         };
-        self.bind(ms.scope, driver, &ms.target_kind);
+        self.bind(ms.scope, ms.rack, driver, &ms.target_kind);
     }
 
-    /// A modulator of the rack at `scope`, a new one or one that is there, drives what `kind` names (the parameter of a plugin, or the setting of
-    /// another modulator): by the intents a browser asks for, a new modulator and the cable to it being the one intent that makes both (`Modulate`:
-    /// one step, in its words) and a modulator that is there a cable (`AddModEdge`).
-    fn bind(&mut self, scope: ModulatorLocation, driver: Driver, kind: &crate::plugin::chain::ModTargetKind) {
+    /// Put each modulator of the session's own among the choices of a modulate popup, as "attach → LFO 0.5Hz sine (hears L2)" (a modulator that hears no lane and no group says nothing of it).
+    fn push_the_sessions_own_modulators(&self, choices: &mut Vec<ModulateChoice>, items: &mut Vec<FilterListItem>) {
+        let model = &self.ctl.model;
+        for (i, m) in model.free_modulators.iter().enumerate() {
+            let hears = match model.ear_of(m).and_then(|ear| model.locate(ear)) {
+                Some(NodePath::Instrument(inst)) => format!(" (hears L{})", inst + 1),
+                Some(NodePath::Group(group)) => format!(" (hears G{})", group + 1),
+                _ => String::new(),
+            };
+            let idx = choices.len();
+            choices.push(ModulateChoice::Existing(i));
+            items.push(FilterListItem { cells: vec![format!("attach → {}{hears}", m.source.label())], index: idx });
+        }
+    }
+
+    /// A modulator, a new one or one of the rack at `rack` that is there, drives what `kind` names in the rack at `scope` (the parameter of a plugin, or the setting of another modulator): by the
+    /// intents a browser asks for, a new modulator and the cable to it being the one intent that makes both (`Modulate`: one step, in its words, and one of the session's own that hears the lane
+    /// or the group) and a modulator that is there a cable (`AddModEdge`).
+    fn bind(&mut self, scope: ModulatorLocation, rack: ModulatorLocation, driver: Driver, kind: &crate::plugin::chain::ModTargetKind) {
         let Some(to) = self.ctl.model.endpoint_of(scope, kind) else { return };
         match driver {
             Driver::New(modulator, depth) => {
                 self.apply(Intent::Modulate { to, kind: modulator, depth });
             }
             Driver::Existing(index) => {
-                let Some(modulator) = self.ctl.model.modulators(scope).and_then(|rack| rack.get(index)).map(|m| m.node) else { return };
+                let Some(modulator) = self.ctl.model.modulators(rack).and_then(|rack| rack.get(index)).map(|m| m.node) else { return };
                 self.apply(Intent::AddModEdge { modulator, to });
             }
         }
@@ -1269,10 +1281,10 @@ impl State {
         self.target_selector = Some(TargetSelectorState { filter, items, entries, scope: ModulatorLocation::Free, mod_index });
     }
 
-    /// Add a free modulator (an LFO, as `m` adds to a lane) at the end of the session's own rack, and put the cursor on it. It is made by the intent that a browser's "+ Modulator"
-    /// asks, a step of the history.
-    fn add_free_modulator(&mut self) {
-        if self.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }).is_none() {
+    /// Add a free modulator (an LFO) at the end of the session's own rack, hearing the lane or the group `hears` (every note if none), and put the cursor on it. It is made by the intent that a browser's
+    /// "+ Modulator" (none) and the "+" of a lane or a group (that one) ask, a step of the history.
+    fn add_free_modulator(&mut self, hears: Option<NodeId>) {
+        if self.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears }).is_none() {
             return;
         }
         let last = self.ctl.model.free_modulators.len().saturating_sub(1);
@@ -1305,19 +1317,13 @@ impl State {
         let (param_index, param_name) = (param.index, param.name.clone());
 
         let (mut choices, mut items) = new_modulator_choices(&param_name);
-        if let Some(node) = self.ctl.model.groups.get(group) {
-            for (i, m) in node.modulators.iter().enumerate() {
-                let label = m.source.label();
-                let idx = choices.len();
-                choices.push(ModulateChoice::Existing(i));
-                items.push(FilterListItem { cells: vec![format!("attach → {label}")], index: idx });
-            }
-        }
+        self.push_the_sessions_own_modulators(&mut choices, &mut items);
 
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
         self.modulate = Some(ModulateState {
             scope: ModulatorLocation::Group(group),
+            rack: ModulatorLocation::Free,
             target_kind: crate::plugin::chain::ModTargetKind::GroupBus {
                 effect_index: eff_idx,
                 param_index,
@@ -1390,7 +1396,7 @@ impl State {
             };
 
         // An armed MidiLearn modulator in the right rack, bound to the target (depth 1.0 = full-range absolute control).
-        self.bind(scope, Driver::New(ModulatorKind::MidiLearn, Some(1.0)), &kind);
+        self.bind(scope, scope, Driver::New(ModulatorKind::MidiLearn, Some(1.0)), &kind);
     }
 
     /// Open the "assign to group" popup for instrument `inst`.
@@ -2769,16 +2775,14 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             s.learn_selected_param();
         }
 
-        // 'm' (chain focus) — add an empty LFO modulator to the instrument's
-        // lane rack. (In param focus, `m` modulates the selected parameter —
+        // 'm' (chain focus) — add an LFO, one of the session's own that hears the lane or the group that the cursor is in. (In param focus, `m` modulates the selected parameter —
         // handled above.)
         KeyCode::Char('m') if s.active_tab == TAB_SESSION && !s.focus_params && matches!(s.selected_address(), Some(TreeAddress::FreeModulator { .. })) => {
             // On a free modulator, add another one to the session's own rack.
-            s.add_free_modulator();
+            s.add_free_modulator(None);
         }
         KeyCode::Char('m') if s.active_tab == TAB_SESSION && !s.focus_params => {
-            // On a group / group-bus node, add a group-scoped modulator; on an
-            // instrument-side node, add a lane modulator.
+            // On a group / group-bus node, add one that hears the group; on an instrument-side node, one that hears the lane.
             let group = match s.selected_address().copied() {
                 Some(TreeAddress::Group(g))
                 | Some(TreeAddress::GroupEffect { group: g, .. })
@@ -2795,15 +2799,15 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 Some(ModulatorLocation::Group(group)) => s.ctl.model.groups.get(group).map(|bus| bus.node),
                 Some(ModulatorLocation::Free) | None => None,
             };
-            if let Some(parent) = owner {
-                s.apply(Intent::AddModulator { parent, kind: ModulatorKind::Lfo });
+            if let Some(heard) = owner {
+                s.add_free_modulator(Some(heard));
             }
         }
 
         // 'F' (chain focus) — add a free modulator: in no lane and no group, wherever the cursor is, and the cursor goes onto it (`AddFreeModulator`, a step of
         // the history). Its cables (`t`) go to a parameter of any plugin of the session.
         KeyCode::Char('F') if s.active_tab == TAB_SESSION && !s.focus_params => {
-            s.add_free_modulator();
+            s.add_free_modulator(None);
         }
 
         // 'h' (chain focus) — choose whose notes a free modulator hears: every note, a lane's or a group's (`SetModulatorEar`, a step of the history), via a popup.
@@ -4688,7 +4692,9 @@ fn push_instrument_entries(
     });
 
     let has_pattern = inst.pattern.as_ref().is_some_and(|p| p.recording || !p.events.is_empty());
-    let child_count = if has_pattern { 1 } else { 0 } + inst.effects.len() + inst.modulators.len();
+    // The session's own modulators that hear the lane are listed with it, after the ones in its rack (a session that was built by intents can have some).
+    let hearing: Vec<(usize, &ModulatorSlot)> = model.free_modulators.iter().enumerate().filter(|(_, m)| model.ear_of(m) == Some(inst.node)).collect();
+    let child_count = if has_pattern { 1 } else { 0 } + inst.effects.len() + inst.modulators.len() + hearing.len();
     let mut child_idx = 0;
     let branch_for = |idx: usize| if idx == child_count - 1 { "╰" } else { "├" };
 
@@ -4761,6 +4767,52 @@ fn push_instrument_entries(
         });
         child_idx += 1;
     }
+    for (mod_idx, m) in hearing {
+        let targets = if m.targets.is_empty() {
+            String::new()
+        } else {
+            let list = m.targets.iter().map(|t| format!("{} ({})", heard_target_label(model, t, inst_idx), depth_percent(t.depth))).collect::<Vec<_>>().join(", ");
+            format!(" \u{2192} {list}")
+        };
+        entries.push(TreeEntry {
+            label: format!("{prefix}{} ~ {}{targets}", branch_for(child_idx), m.source.label()),
+            address: TreeAddress::FreeModulator { index: mod_idx },
+            node: m.node,
+            color: Some(Color::Magenta),
+            indent: 1,
+        });
+        child_idx += 1;
+    }
+}
+
+/// What a cable of a free modulator that hears group `group` drives, as the tree says it under the group: a parameter of a member's plugin by the member's place in the group (`M0 Oscillator:
+/// detune`), a parameter of one of the group's bus effects (`Bus Reverb: damping`), as a group's own modulator's cable is, and anything else as every free modulator's is (`L2 Filter: cutoff`).
+fn heard_by_group_target_label(model: &SessionModel, target: &ModTargetSlot, group: usize) -> String {
+    if let Driven::Param { plugin, .. } = target.aim {
+        let slot = model.plugin_slot(plugin);
+        match (model.locate(plugin), slot) {
+            (Some(NodePath::GroupEffect { group: of, .. }), Some(slot)) if of == group => return format!("Bus {}: {}", slot.name, target.param_name),
+            (Some(NodePath::Instrument(lane) | NodePath::Effect { inst: lane, .. }), Some(slot)) if model.instruments[lane].group == Some(group) => {
+                let member = model.instruments[..lane].iter().filter(|other| other.group == Some(group)).count();
+                return format!("M{member} {}: {}", slot.name, target.param_name);
+            }
+            _ => {}
+        }
+    }
+    free_target_label(model, target)
+}
+
+/// What a cable of a free modulator that hears lane `inst` drives, as the tree says it under the lane: a parameter of a plugin of the lane by the plugin (`Oscillator: detune`, as a lane's own
+/// modulator's cable is), and anything else as every free modulator's is (`L2 Filter: cutoff`).
+fn heard_target_label(model: &SessionModel, target: &ModTargetSlot, inst: usize) -> String {
+    if let Driven::Param { plugin, .. } = target.aim {
+        if matches!(model.locate(plugin), Some(NodePath::Instrument(lane) | NodePath::Effect { inst: lane, .. }) if lane == inst) {
+            if let Some(slot) = model.plugin_slot(plugin) {
+                return format!("{}: {}", slot.name, target.param_name);
+            }
+        }
+    }
+    free_target_label(model, target)
 }
 
 /// Where the plugin in `node` is, as the Patch tab tags a lane and a group: `L1` for a plugin of the first lane (its instrument or an effect of its chain) and `G1` for an effect of the
@@ -4786,22 +4838,17 @@ fn build_tree_entries(model: &SessionModel) -> Vec<TreeEntry> {
     let (instruments, groups) = (&model.instruments[..], &model.groups[..]);
     let mut entries = Vec::new();
 
-    // The free modulators first (magenta): they are in no lane and no group, so they are the session's own, and each says what its cables drive wherever it is.
-    for (mod_idx, m) in model.free_modulators.iter().enumerate() {
+    // The free modulators that hear no lane and no group first (magenta): they are the session's own, and each says what its cables drive wherever it is. The ones that hear a lane or a group are
+    // listed with it, where a lane's and a group's own were (a modulator is the session's own, and is listed where its notes are).
+    for (mod_idx, m) in model.free_modulators.iter().enumerate().filter(|(_, m)| model.ear_of(m).is_none()) {
         let targets = if m.targets.is_empty() {
             String::new()
         } else {
             let list = m.targets.iter().map(|t| format!("{} ({})", free_target_label(model, t), depth_percent(t.depth))).collect::<Vec<_>>().join(", ");
             format!(" \u{2192} {list}")
         };
-        // (And whose notes it hears, if it hears a lane's or a group's.)
-        let hears = match model.ear_of(m).and_then(|ear| model.locate(ear)) {
-            Some(NodePath::Instrument(inst)) => format!(", hears L{}", inst + 1),
-            Some(NodePath::Group(group)) => format!(", hears G{}", group + 1),
-            _ => String::new(),
-        };
         entries.push(TreeEntry {
-            label: format!("~ {}{targets}  (free{hears})", m.source.label()),
+            label: format!("~ {}{targets}  (free)", m.source.label()),
             address: TreeAddress::FreeModulator { index: mod_idx },
             node: m.node,
             color: Some(Color::Magenta),
@@ -4901,6 +4948,23 @@ fn build_tree_entries(model: &SessionModel) -> Vec<TreeEntry> {
                     indent: 1,
                 });
             }
+        }
+        // The session's own modulators that hear the group, as a group's own are listed (a cable into a member's plugin or a bus effect of the group says so as a group's own does, and any other as
+        // every free modulator's does).
+        for (mod_idx, m) in model.free_modulators.iter().enumerate().filter(|(_, m)| model.ear_of(m) == Some(group.node)) {
+            let targets = if m.targets.is_empty() {
+                String::new()
+            } else {
+                let list = m.targets.iter().map(|t| format!("{} ({})", heard_by_group_target_label(model, t, g_idx), depth_percent(t.depth))).collect::<Vec<_>>().join(", ");
+                format!(" \u{2192} {list}")
+            };
+            entries.push(TreeEntry {
+                label: format!("  ~ {}{targets}  (bus)", m.source.label()),
+                address: TreeAddress::FreeModulator { index: mod_idx },
+                node: m.node,
+                color: Some(Color::Magenta),
+                indent: 1,
+            });
         }
     }
 

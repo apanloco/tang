@@ -3,6 +3,7 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 import { afterEach, describe, expect, test } from "vitest";
 
 import { MASTER, freeReachFixture, nodeNamed, tracerSnapshot } from "../../client/fixtures";
+import { moved } from "../../client/moved";
 import { displayNames } from "../../client/names";
 import type { Intent } from "../../protocol";
 import { NoticeBoard } from "../../ui/NoticeBoard";
@@ -131,7 +132,7 @@ describe("the bar's button that adds a modulator that is in no lane and no group
   test("asks for the kind that is chosen, one request, and the session has a modulator with no parent, a node on the canvas that is told what it is", async () => {
     const { server, requests } = await page();
     const node = await add("Envelope", 3);
-    expect(asked(requests)).toEqual([{ type: "addFreeModulator", kind: "envelope" }]);
+    expect(asked(requests)).toEqual([{ type: "addFreeModulator", kind: "envelope", hears: null }]);
     expect(server.snapshot.graph.nodes.find((n) => n.id === 3)).toMatchObject({ id: 3, parent: null, kind: "modulator", name: "ADSR" });
     expect(node.querySelector(".tang-node__name")?.textContent).toBe("ADSR");
     // (No lane has it: the tracer's own lane has the modulators it had, and a request names no lane.)
@@ -187,6 +188,25 @@ describe("the bar's button that adds a modulator that is in no lane and no group
     expect(await nodeOf(3)).toBeTruthy();
     expect(server.snapshot.graph.edges.filter((e) => e.kind === "modulation")).toHaveLength(2);
     expect(server.snapshot.graph.nodes.find((n) => n.id === 3)?.parent).toBeNull();
+  });
+
+  test("gives the focus back, when a modulator that hears a lane is taken out, to the \"+\" of that lane, which makes one, and not to the bar's button", async () => {
+    // (The tracer as a program has it once loaded: the LFO is the session's own and hears the lane.)
+    await rig(
+      <>
+        <PatchView />
+        <AddFreeModulatorMenu />
+      </>,
+      { snapshot: moved(tracerSnapshot) },
+    );
+    fireEvent.click(within(await nodeOf(2)).getByRole("button", { name: /^Remove LFO/ }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("rf__node-2")).toBeNull();
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add a modulator to Oscillator" }));
+    });
+    expect(document.activeElement).not.toBe(addButton());
   });
 
   test("is a step of the history in the words of the button that adds a modulator to a lane: Undo takes the modulator out, and Redo makes it again under the id it had", async () => {

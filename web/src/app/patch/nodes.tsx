@@ -78,7 +78,7 @@ const addModulatorId = (node: NodeId): string => `add-modulator-${String(node)}`
 /** The `id` of the button in the bar that adds a modulator that is in no lane and no group, which what takes one out gives the focus to. */
 export const ADD_FREE_MODULATOR_ID = "add-free-modulator";
 
-/** The button of a lane or a group that adds a modulator to it: a menu of the kinds. */
+/** The button of a lane or a group that adds a modulator for it: a menu of the kinds. The modulator is the session's own (a cable from it can end at any plugin) and hears the notes of the lane or the group. */
 function AddModulatorMenu({ node, name }: { node: NodeId; name: string }) {
   const editor = useEditor();
   return (
@@ -88,7 +88,7 @@ function AddModulatorMenu({ node, name }: { node: NodeId; name: string }) {
       items={MODULATOR_KINDS}
       onChoose={(kind) => {
         // (If it is refused the page says so: `Editor` puts the reason among the notices.)
-        void editor.addModulator(node, kind);
+        void editor.addFreeModulator(kind, node);
       }}
     >
       +
@@ -281,11 +281,12 @@ function RemoveNodeButton({ node, name, focusTo }: { node: NodeId; name: string;
 /** "1 effect", "2 effects". */
 const counted = (n: number, word: string): string => `${String(n)} ${word}${n === 1 ? "" : "s"}`;
 
-/** What taking out a lane or a group comes to, in words: what goes with it, and, for a group, what stays. */
+/** What taking out a lane or a group comes to, in words: what goes with it, and what stays: for a group its lanes, and for either the modulators that hear it, which hear every note then. */
 function removalWords(removal: Removal): string {
   const goes = [removal.effects > 0 ? counted(removal.effects, "effect") : null, removal.modulators > 0 ? counted(removal.modulators, "modulator") : null].filter((part) => part !== null);
   const stays = removal.lanes > 0 ? `its ${counted(removal.lanes, "lane")} ${removal.lanes === 1 ? "stays" : "stay"}, in no group` : null;
-  const parts = [goes.length > 0 ? `its ${goes.join(" and ")} go${goes.length === 1 && removal.effects + removal.modulators === 1 ? "es" : ""} with it` : null, stays].filter((part) => part !== null);
+  const heard = removal.hearing > 0 ? `${counted(removal.hearing, "modulator")} that ${removal.hearing === 1 ? "hears it stays" : "hear it stay"}, hearing every note` : null;
+  const parts = [goes.length > 0 ? `its ${goes.join(" and ")} go${goes.length === 1 && removal.effects + removal.modulators === 1 ? "es" : ""} with it` : null, stays, heard].filter((part) => part !== null);
   return parts.length > 0 ? `: ${parts.join(", and ")}` : "";
 }
 
@@ -530,6 +531,10 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   // (An LFO is called what it is: its kind is not said twice.)
   const kind = source ? kindOf(source) : null;
   const settings = source ? settingsOf(source) : [];
+  // (What takes it out gives the focus to the "+" that made it: its lane's or its group's, or the bar's for one that hears no lane and no group.)
+  const owner = node?.parent ?? null;
+  const heard = node?.kind === "modulator" ? node.hears : undefined;
+  const addedBy = owner !== null ? addModulatorId(owner) : heard !== undefined ? addModulatorId(heard) : ADD_FREE_MODULATOR_ID;
   return (
     <div className="tang-node tang-node--modulator">
       <Header
@@ -540,7 +545,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
       >
         {/* (The note length that an LFO or a step sequencer follows the tempo by: no other kind has one, and the control is nothing for it.) */}
         <SyncControl node={data.node} />
-        <RemoveNodeButton node={data.node} name={data.name} focusTo={node ? (node.parent !== null ? addModulatorId(node.parent) : ADD_FREE_MODULATOR_ID) : null} />
+        <RemoveNodeButton node={data.node} name={data.name} focusTo={node ? addedBy : null} />
       </Header>
       {settings.length > 0 ? (
         <div className="tang-node__controls nodrag nopan nowheel">

@@ -672,13 +672,13 @@ describe("adding a modulator", () => {
     const client = await open(server);
     // A second lane, which has nothing in it: the last node before the master is its own, and no modulator's.
     await client.request({ type: "addInstrument", plugin: "builtin:osc" });
-    await client.request({ type: "addFreeModulator", kind: "envelope" });
+    await client.request({ type: "addFreeModulator", kind: "envelope", hears: null });
     await until(() => nodesOf(client).some((n) => n.id === 4), "the modulator");
     expect(nodesOf(client).map((n) => n.id)).toEqual([0, 1, 2, 3, 4, MASTER]);
     expect(nodesOf(client).find((n) => n.id === 4)).toMatchObject({ kind: "modulator", parent: null, name: "ADSR" });
     // Another modulator of the lane's: it goes with the lane's, and the one that is in no lane is after both.
     await client.request({ type: "addModulator", parent: lane.id, kind: "macro" });
-    await client.request({ type: "addFreeModulator", kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: null });
     await until(() => nodesOf(client).some((n) => n.id === 6), "the second");
     expect(nodesOf(client).map((n) => n.id)).toEqual([0, 1, 2, 5, 3, 4, 6, MASTER]);
   });
@@ -3568,7 +3568,7 @@ describe("what a velocity and a key put out and do in the mock engine: they foll
     async function freeWith(kind: "key" | "velocity"): Promise<{ client: Client; output: number }> {
       const server = new MockServer({ telemetryPeriod: 2, snapshot: withNotes({ type: "cc", number: 1 }, { range: { low: 60, high: 71 }, transpose: 12 }) });
       const client = await open(server, { telemetry: ["modulation"] });
-      await client.request({ type: "addFreeModulator", kind });
+      await client.request({ type: "addFreeModulator", kind, hears: null });
       const made = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "modulator" && n.parent === null).at(-1);
       if (!made) throw new Error("the session has a control of its own");
       return { client, output: made.id };

@@ -31,6 +31,27 @@ describe("which scene a page asks of the mock", () => {
   });
 });
 
+describe("what the scenes of the mock are", () => {
+  test("sessions as the program has them once it has loaded them: no modulator is in a lane or a group, and each hears the lane it was in", async () => {
+    const at = { protocol: "http:", host: "localhost:5173", hash: "" };
+    for (const search of ["?engine=mock", "?engine=mock&scene=stress", "?engine=mock&scene=lanes"]) {
+      const { client } = createConnection({ ...at, search });
+      client.start();
+      await vi.waitFor(() => {
+        expect(client.state.status).toBe("open");
+      });
+      const modulators = (client.state.snapshot?.graph.nodes ?? []).flatMap((node) => (node.kind === "modulator" ? [node] : []));
+      expect(modulators.length, search).toBeGreaterThan(0);
+      const lanes = new Set(client.state.snapshot?.graph.nodes.filter((node) => node.kind === "instrument").map((node) => node.id));
+      for (const modulator of modulators) {
+        expect(modulator.parent, `${search}: ${modulator.name}`).toBeNull();
+        expect(modulator.hears !== undefined && lanes.has(modulator.hears), `${search}: ${modulator.name}`).toBe(true);
+      }
+      client.stop();
+    }
+  });
+});
+
 describe("the MIDI inputs of the mock", () => {
   test("are open in every scene, so that a source of notes can be added for one: the mock has no MIDI of its own", async () => {
     const at = { protocol: "http:", host: "localhost:5173", hash: "" };

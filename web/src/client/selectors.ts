@@ -183,8 +183,10 @@ export interface Removal {
   instrument: boolean;
   /** The effects of the lane's chain, or of the group's bus: they go with it. */
   effects: number;
-  /** Its modulators: they go with it. */
+  /** Its modulators, those in its rack: they go with it. */
   modulators: number;
+  /** The modulators of the session's own that hear it (step 94: what the page makes for a lane or a group is of the session, and hears it): they stay, and hear every note then. */
+  hearing: number;
   /** For a group, the lanes that are members of it: they stay, in no group. (None for a lane.) */
   lanes: number;
   /** The only lane of the session, which a session keeps. */
@@ -203,6 +205,7 @@ export function removalOf(state: ClientState, id: NodeId): Removal | undefined {
     instrument: found.kind === "instrument" && found.plugin !== null,
     effects: children.filter((node) => node.kind === "effect").length,
     modulators: children.filter((node) => node.kind === "modulator").length,
+    hearing: graph.nodes.filter((node) => node.kind === "modulator" && node.parent === null && node.hears === id).length,
     lanes: children.filter((node) => node.kind === "instrument").length,
     last: found.kind === "instrument" && graph.nodes.filter((node) => node.kind === "instrument").length < 2,
   };
@@ -212,7 +215,7 @@ export function removalOf(state: ClientState, id: NodeId): Removal | undefined {
 export function sameRemoval(a: Removal | undefined, b: Removal | undefined): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
-  return a.kind === b.kind && a.name === b.name && a.instrument === b.instrument && a.effects === b.effects && a.modulators === b.modulators && a.lanes === b.lanes && a.last === b.last;
+  return a.kind === b.kind && a.name === b.name && a.instrument === b.instrument && a.effects === b.effects && a.modulators === b.modulators && a.hearing === b.hearing && a.lanes === b.lanes && a.last === b.last;
 }
 
 /** The value of a host-side gain of a node, if the node has that gain (`withGain` in reducers.ts is the other way round). */

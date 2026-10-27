@@ -5,7 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { angleOf, fractionOf, pointAt } from "../src/ui/knob-geometry";
 import { node } from "./canvas";
-import { test } from "./own";
+import { modulatorsIn, test } from "./own";
 
 // A velocity and a key on the real program (a program of its own, on the null audio backend: the file it saves is read, and the history is the program's): controls that follow the notes the lane
 // plays, made from a knob with the knob's menu or from the lane's. The keys of the computer play at a velocity of 100, and the engine's control puts the notes it hears into what it drives.
@@ -45,7 +45,7 @@ const save = async (page: Page, file: string): Promise<string> => {
 };
 
 /** The modulators of the saved lane, as the text of each. */
-const modulatorsOf = (saved: string): string[] => saved.split("[[instrument.modulator]]\n").slice(1).map((part) => part.split("[[instrument.effect]]")[0] ?? "");
+const modulatorsOf = modulatorsIn;
 
 /** A key of the computer pressed and let go: the note is played, and what the controls heard of it stays. */
 async function play(page: Page, key: string): Promise<void> {
@@ -82,7 +82,7 @@ test("a velocity made from the resonance knob adds the velocity of the notes tha
   // The file has a control that is bound to the velocity of the notes, with its cable.
   const parts = modulatorsOf(await save(page, own.file));
   expect(parts).toHaveLength(2);
-  expect(parts[1]).toBe('type = "midi"\nmidi_velocity = true\n\n[[instrument.modulator.target]]\nparam = "resonance"\nslot = 1\ndepth = 0.5\n\n');
+  expect(parts[1]).toBe('type = "midi"\nmidi_velocity = true\nhears = "instrument[0]"\n\n[[modulator.target]]\nparam = "resonance"\nto = "instrument[0].effect[0]"\ndepth = 0.5\n\n');
 });
 
 test("a key made from the resonance knob rests at middle C and adds the distance of the last note from it, five octaves being the whole of the depth, and the file has it bound", async ({ page, own }) => {
@@ -109,7 +109,7 @@ test("a key made from the resonance knob rests at middle C and adds the distance
 
   const parts = modulatorsOf(await save(page, own.file));
   expect(parts).toHaveLength(2);
-  expect(parts[1]).toBe('type = "midi"\nmidi_key = true\n\n[[instrument.modulator.target]]\nparam = "resonance"\nslot = 1\ndepth = 0.5\n\n');
+  expect(parts[1]).toBe('type = "midi"\nmidi_key = true\nhears = "instrument[0]"\n\n[[modulator.target]]\nparam = "resonance"\nto = "instrument[0].effect[0]"\ndepth = 0.5\n\n');
 });
 
 test("a velocity that the lane's menu adds has no knob, is a step of the history in the words of its own, and a second page sees it come and go", async ({ page, browser, own }) => {

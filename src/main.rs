@@ -369,7 +369,9 @@ fn run_session(
     // Load or create session config.
     let (config, source) = match session {
         Some(s) => {
-            let config = session::load(&s)?;
+            let mut config = session::load(&s)?;
+            // Every modulator is the session's own from here on (step 94): a file that has them in its lanes and its groups is read as it was written, and saved the new way.
+            config.move_modulators_to_the_session();
             (config, s)
         }
         None => {

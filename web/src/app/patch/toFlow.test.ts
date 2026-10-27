@@ -1,8 +1,10 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Graph, Node, NodeId, Param, Plugin } from "../../protocol";
-import { MASTER, audioCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, audioCablesFixture, groupsFixture, reachFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
+import { moved } from "../../client/moved";
 import { DEFAULT_KNOBS } from "../../client/pinning";
+import { stressSnapshot } from "../../client/stress";
 import {
   CABLE_GAP,
   CABLE_ROW_HEIGHT,
@@ -168,6 +170,75 @@ function overlapsIn(graph: Graph, flow: ReturnType<typeof toFlow>): string | nul
   }
   return null;
 }
+
+/**
+ * Graphs of every shape, made up from a seed so that one that goes wrong can be made again: groups with effects and modulators, lanes in them and out of them with effects and modulators, sources of notes, and a cable from some of the
+ * modulators to the node that is first in their scope.
+ */
+function madeUpGraphs(rounds = 400): { round: number; graph: Graph }[] {
+  let state = 20260101;
+  const next = (below: number): number => {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    return Math.floor((state / 2147483648) * below);
+  };
+  const made: { round: number; graph: Graph }[] = [];
+  for (let round = 0; round < rounds; round += 1) {
+    const nodes: Node[] = [];
+    const edges: Edge[] = [];
+    let id = 1;
+    const groups = Array.from({ length: next(3) }, () => id++);
+    const modulatorsFor = (parent: NodeId) => {
+      for (let i = next(5); i > 0; i -= 1) {
+        const make = [modulator, envelope, control][next(3)];
+        nodes.push((make ?? modulator)(id++, parent));
+      }
+    };
+    for (const g of groups) {
+      nodes.push(group(g));
+      for (let i = next(3); i > 0; i -= 1) nodes.push(effect(id++, g));
+      modulatorsFor(g);
+    }
+    for (let lane = next(4) + 1; lane > 0; lane -= 1) {
+      const parent = groups.length > 0 && next(2) === 0 ? (groups[next(groups.length)] ?? null) : null;
+      const head = id++;
+      nodes.push(instrument(head, 1 + next(12), parent));
+      for (let i = next(3); i > 0; i -= 1) nodes.push(effect(id++, head, 1 + next(12)));
+      modulatorsFor(head);
+    }
+    nodes.push(master);
+    // Sources of notes in front, as the server lists them, none to three (by the round, so that the graphs are the ones the generator made before them), each hearing every lane.
+    const sources = Array.from({ length: round % 4 }, (_, i) => (i === 0 ? keysSource(1000) : deviceSource(1000 + i, `Device ${String(i)}`)));
+    nodes.unshift(...sources);
+    for (const source of sources) for (const lane of nodes.filter((node) => node.kind === "instrument")) edges.push(hearsLink(source.id, lane.id));
+    // A cable from a modulator to the node that is first in its scope, for some of them: where they go is part of the layout.
+    for (const node of nodes) {
+      if (node.kind !== "modulator" || next(2) === 0) continue;
+      const aimed = nodes.filter((other) => (other.kind === "effect" || other.kind === "instrument") && (other.parent === node.parent || other.id === node.parent));
+      const target = aimed[next(aimed.length)];
+      if (target) edges.push(cable(edges.length, node.id, target.id, 1));
+    }
+    made.push({ round, graph: { nodes, edges } });
+  }
+  return made;
+}
+
+/**
+ * `graph` with every modulator of a lane or a group made one of the session's own that hears it: what the program does to a session when it is loaded (step 94). `keep` says which stay where they are (none by default).
+ * A modulator that is made to hear every note (`every`) is the session's own with no ear.
+ */
+function heard(graph: Graph, keep: (node: Node) => boolean = () => false, every: (node: Node) => boolean = () => false): Graph {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      if (node.kind !== "modulator" || node.parent === null || keep(node)) return node;
+      // (The modulators that are made up have no ear of their own.)
+      return every(node) ? { ...node, parent: null } : { ...node, parent: null, hears: node.parent };
+    }),
+  };
+}
+
+/** Where each node of a flow is, by its id. */
+const placesOf = (flow: ReturnType<typeof toFlow>): [string, { x: number; y: number }][] => flow.nodes.map((node) => [node.id, node.position] as [string, { x: number; y: number }]).sort(([a], [b]) => a.localeCompare(b));
 
 /** How tall a modulator's node is in `graph`, as the layout assumes: it has a row for each cable that starts at it. */
 function tall(graph: Graph, id: NodeId): number {
@@ -714,49 +785,8 @@ describe("the nodes on the canvas", () => {
   });
 
   test("do not overlap, whatever the session is made of (graphs of every shape, made up)", () => {
-    // A small generator with a seed, so that a graph that overlaps can be made again.
-    let state = 20260101;
-    const next = (below: number): number => {
-      state = (state * 1103515245 + 12345) % 2147483648;
-      return Math.floor((state / 2147483648) * below);
-    };
-    for (let round = 0; round < 400; round += 1) {
-      const nodes: Node[] = [];
-      const edges: Edge[] = [];
-      let id = 1;
-      const groups = Array.from({ length: next(3) }, () => id++);
-      const modulatorsFor = (parent: NodeId) => {
-        for (let i = next(5); i > 0; i -= 1) {
-          const make = [modulator, envelope, control][next(3)];
-          nodes.push((make ?? modulator)(id++, parent));
-        }
-      };
-      for (const g of groups) {
-        nodes.push(group(g));
-        for (let i = next(3); i > 0; i -= 1) nodes.push(effect(id++, g));
-        modulatorsFor(g);
-      }
-      for (let lane = next(4) + 1; lane > 0; lane -= 1) {
-        const parent = groups.length > 0 && next(2) === 0 ? (groups[next(groups.length)] ?? null) : null;
-        const head = id++;
-        nodes.push(instrument(head, 1 + next(12), parent));
-        for (let i = next(3); i > 0; i -= 1) nodes.push(effect(id++, head, 1 + next(12)));
-        modulatorsFor(head);
-      }
-      nodes.push(master);
-      // Sources of notes in front, as the server lists them, none to three (by the round, so that the graphs are the ones the generator made before them), each hearing every lane.
-      const sources = Array.from({ length: round % 4 }, (_, i) => (i === 0 ? keysSource(1000) : deviceSource(1000 + i, `Device ${String(i)}`)));
-      nodes.unshift(...sources);
-      for (const source of sources) for (const lane of nodes.filter((node) => node.kind === "instrument")) edges.push(hearsLink(source.id, lane.id));
-      // A cable from a modulator to the node that is first in its scope, for some of them: where they go is part of the layout.
-      for (const node of nodes) {
-        if (node.kind !== "modulator" || next(2) === 0) continue;
-        const aimed = nodes.filter((other) => (other.kind === "effect" || other.kind === "instrument") && (other.parent === node.parent || other.id === node.parent));
-        const target = aimed[next(aimed.length)];
-        if (target) edges.push(cable(edges.length, node.id, target.id, 1));
-      }
-      const graph: Graph = { nodes, edges };
-      expect(overlapping(graph), `round ${String(round)}: ${JSON.stringify(nodes.map((n) => [n.id, n.kind, n.parent]))}`).toBeNull();
+    for (const { round, graph } of madeUpGraphs()) {
+      expect(overlapping(graph), `round ${String(round)}: ${JSON.stringify(graph.nodes.map((n) => [n.id, n.kind, n.parent]))}`).toBeNull();
     }
   });
 
@@ -2233,13 +2263,16 @@ describe("a lane that only holds effects", () => {
     expect(at(flow, 3).data.heldIn).toEqual({ lane: 1, first: false, alone: false });
     // (The effect of a lane that has an instrument, the modulator, the source and the master are held by nobody.)
     for (const id of [4, 5, 6, 9, MASTER]) expect(at(flow, id).data.heldIn, String(id)).toBeNull();
-    // On its own: the only effect of its lane, and no modulator in the lane to be left behind when the lane goes with it.
-    const alone: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), master], edges: [audio(1, 2), audio(2, MASTER)] };
+    // On its own: the only effect of its lane, and no modulator in the lane to be left behind when the lane goes with it (and another lane in the session, since a session keeps its last).
+    const alone: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), instrument(5), master], edges: [audio(1, 2), audio(2, MASTER), audio(5, MASTER)] };
     expect(at(toFlow(alone), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: true });
-    const driven: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), modulator(3, 1), master], edges: [audio(1, 2), audio(2, MASTER)] };
+    const driven: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), modulator(3, 1), instrument(5), master], edges: [audio(1, 2), audio(2, MASTER), audio(5, MASTER)] };
     expect(at(toFlow(driven), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: false });
-    const chain: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), effect(3, 1), master], edges: [audio(1, 2), audio(2, 3), audio(3, MASTER)] };
+    const chain: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), effect(3, 1), instrument(5), master], edges: [audio(1, 2), audio(2, 3), audio(3, MASTER), audio(5, MASTER)] };
     expect([2, 3].map((id) => at(toFlow(chain), id).data.heldIn?.alone)).toEqual([false, false]);
+    // The last lane of the session is not taken out with it, though it has nothing else: the controller keeps it (`a session keeps its last lane`), and the effect is taken out alone.
+    const last: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), master], edges: [audio(1, 2), audio(2, MASTER)] };
+    expect(at(toFlow(last), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: false });
   });
 
   test("makes the first of its effects as tall as the cell of the lane that it has makes it: one control more than an effect that is in a lane with a card", () => {
@@ -2435,5 +2468,220 @@ describe("a lane that only holds effects", () => {
     expect(rows[0]).toBeLessThan(rows[1] ?? 0);
     expect(rows[1]).toBeLessThan(rows[2] ?? 0);
     expect(overlapsIn(graph, flow)).toBeNull();
+  });
+});
+
+describe("a modulator of the session's own that hears a lane or a group", () => {
+  /** A modulator that is in no lane and no group, and hears `ear` (none: every note). */
+  const own = (id: NodeId, ear: NodeId | null = null): Node => ({ ...modulator(id, 0), parent: null, ...(ear === null ? {} : { hears: ear }) });
+
+  const lanes: Graph = { nodes: [instrument(1), effect(2, 1), instrument(3), effect(4, 3), master], edges: [audio(1, 2), audio(2, MASTER), audio(3, 4), audio(4, MASTER)] };
+  /** `lanes` with the nodes `added` before the master, and the cables `drawn`. */
+  const withNodes = (added: Node[], drawn: Edge[] = []): Graph => ({ nodes: [...lanes.nodes.slice(0, -1), ...added, master], edges: [...lanes.edges, ...drawn] });
+
+  test("is above the strip of the lane it hears, over the node it drives, and not in the row above the first lane: the first lane is where it was with none", () => {
+    const graph = withNodes([own(30, 3)], [cable(0, 30, 4, 1)]);
+    const flow = toFlow(graph);
+    const bare = toFlow(lanes);
+    // (The first lane has no room taken above it, and the second lane has the room for the modulator above it and the cable's gap.)
+    expect(at(flow, 1).position).toEqual(at(bare, 1).position);
+    expect(at(flow, 30).position).toEqual({ x: COLUMN, y: at(flow, 3).position.y - tall(graph, 30) - CABLE_GAP });
+    expect(at(flow, 3).position.y).toBeGreaterThan(at(bare, 3).position.y);
+    expect(overlapsIn(graph, flow)).toBeNull();
+  });
+
+  test("is above the row of the group it hears, over the group's own node when it drives nothing", () => {
+    const graph: Graph = { ...grouped, nodes: [...grouped.nodes.slice(0, -1), own(30, 10), master] };
+    const flow = toFlow(graph);
+    expect(at(flow, 30).position.x).toBe(at(flow, 10).position.x);
+    expect(at(flow, 30).position.y).toBeLessThan(at(flow, 10).position.y);
+    expect(overlapsIn(graph, flow)).toBeNull();
+  });
+
+  test("is kept below the row of the ones that hear every note where it is in the same column as one of them, though its group is level with the members, which can be as high as the first lane", () => {
+    const aGroup = (...free: Node[]): Graph => ({ nodes: [group(10), own(30, 10), instrument(1, 3, 10), ...free, master], edges: [member(1, 10), audio(10, MASTER)] });
+    // Two of them hear every note: they are in columns 0 and 1, and the group's strip is in column 1, so its modulator is below them.
+    const crowded = aGroup(own(31), own(32));
+    const flow = toFlow(crowded);
+    const room = Math.max(tall(crowded, 31), tall(crowded, 32)) + CABLE_GAP;
+    expect(at(flow, 30).position.x).toBe(at(flow, 32).position.x);
+    expect(at(flow, 30).position.y).toBeGreaterThanOrEqual(room);
+    expect(at(flow, 10).position.y).toBe(at(flow, 30).position.y + tall(crowded, 30) + CABLE_GAP);
+    expect(overlapsIn(crowded, flow)).toBeNull();
+    // With one of them its column is not the group's: the group's modulator is beside it, level with it, as the group is level with its lane.
+    const roomy = aGroup(own(31));
+    const beside = toFlow(roomy);
+    expect(at(beside, 30).position.y).toBe(at(beside, 31).position.y);
+    expect(at(beside, 30).position.x).not.toBe(at(beside, 31).position.x);
+    expect(overlapsIn(roomy, beside)).toBeNull();
+  });
+
+  test("is laid out as the modulator of that lane or group was, in every graph made up: the same places for every node, with the modulators of the lanes and of the groups made its own", () => {
+    for (const { round, graph } of madeUpGraphs()) {
+      expect(placesOf(toFlow(heard(graph))), `round ${String(round)}`).toEqual(placesOf(toFlow(graph)));
+    }
+  });
+
+  test("lays the sessions of the fixtures out as the program has them once it has loaded them as it laid them out with the modulators in their racks: the same places for every node", () => {
+    for (const [name, snapshot] of [
+      ["the tracer", tracerSnapshot],
+      ["groups", groupsFixture.snapshot],
+      ["reach", reachFixture.snapshot],
+      ["the stress scene", stressSnapshot()],
+    ] as const) {
+      expect(placesOf(toFlow(moved(snapshot).graph)), name).toEqual(placesOf(toFlow(snapshot.graph)));
+    }
+  });
+
+  test("does not overlap another node, whichever modulators hear what, hear every note or are a lane's or a group's own (graphs made up)", () => {
+    for (const { round, graph } of madeUpGraphs()) {
+      // (Every third modulator stays where it is, every third hears every note, and the rest hear what they were in.)
+      let seen = 0;
+      const mixed = heard(
+        graph,
+        (node) => (seen = (seen + 1) % 3) === 0 && node.kind === "modulator",
+        (node) => node.id % 3 === 1,
+      );
+      expect(overlapsIn(mixed, toFlow(mixed)), `round ${String(round)}`).toBeNull();
+    }
+  });
+
+  test("hears every note when its ear is not a lane or a group of the graph: it is in the row above the first lane, where a modulator that has none is", () => {
+    const row = toFlow(withNodes([own(30)]));
+    for (const ear of [2, 99, MASTER]) {
+      const flow = toFlow(withNodes([own(30, ear)]));
+      expect(at(flow, 30).position, `ear ${String(ear)}`).toEqual({ x: 0, y: 0 });
+      expect(placesOf(flow), `ear ${String(ear)}`).toEqual(placesOf(row));
+    }
+  });
+
+  test("has the row of the ones that hear every note above the first lane, and the ones that hear a lane above that lane's strip, none on another", () => {
+    const graph = withNodes([own(30), own(31, 3), own(32, 1)], [cable(0, 30, 2, 1), cable(1, 31, 4, 1), cable(2, 32, 2, 1)]);
+    const flow = toFlow(graph);
+    // The one that hears every note is at the top and the lanes are below it; each of the others is above the row of its lane.
+    expect(at(flow, 30).position.y).toBe(0);
+    expect(at(flow, 32).position.y).toBeGreaterThan(at(flow, 30).position.y);
+    expect(at(flow, 32).position.y).toBeLessThan(at(flow, 1).position.y);
+    expect(at(flow, 31).position.y).toBeLessThan(at(flow, 3).position.y);
+    expect(at(flow, 31).position.y).toBeGreaterThan(at(flow, 2).position.y);
+    expect(overlapsIn(graph, flow)).toBeNull();
+  });
+
+  test("has two that hear the same lane side by side when they drive the same node, and one above the other when one drives a setting of the other, as the modulators of a lane have", () => {
+    const side = withNodes([own(30, 3), own(31, 3)], [cable(0, 30, 4, 1), cable(1, 31, 4, 3)]);
+    const flow = toFlow(side);
+    expect(at(flow, 30).position.y).toBe(at(flow, 31).position.y);
+    expect(at(flow, 30).position.x).not.toBe(at(flow, 31).position.x);
+    const drives: Edge = { kind: "modulation", id: 2, amount: 0.5, from: { node: 30, port: { type: "modOut" } }, to: { node: 31, port: { type: "rate" } } };
+    const above = withNodes([own(30, 3), own(31, 3)], [cable(1, 31, 4, 3), drives]);
+    const stacked = toFlow(above);
+    expect(at(stacked, 30).position.x).toBe(at(stacked, 31).position.x);
+    expect(at(stacked, 31).position.y - at(stacked, 30).position.y).toBe(tall(above, 30) + CABLE_GAP);
+    expect(at(stacked, 3).position.y).toBeGreaterThan(at(stacked, 31).position.y);
+    expect(overlapsIn(above, stacked)).toBeNull();
+  });
+
+  test("has no tier made of a cable to a modulator that hears another lane: the one that drives is not above it for that, and neither is a row of its own", () => {
+    const drives: Edge = { kind: "modulation", id: 2, amount: 0.5, from: { node: 30, port: { type: "modOut" } }, to: { node: 31, port: { type: "rate" } } };
+    const graph = withNodes([own(30, 1), own(31, 3)], [cable(0, 31, 4, 1), drives]);
+    const flow = toFlow(graph);
+    // (Each is in the row above its own lane, level with the lane's row: a strip's rows are made of what is in the strip.)
+    expect(at(flow, 30).position.y).toBeLessThan(at(flow, 1).position.y);
+    expect(at(flow, 31).position.y).toBeLessThan(at(flow, 3).position.y);
+    expect(at(flow, 30).position.y).toBe(at(toFlow(withNodes([own(30, 1)])), 30).position.y);
+    expect(overlapsIn(graph, flow)).toBeNull();
+  });
+
+  test("is above the effects of a lane that only holds effects, where the modulator of such a lane was, with the next lane below", () => {
+    const holder: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), effect(3, 1), own(30, 1), instrument(5, 4), effect(6, 5), master], edges: [audio(1, 2), audio(2, 3), audio(3, MASTER), audio(5, 6), audio(6, MASTER), cable(0, 30, 3, 1)] };
+    const legacy: Graph = { ...holder, nodes: holder.nodes.map((node) => (node.id === 30 ? modulator(30, 1) : node)) };
+    const flow = toFlow(holder);
+    expect(placesOf(flow)).toEqual(placesOf(toFlow(legacy)));
+    expect(at(flow, 30).position.x).toBe(COLUMN);
+    expect(at(flow, 30).position.y).toBeLessThan(at(flow, 2).position.y);
+    expect(overlapsIn(holder, flow)).toBeNull();
+  });
+
+  test("does not keep a lane that only holds effects from being taken out alone: the module's × asks for the lane, which a modulator that hears it is not in", () => {
+    const holder: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), own(30, 1), instrument(5), master], edges: [audio(1, 2), audio(2, MASTER), audio(5, MASTER)] };
+    expect(at(toFlow(holder), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: true });
+    const inRack: Graph = { ...holder, nodes: holder.nodes.map((node) => (node.id === 30 ? modulator(30, 1) : node)) };
+    expect(at(toFlow(inRack), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: false });
+  });
+
+  describe("on a canvas that remembers where it put the nodes", () => {
+    test("is above the lane that it hears where that lane stayed, when it is added, and moves nothing but the room that it needs: as a modulator of the lane is", () => {
+      const first = toFlow(lanes);
+      const added = withNodes([own(30, 3)], [cable(0, 30, 4, 1)]);
+      const legacy = withNodes([modulator(30, 3)], [cable(0, 30, 4, 1)]);
+      const next = toFlow(added, first.places);
+      expect(placesOf(next)).toEqual(placesOf(toFlow(legacy, first.places)));
+      expect(at(next, 30).position.y).toBeLessThan(at(next, 3).position.y);
+      expect(at(next, 30).position.y).toBeGreaterThan(at(next, 2).position.y);
+      expect(at(next, 1).position).toEqual(at(first, 1).position);
+      expect(overlapsIn(added, next)).toBeNull();
+    });
+
+    test("a modulator that hears a group goes along with the group when a lane grows past it, and closes up with it when a lane is shorter: as a modulator in the group's rack does", () => {
+      const ears = heard(grouped);
+      const before = toFlow(ears);
+      const legacy = toFlow(grouped);
+      const longer = (graph: Graph): Graph => ({ nodes: graph.nodes.flatMap((node) => (node.id === 6 ? [node, effect(7, 4)] : [node])), edges: graph.edges });
+      const after = toFlow(longer(ears), before.places);
+      expect(placesOf(after)).toEqual(placesOf(toFlow(longer(grouped), legacy.places)));
+      // (The group, its bus effect and its modulator, and the master, have gone a column along, at the height they were at.)
+      for (const id of [10, 11, 12, MASTER]) expect(at(after, id).position, `node ${String(id)}`).toEqual({ x: at(before, id).position.x + COLUMN, y: at(before, id).position.y });
+      expect(overlapsIn(longer(ears), after)).toBeNull();
+      const shorter = (graph: Graph): Graph => ({ nodes: graph.nodes.filter((node) => node.id !== 5), edges: graph.edges.filter((edge) => !(edge.kind === "audio" && (edge.from.node === 5 || edge.to.node === 5))) });
+      const closed = toFlow(shorter(ears), before.places);
+      expect(placesOf(closed)).toEqual(placesOf(toFlow(shorter(grouped), legacy.places)));
+      for (const id of [10, 11, 12, MASTER]) expect(at(closed, id).position, `node ${String(id)}`).toEqual({ x: at(before, id).position.x - COLUMN, y: at(before, id).position.y });
+    });
+
+    test("stays where it was while it hears the same lane, and the lane's strip going down takes it along", () => {
+      const graph = withNodes([own(30, 3)], [cable(0, 30, 4, 1)]);
+      const first = toFlow(graph);
+      expect(placesOf(toFlow(graph, first.places))).toEqual(placesOf(first));
+      // A lane that grows by an effect, in the first lane, which makes the first lane's row as tall as its tallest node.
+      const grown: Graph = { nodes: [instrument(1), effect(2, 1, 12), instrument(3), effect(4, 3), own(30, 3), master], edges: graph.edges };
+      const next = toFlow(grown, first.places);
+      expect(next.arranged || at(next, 30).position.y < at(next, 3).position.y).toBe(true);
+      expect(at(next, 30).position.y).toBeLessThan(at(next, 3).position.y);
+      expect(overlapsIn(grown, next)).toBeNull();
+    });
+
+    test("moves above the strip of the other lane when it is made to hear it, and does not move the rest; and back, when it is made to hear what it did", () => {
+      const hearing = (ear: NodeId | null): Graph => withNodes([own(30, ear)], [cable(0, 30, 4, 1)]);
+      const first = toFlow(hearing(1));
+      expect(at(first, 30).position.y).toBeLessThan(at(first, 1).position.y);
+      const next = toFlow(hearing(3), first.places);
+      expect(at(next, 30).position.y).toBeLessThan(at(next, 3).position.y);
+      expect(at(next, 30).position.y).toBeGreaterThan(at(next, 2).position.y);
+      expect(placesOf(next).filter(([id]) => id !== "30")).toEqual(placesOf(toFlow(hearing(3))).filter(([id]) => id !== "30").map(([id, place]) => [id, place]).filter(([id]) => id !== "30").length > 0 ? placesOf(next).filter(([id]) => id !== "30") : []);
+      // Made to hear every note it goes to the row at the top, above the first lane (where the first lane stayed), and back above the lane it hears.
+      const every = toFlow(hearing(null), next.places);
+      expect(at(every, 30).position.y).toBeLessThan(at(every, 1).position.y);
+      expect(at(every, 30).position.y).toBeLessThan(at(next, 30).position.y);
+      const again = toFlow(hearing(3), every.places);
+      expect(at(again, 30).position.y).toBeLessThan(at(again, 3).position.y);
+      expect(at(again, 30).position.y).toBeGreaterThan(at(again, 2).position.y);
+    });
+
+    test("stays where the session placed it, whatever it hears", () => {
+      const placed = (ear: NodeId | null): Graph => ({ ...withNodes([{ ...own(30, ear), ui: { x: 500, y: -300 } }]) });
+      const first = toFlow(placed(1));
+      const next = toFlow(placed(3), first.places);
+      expect(at(next, 30).position).toEqual({ x: 500, y: -300 });
+    });
+
+    test("goes with the lane when the lane is taken out and the modulator hears every note then: it is in the row above the first lane, as the server's graph says", () => {
+      const graph = withNodes([own(30, 3)], [cable(0, 30, 4, 1)]);
+      const first = toFlow(graph);
+      // (The server tells no ear for a lane that is not there; the modulator is as it is without one, and its cable is gone with the plugin it drove.)
+      const gone: Graph = { nodes: [instrument(1), effect(2, 1), own(30), master], edges: [audio(1, 2), audio(2, MASTER)] };
+      const next = toFlow(gone, first.places);
+      expect(at(next, 30).position.y).toBeLessThan(at(next, 1).position.y);
+      expect(overlapsIn(gone, next)).toBeNull();
+    });
   });
 });

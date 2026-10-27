@@ -4,7 +4,7 @@ import { expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
 import { node } from "./canvas";
-import { test } from "./own";
+import { modulatorsIn, test } from "./own";
 
 // The key of an LFO from the page, on the real program (a program of its own: the file it saves is read, and the history is the program's): a choice of whether a note starts the LFO again
 // and a knob for how long it takes to come in after one, which the program applies (the file it saves has them by their names) and which undo puts back.
@@ -14,9 +14,6 @@ const save = async (page: Page, file: string): Promise<string> => {
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   return readFileSync(file, "utf8");
 };
-
-/** The text of the modulators of the saved lane, each by itself. */
-const modulatorsOf = (saved: string): string[] => saved.split("[[instrument.modulator]]\n").slice(1).map((part) => part.split("[[instrument.effect]]")[0] ?? "");
 
 test("an LFO's retrigger and fade are set from its node, saved in the file by the names the file has, and put back by undo", async ({ page, own }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
@@ -30,7 +27,7 @@ test("an LFO's retrigger and fade are set from its node, saved in the file by th
   await expect(fade).toHaveAttribute("aria-valuenow", "0");
   await expect(fade).toHaveAttribute("aria-valuetext", "none");
   // (Nothing is changed yet, so there is nothing to save: the file is the one that was loaded.)
-  expect(modulatorsOf(readFileSync(own.file, "utf8"))[0] ?? "", "a free LFO has neither key in its file").not.toMatch(/retrigger|fade/);
+  expect(modulatorsIn(readFileSync(own.file, "utf8"))[0] ?? "", "a free LFO has neither key in its file").not.toMatch(/retrigger|fade/);
 
   await retrigger.selectOption({ label: "on" });
   await expect(page.getByRole("button", { name: "Undo set retrigger", exact: true })).toBeVisible();
@@ -39,7 +36,7 @@ test("an LFO's retrigger and fade are set from its node, saved in the file by th
   await page.keyboard.press("End");
   await expect(fade).toHaveAttribute("aria-valuenow", "5");
   await expect(fade).toHaveAttribute("aria-valuetext", "5 s");
-  const keyed = modulatorsOf(await save(page, own.file))[0] ?? "";
+  const keyed = modulatorsIn(await save(page, own.file))[0] ?? "";
   expect(keyed).toContain("retrigger = true\n");
   expect(keyed).toContain("fade = 5.0\n");
 
@@ -49,5 +46,5 @@ test("an LFO's retrigger and fade are set from its node, saved in the file by th
   await expect(retrigger).toHaveValue("1");
   await page.getByRole("button", { name: "Undo set retrigger", exact: true }).click();
   await expect(retrigger).toHaveValue("0");
-  expect(modulatorsOf(await save(page, own.file))[0] ?? "").not.toMatch(/retrigger|fade/);
+  expect(modulatorsIn(await save(page, own.file))[0] ?? "").not.toMatch(/retrigger|fade/);
 });

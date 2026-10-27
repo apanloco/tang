@@ -467,16 +467,22 @@ impl Controller {
     /// Returns its index in the rack, or `None`, sending nothing, if there is no
     /// such rack.
     pub fn add_modulator(&mut self, at: ModulatorLocation, source: ModSourceSlot) -> Option<usize> {
+        self.add_modulator_hearing(at, source, None)
+    }
+
+    /// `add_modulator`, for a modulator of the session's own rack that hears the lane or the group `ear` (the node of one: the caller has looked) and not every note (the audio thread is
+    /// told it with the modulator, as the loader tells it, so that Undo and Redo give it back). A lane's or a group's rack has no ear (`check_ids`): `ear` is for the free rack.
+    pub fn add_modulator_hearing(&mut self, at: ModulatorLocation, source: ModSourceSlot, ear: Option<NodeId>) -> Option<usize> {
         let index = self.model.modulators_mut(at)?.len();
         let graph_source = mod_source_slot_to_graph(&source);
         let node = self.model.alloc_node();
         let _ = self.cmd_tx.send(GraphCommand::InsertModulator { location: at, index, source: graph_source, node });
         // Its output is published from now on, and where it is if it is a step sequencer.
         let (output, position) = ModulatorSlot::alloc_slots(&mut self.model.slots, &source);
-        for command in modulator_slot_commands(at, index, output, position, None) {
+        for command in modulator_slot_commands(at, index, output, position, ear) {
             let _ = self.cmd_tx.send(command);
         }
-        self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new(), output, position, ear: None });
+        self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new(), output, position, ear });
         Some(index)
     }
 

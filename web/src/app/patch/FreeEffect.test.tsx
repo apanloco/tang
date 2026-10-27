@@ -178,17 +178,17 @@ describe("an effect that stands by itself", () => {
     expect(await nodeOf(5)).toBeTruthy();
   });
 
-  test("has a \"+\" that adds a modulator to its lane, and the modulator is on the canvas, over the effect it is the lane's modulator of", async () => {
+  test("has a \"+\" that adds a modulator that hears its lane, and the modulator is on the canvas, over the effect that it hears", async () => {
     const { requests } = await withReverb();
     const reverb = await nodeOf(4);
     fireEvent.click(within(reverb).getByRole("button", { name: "Add a modulator to Reverb" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "LFO" }));
     await waitFor(() => {
-      expect(asked(requests).slice(-1)).toEqual([{ type: "addModulator", parent: 3, kind: "lfo" }]);
+      expect(asked(requests).slice(-1)).toEqual([{ type: "addFreeModulator", kind: "lfo", hears: 3 }]);
     });
     const lfo = await nodeOf(5);
     expect(within(lfo).getAllByText("LFO 2").length).toBeGreaterThan(0);
-    // (Above the effect, as a lane's modulators are above its row.)
+    // (Above the effect, as the modulators of a lane are above its row: a modulator is laid out above the strip of the lane that it hears.)
     const top = (found: HTMLElement): number => Number(/translate\([^,]+,\s*(-?[\d.]+)px\)/.exec(found.style.transform)?.[1]);
     expect(top(lfo)).toBeLessThan(top(reverb));
   });

@@ -5,7 +5,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { angleOf, fractionOf, pointAt } from "../src/ui/knob-geometry";
 import { node } from "./canvas";
-import { test } from "./own";
+import { modulatorsIn, test } from "./own";
 
 // A macro on the real program (a program of its own, on the null audio backend: the file it saves is read, and the history is the program's): made from a knob
 // with the knob's menu, it is a node with one knob, its value, which adds to what it drives as it is turned, in the engine, one change of the history for the
@@ -77,13 +77,13 @@ test("a macro made from the resonance knob moves the engine's resonance as it is
   await expect(value).toHaveAttribute("aria-valuenow", "0.5");
   await expect.poll(async () => (await dotAt(dot)).x, { timeout: 8000 }).toBeCloseTo(dotFor(4.375).x, 1);
 
-  // The file has it, as a macro with the value it is turned to and its cable.
+  // The file has it, as a macro with the value it is turned to, the lane it hears and its cable to the filter (the second modulator, after the tracer's LFO).
   await page.keyboard.press("End");
   await expect(value).toHaveAttribute("aria-valuenow", "1");
   const saved = await save(page, own.file);
-  const parts = saved.split("[[instrument.modulator]]\n").slice(1).map((part) => part.split("[[instrument.effect]]")[0] ?? "");
+  const parts = modulatorsIn(saved);
   expect(parts).toHaveLength(2);
-  expect(parts[1]).toBe('type = "macro"\nvalue = 1.0\n\n[[instrument.modulator.target]]\nparam = "resonance"\nslot = 1\ndepth = 0.5\n\n');
+  expect(parts[1]).toBe('type = "macro"\nvalue = 1.0\nhears = "instrument[0]"\n\n[[modulator.target]]\nparam = "resonance"\nto = "instrument[0].effect[0]"\ndepth = 0.5\n\n');
 });
 
 test("the value of a macro is a step of the history that Undo puts back, and the macro and its cable are a step of their own: Undo takes them out and Redo makes them again", async ({ page, own }) => {

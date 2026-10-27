@@ -45,20 +45,25 @@ pub fn stress_session(lanes: usize, muted: bool) -> String {
 /// How an engine is made from its wiring, for the table that times two of them.
 type Make = dyn Fn(Wiring) -> Box<dyn Engine>;
 
-/// What a scenario of the benchmark is: a session, and whether a chord is held from the start (a session with no notes shows what the engine does when nothing sounds).
+/// What a scenario of the benchmark is: a session, and whether a chord is held from the start (a session with no notes shows what the engine does when nothing sounds), and whether
+/// it is moved (step 94: the modulators of its lanes and groups are the session's own, as the program loads a session). The loop that the plan replaced has no free modulators, so
+/// a moved session is timed on the plan alone.
 struct Case {
     name: &'static str,
     session: String,
     notes: bool,
+    moved: bool,
 }
 
 fn cases() -> Vec<Case> {
     let basic = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/oracle/sessions/basic.toml")).expect("the basic session");
     vec![
-        Case { name: "one oscillator, a chord", session: basic, notes: true },
-        Case { name: "8 lanes of the stress session, nothing played", session: stress_session(8, false), notes: false },
-        Case { name: "8 lanes of the stress session, a chord of 6", session: stress_session(8, false), notes: true },
-        Case { name: "the same, every lane muted", session: stress_session(8, true), notes: true },
+        Case { name: "one oscillator, a chord", session: basic, notes: true, moved: false },
+        Case { name: "8 lanes of the stress session, nothing played", session: stress_session(8, false), notes: false, moved: false },
+        Case { name: "8 lanes of the stress session, a chord of 6", session: stress_session(8, false), notes: true, moved: false },
+        Case { name: "the same, every lane muted", session: stress_session(8, true), notes: true, moved: false },
+        Case { name: "the stress session moved, nothing played", session: stress_session(8, false), notes: false, moved: true },
+        Case { name: "the stress session moved, a chord of 6", session: stress_session(8, false), notes: true, moved: true },
     ]
 }
 
@@ -76,7 +81,7 @@ pub struct Timing {
     pub allocating_blocks: usize,
 }
 
-pub fn measure(session: &str, notes: bool, block: usize, blocks: usize, make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> Timing {
+pub fn measure(session: &str, notes: bool, moved: bool, block: usize, blocks: usize, make: &dyn Fn(Wiring) -> Box<dyn Engine>) -> Timing {
     let scenario = Scenario {
         id: format!("bench@{block}"),
         session: session.to_string(),
@@ -85,6 +90,8 @@ pub fn measure(session: &str, notes: bool, block: usize, blocks: usize, make: &d
         frames: ((WARM_UP + blocks) * block) as u64,
         script: if notes { held_chord() } else { Vec::new() },
         edits: Vec::new(),
+        // (Not moved, as the file is written, unless asked: the loop that the plan replaced is timed on it too, and it has no free modulators.)
+        moved,
     };
     let mut rig = Rig::new(&scenario, make);
     for _ in 0..WARM_UP {
@@ -141,6 +148,7 @@ mod tests {
                 frames: 24_000,
                 script: held_chord(),
                 edits: Vec::new(),
+                moved: true,
             };
             let rendered = render(&scenario, &engine);
             let peak = rendered.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
@@ -160,8 +168,8 @@ mod tests {
             for (block, blocks) in [(64, 4000), (256, 2000), (1024, 500)] {
                 // The engine as the program has it (the plan) and the loop it replaced, one after the other on the same session.
                 let engines: [(&str, &Make); 2] = [("loop", &legacy), ("plan", &engine)];
-                for (which, make) in engines {
-                    let timing = measure(&case.session, case.notes, block, blocks, make);
+                for (which, make) in engines.into_iter().filter(|(which, _)| !case.moved || *which == "plan") {
+                    let timing = measure(&case.session, case.notes, case.moved, block, blocks, make);
                     let budget = Duration::from_secs_f64(block as f64 / f64::from(RATE));
                     let us = |d: Duration| d.as_secs_f64() * 1e6;
                     let (median, p95, p99, max) = (percentile(&timing.took, 50.0), percentile(&timing.took, 95.0), percentile(&timing.took, 99.0), *timing.took.last().unwrap());

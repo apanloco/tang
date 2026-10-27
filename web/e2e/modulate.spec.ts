@@ -4,7 +4,7 @@ import { expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
 import { addEnvelope, cables, node } from "./canvas";
-import { test } from "./own";
+import { modulatorsIn, test } from "./own";
 
 // Modulating a control from the control, on the real program (a program of its own: the file it saves is read, and the history is the program's): a new LFO
 // or a new MIDI control made for a knob is in the server's session and the file as one change, which one Undo takes out and one Redo makes again, and a
@@ -33,8 +33,8 @@ const save = async (page: Page, file: string): Promise<string> => {
   return readFileSync(file, "utf8");
 };
 
-/** What the file has for the cables that start at the modulators of the lane, one string for each modulator, as written. */
-const modulators = (saved: string): string[] => saved.split("[[instrument.modulator]]\n").slice(1).map((part) => part.split("[[instrument.effect]]")[0] ?? "");
+/** What the file has for the cables that start at the modulators of the session, one string for each modulator, as written. */
+const modulators = modulatorsIn;
 
 test("a new LFO made from a knob is in the server's session and the saved file, one Undo takes it out and one Redo makes it again, and a second page sees what is done", async ({ page, browser, own }) => {
   await open(page, own.url);
@@ -51,10 +51,10 @@ test("a new LFO made from a knob is in the server's session and the saved file, 
   await expect(node(page, "LFO 2")).toBeVisible();
   await expect(page.getByRole("slider", { name: "Depth of LFO 2 → Filter: resonance" })).toHaveValue("0.5");
 
-  // The file has it: a second modulator of the lane, an LFO at its default rate, with a cable to the filter's resonance at half depth.
+  // The file has it: a second modulator, an LFO at its default rate that hears the lane the knob is of, with a cable to the filter's resonance at half depth.
   const saved = await save(page, own.file);
   expect(modulators(saved)).toHaveLength(2);
-  expect(modulators(saved)[1]).toBe('waveform = "sine"\nrate = 1.0\n\n[[instrument.modulator.target]]\nparam = "resonance"\nslot = 1\ndepth = 0.5\n\n');
+  expect(modulators(saved)[1]).toBe('waveform = "sine"\nrate = 1.0\nhears = "instrument[0]"\n\n[[modulator.target]]\nparam = "resonance"\nto = "instrument[0].effect[0]"\ndepth = 0.5\n\n');
 
   // A second page has the same history, and what it does is on the first as what anybody does.
   const other = await browser.newPage();
@@ -90,7 +90,7 @@ test("a new MIDI control made from a knob is armed to learn on the program and i
 
   // (No controller is moved here: a program with no MIDI port cannot be told one. The control waits, and the file has it, unbound, to be armed again when it is loaded.)
   const saved = await save(page, own.file);
-  expect(modulators(saved)[1]).toBe('type = "midi"\n\n[[instrument.modulator.target]]\nparam = "detune"\ndepth = 1.0\n\n');
+  expect(modulators(saved)[1]).toBe('type = "midi"\nhears = "instrument[0]"\n\n[[modulator.target]]\nparam = "detune"\nto = "instrument[0]"\ndepth = 1.0\n\n');
 
   await page.getByRole("button", { name: "Undo learn detune", exact: true }).click();
   await expect(control).toHaveCount(0);

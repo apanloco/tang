@@ -57,10 +57,12 @@ pub enum Intent {
     /// refused. It drives nothing yet.
     AddModulator { parent: NodeId, kind: ModulatorKind },
     /// Add a modulator that is in no lane and no group (P5b-2): a **free modulator**, at the end of the session's own rack. It drives nothing yet. It hears every note and every
-    /// source (it is in no lane to take a range or a source from), and a cable from it can end at a parameter of any plugin of the session, an instrument's or an effect's, a lane's
-    /// or a bus's, and at a setting of another free modulator (`AddModEdge`, `Modulate`). A step of the history, in the words of the button that adds a modulator ("add LFO"): undo
-    /// takes it out. Refused, with nothing changed, for no kind of modulator (a kind is always one).
-    AddFreeModulator { kind: ModulatorKind },
+    /// source (it is in no lane to take a range or a source from) unless `hears` names a lane (its instrument's node) or a group, whose notes it hears then (P5c-1, the ear: what the
+    /// "+" of a lane or a group asks since step 94, so that the modulator is the lane's or the group's by what it hears, and not by the rack it is in), and a cable from it can end at a
+    /// parameter of any plugin of the session, an instrument's or an effect's, a lane's or a bus's, and at a setting of another free modulator (`AddModEdge`, `Modulate`). A step of the
+    /// history, in the words of the button that adds a modulator ("add LFO"): undo takes it out, and redo makes it again under its id, hearing what it heard. Refused, with nothing
+    /// changed, for a `hears` that is not a node of the session or is neither a lane nor a group.
+    AddFreeModulator { kind: ModulatorKind, hears: Option<NodeId> },
     /// Draw a modulation cable from the modulator `modulator` to the port `to` of a node: a plugin's parameter,
     /// or a setting of another modulator. A parameter has to be one that modulator reaches: a lane's modulator
     /// reaches the plugins in its lane (the instrument and its effects), a group's reaches those of the lanes
@@ -75,10 +77,12 @@ pub enum Intent {
     AddModEdge { modulator: NodeId, to: Endpoint },
     /// Make a modulator of `kind` for what the port `to` of a node is, and draw a cable from it to the port, as one thing: what
     /// the TUI's `m` (a new LFO or envelope for a parameter) and `l` (a MIDI control that learns the next controller that is moved)
-    /// do. The modulator goes at the end of the rack that reaches `to`: the lane's for a plugin of the lane (its instrument or an
-    /// effect of its chain), the group's for a bus effect, and the rack a modulator is in for a setting of it (its rate, a stage of
-    /// its envelope, the depth of one of its cables), where the new one is a sibling that drives it. The cable starts at half
-    /// depth, or at `depth` (clamped as `SetEdgeDepth` clamps it) if one is given. Refused, with nothing changed (nothing is made,
+    /// do. The modulator is **the session's own** (step 94: a free modulator, at the end of its rack, which any plugin of the session
+    /// can be drawn to): it hears the notes of the lane for a plugin of the lane (its instrument or an effect of its chain), of the
+    /// group for a bus effect, and what the modulator hears for a setting of one that is free (its rate, a stage of its envelope, the
+    /// depth of one of its cables), where the new one is a sibling that drives it. (A setting of a modulator that is in a lane's or a
+    /// group's rack, which only a session that was built from intents has since step 94, makes a sibling in that rack.) The cable
+    /// starts at half depth, or at `depth` (clamped as `SetEdgeDepth` clamps it) if one is given. Refused, with nothing changed (nothing is made,
     /// and no id is used), for what `AddModEdge` refuses of a cable to `to` from a modulator that is not there yet, for a group (it
     /// has no parameter) and for a depth that is not a number.
     Modulate { to: Endpoint, kind: ModulatorKind, depth: Option<f32> },
@@ -788,7 +792,8 @@ mod tests {
                 Intent::AddModulator { parent: NodeId(2), kind: ModulatorKind::MidiLearn },
                 json!({"type": "addModulator", "parent": 2, "kind": "midiLearn"}),
             ),
-            (Intent::AddFreeModulator { kind: ModulatorKind::Steps }, json!({"type": "addFreeModulator", "kind": "steps"})),
+            (Intent::AddFreeModulator { kind: ModulatorKind::Steps, hears: None }, json!({"type": "addFreeModulator", "kind": "steps", "hears": null})),
+            (Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: Some(NodeId(3)) }, json!({"type": "addFreeModulator", "kind": "envelope", "hears": 3})),
             (Intent::RemoveNode { node: NodeId(8) }, json!({"type": "removeNode", "node": 8})),
             (Intent::AddSource { source: SourceInfo::Keys }, json!({"type": "addSource", "source": {"type": "keys"}})),
             (

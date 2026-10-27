@@ -1449,7 +1449,7 @@ fn load_free_modulators(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testutil::{self, DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PINNED, PLACED, Run, SETTINGS, load, try_load};
+    use crate::app::testutil::{self, DISABLED_PATTERN, GROUPS, LEGACY, MIDI, PINNED, PLACED, Run, SETTINGS, load, load_moved, try_load};
 
     #[test]
     fn plugin_slots_hide_locked_parameters_and_turn_labelled_ones_into_enums() {
@@ -3649,6 +3649,176 @@ slot = 4
         .expect_err("a group's bus is stereo too");
         // (The second group's third effect: the place of the group and the place of the effect are told apart.)
         assert_eq!(format!("{err:#}"), "group[1].effect[2]: MonoEffect has 1 audio output, and an effect here needs 2");
+    }
+
+    // -- Every modulator the session's own (step 94: `SessionConfig::move_modulators_to_the_session`) --
+
+    /// Where the plugin `node` is, as a file names it (`instrument[0].effect[1]`), and not by the node, which a load that makes the modulators in another order gives another.
+    fn plugin_place(model: &SessionModel, node: NodeId) -> String {
+        match model.locate(node) {
+            Some(NodePath::Instrument(lane)) => format!("instrument[{lane}]"),
+            Some(NodePath::Effect { inst, index }) => format!("instrument[{inst}].effect[{index}]"),
+            Some(NodePath::GroupEffect { group, index }) => format!("group[{group}].effect[{index}]"),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// Every modulator of `model` in the order that the move keeps (the lanes', the groups', the session's own), with whom it hears, what it is and what each of its cables
+    /// drives (a plugin by its place, a modulator by its place in this order, and the depth of a cable by the modulator and the place of the cable), the depth it is at and what it
+    /// is centred on: what a file says of a modulator, whether it says it in a lane, in a group or among the session's own.
+    fn modulators_described(model: &SessionModel) -> Vec<String> {
+        let lanes = model.instruments.iter().enumerate().flat_map(|(lane, node)| node.modulators.iter().map(move |m| (m, Some(format!("instrument[{lane}]")))));
+        let groups = model.groups.iter().enumerate().flat_map(|(group, node)| node.modulators.iter().map(move |m| (m, Some(format!("group[{group}]")))));
+        let free = model.free_modulators.iter().map(|m| (m, model.ear_of(m).and_then(|ear| model.heard_place(ear)).map(|place| place.to_string())));
+        let all: Vec<(&ModulatorSlot, Option<String>)> = lanes.chain(groups).chain(free).collect();
+        let place_of = |node: NodeId| all.iter().position(|(m, _)| m.node == node).expect("a modulator of the session");
+        let cable_at = |edge: EdgeId| all.iter().enumerate().find_map(|(at, (m, _))| m.targets.iter().position(|t| t.edge == edge).map(|target| format!("#{at}.{target}"))).expect("a cable of the session");
+        all.iter()
+            .map(|(m, hears)| {
+                let cables: Vec<String> = m
+                    .targets
+                    .iter()
+                    .map(|t| {
+                        let drives = match t.aim {
+                            Driven::Param { plugin, index } => format!("{}:{index} ({})", plugin_place(model, plugin), t.param_name),
+                            Driven::Setting { modulator, field } => format!("#{} {field:?}", place_of(modulator)),
+                            Driven::Depth(edge) => format!("depth of {}", cable_at(edge)),
+                        };
+                        format!("{drives} depth {:.3} centre {:?} range [{:.3}, {:.3}]", t.depth, model.centre_of(t.aim).map(|centre| format!("{centre:.3}")), t.param_min, t.param_max)
+                    })
+                    .collect();
+                format!("{} hears {} [{}]", m.source.label(), hears.as_deref().unwrap_or("every note"), cables.join("; "))
+            })
+            .collect()
+    }
+
+    /// Sessions with modulators in their lanes and in their groups, in every form that a file has them in: what the rest of these tests load, an older file that nests them in the effects, cables
+    /// between siblings, a group's cables to its members and its bus and to the modulators of its members, and cables that name what is not there.
+    fn racks_of_every_kind() -> Vec<(&'static str, String)> {
+        let nested = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+rate = 0.5
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.5
+[[instrument.modulator.target]]
+param = "cutoff"
+slot = 1
+depth = 0.2
+[[instrument.modulator]]
+type = "envelope"
+[[instrument.modulator.target]]
+mod_rate = 0
+depth = 0.4
+[[instrument.modulator.target]]
+mod_depth = [0, 1]
+depth = 0.1
+[[instrument.modulator.target]]
+mod_rate = 9
+depth = 0.9
+[[instrument.modulator.target]]
+mod_rate = 1
+depth = 0.9
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect.modulator]]
+rate = 3.0
+[[instrument.effect.modulator.target]]
+param = "cutoff"
+slot = 7
+depth = 0.2
+[[instrument.effect.modulator]]
+rate = 4.0
+[[instrument.effect.modulator.target]]
+mod_rate = 0
+depth = 0.3
+[[instrument.effect.modulator.target]]
+mod_rate = 5
+depth = 0.3
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.modulator]]
+type = "steps"
+[[instrument.modulator.target]]
+param = "detune"
+[[instrument.modulator]]
+rate = 6.0
+[[instrument.modulator.target]]
+mod_rate = 0
+"#
+        .to_string();
+        let with_free = format!(
+            "{GROUPS}\n[[modulator]]\ntype = \"lfo\"\n[[modulator.target]]\nto = \"instrument[0]\"\nparam = \"detune\"\n[[modulator.target]]\nmod_rate = 1\n[[modulator]]\ntype = \"envelope\"\nhears = \"instrument[1]\"\n[[modulator.target]]\nmod_rate = 0\n"
+        );
+        vec![
+            ("the groups' session", GROUPS.to_string()),
+            ("modulators nested in an effect, and cables between siblings", nested),
+            ("an older file", LEGACY.to_string()),
+            ("controls that learn", MIDI.to_string()),
+            ("modulators in the session's own rack too", with_free),
+            ("a session that has none", "[[instrument]]\nplugin = \"builtin:osc\"\n".to_string()),
+        ]
+    }
+
+    #[test]
+    fn every_modulator_of_a_moved_session_is_the_sessions_own_and_drives_what_it_drove_and_hears_what_its_rack_heard() {
+        for (what, text) in racks_of_every_kind() {
+            let (kept, moved) = (load(&text), load_moved(&text));
+            // Nothing is left in a lane or in a group...
+            assert!(moved.model.instruments.iter().all(|lane| lane.modulators.is_empty()), "{what}");
+            assert!(moved.model.groups.iter().all(|group| group.modulators.is_empty()), "{what}");
+            // ...and every one is as it was: the same, in the same order, driving the same things at the same depths, hearing the lane or the group that it was in.
+            assert_eq!(modulators_described(&moved.model), modulators_described(&kept.model), "{what}");
+            moved.model.check_ids().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_moved_modulator_hears_the_node_of_the_lane_or_the_group_it_was_in_and_the_audio_thread_is_told_with_it() {
+        let moved = load_moved(GROUPS);
+        let ear = |index: usize| moved.model.free_modulators[index].ear;
+        // The group's two modulators come first in the order of the racks' (the lanes have one, in the second lane: the lanes' are first).
+        assert_eq!(ear(0), Some(moved.model.instruments[1].node), "the second lane's own");
+        assert_eq!(ear(1), Some(moved.model.groups[0].node));
+        assert_eq!(ear(2), Some(moved.model.groups[0].node));
+        let told: Vec<&String> = moved.commands.iter().filter(|c| c.starts_with("SetModulatorEar")).collect();
+        assert_eq!(told.len(), 3, "{told:?}");
+        assert_eq!(told[0], &format!("SetModulatorEar Free index=0 ear={}", moved.model.instruments[1].node.0));
+        assert_eq!(told[1], &format!("SetModulatorEar Free index=1 ear={}", moved.model.groups[0].node.0));
+        assert!(moved.commands.iter().all(|c| !c.starts_with("InsertGroupModulator") && !c.starts_with("InsertModulator inst")), "{:?}", moved.commands);
+    }
+
+    #[test]
+    fn a_moved_session_is_saved_as_the_sessions_own_modulators_and_loaded_again_as_the_same_session() {
+        for (what, text) in racks_of_every_kind() {
+            let moved = load_moved(&text);
+            let saved = saved(&moved.model);
+            assert!(!saved.contains("instrument.modulator") && !saved.contains("group.modulator"), "{what}: {saved}");
+            assert_eq!(saved.contains("[[modulator]]"), !moved.model.free_modulators.is_empty(), "{what}");
+            // (A file that is saved is not moved again: what it has is the session's own.)
+            let again = load_moved(&saved);
+            assert_eq!(modulators_described(&again.model), modulators_described(&moved.model), "{what}");
+            assert_eq!(self::saved(&again.model), saved, "{what}: the same file again");
+        }
+    }
+
+    #[test]
+    fn a_moved_session_with_a_modulator_that_hears_a_lane_keeps_it_when_the_file_is_read_without_the_move() {
+        // The file that a moved session is saved as is read the same by the loader that does not move: its modulators are the session's own already.
+        let moved = load_moved(GROUPS);
+        let text = saved(&moved.model);
+        assert_eq!(modulators_described(&load(&text).model), modulators_described(&moved.model));
+    }
+
+    #[test]
+    fn a_session_that_has_no_modulator_in_a_lane_or_a_group_is_loaded_as_it_was_whether_or_not_it_is_moved() {
+        let text = format!("[[instrument]]\nplugin = \"builtin:osc\"\n[[modulator]]\ntype = \"lfo\"\n[[modulator.target]]\nto = \"instrument[0]\"\nparam = \"detune\"\n{}", "");
+        let (kept, moved) = (load(&text), load_moved(&text));
+        assert_eq!(kept.commands, moved.commands);
+        assert_eq!(kept.telemetry, moved.telemetry);
+        assert_eq!(modulators_described(&kept.model), modulators_described(&moved.model));
     }
 
     #[test]

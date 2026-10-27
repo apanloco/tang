@@ -224,7 +224,7 @@ test("a modulator that is taken out is put back by Undo with its cable and the d
   await page.keyboard.press("End");
   await expect(depth).toHaveValue("1");
   const before = await save();
-  expect(before).toContain("[[instrument.modulator]]");
+  expect(before).toContain("[[modulator]]");
 
   // Taken out with its button, the modulator goes with its cable: it is a step of its own, and the file that is saved then has neither.
   await page.getByRole("button", { name: "Remove LFO" }).click();
@@ -232,7 +232,7 @@ test("a modulator that is taken out is put back by Undo with its cable and the d
   await expect(depth).toHaveCount(0);
   await expect(undo).toHaveAccessibleName("Undo remove an LFO");
   const taken = await save();
-  expect(taken).not.toContain("[[instrument.modulator]]");
+  expect(taken).not.toContain("[[modulator]]");
 
   // Put back by Undo: it is where it was with its cable at the depth it had, and the file is the one that was saved before it went.
   await undo.click();

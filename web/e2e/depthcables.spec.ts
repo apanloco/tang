@@ -37,11 +37,11 @@ test("a cable dragged to the depth of another is in the server's session and the
   await expect(page.getByRole("slider", { name: `Depth of ${WORDS}` })).toHaveValue("0.5");
   await expect(cables(page)).toHaveCount(2);
 
-  // The file has it: the envelope's cable to the LFO's cable (the first target of the first modulator of the lane), at the depth it was made at.
+  // The file has it: the envelope's cable to the LFO's cable (the first target of the first modulator of the session), at the depth it was made at.
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const saved = readFileSync(own.file, "utf8");
-  expect(saved).toMatch(/\[\[instrument\.modulator\.target\]\]\nmod_depth = \[0, 0\]\ndepth = 0\.5/);
+  expect(saved).toMatch(/\[\[modulator\.target\]\]\nmod_depth = \[0, 0\]\ndepth = 0\.5/);
 
   // Undo takes the cable out, with the page as it was before it (the row's port is not driven, the envelope stays), and redo draws it again.
   await page.getByRole("button", { name: "Undo" }).click();

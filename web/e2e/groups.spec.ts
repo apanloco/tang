@@ -18,7 +18,7 @@ test("a group is added from the bar, a lane is put in it and taken out of it, th
   await expect(groupChoice(page, "Oscillator")).toHaveValue("");
   await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(1);
   await page.getByRole("button", { name: "Remove the lane of Oscillator" }).click();
-  await expect(page.getByRole("menuitem")).toHaveText(["Keep Oscillator", "Remove Oscillator only: its 1 effect and 1 modulator stay in the lane"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["Keep Oscillator", "Remove Oscillator only: its 1 effect stays in the lane"]);
   await page.keyboard.press("Escape");
 
   // A group from the bar: it is on the canvas, empty and with its own buttons, and the lane can be put in it.
@@ -85,7 +85,7 @@ test("a group is made from a lane's choice, a second lane is added and taken out
 test("the instrument of a lane is taken out alone: its filter and its LFO stay and stand by themselves, the lane has no card, and Undo puts the instrument back", async ({ page }) => {
   await open(page);
   await page.getByRole("button", { name: "Remove the lane of Oscillator" }).click();
-  await expect(page.getByRole("menuitem")).toHaveText(["Keep Oscillator", "Remove Oscillator only: its 1 effect and 1 modulator stay in the lane"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["Keep Oscillator", "Remove Oscillator only: its 1 effect stays in the lane"]);
   await page.getByRole("menuitem", { name: /^Remove Oscillator only/ }).click();
   // The lane has nothing left that a card shows (no instrument, no key range, no group): its filter and its LFO are on the canvas as they were, modules that stand by themselves, and the filter has
   // the lane's mute and solo. The focus is on the bar's button that adds an instrument.

@@ -135,7 +135,7 @@ export async function sampleCutoff(page: Page, ms: number): Promise<Sample[]> {
 /** What of the session a test looks at: the parameters of the plugins, the LFO's settings, and the depths of the cables. */
 interface SessionView {
   graph: {
-    nodes: { id: number; name: string; kind?: string; parent?: number | null; plugin?: { params: { index: number; value: number }[] }; source?: { type: string; rate?: number; waveform?: string } }[];
+    nodes: { id: number; name: string; kind?: string; parent?: number | null; hears?: number; plugin?: { params: { index: number; value: number }[] }; source?: { type: string; rate?: number; waveform?: string } }[];
     edges: { kind: string; id?: number; amount?: number; from?: { node: number }; to?: { node: number; port: { type: string; index?: number } } }[];
   };
 }

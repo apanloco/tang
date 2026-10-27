@@ -520,13 +520,13 @@ describe("the patch", () => {
       expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["LFO", "Envelope", "Macro", "MIDI control", "Velocity", "Key", "Step sequencer"]);
     });
 
-    test("asks the server to add the kind that was chosen to that lane, and the node is on the canvas with its controls when it has", async () => {
+    test("asks the server for a modulator of the kind that was chosen, of the session's own and hearing that lane, and the node is on the canvas with its controls when it has", async () => {
       const { requests } = await rig(<PatchView />);
       expect(screen.queryByRole("group", { name: "ADSR" })).toBeNull();
       fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Envelope" }));
       await waitFor(() => {
-        expect(requests().map((request) => request.intent)).toEqual([{ type: "addModulator", parent: oscillator.id, kind: "envelope" }]);
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "addFreeModulator", kind: "envelope", hears: oscillator.id }]);
       });
       const added = await screen.findByRole("group", { name: "ADSR" });
       expect(controlsIn(added)).toEqual(["Attack", "Decay", "Sustain", "Release"]);
@@ -545,7 +545,7 @@ describe("the patch", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
       fireEvent.click(screen.getByRole("menuitem", { name: item }));
       await waitFor(() => {
-        expect(requests().map((request) => request.intent)).toEqual([{ type: "addModulator", parent: oscillator.id, kind }]);
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "addFreeModulator", kind, hears: oscillator.id }]);
       });
       const added = await screen.findByRole("group", { name: item });
       expect(controlsIn(added)).toEqual([]);
@@ -557,7 +557,7 @@ describe("the patch", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Step sequencer" }));
       await waitFor(() => {
-        expect(requests().map((request) => request.intent)).toEqual([{ type: "addModulator", parent: oscillator.id, kind: "steps" }]);
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "addFreeModulator", kind: "steps", hears: oscillator.id }]);
       });
       const added = await screen.findByRole("group", { name: "Steps" });
       expect(controlsIn(added)).toEqual(["Sync", "Rate", "Glide", "Length", "Retrigger"]);
@@ -568,13 +568,13 @@ describe("the patch", () => {
       expect(bars.filter((bar) => bar.hasAttribute("data-unused"))).toHaveLength(0);
     });
 
-    test("to a group asks for one in the group, whichever kind", async () => {
+    test("to a group asks for one that hears the group, whichever kind", async () => {
       const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
       for (const [item, kind] of [["LFO", "lfo"], ["Macro", "macro"], ["MIDI control", "midiLearn"], ["Velocity", "velocity"], ["Key", "key"], ["Step sequencer", "steps"]] as const) {
         fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Group 2" }));
         fireEvent.click(screen.getByRole("menuitem", { name: item }));
         await waitFor(() => {
-          expect(requests().at(-1)?.intent).toEqual({ type: "addModulator", parent: 2, kind });
+          expect(requests().at(-1)?.intent).toEqual({ type: "addFreeModulator", kind, hears: 2 });
         });
       }
       await waitFor(() => {
@@ -599,7 +599,7 @@ describe("the patch", () => {
       });
       fireEvent.click(await screen.findByRole("button", { name: "Add a modulator to Oscillator" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "LFO" }));
-      expect(await screen.findByText("Could not add an LFO to Oscillator: Not connected to the server.")).toBeTruthy();
+      expect(await screen.findByText("Could not add an LFO that hears Oscillator: Not connected to the server.")).toBeTruthy();
       expect(view.container.querySelectorAll(".react-flow__node")).toHaveLength(before);
     });
   });

@@ -20,7 +20,7 @@ use ratatui::buffer::Buffer;
 
 use super::*;
 use crate::app::load::load_session;
-use crate::app::testutil::{DropProbe, described, recording, stub_engine, told, told_all};
+use crate::app::testutil::{DropProbe, described, recording, stub_engine, told_all};
 use crate::plugin::PluginInfo;
 use crate::plugin::chain::{MidiBindSource, MidiLearnedNotification, ModulatorLocation};
 use crate::app::graph::{Endpoint, Port};
@@ -58,6 +58,18 @@ struct Harness {
 impl Harness {
     fn new(session_toml: impl AsRef<str>) -> Self {
         let config = session::parse(session_toml.as_ref()).expect("scene parses");
+        Self::of(config)
+    }
+
+    /// `new`, for a session whose modulators are moved to the session's own, as the program loads it (step 94: `SessionConfig::move_modulators_to_the_session`). `new` loads a file as it is
+    /// written, with the modulators in its lanes and its groups in them: those racks are still in the controller, and what a test of them says is no less so.
+    fn moved(session_toml: impl AsRef<str>) -> Self {
+        let mut config = session::parse(session_toml.as_ref()).expect("scene parses");
+        config.move_modulators_to_the_session();
+        Self::of(config)
+    }
+
+    fn of(config: session::SessionConfig) -> Self {
         // The loader sends the audio thread its commands; nothing listens here, but
         // the receiver has to stay alive for the sends to succeed.
         let (load_tx, _load_rx) = unbounded();
@@ -690,8 +702,8 @@ fn popup_lane_target_selector() {
 
 #[test]
 fn popup_modulate_parameter() {
-    // `m` on a focused parameter: a new modulator of each kind / attach to existing.
-    let mut h = Harness::new(scene_group());
+    // `m` on a focused parameter: a new modulator of each kind / attach to one of the session's own (each says whose notes it hears).
+    let mut h = Harness::moved(scene_group());
     h.goto(TreeAddress::Effect { inst: 2, index: 0 });
     h.press(KeyCode::Enter).press(KeyCode::Char('m'));
     assert_golden("popup_modulate_parameter", &mut h);
@@ -1909,20 +1921,73 @@ fn replacing_the_instrument_takes_out_the_cables_into_the_old_one() {
 }
 
 #[test]
-fn m_on_an_instrument_adds_an_lfo_to_its_lane() {
-    let mut h = Harness::new(scene_split());
+fn m_on_an_instrument_adds_an_lfo_of_the_sessions_own_that_hears_its_lane_and_lists_it_with_the_lane() {
+    let mut h = Harness::moved(scene_split());
+    let before = h.tree().len();
     h.goto(TreeAddress::Instrument(1));
+    let lane = h.s.ctl.model.instruments[1].node;
     h.press(KeyCode::Char('m'));
-    assert_eq!(h.commands(), ["InsertModulator inst=1 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]);
-    assert_eq!(h.tree()[4], "╰ ~ LFO 1.0Hz sine");
+    assert_eq!(
+        h.commands(),
+        [
+            "InsertFreeModulator index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }".to_string(),
+            format!("SetModulatorEar Free index=2 ear={}", lane.0)
+        ]
+    );
+    assert_eq!(h.s.ctl.model.free_modulators[2].ear, Some(lane));
+    // It is listed with the lane that it hears, after the modulator that the lane had, which is the session's own too, and the cursor is on it.
+    let tree = h.tree();
+    assert_eq!(tree.len(), before + 1);
+    assert_eq!(tree[3], "├ ~ LFO 7.0Hz sine → Oscillator: detune (15%)", "{tree:?}");
+    assert_eq!(tree[4], "╰ ~ LFO 1.0Hz sine", "{tree:?}");
+    assert_eq!(h.s.selected_address().copied(), Some(TreeAddress::FreeModulator { index: 2 }));
 }
 
 #[test]
-fn m_on_a_group_adds_an_lfo_to_the_groups_rack() {
-    let mut h = Harness::new(scene_group());
+fn the_tree_of_a_session_whose_modulators_are_moved_to_its_own_is_the_tree_it_was_with_each_under_the_lane_it_hears() {
+    // Lanes only: a modulator that hears a lane is listed where the lane's own was, as it was said (a cable into the lane's own plugin by the plugin's name).
+    for scene in [scene_split(), scene_two_effects(), scene_small_depths(), scene_three_kinds_of_modulator(), scene_macro(), scene_steps(), scene_synced(), scene_notes()] {
+        assert_eq!(Harness::moved(scene).tree(), Harness::new(scene).tree(), "{scene}");
+    }
+    // A session that is built with one that hears no lane has it first, in the words of every free modulator.
+    let mut h = Harness::moved(scene_split());
+    h.press(KeyCode::Char('F'));
+    assert_eq!(h.tree()[0], "~ LFO 1.0Hz sine  (free)");
+    assert_eq!(h.tree().len(), Harness::new(scene_split()).tree().len() + 1);
+}
+
+#[test]
+fn a_modulator_that_hears_a_group_is_listed_under_it_after_its_bus_effects_and_one_that_drives_another_lane_says_which() {
+    let mut h = Harness::moved(scene_group());
+    let tree = h.tree();
+    // The group's two, in the order of the session's own after the bass's, with what they drive by the lane or the group of the plugin.
+    let at = tree.iter().position(|line| line.contains("fx Reverb  [Built-in]  (bus)")).expect("the pad's bus effect");
+    assert_eq!(tree[at + 1], "  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%), Bus Reverb: damping (25%)  (bus)");
+    assert_eq!(tree[at + 2], "  ~ ADSR → Mod 1 rate (30%)  (bus)");
+    // The bass's own is under the bass.
+    assert!(tree.contains(&"╰ ~ LFO 0.2Hz triangle → Filter: cutoff (50%)"), "{tree:#?}");
+    // One that hears the bass and drives a parameter of the pad's first lane says whose it is.
+    let (bass_lfo, osc) = (h.s.ctl.model.free_modulators[0].node, node_at(&h, NodePath::Instrument(0)));
+    let detune = h.s.ctl.model.instruments[0].instrument.as_ref().unwrap().params.iter().find(|row| row.name == "detune").unwrap().index;
+    h.s.apply(Intent::AddModEdge { modulator: bass_lfo, to: crate::app::graph::Endpoint { node: osc, port: crate::app::graph::Port::Param { index: detune } } });
+    assert!(h.tree().iter().any(|line| line.starts_with("╰ ~ LFO 0.2Hz triangle → Filter: cutoff (50%), L1 Oscillator: detune (50%)")), "{:#?}", h.tree());
+}
+
+#[test]
+fn m_on_a_group_adds_an_lfo_of_the_sessions_own_that_hears_the_group() {
+    let mut h = Harness::moved(scene_group());
     h.goto(TreeAddress::Group(0));
+    let group = h.s.ctl.model.groups[0].node;
     h.press(KeyCode::Char('m'));
-    assert_eq!(h.commands(), ["InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]);
+    assert_eq!(
+        h.commands(),
+        [
+            "InsertFreeModulator index=3 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }".to_string(),
+            format!("SetModulatorEar Free index=3 ear={}", group.0)
+        ]
+    );
+    assert_eq!(h.s.ctl.model.free_modulators[3].ear, Some(group));
+    assert!(h.s.ctl.model.groups[0].modulators.is_empty() && h.s.ctl.model.free_modulators.len() == 4);
 }
 
 #[test]
@@ -2656,7 +2721,10 @@ fn h_on_a_free_modulator_lists_every_note_each_lane_and_each_group_and_the_choic
     assert!(h.s.ear_popup.is_none());
     let lane1 = h.s.ctl.model.instruments[1].node;
     assert_eq!(h.s.ctl.model.free_modulators[1].ear, Some(lane1));
-    assert_eq!(h.tree()[1], "~ ADSR \u{2192} L2 Filter: cutoff (50%), Mod 0 depth 0 (10%)  (free, hears L2)");
+    // (The tree lists it with the lane it hears now, as a lane's own modulator was listed, with the plugin it drives in that lane by its name; the cursor stays on it.)
+    let line = |h: &Harness| h.tree().into_iter().find(|line| line.contains("~ ADSR")).expect("the modulator is in the tree").to_string();
+    assert_eq!(line(&h), "╰ ~ ADSR \u{2192} Filter: cutoff (50%), Mod 0 depth 0 (10%)");
+    assert_eq!(h.s.selected_address().copied(), Some(TreeAddress::FreeModulator { index: 1 }));
     assert_eq!(h.commands(), [format!("SetModulatorEar Free index=1 ear={}", lane1.0)]);
     assert!(h.s.ctl.dirty);
     // It is marked the next time, and Esc leaves without a change.
@@ -2668,15 +2736,15 @@ fn h_on_a_free_modulator_lists_every_note_each_lane_and_each_group_and_the_choic
     assert!(h.commands().is_empty());
     // The group (the last row, which the popup starts above), which the tree says as well, and every note again (the first row).
     h.press(KeyCode::Char('h')).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Enter);
-    assert!(h.tree()[1].ends_with("(free, hears G1)"), "{:?}", h.tree());
+    assert!(line(&h).ends_with("(bus)"), "under the group, as a group's own were: {:?}", h.tree());
     h.press(KeyCode::Char('h')).press(KeyCode::Enter);
     assert_eq!(h.s.ctl.model.free_modulators[1].ear, None);
-    assert!(h.tree()[1].ends_with("(free)"), "{:?}", h.tree());
+    assert!(h.tree()[1].ends_with("(free)"), "back at the top, where the ones that hear nothing are: {:?}", h.tree());
     // Undo goes back through the three.
     h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
-    assert!(h.tree()[1].ends_with("(free, hears G1)"), "{:?}", h.tree());
+    assert!(line(&h).ends_with("(bus)"), "{:?}", h.tree());
     h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
-    assert!(h.tree()[1].ends_with("(free, hears L2)"), "{:?}", h.tree());
+    assert_eq!(line(&h), "╰ ~ ADSR \u{2192} Filter: cutoff (50%), Mod 0 depth 0 (10%)");
 }
 
 #[test]
@@ -2890,30 +2958,34 @@ fn target_fields(model: &crate::app::model::SessionModel, at: ModulatorLocation,
         .collect()
 }
 
-/// The bass lane's filter with its `cutoff` (0.35, 0 to 1) selected in the parameter pane.
+/// The bass lane's filter with its `cutoff` (0.35, 0 to 1) selected in the parameter pane, in a session whose modulators are the session's own (the bass's LFO is the first of three: the pad's
+/// two are after it).
 fn on_the_bass_filters_cutoff() -> Harness {
-    let mut h = Harness::new(scene_group());
+    let mut h = Harness::moved(scene_group());
     h.goto(TreeAddress::Effect { inst: 2, index: 0 });
     h.press(KeyCode::Enter);
     h
 }
 
 #[test]
-fn the_modulate_popup_makes_an_lfo_in_the_lane_and_binds_the_parameter_to_it() {
+fn the_modulate_popup_makes_an_lfo_of_the_sessions_own_that_hears_the_lane_and_binds_the_parameter_to_it() {
     let mut h = on_the_bass_filters_cutoff();
+    let (bass, filter) = (node_at(&h, NodePath::Instrument(2)), node_at(&h, NodePath::Effect { inst: 2, index: 0 }));
     h.press(KeyCode::Char('m')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        told_all(&h.s.ctl.model, &[
-            "InsertModulator inst=2 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
-            "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
-        ])
+        [
+            "InsertFreeModulator index=3 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }".to_string(),
+            format!("SetModulatorEar Free index=3 ear={}", bass.0),
+            format!("AddFreeModTarget mod=3 aim=Param {{ plugin: NodeId({}), index: 0 }} depth=0.500 base=0.350 range=[0.000, 1.000]", filter.0),
+        ]
     );
-    let made = &h.s.ctl.model.instruments[2].modulators[1];
+    let made = &h.s.ctl.model.free_modulators[3];
     assert!(matches!(made.source, ModSourceSlot::Lfo { rate, .. } if rate == 1.0));
+    assert_eq!(made.ear, Some(bass), "it hears the lane of the parameter");
     assert_eq!(
-        target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 1),
-        [(1, "cutoff".to_string(), "PluginParam { slot: 1, param_index: 0 }".to_string(), 0.5, 0.0, 1.0)]
+        target_fields(&h.s.ctl.model, ModulatorLocation::Free, 3),
+        [(0, "cutoff".to_string(), format!("FreeParam {{ plugin: NodeId({}), param_index: 0 }}", filter.0), 0.5, 0.0, 1.0)]
     );
     assert!(h.s.ctl.dirty);
 }
@@ -2921,15 +2993,17 @@ fn the_modulate_popup_makes_an_lfo_in_the_lane_and_binds_the_parameter_to_it() {
 #[test]
 fn the_modulate_popup_can_make_an_envelope_instead() {
     let mut h = on_the_bass_filters_cutoff();
+    let (bass, filter) = (node_at(&h, NodePath::Instrument(2)), node_at(&h, NodePath::Effect { inst: 2, index: 0 }));
     h.press(KeyCode::Char('m')).press(KeyCode::Down).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        told_all(&h.s.ctl.model, &[
-            "InsertModulator inst=2 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }",
-            "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
-        ])
+        [
+            "InsertFreeModulator index=3 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }".to_string(),
+            format!("SetModulatorEar Free index=3 ear={}", bass.0),
+            format!("AddFreeModTarget mod=3 aim=Param {{ plugin: NodeId({}), index: 0 }} depth=0.500 base=0.350 range=[0.000, 1.000]", filter.0),
+        ]
     );
-    let made = &h.s.ctl.model.instruments[2].modulators[1];
+    let made = &h.s.ctl.model.free_modulators[3];
     assert!(
         matches!(
             made.source,
@@ -2945,18 +3019,38 @@ fn the_modulate_popup_can_make_an_envelope_instead() {
 #[test]
 fn the_modulate_popup_can_attach_the_parameter_to_a_modulator_that_is_there() {
     let mut h = on_the_bass_filters_cutoff();
+    let filter = node_at(&h, NodePath::Effect { inst: 2, index: 0 });
     h.press(KeyCode::Down); // the filter's resonance, which the bass's LFO does not drive
-    // (The popup lists a new modulator of each kind before the modulators that are there.)
-    h.press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len()).press(KeyCode::Enter);
+    // (The popup lists a new modulator of each kind before the modulators of the session: the bass's LFO is the first, and says that it hears the bass's lane.)
+    h.press(KeyCode::Char('m'));
+    let popup = h.dump();
+    assert!(popup.contains("attach → LFO 0.2Hz triangle (hears L3)"), "{popup}");
+    h.press_n(KeyCode::Down, NEW_MODULATORS.len()).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        told_all(&h.s.ctl.model, &["AddModTarget inst=2 mod=0 kind=PluginParam { slot: 1, param_index: 1 } depth=0.500 base=0.707 range=[0.500, 10.000]"]),
+        [format!("AddFreeModTarget mod=0 aim=Param {{ plugin: NodeId({}), index: 1 }} depth=0.500 base=0.707 range=[0.500, 10.000]", filter.0)],
         "no new modulator, a second target on the bass's LFO"
     );
-    let modulators = &h.s.ctl.model.instruments[2].modulators;
-    assert_eq!(modulators.len(), 1);
-    assert_eq!(target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 0).len(), 2);
-    assert_eq!(target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 0)[1].1, "resonance");
+    assert_eq!(h.s.ctl.model.free_modulators.len(), 3);
+    assert_eq!(target_fields(&h.s.ctl.model, ModulatorLocation::Free, 0).len(), 2);
+    assert_eq!(target_fields(&h.s.ctl.model, ModulatorLocation::Free, 0)[1].1, "resonance");
+}
+
+#[test]
+fn the_modulate_popup_attaches_a_parameter_to_a_modulator_that_hears_another_lane_or_a_group_too_since_every_modulator_reaches_every_plugin() {
+    let mut h = on_the_bass_filters_cutoff();
+    let filter = node_at(&h, NodePath::Effect { inst: 2, index: 0 });
+    h.press(KeyCode::Down);
+    // The third of the session's modulators is the pad's envelope: it hears the group, and drives a parameter of the bass's filter all the same.
+    h.press(KeyCode::Char('m'));
+    let popup = h.dump();
+    assert!(popup.contains("(hears G1)"), "{popup}");
+    h.press_n(KeyCode::Down, NEW_MODULATORS.len() + 2).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        [format!("AddFreeModTarget mod=2 aim=Param {{ plugin: NodeId({}), index: 1 }} depth=0.500 base=0.707 range=[0.500, 10.000]", filter.0)]
+    );
+    assert!(matches!(h.s.ctl.model.free_modulators[2].source, ModSourceSlot::Envelope { .. }));
 }
 
 #[test]
@@ -2965,26 +3059,72 @@ fn the_modulate_popup_does_not_attach_a_parameter_to_a_modulator_that_drives_it_
     let mut h = on_the_bass_filters_cutoff();
     h.press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len()).press(KeyCode::Enter);
     assert!(h.commands().is_empty());
-    assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), 1, "the LFO's cable to the cutoff, and no more");
+    assert_eq!(h.s.ctl.model.free_modulators[0].targets.len(), 1, "the LFO's cable to the cutoff, and no more");
     assert_eq!(h.s.ctl.history_state().undo, None);
 }
 
 #[test]
-fn the_modulate_popup_on_a_bus_parameter_makes_a_group_modulator() {
-    let mut h = Harness::new(scene_group());
+fn the_modulate_popup_on_a_bus_parameter_makes_a_modulator_of_the_sessions_own_that_hears_the_group() {
+    let mut h = Harness::moved(scene_group());
+    let (pad, reverb) = (node_at(&h, NodePath::Group(0)), node_at(&h, NodePath::GroupEffect { group: 0, index: 0 }));
     h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
     h.press(KeyCode::Enter).press(KeyCode::Char('m')).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        told_all(&h.s.ctl.model, &[
-            "InsertGroupModulator group=0 index=2 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }",
-            "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=0.500 base=0.880 range=[0.100, 0.990]",
-        ])
+        [
+            "InsertFreeModulator index=3 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }".to_string(),
+            format!("SetModulatorEar Free index=3 ear={}", pad.0),
+            format!("AddFreeModTarget mod=3 aim=Param {{ plugin: NodeId({}), index: 0 }} depth=0.500 base=0.880 range=[0.100, 0.990]", reverb.0),
+        ]
     );
     assert_eq!(
-        target_fields(&h.s.ctl.model, ModulatorLocation::Group(0), 2),
-        [(0, "decay".to_string(), "GroupBus { effect_index: 0, param_index: 0 }".to_string(), 0.5, 0.1, 0.99)]
+        target_fields(&h.s.ctl.model, ModulatorLocation::Free, 3),
+        [(0, "decay".to_string(), format!("FreeParam {{ plugin: NodeId({}), param_index: 0 }}", reverb.0), 0.5, 0.1, 0.99)]
     );
+    assert_eq!(h.s.ctl.model.free_modulators[3].ear, Some(pad));
+}
+
+#[test]
+fn the_modulate_popup_on_a_bus_parameter_attaches_a_modulator_of_the_sessions_own_that_is_there() {
+    let mut h = Harness::moved(scene_group());
+    let reverb = node_at(&h, NodePath::GroupEffect { group: 0, index: 0 });
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Char('m'));
+    // (The new ones first, and then the session's own: the first of them is the bass's, which hears the bass's lane and has no cable to the reverb.)
+    h.press_n(KeyCode::Down, NEW_MODULATORS.len()).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        [format!("AddFreeModTarget mod=0 aim=Param {{ plugin: NodeId({}), index: 0 }} depth=0.500 base=0.880 range=[0.100, 0.990]", reverb.0)],
+        "no new modulator: a cable from the first of the session's own"
+    );
+    assert_eq!(h.s.ctl.model.free_modulators.len(), 3);
+}
+
+#[test]
+fn the_modulate_popup_on_the_rate_of_a_modulator_in_a_lanes_rack_attaches_a_sibling_of_that_rack() {
+    // (A modulator that is in a lane's rack, which a session that is loaded has none of since step 94, and a session that is built by intents can have: its settings are driven by the siblings that are in its rack.)
+    let mut h = Harness::new("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\n[[instrument.modulator]]\ntype = \"envelope\"\n");
+    h.goto(TreeAddress::Modulator { inst: 0, index: 0 });
+    h.press(KeyCode::Enter).press_n(KeyCode::Down, 2).press(KeyCode::Char('m'));
+    let popup = h.s.modulate.as_ref().expect("the popup is open");
+    assert_eq!(popup.scope, ModulatorLocation::Lane(0));
+    assert!(popup.items.iter().any(|item| item.cells[0].starts_with("attach \u{2192} ADSR")), "the envelope of the rack");
+    h.press_n(KeyCode::Down, NEW_MODULATORS.len()).press(KeyCode::Enter);
+    let commands = h.commands();
+    assert!(commands.iter().all(|c| !c.starts_with("InsertModulator")), "no new modulator: {commands:?}");
+    assert!(commands.iter().any(|c| c.starts_with("AddModTarget inst=0 mod=1 aim=Setting { modulator: NodeId(1), field: Rate }")), "{commands:?}");
+    assert_eq!(target_fields(&h.s.ctl.model, ModulatorLocation::Lane(0), 1).len(), 1);
+}
+
+#[test]
+fn m_on_a_modulator_of_the_sessions_own_adds_another_that_hears_every_note_whatever_the_first_hears() {
+    let mut h = Harness::moved(scene_group());
+    let before = h.s.ctl.model.free_modulators.len();
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    assert!(h.s.ctl.model.free_modulators[0].ear.is_some(), "the first hears a lane");
+    h.press(KeyCode::Char('m'));
+    assert_eq!(h.s.ctl.model.free_modulators.len(), before + 1);
+    assert_eq!(h.s.ctl.model.free_modulators[before].ear, None, "a new one hears every note");
 }
 
 #[test]
@@ -3049,50 +3189,56 @@ fn the_target_selector_binds_to_the_modulator_it_was_opened_for_whichever_place_
 }
 
 #[test]
-fn the_modulate_popup_attaches_the_parameter_to_the_modulator_that_was_chosen_whichever_place_it_has_in_its_rack() {
+fn the_modulate_popup_attaches_the_parameter_to_the_modulator_that_was_chosen_whichever_place_it_has_in_the_sessions_own() {
     // The envelope again: the popup lists a new modulator of each kind, and then the three that are there (the envelope is the second).
-    let mut h = Harness::new(crate::app::testutil::CROSS_MOD_RACKS);
+    let mut h = Harness::moved(crate::app::testutil::CROSS_MOD_RACKS);
     h.goto(TreeAddress::Instrument(0));
+    let osc = node_at(&h, NodePath::Instrument(0));
     h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len() + 1).press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
-        told_all(&h.s.ctl.model, &["AddModTarget inst=0 mod=1 kind=PluginParam { slot: 0, param_index: 0 } depth=0.500 base=0.000 range=[0.000, 4.000]"])
+        [format!("AddFreeModTarget mod=1 aim=Param {{ plugin: NodeId({}), index: 0 }} depth=0.500 base=0.000 range=[0.000, 4.000]", osc.0)]
     );
-    assert_eq!(h.s.ctl.model.instruments[0].modulators[1].targets.len(), 3);
+    assert_eq!(h.s.ctl.model.free_modulators[1].targets.len(), 3);
 }
 
 #[test]
 fn learning_a_parameter_arms_a_midi_modulator_bound_to_it_at_full_depth() {
     let mut h = on_the_bass_filters_cutoff();
     h.press(KeyCode::Char('l'));
+    let (bass, filter) = (node_at(&h, NodePath::Instrument(2)), node_at(&h, NodePath::Effect { inst: 2, index: 0 }));
     assert_eq!(
         h.commands(),
-        told_all(&h.s.ctl.model, &[
-            "InsertModulator inst=2 index=1 source=MidiLearn { source: None, value: 0.0, learning: true }",
-            "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]",
-            "SetModTargetDepth inst=2 mod=1 target=0 depth=1.000",
-        ])
+        [
+            "InsertFreeModulator index=3 source=MidiLearn { source: None, value: 0.0, learning: true }".to_string(),
+            format!("SetModulatorEar Free index=3 ear={}", bass.0),
+            format!("AddFreeModTarget mod=3 aim=Param {{ plugin: NodeId({}), index: 0 }} depth=0.500 base=0.350 range=[0.000, 1.000]", filter.0),
+            "SetFreeModTargetDepth mod=3 target=0 depth=1.000".to_string(),
+        ]
     );
-    let armed = &h.s.ctl.model.instruments[2].modulators[1];
+    let armed = &h.s.ctl.model.free_modulators[3];
     assert!(matches!(armed.source, ModSourceSlot::MidiLearn { source: None, learning: true }));
+    assert_eq!(armed.ear, Some(bass));
     assert_eq!(
-        target_fields(&h.s.ctl.model, ModulatorLocation::Lane(2), 1),
-        [(1, "cutoff".to_string(), "PluginParam { slot: 1, param_index: 0 }".to_string(), 1.0, 0.0, 1.0)]
+        target_fields(&h.s.ctl.model, ModulatorLocation::Free, 3),
+        [(0, "cutoff".to_string(), format!("FreeParam {{ plugin: NodeId({}), param_index: 0 }}", filter.0), 1.0, 0.0, 1.0)]
     );
 
-    // On a group's bus effect it goes in the group's rack.
-    let mut h = Harness::new(scene_group());
+    // On a group's bus effect it hears the group.
+    let mut h = Harness::moved(scene_group());
+    let (pad, reverb) = (node_at(&h, NodePath::Group(0)), node_at(&h, NodePath::GroupEffect { group: 0, index: 0 }));
     h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
     h.press(KeyCode::Enter).press(KeyCode::Char('l'));
     assert_eq!(
         h.commands(),
-        told_all(&h.s.ctl.model, &[
-            "InsertGroupModulator group=0 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }",
-            "AddGroupModTarget group=0 mod=2 kind=GroupBus { effect_index: 0, param_index: 0 } depth=0.500 base=0.880 range=[0.100, 0.990]",
-            "SetGroupModTargetDepth group=0 mod=2 target=0 depth=1.000",
-        ])
+        [
+            "InsertFreeModulator index=3 source=MidiLearn { source: None, value: 0.0, learning: true }".to_string(),
+            format!("SetModulatorEar Free index=3 ear={}", pad.0),
+            format!("AddFreeModTarget mod=3 aim=Param {{ plugin: NodeId({}), index: 0 }} depth=0.500 base=0.880 range=[0.100, 0.990]", reverb.0),
+            "SetFreeModTargetDepth mod=3 target=0 depth=1.000".to_string(),
+        ]
     );
-    assert_eq!(h.s.ctl.model.groups[0].modulators[2].targets.len(), 1);
+    assert_eq!(h.s.ctl.model.free_modulators[3].targets.len(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -3864,15 +4010,15 @@ fn a_captured_control_shows_in_the_tree() {
         (MidiBindSource::PitchBend, "Pitch Bend"),
         (MidiBindSource::Aftertouch, "Aftertouch"),
     ] {
-        let mut h = Harness::new(scene_split());
+        let mut h = Harness::moved(scene_split());
         // Arm a MIDI-learn modulator on lane 0's first parameter the way a user does.
         h.goto(TreeAddress::Instrument(0));
         h.press(KeyCode::Enter).press(KeyCode::Char('l'));
-        let index = h.s.ctl.model.instruments[0].modulators.len() - 1;
+        let index = h.s.ctl.model.free_modulators.len() - 1;
         assert!(h.tree().iter().any(|l| l.contains("MIDI (learning…)")), "`l` arms a modulator");
 
         h.learn_tx
-            .send(MidiLearnedNotification { location: ModulatorLocation::Lane(0), mod_index: index, source })
+            .send(MidiLearnedNotification { location: ModulatorLocation::Free, mod_index: index, source })
             .unwrap();
         tick(&mut h.s);
         assert!(h.tree().iter().any(|l| l.contains(label)), "{label}: {:#?}", h.tree());
@@ -3882,14 +4028,14 @@ fn a_captured_control_shows_in_the_tree() {
 
 #[test]
 fn a_captured_control_shows_in_the_tree_for_a_group_modulator() {
-    let mut h = Harness::new(scene_group());
+    let mut h = Harness::moved(scene_group());
     h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
     h.press(KeyCode::Enter).press(KeyCode::Char('l'));
-    let index = h.s.ctl.model.groups[0].modulators.len() - 1;
+    let index = h.s.ctl.model.free_modulators.len() - 1;
 
     h.learn_tx
         .send(MidiLearnedNotification {
-            location: ModulatorLocation::Group(0),
+            location: ModulatorLocation::Free,
             mod_index: index,
             source: MidiBindSource::Cc(1),
         })
@@ -4657,14 +4803,15 @@ fn the_modulate_popup_has_a_new_step_sequencer_that_is_made_as_a_staircase_with_
     let popup = h.dump();
     assert!(popup.contains("New step sequencer → cutoff"), "{popup}");
     h.press(KeyCode::Enter);
-    let rack = &h.s.ctl.model.instruments[2].modulators;
-    assert_eq!(rack.len(), 2);
-    let ModSourceSlot::Steps { values, length, rate, glide, retrigger, .. } = rack[1].source else { panic!("{:?}", rack[1].source) };
+    let rack = &h.s.ctl.model.free_modulators;
+    assert_eq!(rack.len(), 4, "the three of the session, and the step sequencer");
+    let ModSourceSlot::Steps { values, length, rate, glide, retrigger, .. } = rack[3].source else { panic!("{:?}", rack[3].source) };
     assert_eq!((values, length, rate, glide, retrigger), (ModSourceSlot::staircase(), 16, 8.0, 0.0, true));
-    assert_eq!(rack[1].targets.len(), 1);
+    assert_eq!(rack[3].targets.len(), 1);
     let commands = h.commands();
-    assert!(commands[0].starts_with("InsertModulator inst=2 index=1 source=Steps { values: [-1.0, -0.875,"), "{commands:?}");
-    assert!(commands[1].starts_with(&told(&h.s.ctl.model, "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }")), "{commands:?}");
+    assert!(commands[0].starts_with("InsertFreeModulator index=3 source=Steps { values: [-1.0, -0.875,"), "{commands:?}");
+    assert!(commands[1].starts_with("SetModulatorEar Free index=3 ear="), "{commands:?}");
+    assert!(commands[2].starts_with("AddFreeModTarget mod=3 aim=Param"), "{commands:?}");
     assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("modulate cutoff"), "the step sequencer and the cable to it are one thing");
 }
 
@@ -4713,33 +4860,34 @@ fn the_modulate_popup_has_a_new_velocity_and_a_new_key_that_are_bound_at_once_wi
     assert!(at("New LFO → cutoff") < at("New envelope → cutoff") && at("New envelope → cutoff") < at("New macro → cutoff"), "{popup}");
     assert!(at("New macro → cutoff") < at("New velocity → cutoff") && at("New velocity → cutoff") < at("New key → cutoff"), "in this order: {popup}");
     h.press_n(KeyCode::Down, 3).press(KeyCode::Enter);
-    let rack = &h.s.ctl.model.instruments[2].modulators;
-    assert_eq!(rack.len(), 2);
-    assert!(matches!(rack[1].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Velocity), learning: false }), "{:?}", rack[1].source);
-    assert_eq!(rack[1].targets.len(), 1);
+    let rack = &h.s.ctl.model.free_modulators;
+    assert_eq!(rack.len(), 4);
+    assert!(matches!(rack[3].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Velocity), learning: false }), "{:?}", rack[3].source);
+    assert_eq!(rack[3].targets.len(), 1);
     let commands = h.commands();
-    assert_eq!(commands[0], "InsertModulator inst=2 index=1 source=MidiLearn { source: Some(Velocity), value: 0.0, learning: false }", "{commands:?}");
-    assert!(commands[1].starts_with(&told(&h.s.ctl.model, "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }")) && commands[1].contains("depth=0.500"), "{commands:?}");
+    assert_eq!(commands[0], "InsertFreeModulator index=3 source=MidiLearn { source: Some(Velocity), value: 0.0, learning: false }", "{commands:?}");
+    assert!(commands[2].starts_with("AddFreeModTarget mod=3 aim=Param") && commands[2].contains("depth=0.500"), "{commands:?}");
     assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("modulate cutoff"), "the control and the cable to it are one thing");
     assert!(h.tree().iter().any(|line| line.contains("~ Velocity → Filter: cutoff (50%)")), "{:#?}", h.tree());
 
     // A key, from the popup of the same parameter again.
     h.press(KeyCode::Char('m')).press_n(KeyCode::Down, 4).press(KeyCode::Enter);
-    let rack = &h.s.ctl.model.instruments[2].modulators;
-    assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }), "{:?}", rack[2].source);
+    let rack = &h.s.ctl.model.free_modulators;
+    assert!(matches!(rack[4].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }), "{:?}", rack[4].source);
     assert!(h.tree().iter().any(|line| line.contains("~ Key → Filter: cutoff (50%)")), "{:#?}", h.tree());
 }
 
 #[test]
-fn the_modulate_popup_on_a_bus_parameter_can_make_a_key_in_the_groups_rack() {
-    let mut h = Harness::new(scene_group());
+fn the_modulate_popup_on_a_bus_parameter_can_make_a_key_that_hears_the_group() {
+    let mut h = Harness::moved(scene_group());
+    let pad = node_at(&h, NodePath::Group(0));
     h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
     h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, 4).press(KeyCode::Enter);
-    let rack = &h.s.ctl.model.groups[0].modulators;
-    assert_eq!(rack.len(), 3, "the two the pad has, and the key");
-    assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }), "{:?}", rack[2].source);
-    assert_eq!(rack[2].targets.len(), 1);
-    assert!(h.commands()[0].starts_with("InsertGroupModulator group=0 index=2 source=MidiLearn { source: Some(Key)"), "{:?}", h.commands());
+    let rack = &h.s.ctl.model.free_modulators;
+    assert_eq!(rack.len(), 4, "the three of the session, and the key");
+    assert!(matches!(rack[3].source, ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Key), learning: false }), "{:?}", rack[3].source);
+    assert_eq!((rack[3].targets.len(), rack[3].ear), (1, Some(pad)));
+    assert!(h.commands()[0].starts_with("InsertFreeModulator index=3 source=MidiLearn { source: Some(Key)"), "{:?}", h.commands());
 }
 
 #[test]
@@ -4775,26 +4923,27 @@ fn the_modulate_popup_has_a_new_macro_that_is_made_at_rest_with_a_cable_to_the_p
     let popup = h.dump();
     assert!(popup.contains("New LFO → cutoff") && popup.contains("New envelope → cutoff") && popup.contains("New macro → cutoff"), "{popup}");
     h.press(KeyCode::Enter);
-    let rack = &h.s.ctl.model.instruments[2].modulators;
-    assert_eq!(rack.len(), 2);
-    assert!(matches!(rack[1].source, ModSourceSlot::Macro { value } if value == 0.0), "{:?}", rack[1].source);
-    assert_eq!(rack[1].targets.len(), 1);
+    let rack = &h.s.ctl.model.free_modulators;
+    assert_eq!(rack.len(), 4);
+    assert!(matches!(rack[3].source, ModSourceSlot::Macro { value } if value == 0.0), "{:?}", rack[3].source);
+    assert_eq!(rack[3].targets.len(), 1);
     let commands = h.commands();
-    assert_eq!(commands[0], "InsertModulator inst=2 index=1 source=Macro { value: 0.0 }", "{commands:?}");
-    assert!(commands[1].starts_with(&told(&h.s.ctl.model, "AddModTarget inst=2 mod=1 kind=PluginParam { slot: 1, param_index: 0 }")), "{commands:?}");
+    assert_eq!(commands[0], "InsertFreeModulator index=3 source=Macro { value: 0.0 }", "{commands:?}");
+    assert!(commands[2].starts_with("AddFreeModTarget mod=3 aim=Param"), "{commands:?}");
     assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("modulate cutoff"), "the macro and the cable to it are one thing");
 }
 
 #[test]
-fn the_modulate_popup_on_a_bus_parameter_can_make_a_macro_in_the_groups_rack() {
-    let mut h = Harness::new(scene_group());
+fn the_modulate_popup_on_a_bus_parameter_can_make_a_macro_that_hears_the_group() {
+    let mut h = Harness::moved(scene_group());
+    let pad = node_at(&h, NodePath::Group(0));
     h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
     h.press(KeyCode::Enter).press(KeyCode::Char('m')).press_n(KeyCode::Down, 2).press(KeyCode::Enter);
-    let rack = &h.s.ctl.model.groups[0].modulators;
-    assert_eq!(rack.len(), 3, "the two the pad has, and the macro");
-    assert!(matches!(rack[2].source, ModSourceSlot::Macro { value } if value == 0.0), "{:?}", rack[2].source);
-    assert_eq!(rack[2].targets.len(), 1);
-    assert_eq!(h.commands()[0], "InsertGroupModulator group=0 index=2 source=Macro { value: 0.0 }");
+    let rack = &h.s.ctl.model.free_modulators;
+    assert_eq!(rack.len(), 4, "the three of the session, and the macro");
+    assert!(matches!(rack[3].source, ModSourceSlot::Macro { value } if value == 0.0), "{:?}", rack[3].source);
+    assert_eq!((rack[3].targets.len(), rack[3].ear), (1, Some(pad)));
+    assert_eq!(h.commands()[0], "InsertFreeModulator index=3 source=Macro { value: 0.0 }");
 }
 
 #[test]
@@ -4869,29 +5018,32 @@ fn a_macro_is_taken_out_with_d_and_put_back_by_ctrl_z_at_the_value_it_had() {
 }
 
 #[test]
-fn m_on_a_parameter_makes_a_modulator_of_its_own_bound_to_it() {
-    // "New LFO" is the first row of the popup. The bass has one lane modulator
-    // already; the pad's bus has two group modulators.
-    let mut h = Harness::new(scene_group());
+fn m_on_a_parameter_makes_a_modulator_of_the_sessions_own_that_hears_the_lane_or_the_group_and_is_bound_to_it() {
+    // "New LFO" is the first row of the popup. The bass has one modulator already (the session's own since the load: it hears the bass's lane), and the pad's bus has two, that hear the group.
+    let mut h = Harness::moved(scene_group());
     let before = all_nodes(&h);
+    let (bass, pad) = (node_at(&h, NodePath::Instrument(2)), node_at(&h, NodePath::Group(0)));
+    let had = h.s.ctl.model.free_modulators.len();
+    assert_eq!(had, 3);
 
     h.goto(TreeAddress::Effect { inst: 2, index: 0 });
     h.press(KeyCode::Enter).press(KeyCode::Char('m')).press(KeyCode::Enter);
-    let lane_mods = &h.s.ctl.model.instruments[2].modulators;
-    assert_eq!(lane_mods.len(), 2);
-    let new = lane_mods.last().unwrap();
-    assert!(!before.contains(&new.node), "the lane modulator has an id of its own");
-    assert_eq!(new.targets.len(), 1, "it is bound to the parameter it was made from");
-    assert!(h.commands()[0].starts_with("InsertModulator inst=2 index=1"));
+    let mods = &h.s.ctl.model.free_modulators;
+    assert_eq!(mods.len(), had + 1);
+    let new = mods.last().unwrap();
+    assert!(!before.contains(&new.node), "the modulator has an id of its own");
+    assert_eq!((new.ear, new.targets.len()), (Some(bass), 1), "it hears the lane of the parameter, and is bound to it");
+    assert!(h.commands()[0].starts_with(&format!("InsertFreeModulator index={had}")));
+    assert!(h.s.ctl.model.instruments[2].modulators.is_empty() && h.s.ctl.model.groups[0].modulators.is_empty(), "no lane and no group has one of its own");
 
     h.press(KeyCode::Esc);
     h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
     h.press(KeyCode::Enter).press(KeyCode::Char('m')).press(KeyCode::Enter);
-    let group_mods = &h.s.ctl.model.groups[0].modulators;
-    assert_eq!(group_mods.len(), 3);
-    let new = group_mods.last().unwrap();
-    assert!(!before.contains(&new.node), "the group modulator has an id of its own");
-    assert_eq!(new.targets.len(), 1);
+    let mods = &h.s.ctl.model.free_modulators;
+    assert_eq!(mods.len(), had + 2);
+    let new = mods.last().unwrap();
+    assert!(!before.contains(&new.node), "the modulator has an id of its own");
+    assert_eq!((new.ear, new.targets.len()), (Some(pad), 1), "a bus effect's modulator hears the group");
 }
 
 #[test]
@@ -6648,11 +6800,11 @@ mod undo_and_redo {
         h.commands();
         ctrl_z(&mut h);
         assert_eq!(h.s.ctl.model.graph(), before);
-        assert_eq!(h.s.ctl.model.instruments[2].modulators.len(), 1, "the LFO the scene has");
+        assert_eq!(h.s.ctl.model.free_modulators.len(), 3, "the three that the scene has");
         assert_eq!(h.commands().len(), 1, "the LFO goes, and the cable with it (the audio thread drops a modulator with its cables)");
         ctrl_y(&mut h);
         assert_eq!(h.s.ctl.model.graph(), after);
-        assert_eq!(h.commands().len(), 2, "the LFO is made again, and the cable to it");
+        assert_eq!(h.commands().len(), 3, "the LFO is made again, hearing the lane it did, and the cable to it");
     }
 
     #[test]
@@ -6662,7 +6814,7 @@ mod undo_and_redo {
         h.press(KeyCode::Char('m')).press_n(KeyCode::Down, NEW_MODULATORS.len()).press(KeyCode::Enter);
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("draw a cable"));
         ctrl_z(&mut h);
-        assert_eq!(h.s.ctl.model.instruments[2].modulators[0].targets.len(), 1, "the cable of the LFO that was there");
+        assert_eq!(h.s.ctl.model.free_modulators[0].targets.len(), 1, "the cable of the LFO that was there");
     }
 
     #[test]
@@ -6676,7 +6828,7 @@ mod undo_and_redo {
         assert_eq!(h.s.ctl.model.graph(), before);
         ctrl_y(&mut h);
         assert_eq!(h.s.ctl.model.graph(), after);
-        let armed = &h.s.ctl.model.instruments[2].modulators[1];
+        let armed = &h.s.ctl.model.free_modulators[3];
         assert_eq!(armed.targets[0].depth, 1.0, "at full depth, as it was learned");
     }
 
@@ -6693,14 +6845,17 @@ mod undo_and_redo {
     }
 
     #[test]
-    fn m_on_an_instrument_adds_an_lfo_that_ctrl_z_takes_out() {
-        let mut h = Harness::new(scene_split());
+    fn m_on_an_instrument_adds_an_lfo_that_ctrl_z_takes_out_and_ctrl_y_makes_again_hearing_the_lane() {
+        let mut h = Harness::moved(scene_split());
         h.goto(TreeAddress::Instrument(1));
-        let before = h.s.ctl.model.instruments[1].modulators.len();
+        let (before, lane) = (h.s.ctl.model.free_modulators.len(), h.s.ctl.model.instruments[1].node);
         h.press(KeyCode::Char('m'));
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add an LFO"));
+        assert_eq!(h.s.ctl.model.free_modulators.len(), before + 1);
         ctrl_z(&mut h);
-        assert_eq!(h.s.ctl.model.instruments[1].modulators.len(), before);
+        assert_eq!(h.s.ctl.model.free_modulators.len(), before);
+        ctrl_y(&mut h);
+        assert_eq!((h.s.ctl.model.free_modulators.len(), h.s.ctl.model.free_modulators[before].ear), (before + 1, Some(lane)));
     }
 
     #[test]

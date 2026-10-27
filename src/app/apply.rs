@@ -119,7 +119,7 @@ impl Controller {
             Intent::SetLaneGroup { node, group } => self.set_lane_group_intent(node, group)?,
             Intent::RemoveEdge { edge } => self.remove_edge_intent(edge)?,
             Intent::AddModulator { parent, kind } => self.add_modulator_intent(parent, kind)?,
-            Intent::AddFreeModulator { kind } => self.add_free_modulator_intent(kind)?,
+            Intent::AddFreeModulator { kind, hears } => self.add_free_modulator_intent(kind, hears)?,
             Intent::AddModEdge { modulator, to } => self.add_mod_edge_intent(modulator, to)?,
             Intent::Modulate { to, kind, depth } => self.modulate_intent(to, kind, depth)?,
             Intent::AddCable { from, to, gain } => self.add_cable_intent(from, to, gain)?,
@@ -434,12 +434,7 @@ impl Controller {
         let NodePath::Modulator { at: at @ ModulatorLocation::Free, index } = self.model.locate(node).ok_or(IntentError::NotFound(node))? else {
             return Err(invalid("only a modulator that is in no lane and no group has an ear: a lane's or a group's hears its own"));
         };
-        if let Some(heard) = ear {
-            match self.model.locate(heard).ok_or(IntentError::NotFound(heard))? {
-                NodePath::Instrument(_) | NodePath::Group(_) => {}
-                _ => return Err(invalid("only a lane or a group can be heard")),
-            }
-        }
+        self.check_ear(ear)?;
         let slot = self.model.free_modulators.get(index).ok_or(IntentError::NotFound(node))?;
         // What it hears already (a lane that went hears every note, as far as anyone can tell) changes nothing and tells the audio thread nothing: an ear that names a lane that went is kept, so that
         // Undo of the lane's removal gives it back, and is not cleared by a request for what is so.
@@ -759,10 +754,20 @@ impl Controller {
         Ok(Done::Restructured)
     }
 
-    /// A modulator that is in no lane and no group (`Intent::AddFreeModulator`): it goes at the end of the session's own rack.
-    fn add_free_modulator_intent(&mut self, kind: ModulatorKind) -> Result<Done, IntentError> {
-        self.add_modulator(ModulatorLocation::Free, kind.source()).expect("the session's own rack is always there");
+    /// A modulator that is in no lane and no group (`Intent::AddFreeModulator`): it goes at the end of the session's own rack, hearing the lane or the group that `hears` names, or every note.
+    fn add_free_modulator_intent(&mut self, kind: ModulatorKind, hears: Option<NodeId>) -> Result<Done, IntentError> {
+        self.check_ear(hears)?;
+        self.add_modulator_hearing(ModulatorLocation::Free, kind.source(), hears).expect("the session's own rack is always there");
         Ok(Done::Restructured)
+    }
+
+    /// Whether `ear` can be heard: none can (every note), and so can a lane and a group, and no other node.
+    fn check_ear(&self, ear: Option<NodeId>) -> Result<(), IntentError> {
+        let Some(heard) = ear else { return Ok(()) };
+        match self.model.locate(heard).ok_or(IntentError::NotFound(heard))? {
+            NodePath::Instrument(_) | NodePath::Group(_) => Ok(()),
+            _ => Err(invalid("only a lane or a group can be heard")),
+        }
     }
 
     fn add_mod_edge_intent(&mut self, modulator: NodeId, to: Endpoint) -> Result<Done, IntentError> {
@@ -788,10 +793,13 @@ impl Controller {
                 return Err(invalid(format!("{depth} is not a value for the depth of a cable")));
             }
         }
-        let at = match self.model.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
-            NodePath::Instrument(inst) | NodePath::Effect { inst, .. } => ModulatorLocation::Lane(inst),
-            NodePath::GroupEffect { group, .. } => ModulatorLocation::Group(group),
-            NodePath::Modulator { at, .. } => at,
+        // The new modulator is the session's own and hears what its target is of: the lane of a plugin of a lane, the group of a bus effect, what a free modulator hears for a setting of it.
+        let (at, ear) = match self.model.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
+            NodePath::Instrument(inst) | NodePath::Effect { inst, .. } => (ModulatorLocation::Free, Some(self.model.instruments[inst].node)),
+            NodePath::GroupEffect { group, .. } => (ModulatorLocation::Free, Some(self.model.groups[group].node)),
+            NodePath::Modulator { at: ModulatorLocation::Free, index } => (ModulatorLocation::Free, self.model.free_modulators.get(index).and_then(|slot| self.model.ear_of(slot))),
+            // (A modulator that is in a lane's or a group's rack, which a session that was loaded has none of since step 94, is driven by a sibling that is in its rack: a free one cannot reach it.)
+            NodePath::Modulator { at, .. } => (at, None),
             NodePath::Group(_) | NodePath::Source(_) => return Err(invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither")),
         };
         let index = self.model.modulators(at).map_or(0, |rack| rack.len());
@@ -802,7 +810,7 @@ impl Controller {
                 return Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth"));
             }
         };
-        let made = self.add_modulator(at, kind.source()).ok_or(IntentError::NotFound(to.node))?;
+        let made = self.add_modulator_hearing(at, kind.source(), ear).ok_or(IntentError::NotFound(to.node))?;
         debug_assert_eq!(made, index, "a modulator goes at the end of its rack");
         self.add_target(at, index, cable);
         if let Some(depth) = depth {
@@ -1116,7 +1124,7 @@ mod tests {
     use super::*;
     use crate::app::graph::{Graph, NodeKind};
     use crate::app::model::Driven;
-    use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load};
+    use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load, load_moved};
     use crate::plugin::chain::{CableFrom, CableTo, ModTargetKind, ModulatorLocation};
     use crate::session::{Feed, NodeUi, Route};
 
@@ -3995,7 +4003,7 @@ type = "steps"
 
     /// A free modulator of `kind` added, its node.
     fn add_free(ctl: &mut Controller, kind: ModulatorKind) -> NodeId {
-        ctl.apply(Intent::AddFreeModulator { kind }).unwrap();
+        ctl.apply(Intent::AddFreeModulator { kind, hears: None }).unwrap();
         ctl.model.free_modulators.last().expect("it is in the session's own rack").node
     }
 
@@ -4015,11 +4023,11 @@ type = "steps"
     fn add_free_modulator_puts_one_at_the_end_of_the_sessions_own_rack_in_the_model_and_the_engine() {
         let (engine, mut ctl) = controller();
         sent(&engine);
-        let applied = ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }).unwrap();
+        let applied = ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: None }).unwrap();
         assert_eq!(applied, Applied::restructured(1));
         assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
         assert_eq!(sent(&engine), ["InsertFreeModulator index=0 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]);
-        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope }).unwrap();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: None }).unwrap();
         assert_eq!(
             sent(&engine),
             ["InsertFreeModulator index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }"]
@@ -4264,6 +4272,70 @@ type = "steps"
     }
 
     #[test]
+    fn modulate_for_a_setting_of_a_free_modulator_makes_a_sibling_that_hears_what_it_hears() {
+        let (engine, mut ctl) = controller();
+        let envelope = add_free(&mut ctl, ModulatorKind::Envelope);
+        let (lane0, group) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Group(0)));
+        // (A modulator that hears every note has a sibling that does, and one that hears a lane or a group has one that hears the same: the sibling is in the rack that the modulator is in.)
+        for ear in [None, Some(lane0), Some(group)] {
+            ctl.apply(Intent::SetModulatorEar { node: envelope, ear }).unwrap();
+            sent(&engine);
+            modulate(&mut ctl, envelope, Port::Attack, ModulatorKind::Envelope, None).unwrap();
+            let sibling = ctl.model.free_modulators.last().unwrap();
+            assert_eq!(sibling.ear, ear, "{ear:?}");
+            let commands = sent(&engine);
+            let told = commands.iter().find(|c| c.starts_with("SetModulatorEar")).cloned();
+            assert_eq!(told, ear.map(|heard| format!("SetModulatorEar Free index={} ear={}", ctl.model.free_modulators.len() - 1, heard.0)), "{commands:?}");
+        }
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_free_modulator_can_make_one_that_hears_a_lane_or_a_group_and_the_audio_thread_is_told_with_the_modulator() {
+        let (engine, mut ctl) = controller();
+        let (lane0, empty, group) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Instrument(1)), node(&ctl, NodePath::Group(0)));
+        sent(&engine);
+        for (index, heard) in [lane0, empty, group].into_iter().enumerate() {
+            ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: Some(heard) }).unwrap();
+            assert_eq!(ctl.model.free_modulators[index].ear, Some(heard));
+            let commands = sent(&engine);
+            assert!(commands[0].starts_with(&format!("InsertFreeModulator index={index} source=Envelope")), "{commands:?}");
+            assert_eq!(commands.iter().filter(|c| c.starts_with("SetModulatorEar")).collect::<Vec<_>>(), [&format!("SetModulatorEar Free index={index} ear={}", heard.0)], "{commands:?}");
+        }
+        // One that hears nothing in particular tells the audio thread nothing of an ear.
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: None }).unwrap();
+        assert_eq!(ctl.model.free_modulators[3].ear, None);
+        assert!(sent(&engine).iter().all(|c| !c.starts_with("SetModulatorEar")));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn add_free_modulator_refuses_an_ear_that_is_not_a_lane_or_a_group_and_changes_nothing_not_even_the_ids_that_the_next_one_gets() {
+        let (engine, mut ctl) = controller();
+        let (effect, group_lfo) = (node(&ctl, NodePath::Effect { inst: 0, index: 0 }), ctl.model.groups[0].modulators[0].node);
+        sent(&engine);
+        for (ear, refused) in [
+            (effect, invalid("only a lane or a group can be heard")),
+            (group_lfo, invalid("only a lane or a group can be heard")),
+            (NodeId(9_999), IntentError::NotFound(NodeId(9_999))),
+            (NodeId::MASTER, IntentError::NotFound(NodeId::MASTER)),
+        ] {
+            assert_eq!(ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: Some(ear) }), Err(refused), "{ear:?}");
+        }
+        assert!(ctl.model.free_modulators.is_empty());
+        assert_eq!(ctl.rev, 0, "no revision");
+        assert!(sent(&engine).is_empty());
+        // The next one has the node and the slot that it would have had if nothing had been refused.
+        let (_other_engine, mut other) = controller();
+        let made = |ctl: &mut Controller| {
+            let lane0 = node(ctl, NodePath::Instrument(0));
+            ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: Some(lane0) }).unwrap();
+            ctl.model.free_modulators.last().map(|m| (m.node, m.output))
+        };
+        assert_eq!(made(&mut ctl), made(&mut other));
+    }
+
+    #[test]
     fn a_free_modulator_that_is_taken_out_gives_what_it_drove_the_value_the_user_set_and_the_cables_that_drove_its_settings_go_first() {
         let (engine, mut ctl) = controller();
         let lfo = add_free(&mut ctl, ModulatorKind::Lfo);
@@ -4371,7 +4443,7 @@ type = "steps"
     }
 
     #[test]
-    fn modulate_makes_a_modulator_in_the_lanes_rack_and_a_cable_from_it_to_the_parameter_as_one_intent() {
+    fn modulate_makes_a_modulator_of_the_sessions_own_that_hears_the_lane_and_a_cable_from_it_to_the_parameter_as_one_intent() {
         let (engine, mut ctl) = controller();
         sent(&engine);
         let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
@@ -4379,16 +4451,20 @@ type = "steps"
         let applied = modulate(&mut ctl, osc, Port::Param { index: detune }, ModulatorKind::Lfo, None).unwrap();
         // One intent is one revision, and the structure is told whole.
         assert_eq!((applied.rev, applied.restructured, ctl.rev), (1, true, 1));
-        let rack = &ctl.model.instruments[0].modulators;
+        // (Step 94: the modulator is in no lane. The lane's rack is as it was, and the new one hears the lane that the knob is in.)
+        assert!(ctl.model.instruments[0].modulators.is_empty());
+        let rack = &ctl.model.free_modulators;
         assert_eq!(rack.len(), 1);
         assert!(matches!(rack[0].source, ModSourceSlot::Lfo { .. }));
+        assert_eq!(rack[0].ear, Some(osc), "it hears the notes of the lane that the plugin is in");
         assert_eq!(rack[0].targets.len(), 1);
-        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(0), 0, 0), Some(ModTargetKind::PluginParam { slot: 0, param_index: detune }));
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Free, 0, 0), Some(ModTargetKind::FreeParam { plugin: osc, param_index: detune }));
         assert_eq!(rack[0].targets[0].depth, NEW_CABLE_DEPTH);
         let commands = sent(&engine);
-        assert_eq!(commands.len(), 2, "{commands:?}");
-        assert!(commands[0].starts_with("InsertModulator inst=0 index=0 source=Lfo"), "{commands:?}");
-        assert!(commands[1].starts_with(&testutil::told(&ctl.model, &format!("AddModTarget inst=0 mod=0 kind=PluginParam {{ slot: 0, param_index: {detune} }} depth=0.500"))), "{commands:?}");
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        assert!(commands[0].starts_with("InsertFreeModulator index=0 source=Lfo"), "{commands:?}");
+        assert_eq!(commands[1], format!("SetModulatorEar Free index=0 ear={}", osc.0), "the ear goes with the modulator");
+        assert!(commands[2].starts_with("AddFreeModTarget mod=0 "), "{commands:?}");
         assert!(ctl.dirty);
         ctl.model.check_ids().unwrap();
     }
@@ -4403,14 +4479,14 @@ type = "steps"
         sent(&engine);
         for (index, (param, asked, got)) in [(detune, 1.0, 1.0), (volume, -0.25, -0.25), (pan, 5.0, 1.0)].into_iter().enumerate() {
             modulate(&mut ctl, osc, Port::Param { index: param }, ModulatorKind::MidiLearn, Some(asked)).unwrap();
-            assert_eq!(ctl.model.instruments[0].modulators[index].targets[0].depth, got, "{asked}");
+            assert_eq!(ctl.model.free_modulators[index].targets[0].depth, got, "{asked}");
         }
         // (The depth is set after the cable is drawn, as it is when it is set by itself.)
         let commands = sent(&engine);
-        assert!(commands[1].starts_with("AddModTarget inst=0 mod=0"), "{commands:?}");
-        assert_eq!(commands[2], "SetModTargetDepth inst=0 mod=0 target=0 depth=1.000", "{commands:?}");
-        assert!(commands.contains(&"SetModTargetDepth inst=0 mod=1 target=0 depth=-0.250".to_string()), "{commands:?}");
-        assert!(commands.contains(&"SetModTargetDepth inst=0 mod=2 target=0 depth=1.000".to_string()), "{commands:?}");
+        let at = commands.iter().position(|c| c.starts_with("AddFreeModTarget mod=0")).expect("the first cable");
+        assert_eq!(commands[at + 1], "SetFreeModTargetDepth mod=0 target=0 depth=1.000", "{commands:?}");
+        assert!(commands.contains(&"SetFreeModTargetDepth mod=1 target=0 depth=-0.250".to_string()), "{commands:?}");
+        assert!(commands.contains(&"SetFreeModTargetDepth mod=2 target=0 depth=1.000".to_string()), "{commands:?}");
         assert_eq!(ctl.rev, 3, "a revision for each");
     }
 
@@ -4434,7 +4510,8 @@ type = "steps"
         ] {
             modulate(&mut ctl, osc, Port::Param { index: param }, kind, None).unwrap();
         }
-        let rack = &ctl.model.instruments[0].modulators;
+        let rack = &ctl.model.free_modulators;
+        assert!(rack.iter().all(|m| m.ear == Some(osc)), "each hears the lane");
         assert!(matches!(rack[0].source, ModSourceSlot::Lfo { waveform: LfoWaveform::Sine, rate, .. } if rate == 1.0));
         assert!(matches!(rack[1].source, ModSourceSlot::Envelope { attack, decay, sustain, release } if (attack, decay, sustain, release) == (0.01, 0.3, 0.7, 0.5)));
         assert!(matches!(rack[2].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "armed for the next control");
@@ -4448,17 +4525,19 @@ type = "steps"
     }
 
     #[test]
-    fn modulate_an_effects_parameter_goes_in_its_lanes_rack_and_a_bus_effects_in_its_groups() {
+    fn modulate_an_effects_parameter_makes_a_modulator_that_hears_its_lane_and_a_bus_effects_one_that_hears_its_group() {
         let (engine, mut ctl) = controller();
         sent(&engine);
         let reverb = NodePath::Effect { inst: 0, index: 0 };
         let (damping, _) = param(&ctl, reverb, "damping");
         let reverb_node = node(&ctl, reverb);
         modulate(&mut ctl, reverb_node, Port::Param { index: damping }, ModulatorKind::Lfo, None).unwrap();
-        // The reverb is the second plugin of the lane (slot 1); the lane's modulator is in the lane's rack, though the lane is a member of the group.
-        let rack = &ctl.model.instruments[0].modulators;
-        assert_eq!(rack.len(), 1);
-        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(0), 0, 0), Some(ModTargetKind::PluginParam { slot: 1, param_index: damping }));
+        // The reverb is the second plugin of the lane; the new modulator hears the lane (though the lane is a member of the group), and the lane's rack and the group's are as they were.
+        let (lane_node, group_node) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Group(0)));
+        assert_eq!(ctl.model.free_modulators.len(), 1);
+        assert_eq!(ctl.model.free_modulators[0].ear, Some(lane_node));
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Free, 0, 0), Some(ModTargetKind::FreeParam { plugin: reverb_node, param_index: damping }));
+        assert!(ctl.model.instruments[0].modulators.is_empty(), "the lane's rack is as it was");
         assert_eq!(ctl.model.groups[0].modulators.len(), 1, "the group's rack is as it was");
 
         let bus = NodePath::GroupEffect { group: 0, index: 0 };
@@ -4466,13 +4545,14 @@ type = "steps"
         let bus_node = node(&ctl, bus);
         sent(&engine);
         modulate(&mut ctl, bus_node, Port::Param { index: cutoff }, ModulatorKind::Envelope, None).unwrap();
-        let group_rack = &ctl.model.groups[0].modulators;
-        assert_eq!(group_rack.len(), 2);
-        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Group(0), 1, 0), Some(ModTargetKind::GroupBus { effect_index: 0, param_index: cutoff }));
-        assert_eq!(ctl.model.instruments[0].modulators.len(), 1, "the lane's rack is as it was");
+        assert_eq!(ctl.model.free_modulators.len(), 2);
+        assert_eq!(ctl.model.free_modulators[1].ear, Some(group_node), "a bus effect's modulator hears the group");
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Free, 1, 0), Some(ModTargetKind::FreeParam { plugin: bus_node, param_index: cutoff }));
+        assert_eq!(ctl.model.groups[0].modulators.len(), 1, "the group's rack is as it was");
         let commands = sent(&engine);
-        assert!(commands[0].starts_with("InsertGroupModulator group=0 index=1"), "{commands:?}");
-        assert!(commands[1].starts_with(&testutil::told(&ctl.model, &format!("AddGroupModTarget group=0 mod=1 kind=GroupBus {{ effect_index: 0, param_index: {cutoff} }}"))), "{commands:?}");
+        assert!(commands[0].starts_with("InsertFreeModulator index=1"), "{commands:?}");
+        assert_eq!(commands[1], format!("SetModulatorEar Free index=1 ear={}", group_node.0), "{commands:?}");
+        assert!(commands[2].starts_with("AddFreeModTarget mod=1 "), "{commands:?}");
         ctl.model.check_ids().unwrap();
     }
 
@@ -4502,26 +4582,30 @@ type = "steps"
     }
 
     #[test]
-    fn modulate_puts_the_modulator_in_the_rack_of_the_lane_the_plugin_is_in_whichever_lane_that_is() {
+    fn modulate_makes_a_modulator_that_hears_the_lane_the_plugin_is_in_whichever_lane_that_is() {
         let (engine, mut ctl) = reaching();
         sent(&engine);
         let racks = |ctl: &Controller| ctl.model.instruments.iter().map(|lane| lane.modulators.len()).collect::<Vec<_>>();
         let groups = |ctl: &Controller| ctl.model.groups.iter().map(|group| group.modulators.len()).collect::<Vec<_>>();
-        let (before, groups_before) = (racks(&ctl), groups(&ctl));
-        // The filter of the lane that has none of a group's, after the control it has.
+        let (before, groups_before, free_before) = (racks(&ctl), groups(&ctl), ctl.model.free_modulators.len());
+        // The filter of the lane that has none of a group's: the new modulator hears that lane.
         let filter = NodePath::Effect { inst: 3, index: 0 };
         let (cutoff, _) = param(&ctl, filter, "cutoff");
         let filter_node = node(&ctl, filter);
         modulate(&mut ctl, filter_node, Port::Param { index: cutoff }, ModulatorKind::Lfo, None).unwrap();
-        assert_eq!(racks(&ctl), [before[0], before[1], before[2], before[3] + 1, before[4]]);
-        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(3), before[3], 0), Some(ModTargetKind::PluginParam { slot: 1, param_index: cutoff }));
-        assert!(sent(&engine)[0].starts_with(&format!("InsertModulator inst=3 index={}", before[3])));
-        // The instrument of a lane that is a member of a group: the lane's rack too, and the group's is as it was.
+        assert_eq!(racks(&ctl), before, "no lane's rack has one more");
+        assert_eq!(ctl.model.free_modulators.len(), free_before + 1);
+        let made = ctl.model.free_modulators.last().unwrap();
+        assert_eq!(made.ear, Some(node(&ctl, NodePath::Instrument(3))));
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Free, free_before, 0), Some(ModTargetKind::FreeParam { plugin: filter_node, param_index: cutoff }));
+        assert!(sent(&engine)[0].starts_with(&format!("InsertFreeModulator index={free_before}")));
+        // The instrument of a lane that is a member of a group: it hears the lane, and the group's rack is as it was.
         let (detune, _) = param(&ctl, NodePath::Instrument(2), "detune");
         let osc = node(&ctl, NodePath::Instrument(2));
         modulate(&mut ctl, osc, Port::Param { index: detune }, ModulatorKind::Envelope, None).unwrap();
-        assert_eq!(racks(&ctl), [before[0], before[1], before[2] + 1, before[3] + 1, before[4]]);
-        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(2), 0, 0), Some(ModTargetKind::PluginParam { slot: 0, param_index: detune }));
+        assert_eq!(racks(&ctl), before);
+        assert_eq!(ctl.model.free_modulators.last().unwrap().ear, Some(osc));
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Free, free_before + 1, 0), Some(ModTargetKind::FreeParam { plugin: osc, param_index: detune }));
         assert_eq!(groups(&ctl), groups_before);
         ctl.model.check_ids().unwrap();
     }
@@ -4533,7 +4617,7 @@ type = "steps"
         let lane = node(&ctl, NodePath::Instrument(0));
         let (detune, _) = param(&ctl, NodePath::Instrument(0), "detune");
         sent(&engine);
-        let racks = |ctl: &Controller| (ctl.model.instruments[0].modulators.len(), ctl.model.groups[0].modulators.len());
+        let racks = |ctl: &Controller| (ctl.model.instruments[0].modulators.len(), ctl.model.groups[0].modulators.len(), ctl.model.free_modulators.len());
         let before = racks(&ctl);
         let refused: Vec<(&str, NodeId, Port, Option<f32>, IntentError)> = vec![
             ("a node that is not there", NodeId(9_999), Port::Param { index: 0 }, None, IntentError::NotFound(NodeId(9_999))),
@@ -4557,7 +4641,7 @@ type = "steps"
         let (_other_engine, mut other) = modulated();
         let other_lane = node(&other, NodePath::Instrument(0));
         modulate(&mut other, other_lane, Port::Param { index: detune }, ModulatorKind::Lfo, None).unwrap();
-        let ids = |ctl: &Controller| ctl.model.instruments[0].modulators.last().map(|m| (m.node, m.targets[0].edge, m.targets[0].effective, m.output));
+        let ids = |ctl: &Controller| ctl.model.free_modulators.last().map(|m| (m.node, m.targets[0].edge, m.targets[0].effective, m.output));
         assert_eq!(ids(&ctl), ids(&other));
     }
 
@@ -4626,8 +4710,8 @@ type = "midi"
     /// modulator that has no parent (`web/src/client/fixtures/freeReach.json`).
     fn reaching_with_free() -> (StubEngine, Controller) {
         let (engine, mut ctl) = reaching();
-        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }).unwrap();
-        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope }).unwrap();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: None }).unwrap();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: None }).unwrap();
         let (lfo, envelope) = (ctl.model.free_modulators[0].node, ctl.model.free_modulators[1].node);
         let (osc, (detune, _)) = (ctl.model.instruments[0].node, param(&ctl, NodePath::Instrument(0), "detune"));
         ctl.apply(cable_to(lfo, osc, detune)).unwrap();
@@ -7090,5 +7174,99 @@ type = "midi"
             "{} is not what the built-in effects are now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
             path.display()
         );
+    }
+
+    // -- What happens to the modulators of a lane and a group that the program has moved to the session's own (step 94: they are nodes of their own that hear the lane or the group, and drive the plugins by their nodes) --
+
+    /// A group with the first lane in it and an LFO that drives that lane's `detune`, an LFO of the lane that drives its `volume`, and a second lane that is in no group.
+    const A_GROUP_AND_A_LANE_WITH_MODULATORS: &str = r#"
+[[group]]
+[[group.modulator]]
+[[group.modulator.target]]
+member = 0
+param = "detune"
+depth = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument.modulator]]
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.2
+
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
+    /// `A_GROUP_AND_A_LANE_WITH_MODULATORS` as the program loads it, with the modulators moved: the lane's LFO first, the group's after it.
+    fn a_moved_session() -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine();
+        (engine, Controller::new(load_moved(A_GROUP_AND_A_LANE_WITH_MODULATORS).model, handles, None))
+    }
+
+    /// What each of the session's own modulators hears and how many cables it has: `(ear, cables)`.
+    fn the_modulators_of(ctl: &Controller) -> Vec<(Option<NodeId>, usize)> {
+        ctl.model.free_modulators.iter().map(|m| (m.ear, m.targets.len())).collect()
+    }
+
+    #[test]
+    fn a_session_that_is_moved_has_the_lanes_lfo_and_the_groups_as_modulators_of_the_sessions_own_that_hear_them() {
+        let (_engine, ctl) = a_moved_session();
+        let (lane, group) = (ctl.model.instruments[0].node, ctl.model.groups[0].node);
+        assert_eq!(the_modulators_of(&ctl), vec![(Some(lane), 1), (Some(group), 1)]);
+        assert!(ctl.model.instruments.iter().all(|lane| lane.modulators.is_empty()) && ctl.model.groups.iter().all(|group| group.modulators.is_empty()));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn taking_a_group_out_leaves_the_modulator_that_heard_it_and_its_cable_to_the_member_and_undo_gives_the_ear_back() {
+        let (engine, mut ctl) = a_moved_session();
+        let (lane, group) = (ctl.model.instruments[0].node, ctl.model.groups[0].node);
+        let modulator = ctl.model.free_modulators[1].node;
+        sent(&engine);
+        ctl.apply(Intent::RemoveNode { node: group }).unwrap();
+        let told = sent(&engine);
+        // The modulator stays, with its cable to the member (which stays, in no group): cables go by node, and a group has none of its own to take with it. It hears every note now, as the audio thread has it (its ear names a node
+        // that went), and the model keeps the node, so that Undo gives the group back to it.
+        assert_eq!(the_modulators_of(&ctl), vec![(Some(lane), 1), (Some(group), 1)]);
+        assert_eq!(ctl.model.ear_of(&ctl.model.free_modulators[1]), None);
+        assert!(told.iter().all(|c| !c.contains("ModTarget")), "none of its cables is taken out: {told:?}");
+        assert!(ctl.model.graph().edges.iter().any(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. }) && e.from.node == modulator), "and the graph has it");
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.ear_of(&ctl.model.free_modulators[1]), Some(group), "it hears the group that came back");
+        assert_eq!(the_modulators_of(&ctl), vec![(Some(lane), 1), (Some(group), 1)]);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_lane_that_leaves_its_group_keeps_the_cables_of_the_modulators_that_hear_the_group() {
+        let (engine, mut ctl) = a_moved_session();
+        let (lane, group) = (ctl.model.instruments[0].node, ctl.model.groups[0].node);
+        sent(&engine);
+        ctl.apply(Intent::SetLaneGroup { node: lane, group: None }).unwrap();
+        // (A group's modulator was the group's, and its cables to a member went with the member when it left: it is a modulator of the session's own now, which drives the plugin it was drawn to wherever the lane is.)
+        assert_eq!(the_modulators_of(&ctl), vec![(Some(lane), 1), (Some(group), 1)]);
+        assert!(sent(&engine).iter().all(|c| !c.contains("ModTarget")), "no cable is taken out");
+        ctl.undo().unwrap();
+        assert_eq!(the_modulators_of(&ctl), vec![(Some(lane), 1), (Some(group), 1)]);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn taking_a_lane_out_leaves_the_modulators_that_heard_it_with_no_cable_to_its_plugins_and_undo_gives_it_all_back() {
+        let (engine, mut ctl) = a_moved_session();
+        let (lane, group) = (ctl.model.instruments[0].node, ctl.model.groups[0].node);
+        ctl.apply(Intent::RemoveNode { node: lane }).unwrap();
+        // (The audio thread hands the lane back when it is asked.)
+        sent(&engine);
+        // Both stay (the lane's own, and the group's): each drove a plugin of the lane, so that the cables go with it, and what the lane's hears is every note then.
+        assert_eq!(the_modulators_of(&ctl), vec![(Some(lane), 0), (Some(group), 0)]);
+        assert_eq!(ctl.model.ear_of(&ctl.model.free_modulators[0]), None);
+        assert_eq!(ctl.model.ear_of(&ctl.model.free_modulators[1]), Some(group));
+        ctl.undo().unwrap();
+        assert_eq!(the_modulators_of(&ctl), vec![(Some(lane), 1), (Some(group), 1)]);
+        assert_eq!(ctl.model.ear_of(&ctl.model.free_modulators[0]), Some(lane), "the lane that came back is heard again");
+        ctl.model.check_ids().unwrap();
     }
 }

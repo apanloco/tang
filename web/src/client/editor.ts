@@ -111,13 +111,14 @@ export class Editor {
   }
 
   /**
-   * Add a modulator of `kind` that is in no lane and no group, the session's own: a cable from it can end at a parameter of any plugin, and at the settings of the other modulators like it. Resolves
-   * with the id of the node it made, which the canvas is asked to show, or with null if it was refused (the page says why). As for `addModulator`: the node is the last modulator with no parent that the
-   * session did not have before.
+   * Add a modulator of `kind` that is in no lane and no group, the session's own: a cable from it can end at a parameter of any plugin, and at the settings of the other modulators like it. It hears the notes
+   * of the lane or the group `hears` (the "+" of a lane and of a group asks it so), or every note for none (the bar's "+ Modulator"). Resolves with the id of the node it made, which the canvas is asked to show,
+   * or with null if it was refused (the page says why). As for `addModulator`: the node is the last modulator with no parent that the session did not have before.
    */
-  async addFreeModulator(kind: ModulatorKind): Promise<NodeId | null> {
+  async addFreeModulator(kind: ModulatorKind, hears: NodeId | null = null): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
-    if (!(await this.#attempt(`add ${MODULATOR_LABELS[kind]} of its own`, { type: "addFreeModulator", kind }))) return null;
+    const what = hears === null ? `add ${MODULATOR_LABELS[kind]} of its own` : `add ${MODULATOR_LABELS[kind]} that hears ${this.#name(hears)}`;
+    if (!(await this.#attempt(what, { type: "addFreeModulator", kind, hears }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "modulator" && node.parent === null && !before.has(node.id));
     return this.#shown(added?.at(-1)?.id);
   }
@@ -411,8 +412,8 @@ export class Editor {
   /**
    * Make a modulator of `kind` for what the port `to` of the node `node` is, and draw a cable from it to the port, as one change that is one step
    * of the history (`Modulate`): a parameter of the plugin in it (by the plugin's own index), or a setting of a modulator (its rate, a stage of its
-   * envelope), or the depth of one of its cables. The modulator goes in the rack that reaches the port: the lane's for a lane's instrument or an
-   * effect of its chain, the group's for a bus effect, and the rack of the modulator for a setting of it, where it is a sibling that drives it. A
+   * envelope), or the depth of one of its cables. The modulator is the session's own (step 94), and hears the lane of a lane's instrument or an
+   * effect of its chain, the group of a bus effect, and what the modulator hears for a setting of one that is the session's own, where it is a sibling that drives it. A
    * control that learns is armed, and its cable starts at the whole range (`LEARN_DEPTH`). Resolves with the id of the modulator it made, which the
    * canvas is asked to show, or with null if it was refused (the page says why). The node is the one new to the session that has the cable to the
    * port: two clients that modulate one parameter at once may be given each other's, which is as good.
