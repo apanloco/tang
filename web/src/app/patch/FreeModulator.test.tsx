@@ -52,6 +52,72 @@ async function add(label: string, id: number): Promise<HTMLElement> {
   return nodeOf(id);
 }
 
+describe("the menu that chooses whose notes a modulator that is in no lane and no group hears (step 93)", () => {
+  const hearsButton = (node: HTMLElement): HTMLElement => within(node).getByRole("button", { name: /^Whose notes / });
+
+  test("is on the node of a modulator that is in no lane and not on the node of a lane's, which hears its own", async () => {
+    await page();
+    const node = await add("LFO", 3);
+    expect(hearsButton(node).textContent).toBe("\u266b");
+    expect(hearsButton(node).getAttribute("aria-label")).toBe("Whose notes LFO 2 hears: every note");
+    expect(hearsButton(node).id).toBe("hears-3");
+    // (The tracer's own LFO is the lane's.)
+    expect(within(await nodeOf(2)).queryByRole("button", { name: /^Whose notes / })).toBeNull();
+  });
+
+  test("lists every note, as the choice now, and the lanes and the groups of the session by the names that the canvas gives them", async () => {
+    await page();
+    const node = await add("Envelope", 3);
+    fireEvent.click(hearsButton(node));
+    const menu = screen.getByRole("menu");
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Every note", "Oscillator"]);
+    expect(within(menu).getAllByRole("group").map((group) => group.getAttribute("aria-label"))).toEqual(["Lanes"]);
+    // (It is the choice now, and marked: the menu opens on it.)
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.getAttribute("aria-current"))).toEqual(["true", null]);
+  });
+
+  test("asks for the lane that is chosen, and the button is lit and says whom the modulator hears, until every note is chosen", async () => {
+    const { server, requests } = await page();
+    const node = await add("Envelope", 3);
+    expect(hearsButton(node).className).not.toContain("tang-node__notes--set");
+    fireEvent.click(hearsButton(node));
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Oscillator" }));
+    await waitFor(() => {
+      expect(server.snapshot.graph.nodes.find((n) => n.id === 3)).toMatchObject({ hears: oscillator.id });
+    });
+    expect(asked(requests).slice(1)).toEqual([{ type: "setModulatorEar", node: 3, ear: oscillator.id }]);
+    await waitFor(() => {
+      expect(hearsButton(within(document.body).getByTestId("rf__node-3")).getAttribute("aria-label")).toBe("Whose notes ADSR hears: Oscillator");
+    });
+    expect(hearsButton(await nodeOf(3)).className).toContain("tang-node__notes--set");
+    // The menu opens on what it hears now, and every note is a choice that asks for none.
+    fireEvent.click(hearsButton(await nodeOf(3)));
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Every note" }));
+    await waitFor(() => {
+      expect(server.snapshot.graph.nodes.find((n) => n.id === 3)).not.toHaveProperty("hears");
+    });
+    expect(asked(requests).slice(2)).toEqual([{ type: "setModulatorEar", node: 3, ear: null }]);
+    await waitFor(() => {
+      expect(hearsButton(within(document.body).getByTestId("rf__node-3")).className).not.toContain("tang-node__notes--set");
+    });
+  });
+
+  test("goes back with Undo, which says whom the modulator hears in its words, and comes again with Redo", async () => {
+    const { server } = await page();
+    const node = await add("LFO", 3);
+    fireEvent.click(hearsButton(node));
+    fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Oscillator" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Undo make an LFO hear the lane of Oscillator" }));
+    await waitFor(() => {
+      expect(server.snapshot.graph.nodes.find((n) => n.id === 3)).not.toHaveProperty("hears");
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Redo make an LFO hear the lane of Oscillator" }));
+    await waitFor(() => {
+      expect(server.snapshot.graph.nodes.find((n) => n.id === 3)).toMatchObject({ hears: oscillator.id });
+    });
+  });
+});
+
 describe("the bar's button that adds a modulator that is in no lane and no group", () => {
   test("is a menu of the kinds of modulator, as the menu of a lane's \"+\" is, which is not there until it is opened", async () => {
     await page();

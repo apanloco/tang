@@ -68,9 +68,15 @@ pub enum NodeKind {
     /// An effect in a lane's chain or in a group's bus chain, with its dry/wet mix and whether the stage before it feeds it (`feed`: `chain`, or `none` once the link into it is cut, when
     /// it is fed by the audio cables that end at it and by nothing else).
     Effect { plugin: Plugin, mix: f32, feed: Feed },
-    /// A modulator, lane-scoped or group-scoped. What it drives are its modulation
-    /// edges.
-    Modulator { source: ModulatorSource },
+    /// A modulator, lane-scoped, group-scoped or in no lane and no group (`parent` null). What it drives are its modulation edges. A modulator that is in no lane and no group has an ear
+    /// (`hears`): the node of the lane or the group whose notes it hears, as the lane's instrument or the group's members are given them. None, which is absent on the wire, is every event,
+    /// whatever its source, and so is a node that is gone; a lane's modulator and a group's hear their own lane or group and have none.
+    Modulator {
+        source: ModulatorSource,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "web", ts(optional))]
+        hears: Option<NodeId>,
+    },
     /// A submix group: its volume and stereo balance, whether it is muted or soloed, and where its end goes (`route`: to the master, or nowhere but its audio cables).
     Group { volume: f32, pan: f32, muted: bool, solo: bool, route: Route },
     /// The master mix.
@@ -381,7 +387,7 @@ impl SessionModel {
                 kind: NodeKind::Group { volume: group.volume, pan: group.pan, muted: group.muted, solo: group.solo, route: group.route },
             });
             nodes.extend(group.effects.iter().map(|fx| effect_node(fx, group.node)));
-            nodes.extend(group.modulators.iter().map(|m| modulator_node(m, Some(group.node))));
+            nodes.extend(group.modulators.iter().map(|m| modulator_node(m, Some(group.node), None)));
             // Out of the group, through its bus effects, to the master (unless its way out is cut: then the chain ends at its last effect).
             audio_chain(&mut edges, group.node, group.effects.iter().map(|fx| (fx.node, fx.fed)), (group.route == Route::Out).then_some((NodeId::MASTER, EdgeKind::Audio)));
         }
@@ -407,7 +413,7 @@ impl SessionModel {
                 },
             });
             nodes.extend(lane.effects.iter().map(|fx| effect_node(fx, lane.node)));
-            nodes.extend(lane.modulators.iter().map(|m| modulator_node(m, Some(lane.node))));
+            nodes.extend(lane.modulators.iter().map(|m| modulator_node(m, Some(lane.node), None)));
             // Out of the instrument, through the lane's effects, to its group or the master (unless its way out is cut).
             let sink = match group {
                 Some(group) => (group.node, EdgeKind::Member),
@@ -417,7 +423,7 @@ impl SessionModel {
         }
 
         // The modulators that belong to no lane and no group have no parent.
-        nodes.extend(self.free_modulators.iter().map(|m| modulator_node(m, None)));
+        nodes.extend(self.free_modulators.iter().map(|m| modulator_node(m, None, self.ear_of(m))));
 
         nodes.push(Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master });
         // Where each of these nodes is drawn, if it has been placed (the table also has the places of nodes that have gone).
@@ -599,7 +605,7 @@ fn effect_node(slot: &PluginSlot, parent: NodeId) -> Node {
     Node { id: slot.node, parent: Some(parent), name: slot.name.clone(), ui: None, kind: NodeKind::Effect { plugin: plugin(slot), mix: slot.mix, feed } }
 }
 
-fn modulator_node(modulator: &ModulatorSlot, parent: Option<NodeId>) -> Node {
+fn modulator_node(modulator: &ModulatorSlot, parent: Option<NodeId>, hears: Option<NodeId>) -> Node {
     let source = match &modulator.source {
         ModSourceSlot::Lfo { waveform, rate, retrigger, fade, sync } => {
             ModulatorSource::Lfo { waveform: (*waveform).into(), rate: *rate, retrigger: *retrigger, fade: *fade, sync: *sync as u32 }
@@ -615,7 +621,7 @@ fn modulator_node(modulator: &ModulatorSlot, parent: Option<NodeId>) -> Node {
             ModulatorSource::Steps { values: values.to_vec(), length: *length as u32, rate: *rate, glide: *glide, retrigger: *retrigger, sync: *sync as u32 }
         }
     };
-    Node { id: modulator.node, parent, name: modulator.source.node_name(), ui: None, kind: NodeKind::Modulator { source } }
+    Node { id: modulator.node, parent, name: modulator.source.node_name(), ui: None, kind: NodeKind::Modulator { source, hears } }
 }
 
 fn plugin(slot: &PluginSlot) -> Plugin {
@@ -785,7 +791,7 @@ mod tests {
         let graph = model.graph();
         let node = graph.nodes.iter().find(|node| matches!(node.kind, NodeKind::Modulator { .. })).unwrap();
         assert_eq!(node.name, "Macro");
-        assert!(matches!(&node.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value } } if *value == 0.5));
+        assert!(matches!(&node.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value }, .. } if *value == 0.5));
         assert!(graph.edges.iter().all(|edge| edge.from.node != node.id && edge.to.node != node.id), "a modulator with no cable has no edge");
     }
 
@@ -1323,7 +1329,7 @@ depth = 0.1
         let graph = model.graph();
         let found = node(&graph, knob);
         assert_eq!(found.name, "Macro");
-        assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.25 } });
+        assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.25 }, hears: None });
         assert_eq!(found.parent, Some(model.instruments[0].node));
     }
 
@@ -1339,7 +1345,7 @@ depth = 0.1
         values[..3].copy_from_slice(&[0.5, -0.25, 1.0]);
         let found_first = found(&model);
         assert_eq!(found_first.name, "Steps");
-        assert_eq!(found_first.kind, NodeKind::Modulator { source: ModulatorSource::Steps { values, length: 3, rate: 6.5, glide: 0.25, retrigger: false, sync: 0 } });
+        assert_eq!(found_first.kind, NodeKind::Modulator { source: ModulatorSource::Steps { values, length: 3, rate: 6.5, glide: 0.25, retrigger: false, sync: 0 }, hears: None });
         assert_eq!(found_first.parent, Some(model.instruments[0].node));
         // Its name does not say how fast it goes or how long it is, which change under a client.
         if let ModSourceSlot::Steps { length, rate, .. } = &mut model.instruments[0].modulators[0].source {
@@ -1366,11 +1372,11 @@ depth = 0.1
         assert_eq!(node(&graph, env).name, "ADSR");
         assert_eq!(
             node(&graph, lfo).kind,
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0, retrigger: false, fade: 0.0, sync: 0 } }
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0, retrigger: false, fade: 0.0, sync: 0 }, hears: None }
         );
         assert_eq!(
             node(&graph, env).kind,
-            NodeKind::Modulator { source: ModulatorSource::Envelope { attack: 0.02, decay: 0.4, sustain: 0.5, release: 1.0 } }
+            NodeKind::Modulator { source: ModulatorSource::Envelope { attack: 0.02, decay: 0.4, sustain: 0.5, release: 1.0 }, hears: None }
         );
 
         let modulation_edges: Vec<&Edge> = graph.edges.iter().filter(|e| matches!(e.kind, EdgeKind::Modulation { .. })).collect();
@@ -1432,7 +1438,7 @@ depth = 0.1
             .modulators
             .iter()
             .map(|m| match &node(&graph, m.node).kind {
-                NodeKind::Modulator { source } => source,
+                NodeKind::Modulator { source, .. } => source,
                 other => panic!("{other:?}"),
             })
             .collect();
@@ -1466,7 +1472,7 @@ depth = 0.1
             let m = model.instruments[0].modulators[0].node;
             assert_eq!(
                 node(&graph, m).kind,
-                NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 } },
+                NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 }, hears: None },
                 "{name}"
             );
         }
@@ -2053,11 +2059,11 @@ depth = 0.2
         let (keyed, free) = (model.instruments[0].modulators[0].node, model.instruments[0].modulators[1].node);
         assert_eq!(
             node(&graph, keyed).kind,
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 2.0, retrigger: true, fade: 0.75, sync: 0 } }
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 2.0, retrigger: true, fade: 0.75, sync: 0 }, hears: None }
         );
         assert_eq!(
             node(&graph, free).kind,
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 } },
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 }, hears: None },
             "one that says nothing of it runs free"
         );
     }
@@ -2070,7 +2076,7 @@ depth = 0.2
         .model;
         let graph = model.graph();
         let sync_of = |index: usize| match &node(&graph, model.instruments[0].modulators[index].node).kind {
-            NodeKind::Modulator { source: ModulatorSource::Lfo { sync, rate, .. } | ModulatorSource::Steps { sync, rate, .. } } => (*sync, *rate),
+            NodeKind::Modulator { source: ModulatorSource::Lfo { sync, rate, .. } | ModulatorSource::Steps { sync, rate, .. }, .. } => (*sync, *rate),
             other => panic!("{other:?}"),
         };
         // (The rate is told too, whether or not it is followed: it is what the knob shows, and what it is when the modulator is free again.)

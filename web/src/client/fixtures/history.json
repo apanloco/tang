@@ -13827,6 +13827,1283 @@
       ]
     },
     {
+      "name": "a modulator that is in no lane is made to hear a lane, a group and every note, the lane that it hears is taken out and put back, and what is refused or is as it is asked to be is no step",
+      "rows": [
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "add an envelope"
+          },
+          "intent": {
+            "kind": "envelope",
+            "type": "addFreeModulator"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "make an envelope hear the lane of Oscillator"
+          },
+          "intent": {
+            "ear": 8,
+            "node": 10,
+            "type": "setModulatorEar"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "ears": [
+              "10 8"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "make an envelope hear Pad"
+          },
+          "intent": {
+            "ear": 0,
+            "node": 10,
+            "type": "setModulatorEar"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "ears": [
+              "10 0"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "make an envelope hear Pad"
+          },
+          "intent": {
+            "ear": 0,
+            "node": 10,
+            "type": "setModulatorEar"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "ears": [
+              "10 0"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "make an envelope hear every note"
+          },
+          "intent": {
+            "ear": null,
+            "node": 10,
+            "type": "setModulatorEar"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "make an envelope hear the lane of Oscillator"
+          },
+          "intent": {
+            "ear": 8,
+            "node": 10,
+            "type": "setModulatorEar"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "ears": [
+              "10 8"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove the lane of Oscillator"
+          },
+          "intent": {
+            "node": 8,
+            "type": "removeNode"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove the lane of Oscillator"
+          },
+          "intent": {
+            "ear": null,
+            "node": 10,
+            "type": "setModulatorEar"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "error": "only a modulator that is in no lane and no group has an ear: a lane's or a group's hears its own",
+          "history": {
+            "redo": null,
+            "undo": "remove the lane of Oscillator"
+          },
+          "intent": {
+            "ear": 3,
+            "node": 6,
+            "type": "setModulatorEar"
+          }
+        },
+        {
+          "error": "only a lane or a group can be heard",
+          "history": {
+            "redo": null,
+            "undo": "remove the lane of Oscillator"
+          },
+          "intent": {
+            "ear": 4,
+            "node": 10,
+            "type": "setModulatorEar"
+          }
+        },
+        {
+          "error": "there is no node 9999",
+          "history": {
+            "redo": null,
+            "undo": "remove the lane of Oscillator"
+          },
+          "intent": {
+            "ear": 9999,
+            "node": 10,
+            "type": "setModulatorEar"
+          }
+        },
+        {
+          "error": "there is no node 9999",
+          "history": {
+            "redo": null,
+            "undo": "remove the lane of Oscillator"
+          },
+          "intent": {
+            "ear": null,
+            "node": 9999,
+            "type": "setModulatorEar"
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove the lane of Oscillator",
+            "undo": "make an envelope hear the lane of Oscillator"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "ears": [
+              "10 8"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "make an envelope hear the lane of Oscillator",
+            "undo": "make an envelope hear every note"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "make an envelope hear every note",
+            "undo": "make an envelope hear Pad"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "ears": [
+              "10 0"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "make an envelope hear Pad",
+            "undo": "make an envelope hear the lane of Oscillator"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "ears": [
+              "10 8"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "make an envelope hear the lane of Oscillator",
+            "undo": "add an envelope"
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "15 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "add an envelope",
+            "undo": null
+          },
+          "intent": {
+            "type": "undo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "make an envelope hear the lane of Oscillator",
+            "undo": "add an envelope"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "16 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "make an envelope hear Pad",
+            "undo": "make an envelope hear the lane of Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "ears": [
+              "10 8"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "16 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "make an envelope hear every note",
+            "undo": "make an envelope hear Pad"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "ears": [
+              "10 0"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "16 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "make an envelope hear the lane of Oscillator",
+            "undo": "make an envelope hear every note"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "16 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": "remove the lane of Oscillator",
+            "undo": "make an envelope hear the lane of Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member",
+              "8>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "ears": [
+              "10 8"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips",
+              "12 8 audioOut peak",
+              "13 8 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "14 9 modOut modOutput",
+              "16 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "8 - Oscillator",
+              "9 8 LFO",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        },
+        {
+          "events": [],
+          "history": {
+            "redo": null,
+            "undo": "remove the lane of Oscillator"
+          },
+          "intent": {
+            "type": "redo"
+          },
+          "restructured": true,
+          "shape": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>4294967295 audio",
+              "3>4 audio",
+              "4>5 audio",
+              "5>0 member"
+            ],
+            "cables": [
+              "#0 6>3 param1 @0.5",
+              "#1 7>3 param2 @0.25"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 3 audioOut peak",
+              "7 3 audioOut clips"
+            ],
+            "modulation": [
+              "8 6 modOut modOutput",
+              "10 7 modOut modOutput",
+              "16 10 modOut modOutput",
+              "9 3 param1 effective",
+              "11 3 param2 effective"
+            ],
+            "nodes": [
+              "0 - Pad",
+              "1 0 Filter",
+              "2 - Group 2",
+              "3 0 Oscillator",
+              "4 3 Reverb",
+              "5 3 Filter",
+              "6 3 LFO",
+              "7 3 ADSR",
+              "10 - ADSR",
+              "4294967295 - Master"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "an instrument is added and taken out as a lane, and put back with its id",
       "rows": [
         {

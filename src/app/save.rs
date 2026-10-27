@@ -222,6 +222,8 @@ fn modulators_to_save(model: &SessionModel, at: ModulatorLocation) -> Vec<SaveMo
                     })
                     .collect(),
                 ui: ui.get(&m.node).copied(),
+                // (Only the session's own modulators hear a lane or a group; one that hears a node that is gone hears every event, and is written so: no place names a node that is not there.)
+                hears: m.ear.and_then(|ear| model.heard_place(ear)),
             }
         })
         .collect()

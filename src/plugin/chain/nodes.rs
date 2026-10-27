@@ -128,33 +128,12 @@ impl InstrumentLane {
         let out = &mut io.outputs_mut()[0];
         let frames = out.first().map_or(0, |buf| buf.len());
 
-        // Filter MIDI by range, remap, let the pattern play, transpose.
-        self.filter_midi(cx.midi);
-        let effective_events: &[(u64, [u8; 3])] = if let Some(ref remapper) = self.remapper {
-            remapper.remap_events(&self.filtered_midi, &mut self.remapped_events);
-            &self.remapped_events
-        } else {
-            &self.filtered_midi
-        };
-        let effective_events = self.pattern.process(effective_events, frames, cx.scale);
-        let effective_events = if self.transpose != 0 {
-            self.transposed_events.clear();
-            for &(frame, bytes) in effective_events {
-                let status_type = bytes[0] & 0xF0;
-                if matches!(status_type, 0x80 | 0x90) {
-                    let note = bytes[1] as i16 + self.transpose as i16;
-                    if (0..=127).contains(&note) {
-                        self.transposed_events.push((frame, [bytes[0], note as u8, bytes[2]]));
-                    }
-                    // Drop notes that fall outside 0-127
-                } else {
-                    self.transposed_events.push((frame, bytes));
-                }
-            }
-            self.transposed_events.as_slice()
-        } else {
-            effective_events
-        };
+        // Filter MIDI by range, remap, let the pattern play, transpose (unless a modulator that hears the lane had it done ahead of the head: `prepare_events`).
+        if !self.prepared {
+            self.prepare_events(cx.midi, frames, cx.scale);
+        }
+        self.prepared = false;
+        let effective_events: &[(u64, [u8; 3])] = &self.heard;
 
         // Modulators (block-rate: once per buffer, before the chain renders): tick all, cross-mod, route each target to its slot's plugin (the instrument or an effect). Applying
         // them up front is the same as per slot, since each plugin reads its parameters when it processes, later in this buffer.

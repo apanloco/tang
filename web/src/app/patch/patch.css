@@ -135,7 +135,8 @@
 }
 
 .tang-menu-button.tang-node__notes:hover:not(:disabled),
-.tang-menu-button.tang-node__notes[aria-expanded="true"] {
+.tang-menu-button.tang-node__notes[aria-expanded="true"],
+.tang-menu-button.tang-node__notes--set {
   border-color: var(--tang-notes);
 }
 

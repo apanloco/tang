@@ -185,7 +185,7 @@ impl Snapshot {
                 }
             }
             Event::ModulatorFieldSet { node, field, value } => {
-                let NodeKind::Modulator { source } = &mut self.node_mut(*node)?.kind else {
+                let NodeKind::Modulator { source, .. } = &mut self.node_mut(*node)?.kind else {
                     return Err(DoesNotFit(format!("node {} is not a modulator", node.0)));
                 };
                 match (source, field) {
@@ -223,7 +223,7 @@ impl Snapshot {
                 }
             }
             Event::StepsSet { node, values } => {
-                let NodeKind::Modulator { source: ModulatorSource::Steps { values: shown, .. } } = &mut self.node_mut(*node)?.kind else {
+                let NodeKind::Modulator { source: ModulatorSource::Steps { values: shown, .. }, .. } = &mut self.node_mut(*node)?.kind else {
                     return Err(DoesNotFit(format!("node {} is not a step sequencer", node.0)));
                 };
                 if values.len() != shown.len() {
@@ -533,7 +533,7 @@ type = "envelope"
             find(snapshot, |n| {
                 let parent = n.parent.and_then(|p| snapshot.graph.nodes.iter().find(|q| q.id == p));
                 let in_group = parent.is_some_and(|p| matches!(p.kind, NodeKind::Group { .. }));
-                matches!(&n.kind, NodeKind::Modulator { source } if matches!(source, ModulatorSource::Envelope { .. }) == envelope)
+                matches!(&n.kind, NodeKind::Modulator { source, .. } if matches!(source, ModulatorSource::Envelope { .. }) == envelope)
                     && in_group == parent_is_group
             })
         };
@@ -637,7 +637,7 @@ type = "envelope"
         let mut told = ctl.snapshot();
         let lfo = nodes(&told).lane_lfo;
         let waveform_of = |snapshot: &Snapshot| match &snapshot.graph.nodes.iter().find(|node| node.id == lfo).unwrap().kind {
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, .. } } => *waveform,
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, .. }, .. } => *waveform,
             other => panic!("{other:?} is not an LFO"),
         };
         for (value, waveform) in [(4.0, Waveform::Random), (5.0, Waveform::Smooth)] {
@@ -806,7 +806,7 @@ type = "envelope"
         told.apply(&applied).unwrap();
         assert_eq!(told, ctl.snapshot());
         let found = told.graph.nodes.iter().find(|n| n.id == knob).unwrap();
-        assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.8 } });
+        assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.8 }, hears: None });
         let before = told.clone();
         let error = told.apply(&Applied::of(2, vec![Event::ModulatorFieldSet { node: knob, field: ModulatorField::Rate, value: 1.0 }])).unwrap_err().to_string();
         assert!(error.contains("does not apply"), "{error}");
@@ -819,7 +819,7 @@ type = "envelope"
         let mut told = ctl.snapshot();
         let lfo = ctl.model.instruments[0].modulators[0].node;
         let source = |told: &Snapshot| match &told.graph.nodes.iter().find(|n| n.id == lfo).unwrap().kind {
-            NodeKind::Modulator { source } => source.clone(),
+            NodeKind::Modulator { source, .. } => source.clone(),
             other => panic!("{other:?}"),
         };
         for (intent, retrigger, fade) in [
@@ -873,7 +873,7 @@ type = "envelope"
         let mut told = ctl.snapshot();
         let sequencer = ctl.model.instruments[0].modulators[0].node;
         let source = |told: &Snapshot| match &told.graph.nodes.iter().find(|n| n.id == sequencer).unwrap().kind {
-            NodeKind::Modulator { source } => source.clone(),
+            NodeKind::Modulator { source, .. } => source.clone(),
             other => panic!("{other:?}"),
         };
         // Each of its settings and then its steps, one intent after another, the snapshot told each.

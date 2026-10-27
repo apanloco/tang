@@ -13,6 +13,13 @@ use crate::app::intent::{Gain, Intent, ModulatorKind};
 use crate::app::model::{NodeId, ParamKind, PluginSlot};
 use crate::session::{Feed, Route};
 
+/// Whose notes a free modulator hears (`Edit::Ear`): a lane or a group, by its place among them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Hears {
+    Lane(usize),
+    Group(usize),
+}
+
 /// A request that a front-end makes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Edit {
@@ -42,6 +49,8 @@ pub enum Edit {
     FreeCable { modulator: usize, plugin: usize, param: usize },
     /// A free modulator, by its place among them, taken out with its cables.
     RemoveFreeModulator { index: usize },
+    /// A free modulator (a place among them) made to hear a lane or a group (a place among them), or every event (step 93).
+    Ear { modulator: usize, to: Option<Hears> },
     /// A modulator of `kind` for a parameter, and a cable to it (the `~` menu of a knob).
     Modulate { lane: usize, slot: usize, param: usize, kind: ModulatorKind },
     RemoveModulator { lane: usize, index: usize },
@@ -222,6 +231,18 @@ impl Edit {
                     return None;
                 }
                 Intent::RemoveNode { node: modulators[index % modulators.len()].node }
+            }
+            Edit::Ear { modulator, to } => {
+                let modulators = &model.free_modulators;
+                if modulators.is_empty() {
+                    return None;
+                }
+                let ear = match to {
+                    None => None,
+                    Some(Hears::Lane(l)) => Some(lane(*l)?.node),
+                    Some(Hears::Group(g)) => Some(group(*g)?.node),
+                };
+                Intent::SetModulatorEar { node: modulators[modulator % modulators.len()].node, ear }
             }
             Edit::Modulate { lane: l, slot, param, kind } => {
                 let plugin = plugin_at(lane(*l)?, *slot)?;
@@ -421,6 +442,26 @@ plugin = "builtin:osc"
         // (The new lane is a place among the lanes, like any: an edit that aims at one aims at it when it is the last.)
         let holder = ctl.model.instruments[2].node;
         assert_eq!(Edit::Mute { lane: 2, muted: true }.resolve(&ctl), Some(Intent::SetMute { node: holder, muted: true }));
+    }
+
+    #[test]
+    fn a_free_modulator_is_made_to_hear_a_lane_or_a_group_or_every_event_by_places_that_wrap_round() {
+        let mut ctl = controller(TWO_LANES);
+        let (lane1, bus) = (ctl.model.instruments[1].node, ctl.model.groups[0].node);
+        // With no free modulator there is nothing to aim at.
+        assert_eq!(Edit::Ear { modulator: 0, to: None }.make(&mut ctl), Outcome::Skipped);
+        assert_eq!(Edit::AddFreeModulator { kind: ModulatorKind::Lfo }.make(&mut ctl), Outcome::Applied);
+        let lfo = ctl.model.free_modulators[0].node;
+        assert_eq!(Edit::Ear { modulator: 0, to: Some(Hears::Lane(1)) }.resolve(&ctl), Some(Intent::SetModulatorEar { node: lfo, ear: Some(lane1) }));
+        assert_eq!(Edit::Ear { modulator: 3, to: Some(Hears::Group(2)) }.resolve(&ctl), Some(Intent::SetModulatorEar { node: lfo, ear: Some(bus) }), "places wrap round: 3 is 0 of 1 modulators, 2 is 0 of 1 groups");
+        assert_eq!(Edit::Ear { modulator: 0, to: Some(Hears::Lane(3)) }.resolve(&ctl), Some(Intent::SetModulatorEar { node: lfo, ear: Some(lane1) }), "3 is 1 of 2 lanes");
+        assert_eq!(Edit::Ear { modulator: 0, to: None }.resolve(&ctl), Some(Intent::SetModulatorEar { node: lfo, ear: None }));
+        assert_eq!(Edit::Ear { modulator: 0, to: Some(Hears::Lane(1)) }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.free_modulators[0].ear, Some(lane1));
+        // (With no group there is nothing to hear: skipped.)
+        let mut no_group = controller("[[instrument]]\nplugin = \"builtin:osc\"\n");
+        assert_eq!(Edit::AddFreeModulator { kind: ModulatorKind::Lfo }.make(&mut no_group), Outcome::Applied);
+        assert_eq!(Edit::Ear { modulator: 0, to: Some(Hears::Group(0)) }.make(&mut no_group), Outcome::Skipped);
     }
 
     #[test]

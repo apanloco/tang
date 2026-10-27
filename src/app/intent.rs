@@ -158,6 +158,13 @@ pub enum Intent {
     /// way. The wiring changes at once, as a lane's group does, and the intent is told as a snapshot (the links of the graph change). Saved with the session (`route = "none"`). Refused,
     /// with nothing changed, for a node that is neither a lane nor a group, and for a way out that is given back where the audio would go round, by the cables there are.
     SetRoute { node: NodeId, route: Route },
+    /// Set whose notes a modulator that is in no lane and no group hears (step 93, P5c-1 of `docs/patch-graph.md` §11.6: the page's choice on the modulator, the terminal's row): `node` is the
+    /// modulator's and `ear` the node of a lane (its instrument's, which an empty lane has too) or of a group, or none for every event, whatever its source, which is what a modulator hears
+    /// to begin with. A modulator that hears a lane is given the notes that the lane's instrument is given (after the sources the lane hears, its range, its remap, its pattern and its
+    /// transpose), so that an envelope follows a pattern that the lane plays and an LFO that restarts at a note restarts at the lane's; one that hears a group is given those of its members.
+    /// Told as a snapshot (the graph says whom a modulator hears) and saved with the session (`hears = "instrument[0]"`). Refused, with nothing changed, for a node that is not a modulator
+    /// of the session's own (a lane's or a group's hears its own lane or group) and for an ear that is neither a lane nor a group.
+    SetModulatorEar { node: NodeId, ear: Option<NodeId> },
     /// Cut or give back the link into an effect from the stage before it in its chain (step 86: the page's × on a link of a chain and its button on the effect's node, the TUI's `f`): `node`
     /// is the node of the effect, a lane's or a group's bus. An effect is fed by the stage before it (the lane's instrument, the bus's sum or the effect before it: `chain`, which every
     /// effect has to begin with) and, cut (`none`), by the audio cables that end at it and by nothing else, so that a link of a chain is taken apart as a cable is. The wiring changes
@@ -818,6 +825,8 @@ mod tests {
             (Intent::SetMute { node: NodeId(2), muted: true }, json!({"type": "setMute", "node": 2, "muted": true})),
             (Intent::SetSolo { node: NodeId(4), solo: false }, json!({"type": "setSolo", "node": 4, "solo": false})),
             (Intent::SetRoute { node: NodeId(4), route: Route::None }, json!({"type": "setRoute", "node": 4, "route": "none"})),
+            (Intent::SetModulatorEar { node: NodeId(7), ear: Some(NodeId(2)) }, json!({"type": "setModulatorEar", "node": 7, "ear": 2})),
+            (Intent::SetModulatorEar { node: NodeId(7), ear: None }, json!({"type": "setModulatorEar", "node": 7, "ear": null})),
             (Intent::SetRoute { node: NodeId(2), route: Route::Out }, json!({"type": "setRoute", "node": 2, "route": "out"})),
             (Intent::SetFeed { node: NodeId(7), feed: Feed::None }, json!({"type": "setFeed", "node": 7, "feed": "none"})),
             (Intent::SetFeed { node: NodeId(3), feed: Feed::Chain }, json!({"type": "setFeed", "node": 3, "feed": "chain"})),

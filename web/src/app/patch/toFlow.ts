@@ -820,7 +820,8 @@ function sameNodeStructure(x: Node, y: Node): boolean {
   if ((x.kind === "instrument" || x.kind === "effect") && (y.kind === "instrument" || y.kind === "effect")) {
     return samePluginStructure(x.plugin, y.plugin);
   }
-  if (x.kind === "modulator" && y.kind === "modulator") return x.source.type === y.source.type;
+  // (Whom a modulator hears is part of it: the menu on its node has it, and the structure is what the menus are given.)
+  if (x.kind === "modulator" && y.kind === "modulator") return x.source.type === y.source.type && x.hears === y.hears;
   if (x.kind === "source" && y.kind === "source") return sameSource(x.source, y.source);
   return true;
 }

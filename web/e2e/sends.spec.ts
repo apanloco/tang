@@ -134,6 +134,8 @@ test("an audio cable is in the session that the program keeps, in the saved file
   await expect(sends(page)).toHaveCount(1);
   await level(page).fill("1.5");
   await expect(level(page)).toHaveValue("1.5");
+  // (The level goes to the program on the next frame, and the history says when it is there: a page that is opened again before that asks the program for what it had, which is 1.)
+  await expect(page.getByRole("button", { name: /^Undo/ })).toHaveAccessibleName("Undo set the level of an audio cable");
 
   // The program has it: a page that is opened again draws it, from the session that the program tells, at its level.
   await page.reload();

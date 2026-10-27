@@ -181,6 +181,7 @@ fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> 
         Some(TreeAddress::FreeModulator { .. }) => vec![
             ("F", "new free"),
             ("t", "add target"),
+            ("h", "hears"),
             ("d", "delete"),
         ],
         Some(TreeAddress::Group(_)) => vec![
@@ -397,6 +398,14 @@ enum GroupAssignChoice {
     Existing(usize),
 }
 
+/// State for the "what a free modulator hears" popup (`h` on a free modulator): every note, or the notes of a lane or of a group. `choices` is the ear that each row stands for.
+struct EarState {
+    modulator: NodeId,
+    choices: Vec<Option<NodeId>>,
+    filter: FilterListState,
+    items: Vec<FilterListItem>,
+}
+
 /// State for the "assign <instrument> to group" popup.
 struct GroupAssignState {
     inst: usize,
@@ -488,6 +497,7 @@ struct State {
     target_selector: Option<TargetSelectorState>,
     modulate: Option<ModulateState>,
     group_assign: Option<GroupAssignState>,
+    ear_popup: Option<EarState>,
     preset_selector: Option<PresetSelectorState>,
     /// A plugin chosen in the selector, which waits for the frame that says it is loading.
     pending_load: Option<PendingLoad>,
@@ -548,6 +558,7 @@ impl State {
             target_selector: None,
             modulate: None,
             group_assign: None,
+            ear_popup: None,
             preset_selector: None,
             pending_load: None,
             areas: Areas::default(),
@@ -617,6 +628,7 @@ impl State {
         self.target_selector = None;
         self.modulate = None;
         self.group_assign = None;
+        self.ear_popup = None;
         self.preset_selector = None;
         if !cursor_node_is_there {
             self.editing = None;
@@ -1402,6 +1414,35 @@ impl State {
         self.group_assign = Some(GroupAssignState { inst, choices, filter, items });
     }
 
+    /// Open the "what it hears" popup for the free modulator at `mod_index`: every note, the notes that a lane's instrument is given (`L1 Oscillator`), or those of a group's members
+    /// (`G1 Group 1`), the one it hears now marked.
+    fn open_ear_popup(&mut self, mod_index: usize) {
+        let Some(modulator) = self.free_modulator(mod_index) else { return };
+        let (node, current) = (modulator.node, self.ctl.model.ear_of(modulator));
+        let mark = |ear: Option<NodeId>| if ear == current { " (current)" } else { "" };
+        let mut choices: Vec<Option<NodeId>> = vec![None];
+        let mut items = vec![FilterListItem { cells: vec![format!("Every note{}", mark(None))], index: 0 }];
+        for (i, lane) in self.ctl.model.instruments.iter().enumerate() {
+            let name = lane.instrument.as_ref().map_or("(empty)", |plugin| plugin.name.as_str());
+            items.push(FilterListItem { cells: vec![format!("L{} {name}{}", i + 1, mark(Some(lane.node)))], index: choices.len() });
+            choices.push(Some(lane.node));
+        }
+        for (g, group) in self.ctl.model.groups.iter().enumerate() {
+            items.push(FilterListItem { cells: vec![format!("G{} {}{}", g + 1, group.display_name(g), mark(Some(group.node)))], index: choices.len() });
+            choices.push(Some(group.node));
+        }
+        let mut filter = FilterListState::new();
+        filter.apply_filter(&items);
+        self.ear_popup = Some(EarState { modulator: node, choices, filter, items });
+    }
+
+    fn confirm_ear_popup(&mut self) {
+        let Some(state) = self.ear_popup.take() else { return };
+        let Some(item) = state.filter.selected_item(&state.items) else { return };
+        let ear = state.choices[item.index];
+        self.apply(Intent::SetModulatorEar { node: state.modulator, ear });
+    }
+
     fn confirm_group_assign(&mut self) {
         let gs = match self.group_assign.take() {
             Some(g) => g,
@@ -2018,6 +2059,7 @@ fn popup_is_open(s: &State) -> bool {
         || s.target_selector.is_some()
         || s.modulate.is_some()
         || s.group_assign.is_some()
+        || s.ear_popup.is_some()
         || s.preset_selector.is_some()
         || s.scale_selector.is_some()
         || s.bpm_editing.is_some()
@@ -2078,6 +2120,8 @@ fn handle_event(s: &mut State, ev: Event) {
                 handle_modulate_key(s, key.code);
             } else if s.group_assign.is_some() {
                 handle_group_assign_key(s, key.code);
+            } else if s.ear_popup.is_some() {
+                handle_ear_key(s, key.code);
             } else if s.preset_selector.is_some() {
                 handle_preset_selector_key(s, key.code);
             } else if s.scale_selector.is_some() {
@@ -2107,6 +2151,7 @@ fn handle_event(s: &mut State, ev: Event) {
                 || s.target_selector.is_some()
                 || s.modulate.is_some()
                 || s.group_assign.is_some()
+                || s.ear_popup.is_some()
                 || s.preset_selector.is_some()
                 || s.scale_selector.is_some()
                 || s.editing.is_some()
@@ -2122,6 +2167,7 @@ fn handle_event(s: &mut State, ev: Event) {
                     s.target_selector = None;
                     s.modulate = None;
                     s.group_assign = None;
+                    s.ear_popup = None;
                     s.preset_selector = None;
                     s.scale_selector = None;
                     s.editing = None;
@@ -2219,6 +2265,23 @@ fn handle_group_assign_key(s: &mut State, code: KeyCode) {
         KeyCode::Down => {
             gs.filter.list.down();
             gs.filter.list.ensure_visible(20);
+        }
+        _ => {}
+    }
+}
+
+fn handle_ear_key(s: &mut State, code: KeyCode) {
+    let es = s.ear_popup.as_mut().unwrap();
+    match code {
+        KeyCode::Esc => s.ear_popup = None,
+        KeyCode::Enter => s.confirm_ear_popup(),
+        KeyCode::Up => {
+            es.filter.list.up();
+            es.filter.list.ensure_visible(20);
+        }
+        KeyCode::Down => {
+            es.filter.list.down();
+            es.filter.list.ensure_visible(20);
         }
         _ => {}
     }
@@ -2741,6 +2804,13 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // the history). Its cables (`t`) go to a parameter of any plugin of the session.
         KeyCode::Char('F') if s.active_tab == TAB_SESSION && !s.focus_params => {
             s.add_free_modulator();
+        }
+
+        // 'h' (chain focus) — choose whose notes a free modulator hears: every note, a lane's or a group's (`SetModulatorEar`, a step of the history), via a popup.
+        KeyCode::Char('h') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some(TreeAddress::FreeModulator { index }) = s.selected_address().copied() {
+                s.open_ear_popup(index);
+            }
         }
 
         // 'g' (chain focus) — assign the selected instrument to a group
@@ -3468,6 +3538,9 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
             if let Some(gs) = &s.group_assign {
                 render_group_assign_popup(frame, area, gs);
             }
+            if let Some(es) = &s.ear_popup {
+                render_ear_popup(frame, area, es);
+            }
             if let Some(ps) = &s.preset_selector {
                 render_preset_selector_popup(frame, area, ps);
             }
@@ -4077,6 +4150,23 @@ fn render_group_assign_popup(frame: &mut ratatui::Frame, area: Rect, gs: &GroupA
 
     let columns: &[(&str, u16)] = &[("Group", inner.width)];
     frame.render_widget(FilterList::new(&gs.filter, &gs.items, columns), inner);
+}
+
+fn render_ear_popup(frame: &mut ratatui::Frame, area: Rect, es: &EarState) {
+    let w = (area.width * 45 / 100).max(32).min(area.width);
+    let h = (area.height * 40 / 100).max(7).min(area.height);
+    let popup = centered_rect(w, h, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta))
+        .title(" Whose notes it hears ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let columns: &[(&str, u16)] = &[("Hears", inner.width)];
+    frame.render_widget(FilterList::new(&es.filter, &es.items, columns), inner);
 }
 
 fn render_modulate_popup(frame: &mut ratatui::Frame, area: Rect, ms: &ModulateState) {
@@ -4704,8 +4794,14 @@ fn build_tree_entries(model: &SessionModel) -> Vec<TreeEntry> {
             let list = m.targets.iter().map(|t| format!("{} ({})", free_target_label(model, t), depth_percent(t.depth))).collect::<Vec<_>>().join(", ");
             format!(" \u{2192} {list}")
         };
+        // (And whose notes it hears, if it hears a lane's or a group's.)
+        let hears = match model.ear_of(m).and_then(|ear| model.locate(ear)) {
+            Some(NodePath::Instrument(inst)) => format!(", hears L{}", inst + 1),
+            Some(NodePath::Group(group)) => format!(", hears G{}", group + 1),
+            _ => String::new(),
+        };
         entries.push(TreeEntry {
-            label: format!("~ {}{targets}  (free)", m.source.label()),
+            label: format!("~ {}{targets}  (free{hears})", m.source.label()),
             address: TreeAddress::FreeModulator { index: mod_idx },
             node: m.node,
             color: Some(Color::Magenta),
@@ -4902,6 +4998,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  d          Delete selected".into(),
         "  m          Add modulator (lane rack; group rack on a group node; free on a free one)".into(),
         "  F          Add a free modulator (in no lane and no group: its cables reach any plugin)".into(),
+        "  h          Choose whose notes a free modulator hears (a lane's, a group's, or every note)".into(),
         "  g          Assign instrument to a group (submix bus)".into(),
         "  x          Set effect / group-bus dry/wet mix".into(),
         "  r          Record/stop pattern".into(),
@@ -5033,6 +5130,7 @@ mod tests {
             }],
             output: None,
             position: None,
+            ear: None,
         };
         // LFO rows: 0=Type, 1=Waveform, 2=Rate, 3=Sync, 4=Retrigger, 5=Fade, 6=Targets separator, 7=first depth.
         assert_eq!(modulator_param_range(&m, 5), Some((0.0, 5.0)), "the fade is a number too");

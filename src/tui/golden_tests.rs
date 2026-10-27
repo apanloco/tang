@@ -2632,6 +2632,67 @@ fn f_in_the_parameter_pane_is_not_a_key() {
     assert!(h.s.ctl.model.free_modulators.is_empty());
 }
 
+// -- What a free modulator hears (`h`, step 93) --
+
+#[test]
+fn popup_ear() {
+    // `h` on a free modulator: every note, each lane and each group, the one that it hears marked.
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.press(KeyCode::Char('h'));
+    assert_golden("popup_ear", &mut h);
+}
+
+#[test]
+fn h_on_a_free_modulator_lists_every_note_each_lane_and_each_group_and_the_choice_is_what_it_hears() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    h.goto(TreeAddress::FreeModulator { index: 1 });
+    h.commands();
+    h.press(KeyCode::Char('h'));
+    let rows = |h: &Harness| -> Vec<String> { h.s.ear_popup.as_ref().expect("the popup is open").items.iter().map(|item| item.cells.join(" | ")).collect() };
+    assert_eq!(rows(&h), ["Every note (current)", "L1 Oscillator", "L2 Oscillator", "G1 Group 1"]);
+    // The second lane: Down twice and Enter. The tree says whom it hears, the audio thread is told, and the history has a step.
+    h.press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Enter);
+    assert!(h.s.ear_popup.is_none());
+    let lane1 = h.s.ctl.model.instruments[1].node;
+    assert_eq!(h.s.ctl.model.free_modulators[1].ear, Some(lane1));
+    assert_eq!(h.tree()[1], "~ ADSR \u{2192} L2 Filter: cutoff (50%), Mod 0 depth 0 (10%)  (free, hears L2)");
+    assert_eq!(h.commands(), [format!("SetModulatorEar Free index=1 ear={}", lane1.0)]);
+    assert!(h.s.ctl.dirty);
+    // It is marked the next time, and Esc leaves without a change.
+    h.press(KeyCode::Char('h'));
+    assert_eq!(rows(&h), ["Every note", "L1 Oscillator", "L2 Oscillator (current)", "G1 Group 1"]);
+    h.press(KeyCode::Down).press(KeyCode::Esc);
+    assert!(h.s.ear_popup.is_none());
+    assert_eq!(h.s.ctl.model.free_modulators[1].ear, Some(lane1));
+    assert!(h.commands().is_empty());
+    // The group (the last row, which the popup starts above), which the tree says as well, and every note again (the first row).
+    h.press(KeyCode::Char('h')).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Down).press(KeyCode::Enter);
+    assert!(h.tree()[1].ends_with("(free, hears G1)"), "{:?}", h.tree());
+    h.press(KeyCode::Char('h')).press(KeyCode::Enter);
+    assert_eq!(h.s.ctl.model.free_modulators[1].ear, None);
+    assert!(h.tree()[1].ends_with("(free)"), "{:?}", h.tree());
+    // Undo goes back through the three.
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!(h.tree()[1].ends_with("(free, hears G1)"), "{:?}", h.tree());
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!(h.tree()[1].ends_with("(free, hears L2)"), "{:?}", h.tree());
+}
+
+#[test]
+fn h_is_a_key_of_a_free_modulator_and_of_nothing_else_in_the_chain() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    for address in [TreeAddress::Instrument(0), TreeAddress::Effect { inst: 0, index: 0 }, TreeAddress::Group(0)] {
+        h.goto(address);
+        h.press(KeyCode::Char('h'));
+        assert!(h.s.ear_popup.is_none(), "{address:?}");
+    }
+    // (And in the parameter pane of a free modulator it is not a key either.)
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.press(KeyCode::Enter).press(KeyCode::Char('h'));
+    assert!(h.s.ear_popup.is_none());
+}
+
 #[test]
 fn the_target_selector_of_a_free_modulator_lists_every_plugin_of_the_session_and_the_siblings_settings() {
     let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);

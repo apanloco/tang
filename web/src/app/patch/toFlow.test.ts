@@ -2029,6 +2029,16 @@ describe("whether two graphs are laid out the same", () => {
     expect(sameStructure(withEnvelope, slower)).toBe(true);
   });
 
+  test("they are not when a modulator that is in no lane is made to hear another lane or none, which its menu is given, and they are when it hears the same one in another object", () => {
+    const free: Node = { id: 60, parent: null, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.2, sustain: 0.3, release: 0.4 } };
+    const hearing = (hears?: NodeId): Graph => ({ nodes: [...base.nodes, hears === undefined ? free : { ...free, hears }], edges: base.edges });
+    expect(sameStructure(hearing(), hearing(0))).toBe(false);
+    expect(sameStructure(hearing(0), hearing())).toBe(false);
+    expect(sameStructure(hearing(0), hearing(1))).toBe(false);
+    expect(sameStructure(hearing(0), hearing(0))).toBe(true);
+    expect(sameStructure(hearing(), hearing())).toBe(true);
+  });
+
   test("they are when only an unrelated part of an unchanged node is a new object", () => {
     const copy: Graph = { nodes: base.nodes.map((node) => ({ ...node })), edges: [...base.edges] };
     expect(sameStructure(base, copy)).toBe(true);

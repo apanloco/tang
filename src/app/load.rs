@@ -831,15 +831,18 @@ fn load_lane_modulators(
     }
     let rack = resolve_rack(&plans, alloc.ids);
 
-    make_rack(ModulatorLocation::Lane(inst_idx), &siblings, &nodes, &plans, &rack, cmd_tx, alloc)
+    make_rack(ModulatorLocation::Lane(inst_idx), &siblings, &nodes, &[], &plans, &rack, cmd_tx, alloc)
 }
 
-/// Make the modulators of the rack at `location` from their configs (`nodes` are their nodes, and `plans` and `rack` say which of their cables are made), and tell the audio thread of each, in
-/// the order of the file: the modulator, the slots it publishes to, and its cables. A lane's rack, a group's and the free modulators' are made the same way.
+/// Make the modulators of the rack at `location` from their configs (`nodes` are their nodes, `ears` whose notes each hears (the session's own only: a lane's and a group's pass none), and `plans`
+/// and `rack` say which of their cables are made), and tell the audio thread of each, in the order of the file: the modulator, the slots it publishes to (and whose notes it hears), and its cables.
+/// A lane's rack, a group's and the free modulators' are made the same way.
+#[allow(clippy::too_many_arguments)]
 fn make_rack(
     location: ModulatorLocation,
     configs: &[&session::ModulatorConfig],
     nodes: &[NodeId],
+    ears: &[Option<NodeId>],
     plans: &[Vec<Option<Plan>>],
     rack: &Rack,
     cmd_tx: &crossbeam_channel::Sender<plugin::chain::GraphCommand>,
@@ -852,12 +855,13 @@ fn make_rack(
             .send(plugin::chain::GraphCommand::InsertModulator { location, index: mod_idx, source: mod_source_slot_to_graph(&source_slot), node: nodes[mod_idx] })
             .map_err(|_| anyhow::anyhow!("command channel closed"))?;
         let (output, position) = ModulatorSlot::alloc_slots(alloc.slots, &source_slot);
-        for command in modulator_slot_commands(location, mod_idx, output, position) {
+        let ear = ears.get(mod_idx).copied().flatten();
+        for command in modulator_slot_commands(location, mod_idx, output, position, ear) {
             send(cmd_tx, command)?;
         }
         let targets = make_cables(location, mod_idx, &mod_config.targets, plans, rack, cmd_tx, alloc)?;
         place(alloc.ui, nodes[mod_idx], mod_config.ui);
-        loaded.push(ModulatorSlot { node: nodes[mod_idx], source: source_slot, targets, output, position });
+        loaded.push(ModulatorSlot { node: nodes[mod_idx], source: source_slot, targets, output, position, ear });
         log::info!("Loaded modulator {mod_idx} of {location:?}: {desc}");
     }
     Ok(loaded)
@@ -1212,7 +1216,7 @@ fn load_group_modulators(
         group_config.modulators.iter().enumerate().map(|(me, mod_config)| mod_config.targets.iter().map(|config| plan_group_target(config, me, &group)).collect()).collect();
     let rack = resolve_rack(&plans, alloc.ids);
     let configs: Vec<&session::ModulatorConfig> = group_config.modulators.iter().collect();
-    make_rack(ModulatorLocation::Group(g_idx), &configs, &nodes, &plans, &rack, cmd_tx, alloc)
+    make_rack(ModulatorLocation::Group(g_idx), &configs, &nodes, &[], &plans, &rack, cmd_tx, alloc)
 }
 
 /// What a group has for the cables of its modulators to name: its members' plugins and modulators (what is loaded of them), its bus effects, and its own modulators.
@@ -1337,6 +1341,18 @@ fn params_at(chains: &[Vec<Vec<plugin::ParameterInfo>>], of: usize, slot: usize)
 }
 
 impl FreeSession<'_> {
+    /// The lane or the group that a free modulator's `hears` names, by its node: `instrument[0]` (the node of the lane, which is its instrument's) or `group[0]`. `Err` says why a text is not one.
+    fn heard_at(&self, text: &str) -> Result<NodeId, String> {
+        use session::CablePlace as Place;
+        let place = Place::parse(text).ok_or_else(|| format!("{text:?} is not a place of the session"))?;
+        let missing = || format!("{place} is not in the session");
+        match place {
+            Place::Instrument(lane) => self.lanes.get(lane).map(|lane| lane.node).ok_or_else(missing),
+            Place::Group(group) => self.groups.get(group).map(|bus| bus.node).ok_or_else(missing),
+            _ => Err(format!("{place} is not a lane or a group")),
+        }
+    }
+
     /// The plugin that `place` names, with its node and its parameters: `instrument[0]` is a lane's instrument, `instrument[0].effect[1]` an effect of its chain and `group[0].effect[1]` an
     /// effect of a group's bus. `Err` says why a place is not one.
     fn plugin_at(&self, place: session::CablePlace) -> Result<(NodeId, &[plugin::ParameterInfo]), String> {
@@ -1411,8 +1427,23 @@ fn load_free_modulators(
     let free = FreeTargets { session, nodes: &nodes, siblings: configs };
     let plans: Vec<Vec<Option<Plan>>> = configs.iter().enumerate().map(|(me, mod_config)| mod_config.targets.iter().map(|config| plan_free_target(config, me, &free)).collect()).collect();
     let rack = resolve_rack(&plans, alloc.ids);
+    // Whose notes each hears: a place that is not a lane or a group of the session is no ear (the modulator hears every event), and the log says so.
+    let ears: Vec<Option<NodeId>> = configs
+        .iter()
+        .enumerate()
+        .map(|(i, config)| {
+            let text = config.hears.as_deref()?;
+            match session.heard_at(text) {
+                Ok(node) => Some(node),
+                Err(why) => {
+                    log::warn!("modulator[{i}].hears: {why}: it hears every note");
+                    None
+                }
+            }
+        })
+        .collect();
     let configs: Vec<&session::ModulatorConfig> = configs.iter().collect();
-    make_rack(ModulatorLocation::Free, &configs, &nodes, &plans, &rack, cmd_tx, alloc)
+    make_rack(ModulatorLocation::Free, &configs, &nodes, &ears, &plans, &rack, cmd_tx, alloc)
 }
 
 #[cfg(test)]
@@ -3274,6 +3305,81 @@ plugin = "builtin:reverb"
         }
         assert_eq!(testutil::kinds_at(&again, ModulatorLocation::Free, 0).len(), 4);
         assert_eq!(saved(&again), text, "and the file is the same");
+    }
+
+    /// Three modulators of the session's own, the first hearing the second lane, the second the group and the third every event.
+    const FREE_EARS: &str = r#"
+[[modulator]]
+type = "envelope"
+hears = "instrument[1]"
+[[modulator]]
+hears = "group[0]"
+[[modulator]]
+
+[[group]]
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+[[instrument]]
+plugin = "builtin:osc"
+"#;
+
+    #[test]
+    fn a_free_modulator_that_hears_a_lane_or_a_group_has_it_for_an_ear_and_the_audio_thread_is_told_the_node() {
+        let run = load(FREE_EARS);
+        let model = &run.model;
+        assert_eq!(model.free_modulators[0].ear, Some(model.instruments[1].node));
+        assert_eq!(model.free_modulators[1].ear, Some(model.groups[0].node));
+        assert_eq!(model.free_modulators[2].ear, None);
+        let told: Vec<&String> = run.commands.iter().filter(|c| c.starts_with("SetModulatorEar")).collect();
+        assert_eq!(told, [&format!("SetModulatorEar Free index=0 ear={}", model.instruments[1].node.0), &format!("SetModulatorEar Free index=1 ear={}", model.groups[0].node.0)]);
+        model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_free_modulators_ear_that_is_not_a_lane_or_a_group_of_the_session_is_no_ear_and_a_lanes_modulator_has_none() {
+        for text in ["master", "keys", "device[0]", "instrument[7]", "group[3]", "instrument[0].effect[0]", "group[0].effect[0]", "somewhere", ""] {
+            let run = load(&format!("[[modulator]]\nhears = {text:?}\n[[group]]\n[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\n"));
+            assert_eq!(run.model.free_modulators[0].ear, None, "{text:?}");
+            assert!(!run.commands.iter().any(|c| c.starts_with("SetModulatorEar")), "{text:?}");
+        }
+        // (A key that a lane's or a group's modulator has is not read: they hear their own.)
+        let run = load("[[group]]\n[[group.modulator]]\nhears = \"instrument[0]\"\n[[instrument]]\nplugin = \"builtin:osc\"\ngroup = 0\n[[instrument.modulator]]\nhears = \"group[0]\"\n");
+        assert!(run.model.groups[0].modulators[0].ear.is_none() && run.model.instruments[0].modulators[0].ear.is_none());
+        assert!(!run.commands.iter().any(|c| c.starts_with("SetModulatorEar")));
+        run.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn what_a_free_modulator_hears_is_saved_as_the_place_of_the_lane_or_the_group_and_loaded_again_and_a_lane_that_is_gone_is_every_event() {
+        let model = load(FREE_EARS).model;
+        let text = saved(&model);
+        assert_eq!(text.matches("hears").count(), 2, "{text}");
+        assert!(text.contains("hears = \"instrument[1]\"") && text.contains("hears = \"group[0]\""), "{text}");
+        let again = load(&text).model;
+        assert_eq!(again.free_modulators.iter().map(|m| m.ear.is_some()).collect::<Vec<_>>(), [true, true, false]);
+        assert_eq!(again.free_modulators[0].ear, Some(again.instruments[1].node));
+        assert_eq!(saved(&again), text, "and the file is the same");
+        // A modulator that hears a node that is neither a lane nor a group that is there (a lane that was taken out, here a modulator) hears every event, and is saved so.
+        let mut model = model;
+        model.free_modulators[1].ear = Some(model.free_modulators[2].node);
+        let text = saved(&model);
+        assert_eq!(text.matches("hears").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn every_kind_of_free_modulator_is_saved_with_the_ear_that_it_has() {
+        let mut text = String::new();
+        for kind in ["lfo", "envelope", "midi", "macro", "steps"] {
+            text += &format!("[[modulator]]\ntype = \"{kind}\"\nhears = \"instrument[0]\"\n");
+        }
+        text += "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        let model = load(&text).model;
+        assert_eq!(model.free_modulators.len(), 5);
+        assert!(model.free_modulators.iter().all(|m| m.ear == Some(model.instruments[0].node)));
+        let written = saved(&model);
+        assert_eq!(written.matches("hears = \"instrument[0]\"").count(), 5, "{written}");
+        assert_eq!(saved(&load(&written).model), written);
     }
 
     #[test]

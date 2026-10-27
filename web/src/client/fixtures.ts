@@ -206,6 +206,8 @@ export interface Shape {
   routes?: string[];
   /** The effects whose feed is cut (the link into them from the stage before is not there), a line each (`id none`); none at all when none is, as the controller's fixtures write it. */
   feeds?: string[];
+  /** The modulators that are in no lane and no group and hear a lane or a group, a line each (`modulator lane`); none at all when none does, as the controller's fixtures write it. */
+  ears?: string[];
   /** The sources of notes, a line each (`id keys` or `id device Name`); none at all for a session that has none, as the controller's fixtures write it. */
   sources?: string[];
   /** The cables of notes that have been drawn from a source to a lane, a line each (`#id from>to`); none at all for a session that has none. */
@@ -232,6 +234,7 @@ export function shapeOf(snapshot: Snapshot): Shape {
   const sends = edges.flatMap((e) => (e.kind === "cable" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} @${String(e.gain)}`] : []));
   const routes = nodes.flatMap((n) => ((n.kind === "instrument" || n.kind === "group") && n.route === "none" ? [`${String(n.id)} none`] : []));
   const feeds = nodes.flatMap((n) => (n.kind === "effect" && n.feed === "none" ? [`${String(n.id)} none`] : []));
+  const ears = nodes.flatMap((n) => (n.kind === "modulator" && n.hears !== undefined ? [`${String(n.id)} ${String(n.hears)}`] : []));
   const sources = nodes.flatMap((n) => (n.kind === "source" ? [n.source.type === "keys" ? `${String(n.id)} keys` : `${String(n.id)} device ${n.source.name}`] : []));
   const notes = edges.flatMap((e) => (e.kind === "events" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)}`] : []));
   const hears = edges.flatMap((e) => (e.kind === "hears" ? [`${String(e.from.node)}>${String(e.to.node)}`] : []));
@@ -250,6 +253,7 @@ export function shapeOf(snapshot: Snapshot): Shape {
     ...(sends.length > 0 ? { sends } : {}),
     ...(routes.length > 0 ? { routes } : {}),
     ...(feeds.length > 0 ? { feeds } : {}),
+    ...(ears.length > 0 ? { ears } : {}),
     ...(sources.length > 0 ? { sources } : {}),
     ...(notes.length > 0 ? { notes } : {}),
     ...(hears.length > 0 ? { hears } : {}),

@@ -412,6 +412,8 @@ pub struct Facts {
     pub racks: RackCables,
     /// The value each of them is centred on: `AudioGraph::cable_bases`.
     pub bases: Vec<(ModulatorLocation, usize, EdgeId, Driven, f32)>,
+    /// Whose notes each modulator of the session's own rack hears (`AudioGraph::ears`): the modulator's node and the node of its ear.
+    pub ears: Vec<(NodeId, Option<NodeId>)>,
 }
 
 /// What a group is, for a test to compare with the model's: the node it is, the names and the nodes of its bus effects, how many
@@ -763,6 +765,11 @@ pub struct Modulator {
     /// How many times an LFO has gone round (counted as the phase wraps, so that a rate that is turned does not start the numbers again): the random
     /// waveforms have a number for each.
     cycle: u32,
+    /// Whose notes the modulator hears, if it is in the session's own rack (`ModulatorLocation::Free`): the node of a lane, and it hears the notes that the lane's instrument is given
+    /// (after the sources the lane hears, its range, its remap, its pattern and its transpose), or of a group, and it hears the notes of its members as a group's own modulators do. `None`,
+    /// and a node that is neither a lane nor a group that is there (it went), is every event, whatever its source: as a lane that no cable of notes ends at hears every source. A modulator in
+    /// a lane's or a group's rack hears its own lane's or group's and has no use for it.
+    pub ear: Option<NodeId>,
 }
 
 impl Modulator {
@@ -778,6 +785,7 @@ impl Modulator {
             position_out: None,
             seed: 0,
             cycle: 0,
+            ear: None,
         }
     }
 
@@ -791,6 +799,17 @@ impl Modulator {
     pub fn with_node(mut self, node: NodeId) -> Self {
         self.node = node;
         self
+    }
+
+    /// Let go of the notes that the modulator held: an envelope that has notes held is let go of (it releases and counts none), as a lane lets go of what a source that it stops hearing had
+    /// sounding. It is for a modulator that stops hearing what it heard (`SetModulatorEar`), which would never be told that those notes ended and would stay open.
+    fn let_go(&mut self) {
+        if let ModSource::Envelope { state, notes_held, .. } = &mut self.source {
+            *notes_held = 0;
+            if matches!(*state, EnvState::Attack | EnvState::Decay | EnvState::Sustain) {
+                *state = EnvState::Release;
+            }
+        }
     }
 
     /// Advance the modulator by one buffer, at `bpm` beats a minute. For envelopes, processes MIDI note events.
@@ -2028,6 +2047,12 @@ pub enum GraphCommand {
         index: usize,
         beats: f32,
     },
+    /// Set whose notes a modulator of the session's own rack hears: a lane's or a group's node, or none for every event (`Modulator::ear`). Nothing to a modulator of a lane's or a group's rack.
+    SetModulatorEar {
+        location: ModulatorLocation,
+        index: usize,
+        ear: Option<NodeId>,
+    },
     /// Insert a new modulator into the rack at `location` (a lane's or a group's). `node` is the id that the model gave the modulator: it keeps it, so that a cable that drives one of its
     /// settings names it by it.
     InsertModulator {
@@ -2890,6 +2915,12 @@ struct InstrumentLane {
     remapped_events: Vec<(u64, [u8; 3])>,
     transposed_events: Vec<(u64, [u8; 3])>,
     filtered_midi: Vec<(u64, [u8; 3])>,
+    /// The notes that the lane's instrument is given in this buffer, as the lane's head works them out (`prepare_events`): the lane's own modulators and its instrument read them, and so
+    /// does a modulator of the session's own rack that hears the lane (`Modulator::ear`).
+    heard: Vec<(u64, [u8; 3])>,
+    /// Whether `heard` has been worked out for the buffer that is going on, ahead of the lane's head: `AudioGraph::process_events` does it first of all for a lane that a modulator hears,
+    /// and the head, which does it itself for a lane that nobody hears, takes it as it is and forgets it.
+    prepared: bool,
     /// Modulators for this whole lane. Each modulator's targets address any
     /// plugin in the chain by slot (0 = instrument, 1..N = effects).
     modulators: Vec<Modulator>,
@@ -2965,6 +2996,8 @@ impl InstrumentLane {
             remapped_events: Vec::with_capacity(128),
             transposed_events: Vec::with_capacity(128),
             filtered_midi: Vec::with_capacity(128),
+            heard: Vec::with_capacity(128),
+            prepared: false,
             modulators: Vec::new(),
             cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
             drive_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
@@ -3133,6 +3166,41 @@ impl InstrumentLane {
                 _ => self.filtered_midi.push((frame, bytes)),
             }
         }
+    }
+
+    /// Work out the notes that the lane's instrument is given in this buffer and keep them in `heard`: the events of the sources the lane hears, by its range, remapped, played by the
+    /// pattern and transposed. The lane's state moves with them (what is sounding is written down, the pattern goes on), so it is done once a buffer: by the lane's head, or ahead of it
+    /// when a modulator hears the lane (`AudioGraph::process_events`), and then the head reads what was kept.
+    fn prepare_events(&mut self, midi_events: Events<'_>, frames: usize, scale: ScaleSetting) {
+        self.filter_midi(midi_events);
+        let effective_events: &[(u64, [u8; 3])] = if let Some(ref remapper) = self.remapper {
+            remapper.remap_events(&self.filtered_midi, &mut self.remapped_events);
+            &self.remapped_events
+        } else {
+            &self.filtered_midi
+        };
+        let effective_events = self.pattern.process(effective_events, frames, scale);
+        let effective_events = if self.transpose != 0 {
+            self.transposed_events.clear();
+            for &(frame, bytes) in effective_events {
+                let status_type = bytes[0] & 0xF0;
+                if matches!(status_type, 0x80 | 0x90) {
+                    let note = bytes[1] as i16 + self.transpose as i16;
+                    if (0..=127).contains(&note) {
+                        self.transposed_events.push((frame, [bytes[0], note as u8, bytes[2]]));
+                    }
+                    // Drop notes that fall outside 0-127
+                } else {
+                    self.transposed_events.push((frame, bytes));
+                }
+            }
+            self.transposed_events.as_slice()
+        } else {
+            effective_events
+        };
+        self.heard.clear();
+        self.heard.extend_from_slice(effective_events);
+        self.prepared = true;
     }
 
     /// Process this instrument + effect chain, writing output to `inst_out`.
@@ -3761,7 +3829,7 @@ impl AudioGraph {
     /// What the engine has of the model's nodes and cables.
     #[cfg(test)]
     pub fn facts(&self) -> Facts {
-        Facts { lanes: self.lanes(), groups: self.groups(), cables: self.audio_cables(), racks: self.cables(), bases: self.cable_bases() }
+        Facts { lanes: self.lanes(), groups: self.groups(), cables: self.audio_cables(), racks: self.cables(), bases: self.cable_bases(), ears: self.ears() }
     }
 
     /// The names of the effects of each lane, in the order of its chain, for a test to compare with the model's.
@@ -3837,6 +3905,12 @@ impl AudioGraph {
         let groups = self.groups.iter().enumerate().flat_map(|(i, group)| rack(ModulatorLocation::Group, i, &group.modulators));
         let free = rack(|_| ModulatorLocation::Free, 0, &self.free_modulators);
         lanes.chain(groups).chain(free).collect()
+    }
+
+    /// Whose notes each modulator of the session's own rack hears (`Modulator::ear`), for a test: the node of the modulator and of its ear, in the order of the rack.
+    #[cfg(test)]
+    pub fn ears(&self) -> Vec<(NodeId, Option<NodeId>)> {
+        self.free_modulators.iter().map(|modulator| (modulator.node, modulator.ear)).collect()
     }
 
     /// The value each cable is centred on (its `base_value`), for a test: the lanes' racks, the groups' and then the free modulators', each
@@ -4396,6 +4470,15 @@ impl AudioGraph {
                         *sync = beats;
                     }
                 }
+                GraphCommand::SetModulatorEar { location, index, ear } => {
+                    if let Some(m) = self.modulator_mut(location, index) {
+                        // (What it held of the notes it heard is let go of: it would never be told that they ended.)
+                        if m.ear != ear {
+                            m.let_go();
+                        }
+                        m.ear = ear;
+                    }
+                }
                 GraphCommand::InsertModulator { location, index, source, node } => {
                     let seed = self.next_modulator_seed();
                     // (A lane's modulators run at the rate of its instrument, a group's at the graph's.)
@@ -4749,8 +4832,27 @@ impl AudioGraph {
             // plugin of any lane or bus, a setting of another free modulator, the depth of one of its cables). What a group's modulators and a lane's drive is written after, so that
             // the nearer to the plugin wins, as a lane's own wins over a group's.
             if !self.free_modulators.is_empty() {
+                // The notes of a lane that a modulator hears are worked out first, since they are what the modulator is given: the lane's head then takes them as they are, and one that
+                // nobody hears works them out itself, as it did (so that a session whose modulators hear every event runs the lane's head exactly as it was).
+                for m in &self.free_modulators {
+                    let hears = m.ear.and_then(|node| self.instruments.iter_mut().find(|lane| lane.node == node));
+                    if let Some(lane) = hears.filter(|lane| !lane.prepared) {
+                        lane.prepare_events(midi_events, frames, scale);
+                    }
+                }
                 for m in &mut self.free_modulators {
-                    m.tick(frames, midi_events.all(), self.bpm);
+                    // What it hears: the notes of its lane, those of the members of its group (as a group's own modulators hear them), and else every event.
+                    let lane = m.ear.and_then(|node| self.instruments.iter().find(|lane| lane.node == node));
+                    let group = m.ear.and_then(|node| self.groups.iter().position(|group| group.node == node));
+                    let heard: &[(u64, [u8; 3])] = match (lane, group) {
+                        (Some(lane), _) => &lane.heard,
+                        (None, Some(group)) => {
+                            build_group_midi(&self.instruments, group, midi_events, &mut self.group_midi_scratch);
+                            &self.group_midi_scratch
+                        }
+                        (None, None) => midi_events.all(),
+                    };
+                    m.tick(frames, heard, self.bpm);
                 }
                 apply_cross_mod(&mut self.free_modulators, &mut self.free_cross_mod_scratch, self.telemetry.as_deref());
                 if let Some(telemetry) = &self.telemetry {
@@ -4809,7 +4911,7 @@ impl AudioGraph {
 
         // Run the plan: each lane in order (its output fed to its group's bus, or to the mix), then each group (its bus fed to the mix), then the mix, which is copied to the
         // output and measured.
-        {
+        let ran = {
             let mut cx = BlockCx {
                 midi: midi_events,
                 audio_out,
@@ -4820,8 +4922,16 @@ impl AudioGraph {
                 fall,
                 learn_tx: self.learn_tx.as_ref(),
             };
-            self.schedule.run(&mut self.instruments, &mut self.groups, &mut self.master, frames, &mut cx)?;
+            self.schedule.run(&mut self.instruments, &mut self.groups, &mut self.master, frames, &mut cx)
+        };
+        // A lane that a modulator hears had its notes worked out ahead of its head, which takes them and forgets it: a block that ended early (a plugin that failed) did not reach the heads
+        // after it, and they are not prepared for the next block, whose notes are others.
+        if !self.free_modulators.is_empty() {
+            for lane in &mut self.instruments {
+                lane.prepared = false;
+            }
         }
+        ran?;
 
         // What the members' settings that a group's cable drives ended up as, now that the lanes have run.
         if let Some(telemetry) = &self.telemetry {
@@ -5114,6 +5224,36 @@ mod tests {
             let v = if self.has_note { self.value } else { 0.0 };
             for ch in audio_out.iter_mut() {
                 ch.fill(v);
+            }
+            Ok(())
+        }
+
+        mock_plugin_boilerplate!();
+    }
+
+    /// Test instrument that fails the block in which it is given the note 1, as a plugin that returns an error does, and puts out nothing otherwise.
+    struct FailsOnNoteOne;
+
+    impl Plugin for FailsOnNoteOne {
+        fn name(&self) -> &str {
+            "FailsOnNoteOne"
+        }
+        fn is_instrument(&self) -> bool {
+            true
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            0
+        }
+
+        fn process(&mut self, midi_events: &[(u64, [u8; 3])], _audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            for out in audio_out.iter_mut() {
+                out.fill(0.0);
+            }
+            if midi_events.iter().any(|&(_, [status, note, velocity])| status & 0xF0 == 0x90 && note == 1 && velocity > 0) {
+                anyhow::bail!("it fails");
             }
             Ok(())
         }
@@ -12287,6 +12427,237 @@ mod tests {
         // And the end of that note, from the same device, closes it.
         process_from(&mut rig.graph, &[(DEVICE_B, [0x80, 60, 0])]);
         assert!(rig.read(free) < 2.0 * one_step, "released: {}", rig.read(free));
+    }
+
+    // -- A modulator of the session's own rack that hears a lane or a group (step 93) --
+
+    /// A free modulator of `source` at `index` that publishes its output and hears `ear` (every event for none); its slot.
+    fn free_hearing(rig: &mut Rig, index: usize, source: ModSource, ear: Option<NodeId>) -> Slot {
+        let slot = rig.slot();
+        rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index, source, node: modulator_node(ModulatorLocation::Free, index) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Free, index, slot }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetModulatorEar { location: ModulatorLocation::Free, index, ear }).unwrap();
+        slot
+    }
+
+    /// What a control that follows the number of the last note puts out for note `note`.
+    fn key_of(note: u8) -> f32 {
+        f32::from(note) / 127.0
+    }
+
+    #[test]
+    fn a_free_modulator_that_hears_a_lane_is_given_what_the_lanes_own_modulator_is_given_after_its_range_and_its_transpose() {
+        let mut rig = Rig::new();
+        let lane = rig.lane_modulator(0, key());
+        let heard = free_hearing(&mut rig, 0, key(), Some(lane_node(0)));
+        let everything = free_hearing(&mut rig, 1, key(), None);
+        rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((50, 70)) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetTranspose { inst: 0, semitones: 12 }).unwrap();
+        // 40 is below the lane's range: the lane's control and the one that hears the lane stay at rest, middle C, and the one that hears every event follows it.
+        rig.process(&[note_on(40)]);
+        assert_eq!((rig.read(lane), rig.read(heard), rig.read(everything)), (key_of(60), key_of(60), key_of(40)));
+        // 60 is the lane's, and the instrument is given it an octave up: so are the two modulators that are given what the instrument is.
+        rig.process(&[note_on(60)]);
+        assert_eq!((rig.read(lane), rig.read(heard), rig.read(everything)), (key_of(72), key_of(72), key_of(60)));
+        // And a note above the range changes neither of them.
+        rig.process(&[note_on(100)]);
+        assert_eq!((rig.read(lane), rig.read(heard), rig.read(everything)), (key_of(72), key_of(72), key_of(100)));
+    }
+
+    #[test]
+    fn a_free_modulator_that_hears_a_lane_follows_the_notes_that_its_pattern_plays_and_not_the_key_that_starts_it() {
+        let mut rig = Rig::new();
+        let on = |note| PatternEvent { frame: 0, status: 0x90, note, velocity: 100 };
+        let off = |note| PatternEvent { frame: 500, status: 0x80, note, velocity: 0 };
+        let pattern = Pattern { events: vec![on(60), on(64), on(67), off(60), off(64), off(67)], length_samples: 1000 };
+        rig.cmd_tx.send(GraphCommand::SetPattern { inst: 0, pattern, base_note: Some(60), in_key: false }).unwrap();
+        let lane = rig.lane_modulator(0, key());
+        let heard = free_hearing(&mut rig, 0, key(), Some(lane_node(0)));
+        let everything = free_hearing(&mut rig, 1, key(), None);
+        rig.process(&[note_on(62)]);
+        // The key 62 plays the pattern up two semitones, 62, 66 and 69, and the last of them is what a control that follows the notes has: the lane's, and the one that hears the lane.
+        assert_eq!((rig.read(lane), rig.read(heard), rig.read(everything)), (key_of(69), key_of(69), key_of(62)));
+    }
+
+    #[test]
+    fn an_envelope_that_hears_a_lane_opens_on_the_notes_the_lane_takes_and_not_on_the_others() {
+        let mut rig = Rig::new();
+        let heard = free_hearing(&mut rig, 0, adsr(0.01), Some(lane_node(0)));
+        rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((0, 10)) }).unwrap();
+        let one_step = FRAMES as f32 / 48000.0 / 0.01;
+        rig.process(&[note_on(60)]);
+        assert_eq!(rig.read(heard), 0.0, "the note is not the lane's");
+        rig.process(&[note_on(5)]);
+        assert!(close(rig.read(heard), one_step), "{}", rig.read(heard));
+    }
+
+    #[test]
+    fn a_free_modulator_that_hears_a_group_is_given_the_notes_of_its_members_as_the_groups_own_modulator_is() {
+        let mut rig = two_lanes_in_a_group();
+        // The members take 0 to 10 and 20 to 30.
+        rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((0, 10)) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 1, range: Some((20, 30)) }).unwrap();
+        let of_the_group = rig.slot();
+        rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Group(0), index: 0, source: key(), node: modulator_node(ModulatorLocation::Group(0), 0) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Group(0), index: 0, slot: of_the_group }).unwrap();
+        let heard = free_hearing(&mut rig, 0, key(), Some(group_node(0)));
+        let everything = free_hearing(&mut rig, 1, key(), None);
+        for (note, expected) in [(5, 5), (60, 5), (25, 25), (80, 25)] {
+            rig.process(&[note_on(note)]);
+            assert_eq!((rig.read(of_the_group), rig.read(heard), rig.read(everything)), (key_of(expected), key_of(expected), key_of(note)), "note {note}");
+        }
+    }
+
+    #[test]
+    fn an_envelope_that_is_made_to_hear_other_notes_lets_go_of_the_ones_it_held_and_does_not_hang_open() {
+        let mut rig = Rig::new();
+        let output = free_hearing(&mut rig, 0, adsr(0.01), None);
+        rig.process(&[note_on(60)]);
+        for _ in 0..120 {
+            rig.process(&[]);
+        }
+        assert!(close(rig.read(output), 0.5), "held at its sustain: {}", rig.read(output));
+        // The same ear again is nothing to it.
+        rig.cmd_tx.send(GraphCommand::SetModulatorEar { location: ModulatorLocation::Free, index: 0, ear: None }).unwrap();
+        rig.process(&[]);
+        assert!(close(rig.read(output), 0.5), "{}", rig.read(output));
+        // It hears a lane that does not take the note from now on: the end of the note that it held is not one that it would be told of, so it lets go of it.
+        rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((0, 10)) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetModulatorEar { location: ModulatorLocation::Free, index: 0, ear: Some(lane_node(0)) }).unwrap();
+        // (It is let go of, and releases: it is on its way down and not cut.)
+        rig.process(&[]);
+        assert!(rig.read(output) > 0.0 && rig.read(output) < 0.5, "releasing: {}", rig.read(output));
+        for _ in 0..600 {
+            rig.process(&[]);
+        }
+        assert_eq!(rig.read(output), 0.0, "it let go");
+        // And it opens again for a note that the lane takes, and closes with it.
+        rig.process(&[note_on(5)]);
+        assert!(rig.read(output) > 0.0);
+        rig.process(&[(0, [0x80, 5, 0])]);
+        for _ in 0..600 {
+            rig.process(&[]);
+        }
+        assert_eq!(rig.read(output), 0.0);
+    }
+
+    #[test]
+    fn a_block_that_ends_early_leaves_no_lane_prepared_for_the_next_and_the_modulator_that_hears_it_has_the_notes_of_each_block() {
+        let mut rig = Rig::new();
+        rig.cmd_tx.send(GraphCommand::AddInstrument { range: None, node: lane_node(1) }).unwrap();
+        // Lane 0 fails in the block that has the note 1, before lane 1's head runs: the notes of lane 1 were worked out ahead of its head, for the modulator that hears it, and it never
+        // took them.
+        swap_instrument_at(&rig.cmd_tx, 0, Box::new(FailsOnNoteOne));
+        swap_instrument_at(&rig.cmd_tx, 1, ConstInstrument::new(0.1));
+        let heard = free_hearing(&mut rig, 0, key(), Some(lane_node(1)));
+        assert!(rig.graph.process(&[note_on(1), note_on(70)], &mut make_output()).is_err(), "the block ends early");
+        assert_eq!(rig.read(heard), key_of(70), "the modulator heard the notes of its lane in the block that failed");
+        // The next block has its own notes, and the lane's head works them out and does not take what was kept.
+        rig.process(&[note_on(80)]);
+        assert_eq!(rig.read(heard), key_of(80), "a lane that was not reached is not prepared for the next block");
+        let mut out = make_output();
+        rig.graph.process(&[], &mut out).unwrap();
+        assert!(close(out[0][FRAMES - 1], 0.1), "and the lane that the failed block did not reach plays the note of this one: {}", out[0][FRAMES - 1]);
+    }
+
+    #[test]
+    fn an_envelope_that_is_in_its_attack_or_its_decay_when_it_is_made_to_hear_other_notes_is_let_go_of_as_well() {
+        for (blocks, stage) in [(1, "attack"), (12, "decay")] {
+            let mut rig = Rig::new();
+            let output = free_hearing(&mut rig, 0, adsr(0.01), None);
+            rig.process(&[note_on(60)]);
+            for _ in 1..blocks {
+                rig.process(&[]);
+            }
+            assert!(rig.read(output) > 0.0, "{stage}: open");
+            rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((0, 10)) }).unwrap();
+            rig.cmd_tx.send(GraphCommand::SetModulatorEar { location: ModulatorLocation::Free, index: 0, ear: Some(lane_node(0)) }).unwrap();
+            for _ in 0..600 {
+                rig.process(&[]);
+            }
+            assert_eq!(rig.read(output), 0.0, "{stage}: let go of, and not held open for ever");
+        }
+    }
+
+    #[test]
+    fn a_modulator_whose_ear_is_a_node_that_is_not_there_hears_every_event_as_one_that_has_none_does() {
+        let mut rig = Rig::new();
+        let gone = free_hearing(&mut rig, 0, key(), Some(NodeId(4242)));
+        let none = free_hearing(&mut rig, 1, key(), None);
+        rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((0, 10)) }).unwrap();
+        rig.process(&[note_on(80)]);
+        assert_eq!((rig.read(gone), rig.read(none)), (key_of(80), key_of(80)));
+    }
+
+    #[test]
+    fn the_ear_is_changed_while_the_modulator_goes_on_and_a_lane_that_nobody_hears_is_what_it_was() {
+        let mut rig = Rig::new();
+        let output = free_hearing(&mut rig, 0, key(), None);
+        rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((0, 10)) }).unwrap();
+        rig.process(&[note_on(80)]);
+        assert_eq!(rig.read(output), key_of(80), "every event");
+        // It hears the lane from now on, which does not take the next note: the control stays where it was.
+        rig.cmd_tx.send(GraphCommand::SetModulatorEar { location: ModulatorLocation::Free, index: 0, ear: Some(lane_node(0)) }).unwrap();
+        rig.process(&[note_on(90)]);
+        assert_eq!(rig.read(output), key_of(80), "the lane does not take 90");
+        rig.process(&[note_on(7)]);
+        assert_eq!(rig.read(output), key_of(7));
+        // And every event again.
+        rig.cmd_tx.send(GraphCommand::SetModulatorEar { location: ModulatorLocation::Free, index: 0, ear: None }).unwrap();
+        rig.process(&[note_on(90)]);
+        assert_eq!(rig.read(output), key_of(90));
+        assert_eq!(rig.graph.facts().ears, [(modulator_node(ModulatorLocation::Free, 0), None)]);
+        rig.cmd_tx.send(GraphCommand::SetModulatorEar { location: ModulatorLocation::Free, index: 0, ear: Some(lane_node(0)) }).unwrap();
+        rig.process(&[]);
+        assert_eq!(rig.graph.facts().ears, [(modulator_node(ModulatorLocation::Free, 0), Some(lane_node(0)))]);
+    }
+
+    #[test]
+    fn a_lane_that_a_modulator_hears_puts_out_the_bits_that_it_puts_out_when_nobody_hears_it() {
+        // The lane works its notes out ahead of its head when a modulator hears it, and once: a lane with a range, a transpose and a pattern that is played by a held key, which is
+        // let go of in the middle, makes the same sound for each.
+        let render = |ear: Option<NodeId>| -> Vec<f32> {
+            let mut rig = Rig::new();
+            let on = |note| PatternEvent { frame: 0, status: 0x90, note, velocity: 100 };
+            let off = |note| PatternEvent { frame: 40, status: 0x80, note, velocity: 0 };
+            let pattern = Pattern { events: vec![on(60), on(64), off(60), off(64)], length_samples: 100 };
+            rig.cmd_tx.send(GraphCommand::SetPattern { inst: 0, pattern, base_note: Some(60), in_key: false }).unwrap();
+            rig.cmd_tx.send(GraphCommand::SetInstrumentRange { inst: 0, range: Some((40, 90)) }).unwrap();
+            rig.cmd_tx.send(GraphCommand::SetTranspose { inst: 0, semitones: 3 }).unwrap();
+            rig.lane_modulator(0, adsr(0.01));
+            // (Two of them hear the lane: its notes are worked out once for both.)
+            free_hearing(&mut rig, 0, adsr(0.01), ear);
+            free_hearing(&mut rig, 1, key(), ear);
+            let mut samples = Vec::new();
+            for block in 0..30 {
+                let midi: &[(u64, [u8; 3])] = match block {
+                    0 => &[(0, [0x90, 62, 100])],
+                    15 => &[(0, [0x80, 62, 0])],
+                    _ => &[],
+                };
+                let mut out = make_output();
+                rig.graph.process(midi, &mut out).unwrap();
+                samples.extend_from_slice(&out[0]);
+            }
+            samples
+        };
+        let nobody = render(None);
+        assert!(nobody.iter().any(|&sample| sample != 0.0), "the lane sounds");
+        assert_eq!(render(Some(lane_node(0))), nobody);
+    }
+
+    #[test]
+    fn modulators_that_hear_a_lane_and_a_group_do_not_ask_the_allocator_for_memory() {
+        let mut rig = two_lanes_in_a_group();
+        let on = |note| PatternEvent { frame: 0, status: 0x90, note, velocity: 100 };
+        let off = |note| PatternEvent { frame: 500, status: 0x80, note, velocity: 0 };
+        let pattern = Pattern { events: vec![on(60), on(64), on(67), off(60), off(64), off(67)], length_samples: 1000 };
+        rig.cmd_tx.send(GraphCommand::SetPattern { inst: 0, pattern, base_note: Some(60), in_key: false }).unwrap();
+        free_hearing(&mut rig, 0, adsr(0.01), Some(lane_node(0)));
+        free_hearing(&mut rig, 1, key(), Some(group_node(0)));
+        free_hearing(&mut rig, 2, velocity(), Some(lane_node(1)));
+        let allocations = allocations_while_processing(&mut rig.graph, &[note_on(62), note_on(65)], 40);
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
     }
 
     #[test]

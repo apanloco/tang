@@ -420,6 +420,10 @@ pub struct ModulatorConfig {
     /// For `type = "midi"`: follows the number of the notes the lane plays (the last one's).
     #[serde(default)]
     pub midi_key: bool,
+    /// (Free modulators) Whose notes the modulator hears, as the file names a place of the session: `instrument[0]` (the notes that the lane's instrument is given) or `group[0]` (those of its
+    /// members). None is every event, whatever its source. A place that is not a lane or a group of the session is no ear: the modulator hears every event, and the log says so.
+    #[serde(default)]
+    pub hears: Option<String>,
     #[serde(default, rename = "target")]
     pub targets: Vec<ModTargetConfig>,
     /// Where the modulator is drawn.
@@ -1204,6 +1208,8 @@ pub struct SaveModulator {
     pub targets: Vec<SaveModTarget>,
     /// Where the modulator is drawn.
     pub ui: Option<NodeUi>,
+    /// (Free modulators) The place of the lane or the group whose notes it hears.
+    pub hears: Option<CablePlace>,
 }
 
 /// Data needed to serialize a modulation target for saving.
@@ -1495,6 +1501,9 @@ struct ModulatorOut {
     midi_velocity: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     midi_key: bool,
+    /// (Free modulators) The place of the lane or the group whose notes it hears.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hears: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "target")]
     targets: Vec<ModTargetOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1668,6 +1677,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                 .map(save_mod_target_to_out)
                 .collect();
             let ui = m.ui.map(NodeUiOut::from);
+            let hears = m.hears.map(|place| place.to_string());
             match &m.source {
                 // (An LFO that runs free writes neither of its key's keys, so that a file that was written before it had a key is as it was.)
                 SaveModSource::Lfo { waveform, rate, retrigger, fade, sync } => ModulatorOut {
@@ -1677,6 +1687,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     retrigger: retrigger.then_some(true),
                     fade: (*fade > 0.0).then(|| clean_f64(*fade)),
                     sync: sync.clone(),
+                    hears: hears.clone(),
                     targets,
                     ui,
                     ..Default::default()
@@ -1687,6 +1698,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     decay: Some(clean_f64(*decay)),
                     sustain: Some(clean_f64(*sustain)),
                     release: Some(clean_f64(*release)),
+                    hears: hears.clone(),
                     targets,
                     ui,
                     ..Default::default()
@@ -1698,6 +1710,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     midi_aftertouch: *aftertouch,
                     midi_velocity: *velocity,
                     midi_key: *key,
+                    hears: hears.clone(),
                     targets,
                     ui,
                     ..Default::default()
@@ -1705,6 +1718,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                 SaveModSource::Macro { value } => ModulatorOut {
                     mod_type: "macro".into(),
                     value: Some(clean_f64(*value)),
+                    hears: hears.clone(),
                     targets,
                     ui,
                     ..Default::default()
@@ -1717,6 +1731,7 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
                     glide: Some(clean_f64(*glide)),
                     retrigger: Some(*retrigger),
                     sync: sync.clone(),
+                    hears: hears.clone(),
                     targets,
                     ui,
                     ..Default::default()
@@ -2331,7 +2346,7 @@ mod tests {
     #[test]
     fn an_lfo_that_is_keyed_is_written_with_its_key_and_read_back_the_same_and_one_that_is_free_has_neither_key() {
         let lane = |rack: Vec<SaveModulator>| SaveInstrumentSlot { modulators: rack, ..placed_lane(None) };
-        let keyed = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: true, fade: 0.3, sync: None }, targets: vec![], ui: None };
+        let keyed = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: true, fade: 0.3, sync: None }, targets: vec![], ui: None, hears: None };
         let text = to_toml(&[lane(vec![keyed])], &[], &[], &Default::default(), None, None, None).unwrap();
         for line in ["retrigger = true", "fade = 0.3"] {
             assert!(text.contains(line), "{line} (as typed, and not what its 32 bits are): {text}");
@@ -2341,7 +2356,7 @@ mod tests {
         assert_eq!((m.mod_type.as_str(), m.retrigger, m.fade), ("lfo", Some(true), 0.3));
         // One that retriggers and does not fade has the one key, and the other way about.
         let only = |retrigger: bool, fade: f32| {
-            let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger, fade, sync: None }, targets: vec![], ui: None };
+            let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger, fade, sync: None }, targets: vec![], ui: None, hears: None };
             to_toml(&[lane(vec![lfo])], &[], &[], &Default::default(), None, None, None).unwrap()
         };
         let (a, b) = (only(true, 0.0), only(false, 2.0));
@@ -2372,11 +2387,13 @@ mod tests {
             source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: sync.map(str::to_string) },
             targets: vec![],
             ui: None,
+            hears: None,
         };
         let steps = |sync: Option<&str>| SaveModulator {
             source: SaveModSource::Steps { values: vec![0.5; 4], length: 4, rate: 8.0, glide: 0.0, retrigger: true, sync: sync.map(str::to_string) },
             targets: vec![],
             ui: None,
+            hears: None,
         };
         let text = to_toml(&[lane(vec![lfo(Some("1/8 triplet")), steps(Some("1/16")), lfo(None), steps(None)])], &[], &[], &Default::default(), None, None, None).unwrap();
         assert_eq!(text.matches("sync = ").count(), 2, "only the two that follow the tempo: {text}");
@@ -2411,7 +2428,7 @@ mod tests {
         let sequencer = |rack: Vec<SaveModulator>| SaveInstrumentSlot { modulators: rack, ..placed_lane(None) };
         let mut values: Vec<f32> = (0..16).map(|i| i as f32 / 8.0 - 1.0).collect();
         values[3] = 0.3;
-        let steps = SaveModulator { source: SaveModSource::Steps { values: values.clone(), length: 5, rate: 6.5, glide: 0.25, retrigger: false, sync: None }, targets: vec![], ui: None };
+        let steps = SaveModulator { source: SaveModSource::Steps { values: values.clone(), length: 5, rate: 6.5, glide: 0.25, retrigger: false, sync: None }, targets: vec![], ui: None, hears: None };
         let text = to_toml(&[sequencer(vec![steps])], &[], &[], &Default::default(), None, None, None).unwrap();
         assert!(text.contains("type = \"steps\""), "{text}");
         assert!(text.contains("steps = [-1.0, -0.875, -0.75, 0.3, -0.5, -0.375, -0.25, -0.125, 0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]"), "every value, as typed: {text}");
@@ -2426,9 +2443,9 @@ mod tests {
         assert_eq!(m.steps.as_ref().unwrap()[3], 0.3);
         assert_eq!((m.length, m.rate, m.glide, m.retrigger), (Some(5), Some(6.5), 0.25, Some(false)));
         // The rest of the modulators have none of it (an LFO that is free has neither of its key's keys, so that a file that was written before it had a key is as it was).
-        let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: None };
-        let envelope = SaveModulator { source: SaveModSource::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }, targets: vec![], ui: None };
-        let knob = SaveModulator { source: SaveModSource::Macro { value: 0.5 }, targets: vec![], ui: None };
+        let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: None, hears: None };
+        let envelope = SaveModulator { source: SaveModSource::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }, targets: vec![], ui: None, hears: None };
+        let knob = SaveModulator { source: SaveModSource::Macro { value: 0.5 }, targets: vec![], ui: None, hears: None };
         let text = to_toml(&[sequencer(vec![lfo, envelope, knob])], &[], &[], &Default::default(), None, None, None).unwrap();
         for key in ["steps", "length", "glide", "retrigger"] {
             assert!(!text.contains(key), "{key}: {text}");
@@ -2803,6 +2820,7 @@ range = "C4-C8"
                     slot: 0, to: None,
                 }],
                 ui: None,
+                hears: None,
             }],
             instrument: Some(SaveInstrument {
                 pinned: vec![],
@@ -2857,6 +2875,7 @@ range = "C4-C8"
                     slot: 0, to: None,
                 }],
                 ui: None,
+                hears: None,
             }],
             instrument: Some(SaveInstrument {
                 pinned: vec![],
@@ -2911,6 +2930,7 @@ range = "C4-C8"
                     slot: 0, to: None,
                 }],
                 ui: None,
+                hears: None,
             }],
             instrument: Some(SaveInstrument {
                 pinned: vec![],
@@ -2948,6 +2968,7 @@ range = "C4-C8"
             source: SaveModSource::MidiLearn { cc: None, pitch_bend: false, aftertouch: false, velocity, key },
             targets: vec![],
             ui: None,
+            hears: None,
         };
         let instruments = vec![SaveInstrumentSlot {
             muted: false,
@@ -3005,6 +3026,7 @@ range = "C4-C8"
                     slot: 1, to: None,
                 }],
                 ui: None,
+                hears: None,
             }],
             instrument: Some(SaveInstrument {
                 pinned: vec![],
@@ -3178,6 +3200,7 @@ range = "C4-C8"
                     },
                 ],
                 ui: None,
+                hears: None,
             }],
             ui: None,
             route: Route::Out,
@@ -3348,7 +3371,7 @@ plugin = "builtin:osc"
             range: None,
             transpose: 0,
             group: None,
-            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui }],
+            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui, hears: None }],
             instrument: Some(SaveInstrument { pinned: vec![], plugin: "builtin:osc".into(), volume: 1.0, preset: None, params: vec![], pitch_bend_range: 2.0, remap: HashMap::new() }),
             effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:filter".into(), mix: 1.0, feed: Feed::Chain, preset: None, params: vec![], ui }],
             pattern: None,
@@ -3367,7 +3390,7 @@ plugin = "builtin:osc"
             volume: 1.0,
             pan: 0.0,
             effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:reverb".into(), mix: 1.0, feed: Feed::Chain, preset: None, params: vec![], ui: at(1100.0, 40.0) }],
-            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: at(800.0, -120.5) }],
+            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: at(800.0, -120.5), hears: None }],
             ui: at(800.0, 40.0),
             route: Route::Out,
         };

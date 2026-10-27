@@ -346,6 +346,15 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       const words = laneOrGroupWords(snapshot.graph.nodes, node);
       return step(intent.route === "none" ? `cut the way out of ${words}` : `give ${words} its way out`, { type: "setRoute", node: intent.node, route: node.route }, null);
     }
+    // (As a way out is: what is no modulator of the session's own is refused, an ear that is neither a lane nor a group is refused too, and what is as it is asked to be changes nothing: no step for any.)
+    case "setModulatorEar": {
+      const node = nodeOf(intent.node);
+      if (node?.kind !== "modulator" || node.parent !== null || (node.hears ?? null) === intent.ear) return "nothing";
+      const heard = intent.ear === null ? null : nodeOf(intent.ear);
+      if (heard !== null && heard?.kind !== "instrument" && heard?.kind !== "group") return "nothing";
+      const kind = MODULATOR_LABELS[kindOf(node.source)];
+      return step(heard === null ? `make ${kind} hear every note` : `make ${kind} hear ${laneOrGroupWords(snapshot.graph.nodes, heard)}`, { type: "setModulatorEar", node: intent.node, ear: node.hears ?? null }, null);
+    }
     // (As a way out is: what is no effect is refused, and a feed that is as it is asked to be changes nothing.)
     case "setFeed": {
       const node = nodeOf(intent.node);

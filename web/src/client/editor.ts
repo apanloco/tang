@@ -57,6 +57,7 @@ const DOING: Record<Intent["type"], string> = {
   setMute: "mute or unmute a lane or a group",
   setSolo: "solo or unsolo a lane or a group",
   setRoute: "cut or give back the way out of a lane or a group",
+  setModulatorEar: "choose whose notes a modulator hears",
   setFeed: "cut or give back the link into an effect",
   setScale: "set the scale of the piano",
   setLocked: "lock or unlock the piano",
@@ -250,6 +251,14 @@ export class Editor {
    */
   setRoute(node: NodeId, route: Route): Promise<boolean> {
     return this.#attempt(route === "none" ? `cut the way out of ${this.#name(node)}` : `give ${this.#name(node)} its way out`, { type: "setRoute", node, route });
+  }
+
+  /**
+   * Make the modulator `node`, which is in no lane and no group, hear the notes of the lane or group `ear`, or every note (`null`): an envelope follows the pattern that a lane plays, a control that follows the
+   * number of a note follows the lane's, an LFO or a step sequencer that starts again at a note starts again at the lane's. True if it was done (the page says why if it was not).
+   */
+  setModulatorEar(node: NodeId, ear: NodeId | null): Promise<boolean> {
+    return this.#attempt(ear === null ? `make ${this.#name(node)} hear every note` : `make ${this.#name(node)} hear ${this.#name(ear)}`, { type: "setModulatorEar", node, ear });
   }
 
   /**

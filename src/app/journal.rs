@@ -515,7 +515,7 @@ impl Controller {
             Inverse::Modulator { at, index, modulator, bases } => {
                 debug_assert_eq!(modulator.targets.len(), bases.len(), "a base for each cable");
                 let source = mod_source_slot_to_graph(&modulator.source);
-                let (output, position, node) = (modulator.output, modulator.position, modulator.node);
+                let (output, position, node, ear) = (modulator.output, modulator.position, modulator.node, modulator.ear);
                 // (The place it went to, which is the last for one past the end: the audio thread is told the same.)
                 let Some(place) = self.model.insert_modulator_at(at, index, modulator) else { return };
                 // Its cables are told as they are, with it in: all of its own are there, so that a cable to the depth of another of them has it.
@@ -538,7 +538,7 @@ impl Controller {
                 }
                 let _ = self.cmd_tx.send(GraphCommand::InsertModulator { location: at, index: place, source, node });
                 // It publishes what it puts out (and where it is) where it did, and its own cables come after it, in the order they had.
-                for command in modulator_slot_commands(at, place, output, position) {
+                for command in modulator_slot_commands(at, place, output, position, ear) {
                     let _ = self.cmd_tx.send(command);
                 }
                 for target in cables {

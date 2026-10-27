@@ -104,6 +104,7 @@ impl Controller {
             Intent::SetMute { node, muted } => Done::Event(self.set_mute(node, muted)?),
             Intent::SetSolo { node, solo } => Done::Event(self.set_solo(node, solo)?),
             Intent::SetRoute { node, route } => self.set_route_intent(node, route)?,
+            Intent::SetModulatorEar { node, ear } => self.set_modulator_ear_intent(node, ear)?,
             Intent::SetFeed { node, feed } => self.set_feed_intent(node, feed)?,
             Intent::SetScale { scale } => Done::Event(self.set_scale(&scale)?),
             Intent::SetLocked { locked } => Done::Event(self.set_locked(locked)),
@@ -423,6 +424,30 @@ impl Controller {
             }
             _ => unreachable!("a lane or a group, found above"),
         }
+        Ok(Done::Restructured)
+    }
+
+    /// Set whose notes a modulator of the session's own rack hears, in the model and in the audio thread (`Intent::SetModulatorEar`): the notes that a lane's instrument is given, those of
+    /// the members of a group, or every event. Nothing else changes (the cables, the settings and the place of the modulator stay), and it is told as a snapshot, since the graph says whom
+    /// a modulator hears.
+    fn set_modulator_ear_intent(&mut self, node: NodeId, ear: Option<NodeId>) -> Result<Done, IntentError> {
+        let NodePath::Modulator { at: at @ ModulatorLocation::Free, index } = self.model.locate(node).ok_or(IntentError::NotFound(node))? else {
+            return Err(invalid("only a modulator that is in no lane and no group has an ear: a lane's or a group's hears its own"));
+        };
+        if let Some(heard) = ear {
+            match self.model.locate(heard).ok_or(IntentError::NotFound(heard))? {
+                NodePath::Instrument(_) | NodePath::Group(_) => {}
+                _ => return Err(invalid("only a lane or a group can be heard")),
+            }
+        }
+        let slot = self.model.free_modulators.get(index).ok_or(IntentError::NotFound(node))?;
+        // What it hears already (a lane that went hears every note, as far as anyone can tell) changes nothing and tells the audio thread nothing: an ear that names a lane that went is kept, so that
+        // Undo of the lane's removal gives it back, and is not cleared by a request for what is so.
+        if self.model.ear_of(slot) == ear {
+            return Ok(Done::Restructured);
+        }
+        self.model.free_modulators[index].ear = ear;
+        let _ = self.cmd_tx.send(GraphCommand::SetModulatorEar { location: at, index, ear });
         Ok(Done::Restructured)
     }
 
@@ -4010,6 +4035,122 @@ type = "steps"
         assert!(ctl.model.instruments.iter().all(|lane| lane.modulators.is_empty()));
         assert_eq!(ctl.rev, 2, "a revision for each");
         assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    // -- What a modulator that is in no lane hears (SetModulatorEar, step 93) --
+
+    #[test]
+    fn set_modulator_ear_makes_a_free_modulator_hear_a_lane_a_group_or_every_event_in_the_model_and_the_engine() {
+        let (engine, mut ctl) = controller();
+        let envelope = add_free(&mut ctl, ModulatorKind::Envelope);
+        let (lane0, empty, group) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Instrument(1)), node(&ctl, NodePath::Group(0)));
+        assert_eq!(ctl.model.free_modulators[0].ear, None, "every event to begin with");
+        sent(&engine);
+        let applied = ctl.apply(Intent::SetModulatorEar { node: envelope, ear: Some(lane0) }).unwrap();
+        assert_eq!(applied, Applied::restructured(2));
+        assert!(applied.events.is_empty(), "nothing a client could apply: it is told by a snapshot");
+        assert_eq!(ctl.model.free_modulators[0].ear, Some(lane0));
+        assert_eq!(sent(&engine), [format!("SetModulatorEar Free index=0 ear={}", lane0.0)]);
+        // A group, and a lane with no instrument (its node is the one an instrument would have), and every event again.
+        for (ear, text) in [(Some(group), group.0.to_string()), (Some(empty), empty.0.to_string()), (None, "none".to_string())] {
+            ctl.apply(Intent::SetModulatorEar { node: envelope, ear }).unwrap();
+            assert_eq!(ctl.model.free_modulators[0].ear, ear);
+            assert_eq!(sent(&engine), [format!("SetModulatorEar Free index=0 ear={text}")]);
+        }
+        assert_eq!(ctl.rev, 5, "a revision for each");
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn set_modulator_ear_is_refused_for_what_is_not_a_modulator_of_the_sessions_own_and_for_an_ear_that_is_not_a_lane_or_a_group() {
+        let (engine, mut ctl) = controller();
+        let envelope = add_free(&mut ctl, ModulatorKind::Envelope);
+        let (lane0, effect) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Effect { inst: 0, index: 0 }));
+        let group_lfo = ctl.model.groups[0].modulators[0].node;
+        sent(&engine);
+        let rev = ctl.rev;
+        let not_its_own = invalid("only a modulator that is in no lane and no group has an ear: a lane's or a group's hears its own");
+        let not_heard = invalid("only a lane or a group can be heard");
+        for (node, ear, refused) in [
+            (group_lfo, Some(lane0), &not_its_own),
+            (lane0, Some(lane0), &not_its_own),
+            (effect, None, &not_its_own),
+            (envelope, Some(effect), &not_heard),
+            (envelope, Some(envelope), &not_heard),
+            (envelope, Some(group_lfo), &not_heard),
+        ] {
+            assert_eq!(ctl.apply(Intent::SetModulatorEar { node, ear }), Err(refused.clone()), "{node:?} hears {ear:?}");
+        }
+        // A node that is not there (the master has no such node to the intents either).
+        for (node, ear, missing) in [(NodeId(9999), None, NodeId(9999)), (NodeId::MASTER, None, NodeId::MASTER), (envelope, Some(NodeId(9999)), NodeId(9999))] {
+            assert_eq!(ctl.apply(Intent::SetModulatorEar { node, ear }), Err(IntentError::NotFound(missing)));
+        }
+        assert_eq!(ctl.rev, rev, "no revision");
+        assert!(sent(&engine).is_empty(), "nothing sent");
+        assert_eq!(ctl.model.free_modulators[0].ear, None);
+    }
+
+    #[test]
+    fn the_graph_says_whom_a_modulator_hears_and_a_lane_that_is_gone_is_every_event_in_it_as_in_the_audio_thread_and_comes_back_with_undo() {
+        let (engine, mut ctl) = controller();
+        let envelope = add_free(&mut ctl, ModulatorKind::Envelope);
+        let empty = node(&ctl, NodePath::Instrument(1));
+        let hears = |ctl: &Controller| match &ctl.model.graph().nodes.iter().find(|n| n.id == envelope).unwrap().kind {
+            NodeKind::Modulator { hears, .. } => *hears,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(hears(&ctl), None);
+        ctl.apply(Intent::SetModulatorEar { node: envelope, ear: Some(empty) }).unwrap();
+        assert_eq!(hears(&ctl), Some(empty));
+        // (A lane's modulator and a group's have no ear in the graph.)
+        assert!(ctl.model.graph().nodes.iter().filter(|n| n.parent.is_some()).all(|n| !matches!(n.kind, NodeKind::Modulator { hears: Some(_), .. })));
+        sent(&engine);
+        ctl.apply(Intent::RemoveNode { node: empty }).unwrap();
+        assert_eq!(ctl.model.free_modulators[0].ear, Some(empty), "the model keeps it: the lane comes back under its id");
+        assert_eq!(hears(&ctl), None, "and the graph says what the audio thread does: every event, for a lane that is gone");
+        assert!(!sent(&engine).iter().any(|c| c.starts_with("SetModulatorEar")), "nothing is told: the audio thread finds no lane by that node");
+        ctl.undo().unwrap();
+        assert_eq!(hears(&ctl), Some(empty), "and it hears the lane that came back");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_request_for_what_a_modulator_hears_already_changes_nothing_and_does_not_forget_a_lane_that_is_gone() {
+        let (engine, mut ctl) = controller();
+        let envelope = add_free(&mut ctl, ModulatorKind::Envelope);
+        let empty = node(&ctl, NodePath::Instrument(1));
+        sent(&engine);
+        ctl.apply(Intent::SetModulatorEar { node: envelope, ear: None }).unwrap();
+        assert!(sent(&engine).is_empty(), "every note already: the audio thread is told nothing");
+        ctl.apply(Intent::SetModulatorEar { node: envelope, ear: Some(empty) }).unwrap();
+        assert_eq!(sent(&engine).len(), 1);
+        ctl.apply(Intent::SetModulatorEar { node: envelope, ear: Some(empty) }).unwrap();
+        assert!(sent(&engine).is_empty(), "that lane already: the audio thread is told nothing");
+        // The lane goes: every note is what the modulator hears, as far as anyone can tell, and a request for it is a request for what is so: the model keeps the lane, which Undo brings back.
+        ctl.apply(Intent::RemoveNode { node: empty }).unwrap();
+        sent(&engine);
+        ctl.apply(Intent::SetModulatorEar { node: envelope, ear: None }).unwrap();
+        assert!(sent(&engine).is_empty());
+        assert_eq!(ctl.model.free_modulators[0].ear, Some(empty));
+        assert_eq!(ctl.history_state().undo.as_deref(), Some("remove an empty lane"), "and it is no step");
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.free_modulators[0].ear, Some(empty), "the lane that comes back is heard again");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_modulator_that_is_made_to_hear_another_while_the_lane_it_heard_is_gone_is_put_back_hearing_every_note_and_not_the_lane_that_is_not_there() {
+        let (_engine, mut ctl) = controller();
+        let envelope = add_free(&mut ctl, ModulatorKind::Envelope);
+        let (empty, group) = (node(&ctl, NodePath::Instrument(1)), node(&ctl, NodePath::Group(0)));
+        ctl.apply(Intent::SetModulatorEar { node: envelope, ear: Some(empty) }).unwrap();
+        ctl.apply(Intent::RemoveNode { node: empty }).unwrap();
+        ctl.apply(Intent::SetModulatorEar { node: envelope, ear: Some(group) }).unwrap();
+        assert_eq!(ctl.model.free_modulators[0].ear, Some(group));
+        ctl.undo().expect("a step that names a lane that is not there could not be undone");
+        assert_eq!(ctl.model.free_modulators[0].ear, None, "what it heard: every note");
         ctl.model.check_ids().unwrap();
     }
 

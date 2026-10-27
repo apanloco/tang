@@ -473,10 +473,10 @@ impl Controller {
         let _ = self.cmd_tx.send(GraphCommand::InsertModulator { location: at, index, source: graph_source, node });
         // Its output is published from now on, and where it is if it is a step sequencer.
         let (output, position) = ModulatorSlot::alloc_slots(&mut self.model.slots, &source);
-        for command in modulator_slot_commands(at, index, output, position) {
+        for command in modulator_slot_commands(at, index, output, position, None) {
             let _ = self.cmd_tx.send(command);
         }
-        self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new(), output, position });
+        self.model.modulators_mut(at)?.push(ModulatorSlot { node, source, targets: Vec::new(), output, position, ear: None });
         Some(index)
     }
 
@@ -1871,7 +1871,7 @@ plugin = "builtin:reverb"
         assert!(after.contains(&added) && !before.contains(&added), "the one that was added, and a node of its own");
         let node = mirror.copy().graph.nodes.into_iter().find(|n| n.id == added).unwrap();
         assert_eq!(node.parent, Some(lane), "in the lane it was added to");
-        assert!(matches!(node.kind, crate::app::graph::NodeKind::Modulator { source: crate::app::graph::ModulatorSource::Envelope { .. } }));
+        assert!(matches!(node.kind, crate::app::graph::NodeKind::Modulator { source: crate::app::graph::ModulatorSource::Envelope { .. }, .. }));
     }
 
     #[test]

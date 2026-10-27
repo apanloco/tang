@@ -717,6 +717,12 @@ impl SessionModel {
                 } else if modulator.position.is_some() {
                     return Err(format!("modulator {m} of {rack} is not a step sequencer and has a position"));
                 }
+                // Only the session's own modulators have an ear (a lane's and a group's hear their own), and it is a node that was made (a lane that is gone is every event).
+                match modulator.ear {
+                    Some(_) if rack != "the free modulators" => return Err(format!("modulator {m} of {rack} has an ear, which only a modulator that is in no lane and no group has")),
+                    Some(ear) if ear.0 >= self.ids.next => return Err(format!("modulator {m} of {rack} hears {ear:?}, which was never allocated")),
+                    _ => {}
+                }
                 for (t, target) in modulator.targets.iter().enumerate() {
                     let whose = format!("target {t} of modulator {m} of {rack}");
                     if target.edge.0 >= self.ids.next_edge {
@@ -1026,6 +1032,21 @@ impl SessionModel {
     /// Take the modulator at `index` out of the rack at `at`, with its own cables, as the audio thread's `RemoveModulator` and `RemoveGroupModulator`
     /// do. (The controller takes out the cables that address it first, so none is left; one that is, goes with it.) `None`, and nothing changed,
     /// if there is no such modulator.
+    /// The node of the lane or the group that `modulator` hears the notes of, if it names one that is there: a node that is neither (it was taken out: an undo brings it back under the same
+    /// id) is every event, as it is in the audio thread (`Modulator::ear`).
+    pub fn ear_of(&self, modulator: &ModulatorSlot) -> Option<NodeId> {
+        modulator.ear.filter(|node| matches!(self.locate(*node), Some(NodePath::Instrument(_) | NodePath::Group(_))))
+    }
+
+    /// The place of the session that names the lane or the group `node`, as the file writes what a modulator hears: `instrument[0]` or `group[0]`.
+    pub fn heard_place(&self, node: NodeId) -> Option<crate::session::CablePlace> {
+        match self.locate(node)? {
+            NodePath::Instrument(lane) => Some(crate::session::CablePlace::Instrument(lane)),
+            NodePath::Group(group) => Some(crate::session::CablePlace::Group(group)),
+            _ => None,
+        }
+    }
+
     pub fn remove_modulator_at(&mut self, at: ModulatorLocation, index: usize) -> Option<ModulatorSlot> {
         let rack = self.modulators_mut(at)?;
         if index >= rack.len() {
@@ -1678,6 +1699,10 @@ pub struct ModulatorSlot {
     /// Where the audio thread publishes where a step sequencer is (telemetry): the whole part of the number is the step it is at, the fraction how far
     /// into it. `None` for any other modulator, and for a step sequencer if the slots had run out.
     pub position: Option<Slot>,
+    /// Whose notes the modulator hears, if it is in the session's own rack (a free modulator): the node of a lane (its instrument's) or of a group, or none for every event, whatever its
+    /// source (`Modulator::ear`, which the audio thread is told by `SetModulatorEar`). A lane's modulators and a group's hear their own lane or group, and have none. A node that is neither
+    /// a lane nor a group that is there (it was taken out, and an undo brings it back under the same id) is every event too (`SessionModel::ear_of`).
+    pub ear: Option<NodeId>,
 }
 
 #[derive(Debug)]
@@ -2104,8 +2129,8 @@ impl ModulatorSlot {
 }
 
 /// The commands that tell the audio thread where the modulator at `index` of the rack at `location` puts its output and, for a step sequencer, where it is: one for each
-/// slot it has, the output's first.
-pub fn modulator_slot_commands(location: ModulatorLocation, index: usize, output: Option<Slot>, position: Option<Slot>) -> Vec<plugin::chain::GraphCommand> {
+/// slot it has, the output's first; and whose notes it hears, if it hears any one's.
+pub fn modulator_slot_commands(location: ModulatorLocation, index: usize, output: Option<Slot>, position: Option<Slot>, ear: Option<NodeId>) -> Vec<plugin::chain::GraphCommand> {
     use plugin::chain::GraphCommand;
     let mut commands = Vec::new();
     if let Some(slot) = output {
@@ -2113,6 +2138,9 @@ pub fn modulator_slot_commands(location: ModulatorLocation, index: usize, output
     }
     if let Some(slot) = position {
         commands.push(GraphCommand::SetModulatorPosition { location, index, slot });
+    }
+    if ear.is_some() {
+        commands.push(GraphCommand::SetModulatorEar { location, index, ear });
     }
     commands
 }
@@ -4429,7 +4457,7 @@ param = "pan"
     fn spare_modulator(model: &SessionModel, node: u32) -> ModulatorSlot {
         let mut cable = spare_cable(model, 900 + node);
         cable.aim = Driven::Setting { modulator: model.instruments[0].modulators[0].node, field: ModSetting::Rate };
-        ModulatorSlot { node: NodeId(node), source: ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 9.0, retrigger: false, fade: 0.0, sync: 0 }, targets: vec![cable], output: None, position: None }
+        ModulatorSlot { node: NodeId(node), source: ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 9.0, retrigger: false, fade: 0.0, sync: 0 }, targets: vec![cable], output: None, position: None, ear: None }
     }
 
     #[test]
@@ -4744,6 +4772,7 @@ param = "pan"
             targets,
             output: None,
             position: None,
+            ear: None,
         }
     }
 
@@ -4754,6 +4783,7 @@ param = "pan"
             targets,
             output: None,
             position: None,
+            ear: None,
         }
     }
 
@@ -4764,6 +4794,7 @@ param = "pan"
             targets,
             output: None,
             position: None,
+            ear: None,
         }
     }
 
@@ -5378,7 +5409,7 @@ depth = 0.5
     }
 
     fn knob(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
-        ModulatorSlot { node: NodeId(7), source: ModSourceSlot::Macro { value: 0.25 }, targets, output: None, position: None }
+        ModulatorSlot { node: NodeId(7), source: ModSourceSlot::Macro { value: 0.25 }, targets, output: None, position: None, ear: None }
     }
 
     #[test]
@@ -5413,6 +5444,7 @@ depth = 0.5
             targets,
             output: None,
             position: None,
+            ear: None,
         }
     }
 
@@ -5460,7 +5492,7 @@ depth = 0.5
     }
 
     fn sequencer(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
-        ModulatorSlot { node: NodeId(7), source: ModSourceSlot::new_steps(), targets, output: None, position: None }
+        ModulatorSlot { node: NodeId(7), source: ModSourceSlot::new_steps(), targets, output: None, position: None, ear: None }
     }
 
     #[test]
@@ -5632,6 +5664,41 @@ depth = 0.5
         assert_eq!(of(&triangle), [Some(2.5), Some(1.0), None, None, None, None]);
         assert_eq!(of(&envelope), [None, None, Some(0.1), Some(0.2), Some(0.3), Some(0.4)]);
         assert_eq!(of(&control), [None; 6]);
+    }
+
+    #[test]
+    fn check_ids_has_the_ear_of_a_modulator_of_the_sessions_own_a_node_that_was_made_and_a_lane_or_a_group_have_none() {
+        let mut model = crate::app::testutil::load(crate::app::testutil::FREE_MODULATORS).model;
+        model.check_ids().unwrap();
+        let lane = model.instruments[0].node;
+        // A lane that was taken out, or never made: a node that was handed out hears, and one that was not is refused.
+        model.free_modulators[0].ear = Some(lane);
+        model.check_ids().unwrap();
+        model.free_modulators[0].ear = Some(NodeId(model.ids.next));
+        assert!(model.check_ids().unwrap_err().contains("which was never allocated"));
+        model.free_modulators[0].ear = Some(NodeId(model.ids.next - 1));
+        model.check_ids().unwrap();
+        model.free_modulators[0].ear = None;
+        // What is in a lane or a group hears its own, and has none: an ear there is refused, in a group's rack and in a lane's.
+        for in_a_group in [true, false] {
+            let node = model.alloc_node();
+            let source = ModSourceSlot::new_lfo();
+            let (output, position) = ModulatorSlot::alloc_slots(&mut model.slots, &source);
+            let slot = ModulatorSlot { node, source, targets: Vec::new(), output, position, ear: Some(lane) };
+            if in_a_group {
+                model.groups[0].modulators.push(slot);
+            } else {
+                model.instruments[0].modulators.push(slot);
+            }
+            let error = model.check_ids().unwrap_err();
+            assert!(error.contains("has an ear, which only a modulator that is in no lane and no group has"), "{error}");
+            if in_a_group {
+                model.groups[0].modulators.pop();
+            } else {
+                model.instruments[0].modulators.pop();
+            }
+        }
+        model.check_ids().unwrap();
     }
 
     #[test]

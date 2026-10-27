@@ -1382,6 +1382,8 @@ function run(snapshot: Snapshot, rows: readonly HistoryRow[]): string[] {
         if (JSON.stringify(shape.routes ?? []) !== JSON.stringify(row.shape.routes ?? [])) wrong.push(`${what}: the ways out that are cut are ${JSON.stringify(shape.routes ?? [])}, not ${JSON.stringify(row.shape.routes ?? [])}`);
         // (The effects whose feed is cut: likewise.)
         if (JSON.stringify(shape.feeds ?? []) !== JSON.stringify(row.shape.feeds ?? [])) wrong.push(`${what}: the feeds that are cut are ${JSON.stringify(shape.feeds ?? [])}, not ${JSON.stringify(row.shape.feeds ?? [])}`);
+        // (The modulators that hear a lane or a group: likewise.)
+        if (JSON.stringify(shape.ears ?? []) !== JSON.stringify(row.shape.ears ?? [])) wrong.push(`${what}: the ears are ${JSON.stringify(shape.ears ?? [])}, not ${JSON.stringify(row.shape.ears ?? [])}`);
         // (The sources of notes, the cables of notes and the links of the lanes that hear every source: likewise.)
         for (const list of ["sources", "notes", "hears", "order"] as const) {
           if (JSON.stringify(shape[list] ?? []) !== JSON.stringify(row.shape[list] ?? [])) wrong.push(`${what}: ${list} are ${JSON.stringify(shape[list] ?? [])}, not ${JSON.stringify(row.shape[list] ?? [])}`);
@@ -1412,6 +1414,7 @@ describe("the mock engine's history", () => {
       "setPinned",
       "renameGroup",
       "setFeed",
+      "setModulatorEar",
       "setScale",
       "setLocked",
       "moveEffect",
@@ -1437,6 +1440,8 @@ describe("the mock engine's history", () => {
     expect(refusals).toContain("there is nothing to undo");
     expect(refusals).toContain("there is nothing to redo");
     expect(refusals).toContain("only an effect has a feed");
+    expect(refusals).toContain("only a modulator that is in no lane and no group has an ear: a lane's or a group's hears its own");
+    expect(refusals).toContain("only a lane or a group can be heard");
     expect(refusals).toContain("giving that effect its input back would make the audio go round, by the cables there are");
     expect(refusals).toContain("the lane has no instrument to take out");
     expect(refusals).toContain("an instrument is taken out of a lane");

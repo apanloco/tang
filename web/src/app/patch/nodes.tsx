@@ -24,6 +24,7 @@ import { useClient, useClientSelection, useClientState, useEditor, useFrames } f
 import { focusWhenPossible, keepFocus } from "../focus";
 import { AudioPort, DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, NotesPort, ParamCell, RangeCell, StepsControl, SyncControl } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
+import { HearsMenu } from "./HearsMenu";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import { ModulateMenu } from "./ModulateMenu";
 import { NodeScope, ScopeButton, ScopePanel } from "./NodeScope";
@@ -531,7 +532,12 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const settings = source ? settingsOf(source) : [];
   return (
     <div className="tang-node tang-node--modulator">
-      <Header name={data.name} badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind}>
+      <Header
+        name={data.name}
+        badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind}
+        // (A modulator that is in no lane and no group chooses whose notes it hears: one that is in a lane or a group hears its own.)
+        sub={node?.kind === "modulator" && node.parent === null ? <HearsMenu node={data.node} name={data.name} /> : null}
+      >
         {/* (The note length that an LFO or a step sequencer follows the tempo by: no other kind has one, and the control is nothing for it.) */}
         <SyncControl node={data.node} />
         <RemoveNodeButton node={data.node} name={data.name} focusTo={node ? (node.parent !== null ? addModulatorId(node.parent) : ADD_FREE_MODULATOR_ID) : null} />

@@ -144,6 +144,58 @@ describe("adding a modulator that is in no lane and no group", () => {
   });
 });
 
+describe("choosing whose notes a modulator that is in no lane hears", () => {
+  const hears = (client: Client, node: number): number | undefined | "no modulator" => {
+    const found = client.state.snapshot?.graph.nodes.find((n) => n.id === node);
+    return found?.kind === "modulator" ? found.hears : "no modulator";
+  };
+
+  test("asks for the lane or the group, and the session says whom the modulator hears: and every note when it is asked for none", async () => {
+    const { client, notices, editor } = await open();
+    const id = await editor.addFreeModulator("envelope");
+    expect(id).toBe(3);
+    expect(await editor.setModulatorEar(3, oscillator.id)).toBe(true);
+    expect(hears(client, 3)).toBe(oscillator.id);
+    expect(await editor.setModulatorEar(3, null)).toBe(true);
+    expect(hears(client, 3)).toBeUndefined();
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("is one request, in the intent's words, and puts nothing among the notices", async () => {
+    const { client, server, editor } = await open();
+    await editor.addFreeModulator("lfo");
+    const asked: unknown[] = [];
+    const request = client.request.bind(client);
+    client.request = (message) => {
+      asked.push(message);
+      return request(message);
+    };
+    await editor.setModulatorEar(3, oscillator.id);
+    expect(asked).toEqual([{ type: "setModulatorEar", node: 3, ear: oscillator.id }]);
+    expect(server.snapshot.graph.nodes.find((n) => n.id === 3)).toMatchObject({ hears: oscillator.id });
+  });
+
+  test("says why when it is refused: the modulator of a lane hears its own, and a plugin is no lane or group", async () => {
+    const { client, notices, editor } = await open();
+    await editor.addFreeModulator("lfo");
+    expect(await editor.setModulatorEar(lfo.id, oscillator.id)).toBe(false);
+    expect(await editor.setModulatorEar(3, filter.id)).toBe(false);
+    expect(said(notices)).toEqual([
+      "Could not make LFO 1 hear Oscillator: only a modulator that is in no lane and no group has an ear: a lane's or a group's hears its own",
+      "Could not make LFO 2 hear Filter: only a lane or a group can be heard",
+    ]);
+    expect(hears(client, 3)).toBeUndefined();
+  });
+
+  test("with no connection says so, and changes nothing", async () => {
+    const { client, notices, editor } = await open();
+    await editor.addFreeModulator("lfo");
+    client.stop();
+    expect(await editor.setModulatorEar(3, null)).toBe(false);
+    expect(said(notices)).toEqual(["Could not make LFO 2 hear every note: Not connected to the server."]);
+  });
+});
+
 describe("modulating a parameter", () => {
   /** The cables of the session that end at the port `to` of `node`. */
   const cablesTo = (cables: readonly Edge[], node: number, to: Port): Edge[] => cables.filter((e) => e.kind === "modulation" && e.to.node === node && samePort(e.to.port, to));

@@ -38,7 +38,7 @@ use crate::app::load::load_session;
 use crate::app::testutil;
 use crate::audio::{Engine, MidiEvent, Renderer};
 use crate::source::Events;
-use self::edits::{Counts, Edit};
+use self::edits::{Counts, Edit, Hears};
 use crate::piano_filter::PianoFilter;
 use crate::plugin::chain::{AudioGraph, GraphCommand, MidiLearnedNotification, PatternNotification};
 use crate::plugin::{Plugin, Runtime};
@@ -443,6 +443,32 @@ const FREE_MODULATOR_EDITS: [(u64, Edit); 19] = [
     (42_000, Edit::Undo),
 ];
 
+/// What is done to what the free modulators of `CABLED` hear while it plays (step 93): lane 0 is given the keys from the high C up, so that it does not take the chord; a free envelope with a
+/// cable to its filter's cutoff hears every note and then lane 0 (it lets go of the chord, which is not the lane's) and then every note again; a free step sequencer with a cable to lane 1's
+/// detune hears the group (lane 0, which takes the high key alone and then every key), then lane 1, which is taken out while it hears it (every event) and put back by Undo (the lane); the envelope
+/// is made to hear lane 0, taken out while it hears it and put back by Undo, and the sequencer is made to hear the group, which is taken out and put back by Undo. Each is made (`Counts` says so:
+/// none is skipped or refused). The places of the plugins are those of `FREE_MODULATOR_EDITS`.
+const FREE_EAR_EDITS: [(u64, Edit); 18] = [
+    (2_000, Edit::Range { lane: 0, range: Some((60, 127)) }),
+    (3_000, Edit::AddFreeModulator { kind: ModulatorKind::Envelope }),
+    (3_500, Edit::FreeCable { modulator: 0, plugin: 1, param: 0 }),
+    (6_000, Edit::Ear { modulator: 0, to: Some(Hears::Lane(0)) }),
+    (9_000, Edit::AddFreeModulator { kind: ModulatorKind::Steps }),
+    (9_500, Edit::FreeCable { modulator: 1, plugin: 2, param: 1 }),
+    (12_000, Edit::Ear { modulator: 1, to: Some(Hears::Group(0)) }),
+    (18_000, Edit::Range { lane: 0, range: None }),
+    (22_000, Edit::Ear { modulator: 0, to: None }),
+    (26_000, Edit::Ear { modulator: 1, to: Some(Hears::Lane(1)) }),
+    (28_000, Edit::RemoveLane { lane: 1 }),
+    (30_500, Edit::Undo),
+    (32_000, Edit::Ear { modulator: 0, to: Some(Hears::Lane(0)) }),
+    (33_500, Edit::RemoveFreeModulator { index: 0 }),
+    (35_000, Edit::Undo),
+    (37_000, Edit::Ear { modulator: 1, to: Some(Hears::Group(0)) }),
+    (39_000, Edit::RemoveGroup { group: 0 }),
+    (41_000, Edit::Undo),
+];
+
 /// What the keys play into `edited:sources`: `performance`, and a key (E4) that is hit and let go of after the pedal is up, which a lane that has been given the keys again plays.
 fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     let mut events = performance();
@@ -464,7 +490,7 @@ pub fn edited() -> Vec<Scenario> {
         edits: edits.to_vec(),
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -639,6 +665,8 @@ impl Rig {
                 racks.iter().map(|(at, modulator, node, cables)| (*at, *modulator, *node, cables.iter().map(|(edge, aim, _)| (*edge, *aim)).collect::<Vec<_>>())).collect()
             };
             assert_eq!(without_depths(&facts.racks), without_depths(&model_racks), "{what}: the modulation cables of the engine are not those of the model");
+            // And whose notes the modulators of the session's own rack hear.
+            assert_eq!(facts.ears, testutil::model_ears(&self.ctl.model), "{what}: the ears of the engine's modulators are not the model's");
             // And their depths, but for those that another cable drives (the engine's is the one that cable has made of it this block, and the model's what the user set).
             for ((at, modulator, _, engine), (_, _, _, model)) in facts.racks.iter().zip(&model_racks) {
                 for (place, ((edge, _, engine), (_, _, model))) in engine.iter().zip(model).enumerate() {
@@ -1001,7 +1029,7 @@ mod tests {
     #[test]
     fn the_scenarios_that_have_free_modulators_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
         let with: Vec<String> = always_on().iter().filter(|scenario| scenario.has_free_modulators()).map(|scenario| scenario.id.clone()).collect();
-        assert_eq!(with, ["session:freemod@256", "edited:freemods@256"]);
+        assert_eq!(with, ["session:freeear@256", "session:freemod@256", "edited:freemods@256", "edited:freeears@256"]);
         assert!(always_on().iter().filter(|scenario| scenario.has_free_modulators()).all(|scenario| !scenario.is_in_the_old_loop()));
         // (A session that has none, and the scenarios of the generator, which draw none, are.)
         assert!(always_on().iter().filter(|scenario| scenario.id.starts_with("generated:")).all(|scenario| !scenario.has_free_modulators()));
@@ -1026,6 +1054,25 @@ mod tests {
         let alone = render(&Scenario { edits: Vec::new(), ..scenario }, &engine);
         let first = drawn.samples.iter().zip(&alone.samples).position(|(x, y)| x.to_bits() != y.to_bits()).expect("the cable is heard");
         assert!(first / 2 >= 8_000 - 8_000 % BLOCK, "a free modulator that drives nothing changes nothing: the first frame that differs is {}", first / 2);
+    }
+
+    #[test]
+    fn what_a_free_modulator_hears_is_heard_in_the_session_that_has_ears_and_in_the_scenario_that_changes_them() {
+        // The session: lane 0 plays a pattern an octave up and takes the keys up to B3, lane 1 the high keys, and the free modulators hear them, or the group, or every note. With the ears
+        // taken out of the file (they hear every note) the render is another, and both are heard.
+        let session = sessions().into_iter().find(|scenario| scenario.id.starts_with("session:freeear")).expect("a session of the corpus");
+        assert_eq!(session.session.matches("hears = ").count(), 3);
+        let ears = render(&session, &engine);
+        let without: String = session.session.lines().filter(|line| !line.starts_with("hears = ")).collect::<Vec<_>>().join("\n");
+        let everything = render(&Scenario { session: without, ..session }, &engine);
+        assert!(fingerprint(&ears).peak > 0.01 && fingerprint(&everything).peak > 0.01, "both are heard");
+        assert_ne!(ears.samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>(), everything.samples.iter().map(|s| s.to_bits()).collect::<Vec<_>>(), "what the free modulators hear is heard");
+        // The scenario: with the edits that set an ear taken out (every modulator hears every event) the render is the same until the first of them, at 6,000 frames, and another after it.
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:freeears")).expect("a scenario of the corpus");
+        let with = render(&scenario, &engine);
+        let plain = render(&Scenario { edits: scenario.edits.iter().filter(|(_, edit)| !matches!(edit, Edit::Ear { .. })).cloned().collect(), ..scenario }, &engine);
+        let first = with.samples.iter().zip(&plain.samples).position(|(x, y)| x.to_bits() != y.to_bits()).expect("an ear is heard");
+        assert!(first / 2 >= 6_000 - 6_000 % BLOCK, "nothing is different before the block that has the first ear: the first frame that differs is {}", first / 2);
     }
 
     #[test]

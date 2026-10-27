@@ -21,6 +21,7 @@ use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, Mod
 use crate::app::journal::{Journal, lane_words};
 use crate::app::model::{EdgeId, Made, NodeId, NodePath, PluginSlot};
 use crate::piano_filter::PianoMode;
+use crate::plugin::chain::ModulatorLocation;
 use crate::session::{Feed, Route};
 
 /// How long after one change of a thing the next change of it may come and still be the same step.
@@ -348,6 +349,27 @@ impl Controller {
         Some((slot.name.clone(), if slot.fed { Feed::Chain } else { Feed::None }))
     }
 
+    /// What a modulator of the session's own rack is called in the words of a step of its ear ("an LFO") and whom it hears now (a lane or a group that is there: one that went is every note, which is
+    /// what Undo is to put back and what the graph says): none for a node that is no such modulator.
+    fn free_modulator_ear(&self, node: NodeId) -> Option<(&'static str, Option<NodeId>)> {
+        match self.model.locate(node)? {
+            NodePath::Modulator { at: ModulatorLocation::Free, index } => {
+                let modulator = &self.model.free_modulators[index];
+                Some((ModulatorKind::of(&modulator.source).label(), self.model.ear_of(modulator)))
+            }
+            _ => None,
+        }
+    }
+
+    /// What a lane or a group is called in the words of a step of what a modulator hears ("the lane of Oscillator", "Pad"): none for a node that is neither.
+    fn lane_or_group_words(&self, node: NodeId) -> Option<String> {
+        match self.model.locate(node)? {
+            NodePath::Instrument(inst) => Some(lane_words(&self.model.instruments[inst])),
+            NodePath::Group(group) => Some(self.model.groups[group].display_name(group)),
+            _ => None,
+        }
+    }
+
     fn lane_or_group_route(&self, node: NodeId) -> Option<(String, Route)> {
         match self.model.locate(node)? {
             NodePath::Instrument(inst) => {
@@ -417,6 +439,18 @@ impl Controller {
             Intent::SetSolo { node, solo } => match self.lane_or_group_flags(*node) {
                 Some((name, _, was)) if was != *solo => {
                     step(format!("{} {name}", if *solo { "solo" } else { "unsolo" }), Intent::SetSolo { node: *node, solo: was }, None)
+                }
+                _ => Plan::Nothing,
+            },
+            // (As a way out is: a node that is no modulator of the session's own rack is refused, and what is as it is asked to be changes nothing: no step is kept for either. A node that is
+            // neither a lane nor a group is refused too, and is not a step.)
+            Intent::SetModulatorEar { node, ear } => match self.free_modulator_ear(*node) {
+                Some((kind, was)) if was != *ear && ear.is_none_or(|heard| self.lane_or_group_words(heard).is_some()) => {
+                    let label = match ear.and_then(|heard| self.lane_or_group_words(heard)) {
+                        Some(heard) => format!("make {kind} hear {heard}"),
+                        None => format!("make {kind} hear every note"),
+                    };
+                    step(label, Intent::SetModulatorEar { node: *node, ear: was }, None)
                 }
                 _ => Plan::Nothing,
             },
@@ -975,6 +1009,67 @@ rate = 3.0
 
     fn redo_label(ctl: &Controller) -> Option<String> {
         ctl.history_state().redo
+    }
+
+    // -- What a modulator that is in no lane hears (SetModulatorEar, step 93) --
+
+    #[test]
+    fn what_a_free_modulator_hears_is_a_step_in_words_that_say_whom_and_undo_and_redo_set_it_in_the_model_and_the_engine() {
+        let (engine, mut ctl, _clock) = controller();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope }).unwrap();
+        let envelope = ctl.model.free_modulators[0].node;
+        let (first, second) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Instrument(1)));
+        let ear = |ctl: &Controller| ctl.model.free_modulators[0].ear;
+        let set = |ctl: &mut Controller, ear| ctl.apply(Intent::SetModulatorEar { node: envelope, ear }).unwrap();
+        sent(&engine);
+        set(&mut ctl, Some(first));
+        assert_eq!(undo_label(&ctl).as_deref(), Some("make an envelope hear the lane of Oscillator"));
+        set(&mut ctl, Some(second));
+        set(&mut ctl, None);
+        assert_eq!(undo_label(&ctl).as_deref(), Some("make an envelope hear every note"));
+        assert_eq!(
+            sent(&engine),
+            [format!("SetModulatorEar Free index=0 ear={}", first.0), format!("SetModulatorEar Free index=0 ear={}", second.0), "SetModulatorEar Free index=0 ear=none".to_string()]
+        );
+        // (What is as it is asked to be is applied and is no step.)
+        set(&mut ctl, None);
+        assert_eq!(ctl.history_state().undo.as_deref(), Some("make an envelope hear every note"));
+        sent(&engine);
+        for (back_to, text) in [(Some(second), second.0.to_string()), (Some(first), first.0.to_string()), (None, "none".to_string())] {
+            ctl.undo().unwrap();
+            assert_eq!(ear(&ctl), back_to);
+            assert_eq!(sent(&engine), [format!("SetModulatorEar Free index=0 ear={text}")]);
+        }
+        assert_eq!(undo_label(&ctl).as_deref(), Some("add an envelope"), "the three steps are undone and the modulator is the next");
+        for (to, text) in [(Some(first), first.0.to_string()), (Some(second), second.0.to_string()), (None, "none".to_string())] {
+            ctl.redo().unwrap();
+            assert_eq!(ear(&ctl), to);
+            assert_eq!(sent(&engine), [format!("SetModulatorEar Free index=0 ear={text}")]);
+        }
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_free_modulator_that_hears_a_lane_is_put_back_by_undo_hearing_it_and_what_is_refused_is_no_step() {
+        let (engine, mut ctl, _clock) = controller();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo }).unwrap();
+        let lfo = ctl.model.free_modulators[0].node;
+        let (first, plugin) = (node(&ctl, NodePath::Instrument(0)), node(&ctl, NodePath::Effect { inst: 0, index: 0 }));
+        ctl.apply(Intent::SetModulatorEar { node: lfo, ear: Some(first) }).unwrap();
+        let steps = ctl.history_state();
+        // Refused: a lane's own modulator has none, and a plugin is not heard.
+        let lane_lfo = ctl.model.instruments[0].modulators[0].node;
+        assert!(ctl.apply(Intent::SetModulatorEar { node: lane_lfo, ear: Some(first) }).is_err());
+        assert!(ctl.apply(Intent::SetModulatorEar { node: lfo, ear: Some(plugin) }).is_err());
+        assert_eq!(ctl.history_state(), steps, "no step for a refusal");
+        // Taken out and put back: the lane that it hears is where it was, and it hears it again, in the model and in the audio thread.
+        ctl.apply(Intent::RemoveNode { node: lfo }).unwrap();
+        sent(&engine);
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.free_modulators[0].ear, Some(first));
+        let told = sent(&engine);
+        assert!(told.iter().any(|c| *c == format!("SetModulatorEar Free index=0 ear={}", first.0)), "{told:?}");
+        ctl.model.check_ids().unwrap();
     }
 
     #[test]
@@ -3595,9 +3690,9 @@ depth = 0.9
             // Something puts it there without the history (as a front-end that edits the model by itself could): the node, or another modulator with the cable.
             let other = ctl.model.alloc_node();
             let spare = if own_cable {
-                crate::app::model::ModulatorSlot { node: other, source: ModSourceSlot::new_lfo(), targets: vec![copy], output: None, position: None }
+                crate::app::model::ModulatorSlot { node: other, source: ModSourceSlot::new_lfo(), targets: vec![copy], output: None, position: None, ear: None }
             } else {
-                crate::app::model::ModulatorSlot { node, source: ModSourceSlot::new_lfo(), targets: Vec::new(), output: None, position: None }
+                crate::app::model::ModulatorSlot { node, source: ModSourceSlot::new_lfo(), targets: Vec::new(), output: None, position: None, ear: None }
             };
             ctl.model.insert_modulator_at(crate::plugin::chain::ModulatorLocation::Lane(0), 4, spare).unwrap();
             let before = picture(&ctl);
@@ -6320,6 +6415,33 @@ size = 0.5
                 // (Seven steps: the LFO, its three cables, and the three removals, each with the free cable that went with it.)
                 script.extend(n_of(7, undo));
                 script.extend(n_of(7, redo));
+                script
+            },
+        ));
+        scripts.push((
+            "a modulator that is in no lane is made to hear a lane, a group and every note, the lane that it hears is taken out and put back, and what is refused or is as it is asked to be is no step",
+            {
+                let ear = |node: NodeId, ear: Option<NodeId>| Op::Do(Intent::SetModulatorEar { node, ear });
+                let mut script = vec![
+                    Op::Do(Intent::AddFreeModulator { kind: ModulatorKind::Envelope }),
+                    ear(fresh(0), Some(lane1)),
+                    ear(fresh(0), Some(g0)),
+                    // As it is: applied, and no step.
+                    ear(fresh(0), Some(g0)),
+                    ear(fresh(0), None),
+                    ear(fresh(0), Some(lane1)),
+                    Op::Do(Intent::RemoveNode { node: lane1 }),
+                    // As it is, too: the lane is gone and the modulator hears every note, which is no step and does not forget the lane (Undo of the removal gives the ear back).
+                    ear(fresh(0), None),
+                    // Refused, and no step: a lane's own modulator has none, a plugin is not a lane or a group, and a node that is not there.
+                    ear(lfo, Some(lane0)),
+                    ear(fresh(0), Some(reverb)),
+                    ear(fresh(0), Some(ghost)),
+                    ear(ghost, None),
+                ];
+                // (Six steps: the envelope, four ears, and the lane's removal.)
+                script.extend(n_of(6, undo));
+                script.extend(n_of(6, redo));
                 script
             },
         ));

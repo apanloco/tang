@@ -3588,6 +3588,42 @@ describe("what a velocity and a key put out and do in the mock engine: they foll
       client.noteOn(40, 90);
       await until(() => near(outputOfFree(client, output), 90 / 127), "the velocity of a note that the lane does not take");
     });
+
+    test("hears, with an ear, the notes of the lane it hears as the lane takes and transposes them, and every note again with none (`SetModulatorEar`)", async () => {
+      const { client, output } = await freeWith("key");
+      const lane = client.state.snapshot?.graph.nodes.find((n) => n.kind === "instrument");
+      if (!lane) throw new Error("the tracer has a lane");
+      await client.request({ type: "setModulatorEar", node: output, ear: lane.id });
+      // The lane takes 60 to 71 and puts them an octave up: 40 is not its, and 62 is heard as 74.
+      const rest = Math.fround(60 / 127);
+      client.noteOn(40, 100);
+      await quiet();
+      expect(outputOfFree(client, output)).toBe(rest);
+      client.noteOn(62, 100);
+      await until(() => near(outputOfFree(client, output), 74 / 127), "a note that the lane takes, and an octave");
+      // Every note again: the note that the lane does not take is heard.
+      await client.request({ type: "setModulatorEar", node: output, ear: null });
+      client.noteOn(40, 100);
+      await until(() => near(outputOfFree(client, output), 40 / 127), "a note that the lane does not take");
+    });
+
+    test("hears every note again when the lane it hears is taken out, and the lane when Undo has put it back", async () => {
+      const { client, output } = await freeWith("key");
+      const lane = client.state.snapshot?.graph.nodes.find((n) => n.kind === "instrument");
+      if (!lane) throw new Error("the tracer has a lane");
+      await client.request({ type: "addInstrument", plugin: "builtin:osc" });
+      await client.request({ type: "setModulatorEar", node: output, ear: lane.id });
+      await client.request({ type: "removeNode", node: lane.id });
+      const hears = (): number | undefined | "no modulator" => {
+        const found = client.state.snapshot?.graph.nodes.find((n) => n.id === output);
+        return found?.kind === "modulator" ? found.hears : "no modulator";
+      };
+      expect(hears(), "the graph says none for a lane that is gone").toBeUndefined();
+      client.noteOn(40, 100);
+      await until(() => near(outputOfFree(client, output), 40 / 127), "every note: the lane is gone");
+      await client.request({ type: "undo" });
+      expect(hears()).toBe(lane.id);
+    });
   });
 
   describe("of a group", () => {

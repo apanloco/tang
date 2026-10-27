@@ -951,6 +951,42 @@ function setRouteOutcome(snapshot: Snapshot, node: NodeId, route: Route): Outcom
 }
 
 /**
+ * Whose notes a modulator that is in no lane and no group hears, as the controller does it (`set_modulator_ear_intent`): the node has to be a modulator of the session's own (a lane's or a group's hears its
+ * own; the master is no node of the model, as far as the controller goes), and the ear a lane or a group, or none for every note. The graph says it as `hears`, and says nothing for none.
+ */
+function setModulatorEarOutcome(snapshot: Snapshot, node: NodeId, ear: NodeId | null): Outcome {
+  const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
+  if (!found) return noNode(node);
+  if (found.kind !== "modulator" || found.parent !== null) return invalid("only a modulator that is in no lane and no group has an ear: a lane's or a group's hears its own");
+  if (ear !== null) {
+    const heard = snapshot.graph.nodes.find((n) => n.id === ear && n.kind !== "master");
+    if (!heard) return noNode(ear);
+    if (heard.kind !== "instrument" && heard.kind !== "group") return invalid("only a lane or a group can be heard");
+  }
+  return { restructured: { ...snapshot, graph: { ...snapshot.graph, nodes: snapshot.graph.nodes.map((n) => (n === found ? withEar(found, ear) : n)) } } };
+}
+
+/** The modulator `node` hearing `ear`, or every note for none: a modulator that hears every note says nothing of it (`hears` is absent on the wire). */
+function withEar(node: Extract<Node, { kind: "modulator" }>, ear: NodeId | null): Node {
+  const copy = { ...node };
+  if (ear === null) delete copy.hears;
+  else copy.hears = ear;
+  return copy;
+}
+
+/**
+ * The session with the ears that name a lane or a group that is gone taken out of its modulators, as the graph the controller gives has them (it says whom a modulator hears if it is a lane or a group that is there,
+ * and nothing else: the audio thread hears every note for a lane that went). The same snapshot if there is none, so that nothing that compares them finds a change.
+ */
+function withoutLostEars(snapshot: Snapshot): Snapshot {
+  const { nodes } = snapshot.graph;
+  const heard = new Set(nodes.filter((n) => n.kind === "instrument" || n.kind === "group").map((n) => n.id));
+  const lost = nodes.some((n) => n.kind === "modulator" && n.hears !== undefined && !heard.has(n.hears));
+  if (!lost) return snapshot;
+  return { ...snapshot, graph: { ...snapshot.graph, nodes: nodes.map((n) => (n.kind === "modulator" && n.hears !== undefined && !heard.has(n.hears) ? withEar(n, null) : n)) } };
+}
+
+/**
  * The link into an effect cut or given back, as the controller does it (`set_feed_intent`): the node has to be an effect of a lane's chain or of a group's bus (the master is no node of the model, as far as the
  * controller goes), and a link that is given back is refused where the audio would go round with the cables there are. The links of the audio path are then the graph's for the nodes as they are
  * (`linksOf`: no link goes into an effect that is not fed, and the chain goes on from it).
@@ -1101,6 +1137,7 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "renameGroup") return renameGroupOutcome(snapshot, intent.node, intent.name);
   if (intent.type === "setLaneGroup") return setLaneGroupOutcome(snapshot, intent.node, intent.group);
   if (intent.type === "setRoute") return setRouteOutcome(snapshot, intent.node, intent.route);
+  if (intent.type === "setModulatorEar") return setModulatorEarOutcome(snapshot, intent.node, intent.ear);
   if (intent.type === "setFeed") return setFeedOutcome(snapshot, intent.node, intent.feed);
   if (intent.type === "addGroup") return addGroupOutcome(snapshot, intent.members, counters);
   if (intent.type === "addEffect") return addEffectOutcome(snapshot, intent.parent, intent.plugin, counters, catalog);
@@ -1602,7 +1639,8 @@ export class MockServer {
       // (An LFO hears every note too: its wave starts again at one if it retriggers, and its fade, if it has one, starts at one whether it does or not.)
       const restarts = (control.source.type === "steps" && control.source.retrigger) || control.source.type === "lfo";
       if (!follows && !restarts) continue;
-      const owner = nodes.find((n) => n.id === control.parent);
+      // (A modulator that is in no lane and no group hears the lane or the group it has an ear for, as a lane's or a group's own does, and every note without one: the graph says none for an ear that is gone.)
+      const owner = nodes.find((n) => n.id === (control.parent ?? control.hears));
       const remember = (heard: number): void => {
         if (follows) this.#heard.set(control.id, { note: heard, velocity });
         else this.#restarted.set(control.id, this.now());
@@ -1610,8 +1648,8 @@ export class MockServer {
       if (owner?.kind === "instrument") {
         const heard = note + owner.transpose;
         if (takes(owner) && heard >= 0 && heard <= 127) remember(heard);
-      } else if (owner?.kind === "group" && nodes.some((n) => n.kind === "instrument" && n.parent === owner.id && takes(n))) {
-        remember(note);
+      } else if (owner?.kind === "group") {
+        if (nodes.some((n) => n.kind === "instrument" && n.parent === owner.id && takes(n))) remember(note);
       } else if (ownerOf(nodes, control) === "free") {
         remember(note);
       }
@@ -1717,7 +1755,7 @@ export class MockServer {
   #commit(outcome: Exclude<Outcome, { error: WireError }>, tell: boolean): { rev: number; told: Told } {
     const rev = this.#snapshot.rev + 1;
     if ("restructured" in outcome) {
-      this.#snapshot = { ...outcome.restructured, rev: rev + 1, meta: { ...outcome.restructured.meta, dirty: true } };
+      this.#snapshot = withoutLostEars({ ...outcome.restructured, rev: rev + 1, meta: { ...outcome.restructured.meta, dirty: true } });
       if (tell) {
         for (const connection of this.#connections) {
           if (connection.subscribed) connection.tell({ type: "snapshot", snapshot: this.#snapshot });

@@ -125,6 +125,9 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetModulatorSync { location, index, beats } => {
             format!("SetModulatorSync {location:?} index={index} beats={beats:.3}")
         }
+        C::SetModulatorEar { location, index, ear } => {
+            format!("SetModulatorEar {location:?} index={index} ear={}", ear.map_or_else(|| "none".to_string(), |node| node.0.to_string()))
+        }
         C::SetModulatorSteps { location, index, values, length, glide, retrigger } => {
             format!("SetModulatorSteps {location:?} index={index} values={values:?} length={length} glide={glide:.3} retrigger={retrigger}")
         }
@@ -1450,7 +1453,7 @@ impl plugin::Plugin for DropProbe {
 
 /// What a session comes to, for the fixtures of what the intents of groups and the history do: the nodes (their id, their parent and their name), the
 /// audio path, the modulation cables, the audio cables that have been drawn between two places (`sends`, a list only when there are some), the lanes and groups whose way out is cut
-/// (`routes`, likewise), the sources of notes (`sources`: what each is, the keys or a device by its name), the cables of notes (`notes`) and the links from each source to each lane that hears
+/// (`routes`, likewise), whom each modulator of the session's own hears (`ears`, likewise), the sources of notes (`sources`: what each is, the keys or a device by its name), the cables of notes (`notes`) and the links from each source to each lane that hears
 /// every source (`hears`), each a list only when there is something in it, and the order of the kinds of edge (`order`, for a session that has a source), and the two lists of the layout of
 /// the telemetry (without its fingerprint), each entry as a line of text the web client's tests make of its own copy by the same rules (`shapeOf` in
 /// `web/src/client/fixtures.ts`).
@@ -1518,6 +1521,16 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
         .collect();
     if !feeds.is_empty() {
         shape["feeds"] = serde_json::json!(feeds);
+    }
+    // The modulators that are in no lane and no group and hear a lane or a group (`hears` on their node): a line each (`modulator lane`), and no list at all when none does, so that the fixtures of the
+    // sessions that have no ear are as they were.
+    let ears: Vec<String> = list(&wire["graph"]["nodes"])
+        .iter()
+        .filter(|n| text(&n["kind"]) == "modulator" && !n["hears"].is_null())
+        .map(|n| format!("{} {}", n["id"], n["hears"]))
+        .collect();
+    if !ears.is_empty() {
+        shape["ears"] = serde_json::json!(ears);
     }
     // The sources of notes, the cables of notes that have been drawn and the links of the lanes that have none: a line each, and no list at all for a session that has none, so that the fixtures of the
     // sessions that have no source are as they were.
@@ -1611,6 +1624,11 @@ pub fn model_racks(model: &SessionModel) -> crate::plugin::chain::RackCables {
     let groups = model.groups.iter().enumerate().flat_map(|(i, group)| racks(ModulatorLocation::Group, i, &group.modulators));
     let free = racks(|_| ModulatorLocation::Free, 0, &model.free_modulators);
     lanes.chain(groups).chain(free).collect()
+}
+
+/// Whose notes each modulator of the session's own rack hears, as the model has it, in the terms and the order of `AudioGraph::ears`.
+pub fn model_ears(model: &SessionModel) -> Vec<(NodeId, Option<NodeId>)> {
+    model.free_modulators.iter().map(|modulator| (modulator.node, modulator.ear)).collect()
 }
 
 /// How the audio thread's racks name what each cable of the modulator at `mod_index` in the rack at `at` drives (`SessionModel::kind_of_target`), for a test that says it.

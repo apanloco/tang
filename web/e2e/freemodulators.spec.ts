@@ -175,6 +175,81 @@ mock("the canvas arranged again has the row of the modulators that are in no lan
   await expectNodesApart(page);
 });
 
+/** The button on a modulator's node that chooses whose notes it hears. */
+const hears = (of: Locator): Locator => of.getByRole("button", { name: /^Whose notes / });
+
+mock("a modulator that is in no lane chooses whose notes it hears from a menu on its node: lit while it hears a lane, and Undo and Redo have the words of what it did", async ({ page }) => {
+  await open(page);
+  await addLane(page);
+  const lfo = await add(page, "LFO", "LFO 2");
+  // (The tracer's own LFO is the lane's, which hears its own lane and has no menu.)
+  await expect(hears(node(page, "LFO 1"))).toHaveCount(0);
+  await expect(hears(lfo)).toHaveAttribute("aria-label", "Whose notes LFO 2 hears: every note");
+  await expect(hears(lfo)).not.toHaveClass(/tang-node__notes--set/);
+  await hears(lfo).click();
+  const menu = page.getByRole("menu");
+  await expect(menu.getByRole("menuitem")).toHaveText(["Every note", "Oscillator 1", "Oscillator 2"]);
+  // (The one that it hears is marked: a check mark is in its name.)
+  await expect(menu.getByRole("menuitem", { name: /Every note$/ })).toHaveAttribute("aria-current", "true");
+  await menu.getByRole("menuitem", { name: "Oscillator 2", exact: true }).click();
+  await expect(hears(lfo)).toHaveAttribute("aria-label", "Whose notes LFO 2 hears: Oscillator 2");
+  await expect(hears(lfo)).toHaveClass(/tang-node__notes--set/);
+  // The menu opens on what it hears, and every note is a choice.
+  await hears(lfo).click();
+  await expect(page.getByRole("menuitem", { name: /Oscillator 2$/ })).toHaveAttribute("aria-current", "true");
+  await page.getByRole("menuitem", { name: "Every note", exact: true }).click();
+  await expect(hears(lfo)).not.toHaveClass(/tang-node__notes--set/);
+  // Undo goes back through them, in the words of what was done.
+  await page.getByRole("button", { name: "Undo make an LFO hear every note", exact: true }).click();
+  await expect(hears(lfo)).toHaveClass(/tang-node__notes--set/);
+  await page.getByRole("button", { name: "Undo make an LFO hear the lane of Oscillator", exact: true }).click();
+  await expect(hears(lfo)).not.toHaveClass(/tang-node__notes--set/);
+  await page.getByRole("button", { name: "Redo make an LFO hear the lane of Oscillator", exact: true }).click();
+  await expect(hears(lfo)).toHaveAttribute("aria-label", "Whose notes LFO 2 hears: Oscillator 2");
+  // Taking the lane out leaves the modulator hearing every note, and Undo has it hear the lane again.
+  await showAll(page);
+  await node(page, "Oscillator 2").getByRole("button", { name: /^Remove /, exact: false }).first().click();
+  await page.getByRole("menuitem", { name: /^Remove the lane of Oscillator 2 for good/ }).click();
+  await expect(node(page, "Oscillator 2")).toHaveCount(0);
+  await expect(hears(lfo)).toHaveAttribute("aria-label", "Whose notes LFO 2 hears: every note");
+  await page.getByRole("button", { name: /^Undo remove the lane of Oscillator/ }).click();
+  await expect(node(page, "Oscillator 2")).toBeVisible();
+  await expect(hears(lfo)).toHaveAttribute("aria-label", "Whose notes LFO 2 hears: Oscillator 2");
+});
+
+test("a modulator that is in no lane, in the real program, hears the lane that it is made to, the file keeps it as the place of the lane, and a page opened again has it", async ({ page, own }) => {
+  test.slow();
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  const saved = async (): Promise<string> => {
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+    return readFileSync(own.file, "utf8");
+  };
+  await addLane(page);
+  const envelope = await add(page, "Envelope", "ADSR");
+  expect(await saved()).not.toContain("hears");
+  // The second lane's notes: the file says which lane by its place among the lanes.
+  await hears(envelope).click();
+  await page.getByRole("menuitem", { name: "Oscillator 2", exact: true }).click();
+  await expect(hears(envelope)).toHaveAttribute("aria-label", "Whose notes ADSR hears: Oscillator 2");
+  let file = await saved();
+  expect(file.match(/^hears = /gm)).toHaveLength(1);
+  expect(file).toContain('hears = "instrument[1]"');
+  expect(file.indexOf("[[modulator]]")).toBeLessThan(file.indexOf('hears = "instrument[1]"'));
+  // A page opened again has it: the session is the server's.
+  await page.reload();
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  await expect(hears(node(page, "ADSR"))).toHaveAttribute("aria-label", "Whose notes ADSR hears: Oscillator 2");
+  await expect(hears(node(page, "ADSR"))).toHaveClass(/tang-node__notes--set/);
+  // Undo takes it back, in the file too.
+  await page.getByRole("button", { name: "Undo make an envelope hear the lane of Oscillator", exact: true }).click();
+  await expect(hears(node(page, "ADSR"))).not.toHaveClass(/tang-node__notes--set/);
+  file = await saved();
+  expect(file).not.toContain("hears");
+});
+
 test("a modulator that is in no lane, in the real program, drives knobs of two lanes, which move, and the file keeps it as a table of its own that names the plugins it drives by their places, and Undo puts it back", async ({ page, own }) => {
   // (A good many waits, and a lane added.)
   test.slow();
