@@ -28,13 +28,45 @@ impl SourceTable {
     }
 }
 
-/// CoreMIDI (macOS) gives a program the list of the MIDI ports as the server last told it, and the server tells a thread on its run loop: a program that never runs one sees the ports that were
-/// there when it started, a port that goes is a stale one that has no name, and a device that is plugged in later is never listed. One turn of the loop, with no waiting, lets it see.
+/// CoreMIDI (macOS) gives a program the list of the MIDI ports as the server last told it, and the server tells the run loop of the thread that made the program's first MIDI client: a
+/// program that never runs one sees the ports that were there when it started, a port that goes is a stale one that has no name, and a device that is plugged in later is never listed.
+///
+/// That thread is one of our own, which does nothing else (`tang-midi-run-loop`: it makes the first client and turns its own run loop for as long as the program runs), and not the main
+/// thread. The main thread's run loop is where a JUCE plugin puts the source of its message queue (the ROLI plugins that the scan of the catalog loads and lets go of, on its own thread):
+/// a turn of that loop once a second, as this function made until it was moved, ran the source of a plugin that the scan was taking down in that moment, and the program crashed in the
+/// first seconds of its life (SIGSEGV, SIGBUS or SIGTRAP in `juce::MessageQueue::runLoopSourceCallback`, five times in the browser tests of one afternoon). A run loop that has no plugin's
+/// sources on it is the one to turn. Called before every look at the ports: the first call makes the thread and waits for its client, the others have nothing to do.
 #[cfg(target_os = "macos")]
 fn let_the_system_see_the_devices() {
     use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
-    // SAFETY: a constant of CoreFoundation's.
-    CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, std::time::Duration::ZERO, false);
+    use std::sync::{Once, mpsc};
+    use std::time::{Duration, Instant};
+
+    static RUN_LOOP: Once = Once::new();
+    RUN_LOOP.call_once(|| {
+        let (made, waiting) = mpsc::channel();
+        let spawned = std::thread::Builder::new().name("tang-midi-run-loop".to_string()).spawn(move || {
+            // (The client is kept, for the run: it is the one the system tells.)
+            let client = MidiInput::new("tang run loop");
+            let _ = made.send(());
+            let Ok(_client) = client else { return };
+            loop {
+                let turned = Instant::now();
+                // SAFETY: a constant of CoreFoundation's.
+                CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_millis(100), false);
+                // (A loop that has nothing to wait for comes back at once: not a thread that spins.)
+                if turned.elapsed() < Duration::from_millis(10) {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+        match spawned {
+            Ok(_) => {
+                let _ = waiting.recv_timeout(Duration::from_secs(5));
+            }
+            Err(e) => log::warn!("no thread to turn the MIDI run loop on: {e}"),
+        }
+    });
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -487,5 +519,58 @@ mod tests {
         open.push(device("Seaboard", 1));
         assert_eq!(names_of(&open), ["Launchkey", "IAC", "Seaboard"], "a device that has gone and come back is the last one opened");
         assert!(names_of::<()>(&[]).is_empty(), "no device is open: no name");
+    }
+}
+
+/// What the look at the ports does to the run loops of the program (macOS).
+#[cfg(all(test, target_os = "macos"))]
+mod run_loop_tests {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use core_foundation::date::CFDate;
+    use core_foundation::runloop::{CFRunLoop, CFRunLoopTimer, CFRunLoopTimerContext, CFRunLoopTimerRef, kCFRunLoopDefaultMode};
+
+    use super::*;
+    use crate::held_notes::HeldNotes;
+    use crate::piano_filter::{PianoFilter, PianoMode};
+    use crate::scale::ScaleSetting;
+
+    extern "C" fn fired(_timer: CFRunLoopTimerRef, info: *mut c_void) {
+        // SAFETY: `info` is the address of the counter of the test, which outlives the timer.
+        unsafe { &*(info as *const AtomicUsize) }.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The program's own, as `main` makes it, over a channel that nobody reads.
+    fn manager() -> MidiManager {
+        let (tx, _rx) = crossbeam_channel::bounded(16);
+        let filter = Arc::new(PianoFilter::new(ScaleSetting::default(), PianoMode::Highlight));
+        let notes = NoteInput::new(tx, Arc::new(HeldNotes::new()), filter);
+        MidiManager::new(notes, Some("no such device".to_string()), Arc::new(MidiMonitor::new(false)))
+    }
+
+    /// The main thread's run loop is where a JUCE plugin puts the source of its message queue, and a plugin that the scan of the catalog is taking down in the moment that the loop is turned
+    /// crashes the program (`let_the_system_see_the_devices`): the look at the ports turns no run loop of the thread that looks. A timer that is due now stands for such a source, which a turn
+    /// of the loop would run.
+    #[test]
+    fn looking_at_the_ports_does_not_turn_the_run_loop_of_the_thread_that_looks() {
+        let fires = AtomicUsize::new(0);
+        let mut context = CFRunLoopTimerContext { version: 0, info: (&raw const fires).cast_mut().cast::<c_void>(), retain: None, release: None, copyDescription: None };
+        let timer = CFRunLoopTimer::new(CFDate::now().abs_time(), 0.0, 0, 0, fired, &mut context);
+        let this_thread = CFRunLoop::get_current();
+        // SAFETY: a constant of CoreFoundation's.
+        let mode = unsafe { kCFRunLoopDefaultMode };
+        this_thread.add_timer(&timer, mode);
+
+        // (The ports may be none, or the system's own may refuse: it is the look that is asked for.)
+        let mut manager = manager();
+        let _ = manager.open_ports();
+        let _ = manager.open_ports();
+        assert_eq!(fires.load(Ordering::SeqCst), 0, "the run loop of this thread was turned by the look at the ports");
+
+        // The same timer is run by a turn of the loop, so that the test would have seen it.
+        CFRunLoop::run_in_mode(mode, std::time::Duration::ZERO, false);
+        assert_eq!(fires.load(Ordering::SeqCst), 1, "a turn of this thread's run loop runs the timer");
+        this_thread.remove_timer(&timer, mode);
     }
 }
