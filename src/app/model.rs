@@ -3016,6 +3016,79 @@ param = "detune"
         assert!(checked > 500, "{checked} places are enough to say something");
     }
 
+    /// A session of two lanes (the second has no instrument, only an effect), a group with a bus effect and two modulators: the first drives the first lane's `detune`, and the second drives the first one's rate.
+    fn two_modulators() -> SessionModel {
+        load(
+            r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument]]
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[modulator]]
+type = "lfo"
+[[modulator.target]]
+to = "instrument[0]"
+param = "detune"
+[[modulator]]
+type = "lfo"
+[[modulator.target]]
+mod_rate = 0
+"#,
+        )
+        .model
+    }
+
+    #[test]
+    fn kind_of_says_none_for_what_a_modulator_does_not_reach_and_the_lists_leave_out_the_same() {
+        let model = two_modulators();
+        let at = ModulatorLocation::Free;
+        let (empty_lane, group) = (model.instruments[1].node, model.groups[0].node);
+        let (first, second) = (model.free_modulators[0].node, model.free_modulators[1].node);
+        let own_cable = model.free_modulators[0].targets[0].edge;
+        // The instrument of a lane that has none has no parameter to drive, a group has none, and a node that is not there is nothing.
+        assert_eq!(model.kind_of(at, 0, Driven::Param { plugin: empty_lane, index: 0 }), None);
+        assert_eq!(model.kind_of(at, 0, Driven::Param { plugin: group, index: 0 }), None);
+        assert_eq!(model.kind_of(at, 0, Driven::Param { plugin: NodeId(9_999), index: 0 }), None);
+        assert!(model.param_targets(at).iter().all(|t| t.node != empty_lane && t.node != group));
+        // A modulator drives neither its own settings nor the depth of its own cables: another's it does.
+        assert_eq!(model.kind_of(at, 0, Driven::Setting { modulator: first, field: ModSetting::Rate }), None);
+        assert!(model.kind_of(at, 1, Driven::Setting { modulator: first, field: ModSetting::Rate }).is_some());
+        assert_eq!(model.kind_of(at, 0, Driven::Depth(own_cable)), None);
+        assert!(model.kind_of(at, 1, Driven::Depth(own_cable)).is_some());
+        // The lists say the same: the others, and never the modulator itself.
+        assert!(model.field_targets(at, 0).iter().all(|t| t.node != first));
+        assert!(model.field_targets(at, 1).iter().any(|t| t.node == first));
+        assert_eq!(model.modulators_in_reach(at, 0), vec![second]);
+        assert_eq!(model.modulators_in_reach(at, 1), vec![first]);
+    }
+
+    #[test]
+    fn the_cables_that_would_be_left_pointing_at_nothing_are_those_of_the_others_and_never_a_modulators_own() {
+        let mut model = two_modulators();
+        let first = model.free_modulators[0].node;
+        let others = model.free_modulators[1].targets[0].edge;
+        assert_eq!(model.cables_into(ModulatorLocation::Free, 0), vec![others], "the second one's cable to the first one's rate");
+        assert_eq!(model.cables_into(ModulatorLocation::Free, 1), Vec::<EdgeId>::new(), "nothing drives the second");
+        // (Only a model that was put together by hand has a cable that drives its own modulator: the controller refuses it.)
+        let own = ModTargetSlot { edge: EdgeId(model.ids.next_edge), param_name: "rate".to_string(), aim: Driven::Setting { modulator: first, field: ModSetting::Rate }, depth: 0.5, param_min: 0.0, param_max: 1.0, effective: None };
+        model.free_modulators[0].targets.push(own);
+        assert_eq!(model.cables_into(ModulatorLocation::Free, 0), vec![others], "its own cable goes with it and is not one that is left");
+    }
+
+    #[test]
+    fn an_ear_that_was_never_allocated_is_refused_by_the_check_and_the_last_one_that_was_is_not() {
+        let mut model = two_modulators();
+        assert_eq!(model.check_ids(), Ok(()));
+        model.free_modulators[0].ear = Some(NodeId(model.ids.next - 1));
+        assert_eq!(model.check_ids(), Ok(()), "a node that was made");
+        model.free_modulators[0].ear = Some(NodeId(model.ids.next));
+        assert!(model.check_ids().unwrap_err().contains("which was never allocated"));
+    }
+
     fn lfo(targets: Vec<ModTargetSlot>) -> ModulatorSlot {
         ModulatorSlot {
             node: NodeId(0),
