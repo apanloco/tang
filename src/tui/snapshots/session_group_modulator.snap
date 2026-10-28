@@ -11,7 +11,7 @@ source: src/tui/golden_tests.rs
 │  ╰ fx Filter  [Built-in]                       ││  Sync                     ◂ free ▸                                 │
 │  fx Reverb  [Built-in]  (bus)                  ││  Retrigger                ◂ off ▸                                  │
 │  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)││  Fade (s)                 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
-│  ~ ADSR → Mod 0 rate (30%)  (bus)              ││  Targets                  ──────                                   │
+│  ~ ADSR → Mod 1 rate (30%)  (bus)              ││  Targets                  ──────                                   │
 │♪ Oscillator  [Built-in]  -B3                   ││  detune depth             ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░     0.40│
 │├ fx Filter  [Built-in]                         ││  damping depth            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░     0.25│
 │╰ ~ LFO 0.2Hz triangle → Filter: cutoff (50%)   ││                                                                    │
@@ -34,7 +34,7 @@ source: src/tui/golden_tests.rs
 │                                                ││                                                                    │
 │                                                ││                                                                    │
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
- t  add target  d  delete
+ F  new free  t  add target  h  hears  d  delete
 ── styles ('.' = default) ──
 aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -67,7 +67,7 @@ c................................................cb.............................
 c................................................cb....................................................................b
 c................................................cb....................................................................b
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-gggccccccccccc.gggccccccc
+gggccccccccc.gggccccccccccc.gggcccccc.gggccccccc
 ── legend ──
 a  fg=White bg=Reset mod=BOLD
 b  fg=Indexed(245) bg=Reset mod=-

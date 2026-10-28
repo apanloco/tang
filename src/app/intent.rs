@@ -38,7 +38,7 @@ pub enum Intent {
     /// Load one of the plugin's presets, by its id, into an instrument or an
     /// effect node. The parameters take the preset's values.
     LoadPreset { node: NodeId, preset: String },
-    /// Set one setting of a modulator (lane or group): an LFO's rate or waveform, an
+    /// Set one setting of a modulator: an LFO's rate or waveform, an
     /// envelope's stage. `value` is clamped to the setting's range, and a waveform is
     /// rounded to a whole value, an index (see `ModulatorField`). A modulator has no
     /// setting that is not its kind's: an LFO has no attack.
@@ -52,11 +52,7 @@ pub enum Intent {
     /// by it (it goes down to nothing over one buffer). A cable of notes: the lane no longer hears the source by it, and hears
     /// every source if it was the last cable of notes that ended at the lane.
     RemoveEdge { edge: EdgeId },
-    /// Add a modulator to a lane or to a group, after the ones it has: `parent` is the node of the
-    /// lane (its instrument's, which an empty lane has too) or of the group; any other node is
-    /// refused. It drives nothing yet.
-    AddModulator { parent: NodeId, kind: ModulatorKind },
-    /// Add a modulator that is in no lane and no group (P5b-2): a **free modulator**, at the end of the session's own rack. It drives nothing yet. It hears every note and every
+    /// Add a modulator (the session's own, since step 96 the only kind: it is in no lane and no group), at the end of the session's own rack. It drives nothing yet. It hears every note and every
     /// source (it is in no lane to take a range or a source from) unless `hears` names a lane (its instrument's node) or a group, whose notes it hears then (P5c-1, the ear: what the
     /// "+" of a lane or a group asks since step 94, so that the modulator is the lane's or the group's by what it hears, and not by the rack it is in), and a cable from it can end at a
     /// parameter of any plugin of the session, an instrument's or an effect's, a lane's or a bus's, and at a setting of another free modulator (`AddModEdge`, `Modulate`). A step of the
@@ -64,12 +60,10 @@ pub enum Intent {
     /// changed, for a `hears` that is not a node of the session or is neither a lane nor a group.
     AddFreeModulator { kind: ModulatorKind, hears: Option<NodeId> },
     /// Draw a modulation cable from the modulator `modulator` to the port `to` of a node: a plugin's parameter,
-    /// or a setting of another modulator. A parameter has to be one that modulator reaches: a lane's modulator
-    /// reaches the plugins in its lane (the instrument and its effects), a group's reaches those of the lanes
-    /// that are its members and its own bus effects. A setting (`rate` of an LFO, `attack`, `decay`, `sustain` or
-    /// `release` of an envelope) or the `depth` of one of the cables of a modulator has to be that of a modulator
-    /// in reach: a lane's modulator reaches the others of its lane, a group's its members' modulators and the
-    /// others of its own, and none reaches itself. The cable starts at half depth (`NEW_CABLE_DEPTH`;
+    /// or a setting of another modulator. A parameter has to be one that modulator reaches: any plugin of the session
+    /// (an instrument, an effect of a lane's chain or of a group's bus). A setting (`rate` of an LFO, `attack`, `decay`,
+    /// `sustain` or `release` of an envelope) or the `depth` of one of the cables of a modulator has to be that of another
+    /// modulator, and none reaches itself. The cable starts at half depth (`NEW_CABLE_DEPTH`;
     /// `SetEdgeDepth` changes it). Refused, with nothing changed, for a port that is none of these (an output, an
     /// audio port), a node or a plugin that is not there or out of reach, a node that is no modulator when the port
     /// is a modulator's, a setting its modulator does not have, a depth that is not one of its cables, and a
@@ -80,8 +74,7 @@ pub enum Intent {
     /// do. The modulator is **the session's own** (step 94: a free modulator, at the end of its rack, which any plugin of the session
     /// can be drawn to): it hears the notes of the lane for a plugin of the lane (its instrument or an effect of its chain), of the
     /// group for a bus effect, and what the modulator hears for a setting of one that is free (its rate, a stage of its envelope, the
-    /// depth of one of its cables), where the new one is a sibling that drives it. (A setting of a modulator that is in a lane's or a
-    /// group's rack, which only a session that was built from intents has since step 94, makes a sibling in that rack.) The cable
+    /// depth of one of its cables), where the new one is a sibling that drives it. The cable
     /// starts at half depth, or at `depth` (clamped as `SetEdgeDepth` clamps it) if one is given. Refused, with nothing changed (nothing is made,
     /// and no id is used), for what `AddModEdge` refuses of a cable to `to` from a modulator that is not there yet, for a group (it
     /// has no parameter) and for a depth that is not a number.
@@ -162,12 +155,12 @@ pub enum Intent {
     /// way. The wiring changes at once, as a lane's group does, and the intent is told as a snapshot (the links of the graph change). Saved with the session (`route = "none"`). Refused,
     /// with nothing changed, for a node that is neither a lane nor a group, and for a way out that is given back where the audio would go round, by the cables there are.
     SetRoute { node: NodeId, route: Route },
-    /// Set whose notes a modulator that is in no lane and no group hears (step 93, P5c-1 of `docs/patch-graph.md` §11.6: the page's choice on the modulator, the terminal's row): `node` is the
+    /// Set whose notes a modulator hears (step 93, P5c-1 of `docs/patch-graph.md` §11.6: the page's choice on the modulator, the terminal's row): `node` is the
     /// modulator's and `ear` the node of a lane (its instrument's, which an empty lane has too) or of a group, or none for every event, whatever its source, which is what a modulator hears
     /// to begin with. A modulator that hears a lane is given the notes that the lane's instrument is given (after the sources the lane hears, its range, its remap, its pattern and its
     /// transpose), so that an envelope follows a pattern that the lane plays and an LFO that restarts at a note restarts at the lane's; one that hears a group is given those of its members.
     /// Told as a snapshot (the graph says whom a modulator hears) and saved with the session (`hears = "instrument[0]"`). Refused, with nothing changed, for a node that is not a modulator
-    /// of the session's own (a lane's or a group's hears its own lane or group) and for an ear that is neither a lane nor a group.
+    /// and for an ear that is neither a lane nor a group.
     SetModulatorEar { node: NodeId, ear: Option<NodeId> },
     /// Cut or give back the link into an effect from the stage before it in its chain (step 86: the page's × on a link of a chain and its button on the effect's node, the TUI's `f`): `node`
     /// is the node of the effect, a lane's or a group's bus. An effect is fed by the stage before it (the lane's instrument, the bus's sum or the effect before it: `chain`, which every
@@ -219,7 +212,7 @@ pub enum Intent {
     /// Refused, with nothing changed, for a node that has no plugin, a parameter the plugin does not have, a separator, a parameter
     /// listed twice and more than `MAX_PINNED` of them.
     SetPinned { node: NodeId, params: Vec<u32> },
-    /// Set the values of a step sequencer, a modulator's (lane or group): `node` is the node of the modulator and `values` all of its steps, from the
+    /// Set the values of a step sequencer, a modulator's: `node` is the node of the modulator and `values` all of its steps, from the
     /// first, `MAX_STEPS` of them (the ones past its length are kept for when it is longer again), each held to -1 to 1. It is one thing to the history, so
     /// that a stroke across the bars is one step to undo. Refused, with nothing changed, for a node that is not a step sequencer, a list that has not as many
     /// steps as there are, and a value that is not a number.
@@ -788,10 +781,6 @@ mod tests {
                 json!({"type": "loadPreset", "node": 5, "preset": "cathedral"}),
             ),
             (Intent::RemoveEdge { edge: EdgeId(6) }, json!({"type": "removeEdge", "edge": 6})),
-            (
-                Intent::AddModulator { parent: NodeId(2), kind: ModulatorKind::MidiLearn },
-                json!({"type": "addModulator", "parent": 2, "kind": "midiLearn"}),
-            ),
             (Intent::AddFreeModulator { kind: ModulatorKind::Steps, hears: None }, json!({"type": "addFreeModulator", "kind": "steps", "hears": null})),
             (Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: Some(NodeId(3)) }, json!({"type": "addFreeModulator", "kind": "envelope", "hears": 3})),
             (Intent::RemoveNode { node: NodeId(8) }, json!({"type": "removeNode", "node": 8})),

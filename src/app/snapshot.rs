@@ -529,12 +529,13 @@ type = "envelope"
     }
 
     fn nodes(snapshot: &Snapshot) -> Nodes {
-        let modulator = |parent_is_group: bool, envelope: bool| {
+        // (A modulator is the session's own, and hears a lane or a group: `hears_a_group` says which of the two.)
+        let modulator = |hears_a_group: bool, envelope: bool| {
             find(snapshot, |n| {
-                let parent = n.parent.and_then(|p| snapshot.graph.nodes.iter().find(|q| q.id == p));
-                let in_group = parent.is_some_and(|p| matches!(p.kind, NodeKind::Group { .. }));
-                matches!(&n.kind, NodeKind::Modulator { source, .. } if matches!(source, ModulatorSource::Envelope { .. }) == envelope)
-                    && in_group == parent_is_group
+                let NodeKind::Modulator { source, hears } = &n.kind else { return false };
+                let heard = hears.and_then(|h| snapshot.graph.nodes.iter().find(|q| q.id == h));
+                let hears_one = heard.is_some_and(|p| matches!(p.kind, NodeKind::Group { .. }));
+                matches!(source, ModulatorSource::Envelope { .. }) == envelope && hears_one == hears_a_group
             })
         };
         let by_plugin = |id: &'static str| move |n: &Node| matches!(&n.kind, NodeKind::Instrument { plugin: Some(p), .. } | NodeKind::Effect { plugin: p, .. } if p.id == id);
@@ -801,12 +802,12 @@ type = "envelope"
     fn a_macro_that_is_turned_is_turned_in_the_snapshot_as_it_is_in_the_session_and_has_no_rate() {
         let mut ctl = controller("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = 0.25\n", None);
         let mut told = ctl.snapshot();
-        let knob = ctl.model.instruments[0].modulators[0].node;
+        let knob = ctl.model.free_modulators[0].node;
         let applied = ctl.apply(Intent::SetModulatorField { node: knob, field: ModulatorField::Value, value: 0.8 }).unwrap();
         told.apply(&applied).unwrap();
         assert_eq!(told, ctl.snapshot());
         let found = told.graph.nodes.iter().find(|n| n.id == knob).unwrap();
-        assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.8 }, hears: None });
+        assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.8 }, hears: Some(ctl.model.instruments[0].node) });
         let before = told.clone();
         let error = told.apply(&Applied::of(2, vec![Event::ModulatorFieldSet { node: knob, field: ModulatorField::Rate, value: 1.0 }])).unwrap_err().to_string();
         assert!(error.contains("does not apply"), "{error}");
@@ -817,7 +818,7 @@ type = "envelope"
     fn an_lfos_retrigger_and_fade_are_changed_in_the_snapshot_as_they_are_in_the_session() {
         let mut ctl = controller("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\n", None);
         let mut told = ctl.snapshot();
-        let lfo = ctl.model.instruments[0].modulators[0].node;
+        let lfo = ctl.model.free_modulators[0].node;
         let source = |told: &Snapshot| match &told.graph.nodes.iter().find(|n| n.id == lfo).unwrap().kind {
             NodeKind::Modulator { source, .. } => source.clone(),
             other => panic!("{other:?}"),
@@ -844,7 +845,7 @@ type = "envelope"
             None,
         );
         let mut told = ctl.snapshot();
-        let nodes: Vec<_> = ctl.model.groups[0].modulators.iter().chain(&ctl.model.instruments[0].modulators).map(|m| m.node).collect();
+        let nodes: Vec<_> = ctl.model.free_modulators.iter().map(|m| m.node).collect();
         assert_eq!(nodes.len(), 5);
         let mut changed = 0;
         for node in nodes {
@@ -871,7 +872,7 @@ type = "envelope"
     fn a_step_sequencer_that_is_changed_is_changed_in_the_snapshot_as_it_is_in_the_session() {
         let mut ctl = controller("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\n", None);
         let mut told = ctl.snapshot();
-        let sequencer = ctl.model.instruments[0].modulators[0].node;
+        let sequencer = ctl.model.free_modulators[0].node;
         let source = |told: &Snapshot| match &told.graph.nodes.iter().find(|n| n.id == sequencer).unwrap().kind {
             NodeKind::Modulator { source, .. } => source.clone(),
             other => panic!("{other:?}"),
@@ -901,7 +902,7 @@ type = "envelope"
             None,
         );
         let mut told = ctl.snapshot();
-        let (sequencer, lfo) = (ctl.model.instruments[0].modulators[0].node, ctl.model.instruments[0].modulators[1].node);
+        let (sequencer, lfo) = (ctl.model.free_modulators[0].node, ctl.model.free_modulators[1].node);
         let osc = ctl.model.instruments[0].node;
         let before = told.clone();
         let refused = [
@@ -935,7 +936,7 @@ type = "envelope"
             None,
         );
         let mut told = ctl.snapshot();
-        let [lfo, sequencer, envelope] = [0, 1, 2].map(|i| ctl.model.instruments[0].modulators[i].node);
+        let [lfo, sequencer, envelope] = [0, 1, 2].map(|i| ctl.model.free_modulators[i].node);
         let before = told.clone();
         for node in [lfo, sequencer] {
             for value in [2.5, -1.0, 17.0, f32::NAN] {

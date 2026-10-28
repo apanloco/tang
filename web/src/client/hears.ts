@@ -1,4 +1,4 @@
-// Whose notes a modulator that is in no lane and no group hears (docs/patch-graph.md §11.6, step 93): every note, or the notes that a lane's instrument is given, or those of a group's members. The items of
+// Whose notes a modulator hears (docs/patch-graph.md §11.6, step 93; every modulator is the session's own since step 96): every note, or the notes that a lane's instrument is given, or those of a group's members. The items of
 // the menu on its node, and the words for it.
 import type { Graph, NodeId } from "../protocol";
 import type { MenuItem } from "../ui/MenuButton";
@@ -9,23 +9,23 @@ import { displayNames } from "./names";
 export const EVERY_NOTE = "every-note";
 
 /**
- * The lane or the group that the modulator `node` hears the notes of, if it has one that is there: none for every note, for a node that is no modulator and for a modulator that is in a lane or a group
- * (which hears its own). The graph says none for an ear that is gone, as the audio thread hears every note then.
+ * The lane or the group that the modulator `node` hears the notes of, if it has one that is there: none for every note and for a node that is no modulator. The graph says none for an ear that is gone,
+ * as the audio thread hears every note then.
  */
 export function hearsOf(graph: Graph, node: NodeId): NodeId | undefined {
   const modulator = graph.nodes.find((n) => n.id === node);
-  if (modulator?.kind !== "modulator" || modulator.parent !== null) return undefined;
+  if (modulator?.kind !== "modulator") return undefined;
   const heard = graph.nodes.find((n) => n.id === modulator.hears);
   return heard?.kind === "instrument" || heard?.kind === "group" ? heard.id : undefined;
 }
 
 /**
  * What the modulator `node` can hear, as the items of a menu: every note, then the lanes and the groups of the session by the names that the canvas gives them, the one it hears marked. A lane that only holds
- * effects (`holdersOf`) is left out: the canvas has no card for it, and its notes are no notes that anything plays. Nothing for a node that is not a modulator of the session's own.
+ * effects (`holdersOf`) is left out: the canvas has no card for it, and its notes are no notes that anything plays. Nothing for a node that is not a modulator.
  */
 export function earItems(graph: Graph, node: NodeId): MenuItem[] {
   const modulator = graph.nodes.find((n) => n.id === node);
-  if (modulator?.kind !== "modulator" || modulator.parent !== null) return [];
+  if (modulator?.kind !== "modulator") return [];
   const heard = hearsOf(graph, node);
   const names = displayNames(graph);
   const holders = holdersOf(graph);

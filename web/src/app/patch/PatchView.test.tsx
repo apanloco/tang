@@ -89,9 +89,9 @@ describe("the patch", () => {
       expect(title?.querySelector(".tang-node__badge")?.textContent, name).toBe(badge);
       expect(header?.firstElementChild, name).toBe(title);
     }
-    // A node that has no badge has a title that is the name only.
+    // A node that has no badge has a title that is the name, and for a modulator the menu that chooses whose notes it hears (lit: the tracer's LFO hears its lane).
     const lfoTitle = (await nodeOf(lfo.id)).querySelector(".tang-node__title");
-    expect(Array.from(lfoTitle?.children ?? [], (child) => child.className)).toEqual(["tang-node__name"]);
+    expect(Array.from(lfoTitle?.children ?? [], (child) => child.className)).toEqual(["tang-node__name", "tang-menu-button nodrag nopan tang-node__notes tang-node__notes--set"]);
   });
 
   test("shows each plugin node's parameters as controls, and its own gain after them (and a lane's keys and its group after that)", async () => {
@@ -256,7 +256,7 @@ describe("the patch", () => {
   test("tells two modulators of one name apart: each node is a group of its own name, and so are the controls in it and the cables", async () => {
     const snapshot: Snapshot = structuredClone(tracerSnapshot);
     // A second LFO on the same lane, driving the same cutoff.
-    snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7, retrigger: false, fade: 0, sync: 0 } });
+    snapshot.graph.nodes.push({ id: 90, parent: null, hears: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7, retrigger: false, fade: 0, sync: 0 } });
     snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } });
     await rig(<PatchView />, { snapshot });
     const first = await screen.findByRole("group", { name: "LFO 1" });
@@ -510,7 +510,7 @@ describe("the patch", () => {
         ].sort(),
       );
       // None on an effect, a modulator or the master.
-      for (const id of [5, 6, 13, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Add a modulator/ })).toBeNull();
+      for (const id of [5, 12, 13, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Add a modulator/ })).toBeNull();
     });
 
     test("opens a menu of the kinds of modulator", async () => {
@@ -624,7 +624,7 @@ describe("the patch", () => {
           "Add an effect to Oscillator 4",
         ].sort(),
       );
-      for (const id of [5, 6, 13, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Add an effect/ })).toBeNull();
+      for (const id of [5, 12, 13, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Add an effect/ })).toBeNull();
     });
 
     test("opens a menu of the effects that are installed, under the format each is of, and not of the instruments", async () => {
@@ -748,7 +748,7 @@ describe("the patch", () => {
           "Choose an instrument for (empty)",
         ].sort(),
       );
-      for (const id of [0, 1, 2, 3, 5, 6, 13, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: label })).toBeNull();
+      for (const id of [0, 1, 2, 3, 5, 12, 13, MASTER]) expect(within(await nodeOf(id)).queryByRole("button", { name: label })).toBeNull();
     });
 
     test("opens a menu of the instruments that are installed, under the format each is of, and not of the effects", async () => {
@@ -800,11 +800,11 @@ describe("the patch", () => {
       await opened("Choose an instrument for (empty)");
       fireEvent.click(screen.getByRole("menuitem", { name: "Oscillator" }));
       await waitFor(() => {
-        expect(requests().at(-1)?.intent).toEqual({ type: "replaceInstrument", node: 14, plugin: "builtin:osc" });
+        expect(requests().at(-1)?.intent).toEqual({ type: "replaceInstrument", node: 11, plugin: "builtin:osc" });
       });
       expect(await screen.findByRole("button", { name: "Change the instrument of Oscillator 5" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Choose an instrument for (empty)" })).toBeNull();
-      expect(controlsIn(await nodeOf(14))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator 5", "Highest key of Oscillator 5", "Group of Oscillator 5"]);
+      expect(controlsIn(await nodeOf(11))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator 5", "Highest key of Oscillator 5", "Group of Oscillator 5"]);
     });
 
     test("takes the cables that drove the old instrument off the canvas, and leaves the others", async () => {
@@ -891,16 +891,16 @@ describe("the patch", () => {
 
     test("asks the server to load the one that was chosen, and the knobs of the node show what it sets", async () => {
       const { requests } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-      const before = await knob(10, "decay");
+      const before = await knob(8, "decay");
       await opened("Load a preset into Reverb 2");
       fireEvent.click(screen.getByRole("menuitem", { name: "Cathedral" }));
       await waitFor(() => {
-        expect(requests().map((request) => request.intent)).toEqual([{ type: "loadPreset", node: 10, preset: "cathedral" }]);
+        expect(requests().map((request) => request.intent)).toEqual([{ type: "loadPreset", node: 8, preset: "cathedral" }]);
       });
       // (The reverb's decay is the first of a preset's values: a long one in Cathedral.)
       const decay = (builtinPresets["builtin:reverb"]?.cathedral ?? []).find((v) => v.param === 0)?.value;
       await waitFor(async () => {
-        expect(Number(await knob(10, "decay"))).toBeCloseTo(decay ?? Number.NaN, 5);
+        expect(Number(await knob(8, "decay"))).toBeCloseTo(decay ?? Number.NaN, 5);
       });
       expect(Number(before)).not.toBeCloseTo(decay ?? 0, 5);
       // The menu has gone, and the focus is back on the button that opened it.
@@ -927,11 +927,11 @@ describe("the patch", () => {
       const { server } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
       await screen.findByRole("button", { name: "Load a preset into Reverb 2" });
       act(() => {
-        server.apply({ type: "loadPreset", node: 10, preset: "room" });
+        server.apply({ type: "loadPreset", node: 8, preset: "room" });
       });
       const room = (builtinPresets["builtin:reverb"]?.room ?? []).find((v) => v.param === 0)?.value;
       await waitFor(async () => {
-        expect(Number(await knob(10, "decay"))).toBeCloseTo(room ?? Number.NaN, 5);
+        expect(Number(await knob(8, "decay"))).toBeCloseTo(room ?? Number.NaN, 5);
       });
       const menu = await opened("Load a preset into Reverb 2");
       expect(within(menu).getAllByRole("menuitem").filter((entry) => entry.getAttribute("aria-current") === "true").map((entry) => entry.textContent)).toEqual(["Small Room"]);
@@ -1031,16 +1031,23 @@ describe("the patch", () => {
       expect(screen.getByRole("menuitem", { name: "detune" })).toBeTruthy();
     });
 
-    test("is for a group's modulator the parameters of its members' plugins and of its own bus effects, then the settings of its members' modulators", async () => {
+    test("is for a modulator that hears a group the parameters of every plugin of the session, then the settings of the other modulators", async () => {
       await rig(<PatchView />, { snapshot: reachFixture.snapshot });
       fireEvent.click(await pickerOf(15));
-      // (In the order of the graph: the group's own bus effect, then the lanes that are its members; then their modulators, which have settings.)
-      expect(listed().map(([plugin]) => plugin)).toEqual(["Filter 1", "Oscillator 1", "Filter 2", "Oscillator 2", "LFO 2", "ADSR 2"]);
+      // (In the order of the graph: the plugins, the buses' and the lanes', then the modulators that have settings, but not the one that is drawn from.)
+      expect(listed().map(([plugin]) => plugin)).toEqual(["Filter 1", "Reverb 1", "Oscillator 1", "Filter 2", "Oscillator 2", "Oscillator 3", "Reverb 2", "Oscillator 4", "Filter 3", "LFO 1", "ADSR 1", "ADSR 2", "LFO 3"]);
     });
 
     test("is disabled for a modulator with nothing to be drawn to, and says so", async () => {
-      await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-      const picker = await pickerOf(17); // the lane with nothing in it
+      // (A session that has a modulator and no plugin and no other modulator: every modulator reaches every plugin and the others, so it takes a session with none of them.)
+      const hearing = tracerSnapshot.graph.nodes.filter((node) => node.kind === "modulator" || node.kind === "master");
+      const nodes = hearing.map((node) => {
+        const copy = { ...node };
+        if (copy.kind === "modulator") delete copy.hears;
+        return copy;
+      });
+      await rig(<PatchView />, { snapshot: { ...tracerSnapshot, graph: { nodes, edges: [] }, telemetry: { ...tracerSnapshot.telemetry, modulation: tracerSnapshot.telemetry.modulation.filter((entry) => entry.kind === "modOutput") } } });
+      const picker = await pickerOf(lfo.id);
       expect(picker.hasAttribute("disabled")).toBe(true);
       expect(picker.textContent).toBe("Nothing to drive");
       fireEvent.click(picker);
@@ -1049,23 +1056,23 @@ describe("the patch", () => {
 
     test("tells two modulators of one name apart", async () => {
       await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-      // (The group's comes first in the graph, so it is the first.)
-      expect((await pickerOf(15)).getAttribute("aria-label")).toBe("Add a cable from LFO 1");
-      expect((await pickerOf(6)).getAttribute("aria-label")).toBe("Add a cable from LFO 2");
+      // (The graph lists them in the order of the session's own rack, so the one that hears the first lane is the first.)
+      expect((await pickerOf(12)).getAttribute("aria-label")).toBe("Add a cable from LFO 1");
+      expect((await pickerOf(15)).getAttribute("aria-label")).toBe("Add a cable from LFO 2");
     });
 
     test("has an id the focus can be given back to, one for each modulator", async () => {
       await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-      for (const id of [15, 6]) expect((await pickerOf(id)).id).toBe(drivesId(id));
-      expect(drivesId(15)).not.toBe(drivesId(6));
+      for (const id of [15, 12]) expect((await pickerOf(id)).id).toBe(drivesId(id));
+      expect(drivesId(15)).not.toBe(drivesId(12));
     });
   });
 
   describe("drawing a cable to a setting of another modulator", () => {
-    // A group with an LFO ("LFO 1"), an envelope ("ADSR 1") and a MIDI control ("CC 74") of its own; its first member lane has an LFO ("LFO 2"),
-    // an envelope ("ADSR 2") and a MIDI control ("CC 1"), and its second an LFO ("LFO 3"); a lane in no group has an LFO, and one of another group.
+    // The first lane of a group is heard by an LFO ("LFO 1"), an envelope ("ADSR 1") and a MIDI control ("CC 1"), its second by an LFO ("LFO 2"), a lane in no group by one
+    // ("LFO 3") and a lane of another group by one ("LFO 4"); the group is heard by an LFO ("LFO 5"), an envelope ("ADSR 2") and a MIDI control ("CC 74").
     const { snapshot } = fieldsFixture;
-    const [groupLfo, laneLfo, laneEnvelope, laneControl] = [13, 4, 5, 6];
+    const [groupLfo, laneLfo, laneEnvelope, laneControl] = [13, 7, 8, 9];
     const cables = snapshot.graph.edges.filter((edge) => edge.kind === "modulation").length;
     /** What the first oscillator's plugin calls its parameter of this index. */
     const oscillatorParam = (index: number): string => {
@@ -1099,8 +1106,8 @@ describe("the patch", () => {
       expect(await driven(laneEnvelope)).toEqual([]);
       expect(await driven(laneControl)).toEqual([]);
       expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables + 1);
-      expect(screen.getByRole("slider", { name: "Depth of ADSR 2 → LFO 2: rate" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Remove cable ADSR 2 → LFO 2: rate" })).toBeTruthy();
+      expect(screen.getByRole("slider", { name: "Depth of ADSR 1 → LFO 1: rate" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Remove cable ADSR 1 → LFO 1: rate" })).toBeTruthy();
     });
 
     test("is drawn to the depth of a cable, to the port of its row, with a slider for its depth that is named by the whole of what it joins", async () => {
@@ -1108,7 +1115,7 @@ describe("the patch", () => {
       const { view } = await rig(<PatchView />, { snapshot: withCable(laneLfo, laneEnvelope, { type: "depth", edge: 1 }) });
       await nodeOf(laneLfo);
       expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables + 1);
-      const words = `LFO 2 → depth of ADSR 2 → Oscillator 1: ${oscillatorParam(2)}`;
+      const words = `LFO 1 → depth of ADSR 1 → Oscillator 1: ${oscillatorParam(2)}`;
       expect(screen.getByRole("slider", { name: `Depth of ${words}` })).toBeTruthy();
       expect(screen.getByRole("button", { name: `Remove cable ${words}` })).toBeTruthy();
       // It ends at the row of that cable, in the node of the envelope that it starts at, which says that a cable ends there.
@@ -1117,52 +1124,52 @@ describe("the patch", () => {
       expect(row?.querySelector(".tang-cable-row__label")?.textContent).toBe(`Oscillator 1: ${oscillatorParam(2)}`);
     });
 
-    test("is on the list of a modulator, after the parameters, modulator by modulator: the settings of the others of its lane, but what it drives already", async () => {
+    test("is on the list of a modulator, after the parameters, modulator by modulator: the settings of the others, but what it drives already", async () => {
       await rig(<PatchView />, { snapshot: withCable(laneControl, laneEnvelope, { type: "decay" }) });
       fireEvent.click(await pickerOf(laneControl));
       const groups = listed();
-      // (The oscillator's parameters, then the LFO's one setting and the envelope's three, for the control drives its decay; and the depths of the cables
-      // that start at them, each by where the cable goes.)
-      expect(groups.map(([name]) => name)).toEqual(["Oscillator 1", "LFO 2", "ADSR 2"]);
-      expect(groups.slice(1)).toEqual([
-        ["LFO 2", ["rate", `depth → Oscillator 1: ${oscillatorParam(1)}`]],
-        ["ADSR 2", ["attack", "sustain", "release", `depth → Oscillator 1: ${oscillatorParam(2)}`, `depth → Oscillator 1: ${oscillatorParam(1)}`]],
+      // (Every plugin's parameters, then every other modulator that has a setting or a cable: the LFO's rate and the depth of its cable, the envelope's three stages, for the control drives its decay,
+      // and the depths of the cables that start at it, each by where the cable goes.)
+      expect(groups.map(([name]) => name)).toEqual(["Reverb", "Oscillator 1", "Oscillator 2", "Oscillator 3", "Oscillator 4", "LFO 1", "ADSR 1", "LFO 2", "LFO 3", "LFO 4", "LFO 5", "ADSR 2", "CC 74"]);
+      expect(groups.filter(([name]) => name === "LFO 1" || name === "ADSR 1")).toEqual([
+        ["LFO 1", ["rate", `depth → Oscillator 1: ${oscillatorParam(1)}`]],
+        ["ADSR 1", ["attack", "sustain", "release", `depth → Oscillator 1: ${oscillatorParam(2)}`, `depth → Oscillator 1: ${oscillatorParam(1)}`]],
       ]);
     });
 
-    test("is on the list of an LFO as the envelope's four stages and the depths of the cables of the envelope and of the MIDI control, which has no setting", async () => {
+    test("is on the list of an LFO as the envelope's four stages and the depths of the cables of the envelope and of the MIDI control, which has no setting, among those of all the others", async () => {
       await rig(<PatchView />, { snapshot });
       fireEvent.click(await pickerOf(laneLfo));
-      expect(listed().map(([name]) => name)).toEqual(["Oscillator 1", "ADSR 2", "CC 1"]);
-      expect(listed()[1]).toEqual(["ADSR 2", ["attack", "decay", "sustain", "release", `depth → Oscillator 1: ${oscillatorParam(2)}`, `depth → Oscillator 1: ${oscillatorParam(1)}`]]);
-      expect(listed()[2]).toEqual(["CC 1", [`depth → Oscillator 1: ${oscillatorParam(7)}`]]);
+      expect(listed().map(([name]) => name)).toEqual(["Reverb", "Oscillator 1", "Oscillator 2", "Oscillator 3", "Oscillator 4", "ADSR 1", "CC 1", "LFO 2", "LFO 3", "LFO 4", "LFO 5", "ADSR 2", "CC 74"]);
+      expect(listed().find(([name]) => name === "ADSR 1")).toEqual(["ADSR 1", ["attack", "decay", "sustain", "release", `depth → Oscillator 1: ${oscillatorParam(2)}`, `depth → Oscillator 1: ${oscillatorParam(1)}`]]);
+      expect(listed().find(([name]) => name === "CC 1")).toEqual(["CC 1", [`depth → Oscillator 1: ${oscillatorParam(7)}`]]);
     });
 
-    test("is for a group's modulator the settings and the cables' depths of its members' modulators, and of the others of its own rack", async () => {
+    test("is for a modulator that hears a group the same: the settings and the cables' depths of every other modulator, those that hear the members and those that hear the group", async () => {
       await rig(<PatchView />, { snapshot });
       fireEvent.click(await pickerOf(groupLfo));
-      // (The group's bus effect and the members' plugins, in the order of the graph; then the members' modulators, member by member, then its own rack's.)
-      expect(listed().map(([name]) => name)).toEqual(["Reverb", "Oscillator 1", "Oscillator 2", "LFO 2", "ADSR 2", "CC 1", "LFO 3", "ADSR 1", "CC 74"]);
+      // (The plugins in the order of the graph; then the other modulators, in the order of the session's own rack.)
+      expect(listed().map(([name]) => name)).toEqual(["Reverb", "Oscillator 1", "Oscillator 2", "Oscillator 3", "Oscillator 4", "LFO 1", "ADSR 1", "CC 1", "LFO 2", "LFO 3", "LFO 4", "ADSR 2", "CC 74"]);
     });
 
     test("asks the server for the cable that was picked, and it is drawn, and the setting is off the list", async () => {
       const { requests, view } = await rig(<PatchView />, { snapshot });
       const picker = await pickerOf(laneEnvelope);
       fireEvent.click(picker);
-      fireEvent.click(within(within(screen.getByRole("menu")).getByRole("group", { name: "LFO 2" })).getByRole("menuitem", { name: "rate" }));
+      fireEvent.click(within(within(screen.getByRole("menu")).getByRole("group", { name: "LFO 1" })).getByRole("menuitem", { name: "rate" }));
       await waitFor(() => {
         expect(requests().map((request) => request.intent)).toEqual([{ type: "addModEdge", modulator: laneEnvelope, to: { node: laneLfo, port: { type: "rate" } } }]);
       });
       await waitFor(() => {
         expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables + 1);
       });
-      expect(screen.getByRole("slider", { name: "Depth of ADSR 2 → LFO 2: rate" })).toBeTruthy();
+      expect(screen.getByRole("slider", { name: "Depth of ADSR 1 → LFO 1: rate" })).toBeTruthy();
       // The menu is closed, with the focus on its button; the LFO has nothing more to take, and its port is marked as driven.
       expect(screen.queryByRole("menu")).toBeNull();
       expect(document.activeElement).toBe(picker);
       fireEvent.click(picker);
       // (Its rate is taken, and the depth of its cable is not.)
-      expect(listed().find(([name]) => name === "LFO 2")?.[1]).toEqual([`depth → Oscillator 1: ${oscillatorParam(1)}`]);
+      expect(listed().find(([name]) => name === "LFO 1")?.[1]).toEqual([`depth → Oscillator 1: ${oscillatorParam(1)}`]);
       expect((await nodeOf(laneLfo)).querySelector(".tang-port--driven")?.getAttribute("data-handleid")).toBe("rate");
     });
 
@@ -1170,20 +1177,20 @@ describe("the patch", () => {
       const { requests, view } = await rig(<PatchView />, { snapshot });
       const picker = await pickerOf(laneLfo);
       fireEvent.click(picker);
-      fireEvent.click(within(within(screen.getByRole("menu")).getByRole("group", { name: "ADSR 2" })).getByRole("menuitem", { name: `depth → Oscillator 1: ${oscillatorParam(2)}` }));
+      fireEvent.click(within(within(screen.getByRole("menu")).getByRole("group", { name: "ADSR 1" })).getByRole("menuitem", { name: `depth → Oscillator 1: ${oscillatorParam(2)}` }));
       await waitFor(() => {
         expect(requests().map((request) => request.intent)).toEqual([{ type: "addModEdge", modulator: laneLfo, to: { node: laneEnvelope, port: { type: "depth", edge: 1 } } }]);
       });
       await waitFor(() => {
         expect(view.container.querySelectorAll(".tang-cable--modulation")).toHaveLength(cables + 1);
       });
-      expect(screen.getByRole("slider", { name: `Depth of LFO 2 → depth of ADSR 2 → Oscillator 1: ${oscillatorParam(2)}` })).toBeTruthy();
+      expect(screen.getByRole("slider", { name: `Depth of LFO 1 → depth of ADSR 1 → Oscillator 1: ${oscillatorParam(2)}` })).toBeTruthy();
       // The menu is closed, with the focus on its button; the depth it drives is off the list and the envelope's other one is not, and the row of the
       // cable is marked as driven.
       expect(screen.queryByRole("menu")).toBeNull();
       expect(document.activeElement).toBe(picker);
       fireEvent.click(picker);
-      expect(listed().find(([name]) => name === "ADSR 2")?.[1].filter((item) => item.startsWith("depth"))).toEqual([`depth → Oscillator 1: ${oscillatorParam(1)}`]);
+      expect(listed().find(([name]) => name === "ADSR 1")?.[1].filter((item) => item.startsWith("depth"))).toEqual([`depth → Oscillator 1: ${oscillatorParam(1)}`]);
       expect((await nodeOf(laneEnvelope)).querySelector(".tang-port--driven")?.getAttribute("data-handleid")).toBe("depth-1");
     });
 
@@ -1204,17 +1211,17 @@ describe("the patch", () => {
         expect(client.state.status).not.toBe("open");
       });
       fireEvent.click(picker);
-      fireEvent.click(within(within(screen.getByRole("menu")).getByRole("group", { name: "LFO 2" })).getByRole("menuitem", { name: "rate" }));
-      expect(await screen.findByText("Could not draw a cable from ADSR 2 to LFO 2: rate: Not connected to the server.")).toBeTruthy();
+      fireEvent.click(within(within(screen.getByRole("menu")).getByRole("group", { name: "LFO 1" })).getByRole("menuitem", { name: "rate" }));
+      expect(await screen.findByText("Could not draw a cable from ADSR 1 to LFO 1: rate: Not connected to the server.")).toBeTruthy();
       expect(document.activeElement).toBe(picker);
       fireEvent.click(picker);
-      expect(listed().map(([name]) => name)).toContain("LFO 2");
+      expect(listed().map(([name]) => name)).toContain("LFO 1");
     });
 
     test("takes the cable out with its button, and the focus goes to the list of the modulator that drove it", async () => {
       const { requests, view } = await rig(<PatchView />, { snapshot: withCable(laneEnvelope, laneLfo, { type: "rate" }) });
       await nodeOf(laneLfo);
-      fireEvent.click(screen.getByRole("button", { name: "Remove cable ADSR 2 → LFO 2: rate" }));
+      fireEvent.click(screen.getByRole("button", { name: "Remove cable ADSR 1 → LFO 1: rate" }));
       await waitFor(() => {
         expect(requests().map((request) => request.intent)).toEqual([{ type: "removeEdge", edge: 50 }]);
       });
@@ -1229,11 +1236,11 @@ describe("the patch", () => {
   });
 
   describe("the cables a modulator's node lists", () => {
-    // The fixture of the settings: the lane's envelope (node 5, "ADSR 2") has two cables, to the second and the first parameters of the oscillator
-    // (node 3, "Oscillator 1") that are named in the session; its LFO (4, "LFO 2") has one, to the first; the MIDI control (6) one; the LFO of the
-    // lane that is in no group (10) has none.
+    // The fixture of the settings: the envelope that hears the first lane (node 8, "ADSR 1") has two cables, to the second and the first parameters of the oscillator
+    // (node 3, "Oscillator 1") that are named in the session; the LFO that hears it (7, "LFO 1") has one, to the first; the MIDI control (9) one; the LFO that hears
+    // the lane that is in no group (11) has none.
     const { snapshot } = fieldsFixture;
-    const [laneLfo, laneEnvelope, laneControl, loneLfo] = [4, 5, 6, 10];
+    const [laneLfo, laneEnvelope, laneControl, loneLfo] = [7, 8, 9, 11];
     const oscillatorNode = snapshot.graph.nodes.find((node) => node.id === 3);
     const paramNamed = (index: number): string => (oscillatorNode?.kind === "instrument" ? oscillatorNode.plugin?.params.find((param) => param.index === index)?.name : undefined) ?? "?";
     const rowsOf = async (id: number): Promise<string[]> => Array.from((await nodeOf(id)).querySelectorAll(".tang-cable-row__label")).map((label) => label.textContent);
@@ -1252,7 +1259,7 @@ describe("the patch", () => {
 
     test("is a list that is named after the modulator, and has none for a modulator that drives nothing", async () => {
       await rig(<PatchView />, { snapshot });
-      const list = within(await nodeOf(laneEnvelope)).getByRole("list", { name: "Cables of ADSR 2" });
+      const list = within(await nodeOf(laneEnvelope)).getByRole("list", { name: "Cables of ADSR 1" });
       expect(within(list).getAllByRole("listitem")).toHaveLength(2);
       expect((await nodeOf(loneLfo)).querySelector(".tang-node__cables")).toBeNull();
       expect(within(await nodeOf(loneLfo)).queryByRole("list")).toBeNull();
@@ -1261,15 +1268,15 @@ describe("the patch", () => {
     test("has a button on each row that modulates the depth of that cable, named after the cable and the modulator it starts at", async () => {
       await rig(<PatchView />, { snapshot });
       const names = async (id: number) => Array.from((await nodeOf(id)).querySelectorAll(".tang-cable-row .tang-modulate")).map((button) => button.getAttribute("aria-label"));
-      expect(await names(laneEnvelope)).toEqual([`Modulate depth of ADSR 2 → Oscillator 1: ${paramNamed(2)}`, `Modulate depth of ADSR 2 → Oscillator 1: ${paramNamed(1)}`]);
-      expect(await names(laneLfo)).toEqual([`Modulate depth of LFO 2 → Oscillator 1: ${paramNamed(1)}`]);
+      expect(await names(laneEnvelope)).toEqual([`Modulate depth of ADSR 1 → Oscillator 1: ${paramNamed(2)}`, `Modulate depth of ADSR 1 → Oscillator 1: ${paramNamed(1)}`]);
+      expect(await names(laneLfo)).toEqual([`Modulate depth of LFO 1 → Oscillator 1: ${paramNamed(1)}`]);
       expect(await names(loneLfo)).toEqual([]);
     });
 
-    test("makes a modulator for the depth of the cable of a row with that button, in the rack of the modulator the cable starts at", async () => {
+    test("makes a modulator for the depth of the cable of a row with that button, one that hears what the modulator the cable starts at hears", async () => {
       const { requests, server } = await rig(<PatchView />, { snapshot });
       await nodeOf(laneEnvelope);
-      fireEvent.click(screen.getByRole("button", { name: `Modulate depth of ADSR 2 → Oscillator 1: ${paramNamed(1)}` }));
+      fireEvent.click(screen.getByRole("button", { name: `Modulate depth of ADSR 1 → Oscillator 1: ${paramNamed(1)}` }));
       fireEvent.click(screen.getByRole("menuitem", { name: "New LFO" }));
       await waitFor(() => {
         expect(requests().map((request) => request.intent)).toEqual([{ type: "modulate", to: { node: laneEnvelope, port: { type: "depth", edge: 2 } }, kind: "lfo", depth: null }]);
@@ -1278,8 +1285,10 @@ describe("the patch", () => {
         const made = server.snapshot.graph.edges.filter((e) => e.kind === "modulation" && e.to.port.type === "depth");
         expect(made).toHaveLength(1);
       });
-      const lane = snapshot.graph.nodes.find((node) => node.id === laneEnvelope)?.parent;
-      expect(server.snapshot.graph.nodes.filter((node) => node.kind === "modulator" && node.parent === lane)).toHaveLength(4);
+      const envelope = snapshot.graph.nodes.find((node) => node.id === laneEnvelope);
+      const lane = envelope?.kind === "modulator" ? envelope.hears : undefined;
+      expect(lane).toBe(3);
+      expect(server.snapshot.graph.nodes.filter((node) => node.kind === "modulator" && node.hears === lane)).toHaveLength(4);
     });
 
     test("tells the whole of a row that the node has no room for, by its title", async () => {
@@ -1314,7 +1323,7 @@ describe("the patch", () => {
 
     test("says what a cable that ends at the depth of another is, in the row of the one that drives it", async () => {
       await rig(<PatchView />, { snapshot: withCable(laneEnvelope, laneLfo, { type: "depth", edge: 0 }) });
-      expect(await rowsOf(laneEnvelope)).toEqual([`Oscillator 1: ${paramNamed(2)}`, `Oscillator 1: ${paramNamed(1)}`, `depth of LFO 2 → Oscillator 1: ${paramNamed(1)}`]);
+      expect(await rowsOf(laneEnvelope)).toEqual([`Oscillator 1: ${paramNamed(2)}`, `Oscillator 1: ${paramNamed(1)}`, `depth of LFO 1 → Oscillator 1: ${paramNamed(1)}`]);
     });
 
     test("has ports that take a cable and start none: a row's port is for another modulator's cable to end at", async () => {
@@ -1341,7 +1350,7 @@ describe("the patch", () => {
       );
       // None on the master. A lane and a group have a menu that asks, which is not the button of an effect or a modulator.
       expect(within(await nodeOf(MASTER)).queryByRole("button", { name: /^Remove / })).toBeNull();
-      for (const id of [0, 2, 4, 7, 14]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Remove (the lane of .+|Group \d+)$/ }), `node ${String(id)}`).toBeTruthy();
+      for (const id of [0, 2, 4, 6, 11]) expect(within(await nodeOf(id)).queryByRole("button", { name: /^Remove (the lane of .+|Group \d+)$/ }), `node ${String(id)}`).toBeTruthy();
     });
 
     test("takes an effect out when its button is pressed, with the cable that drives it, and the focus goes to the button that adds one to its lane", async () => {
@@ -1455,7 +1464,7 @@ describe("the patch", () => {
 
     test("gives it to the list of the modulator of that cable, whichever modulators there are", async () => {
       const snapshot: Snapshot = structuredClone(tracerSnapshot);
-      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7, retrigger: false, fade: 0, sync: 0 } });
+      snapshot.graph.nodes.push({ id: 90, parent: null, hears: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7, retrigger: false, fade: 0, sync: 0 } });
       snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } });
       // (A second cable of the second modulator, so that it still has one cable when the first is taken out.)
       snapshot.graph.edges.push({ kind: "modulation", id: 2, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: oscillator.id, port: { type: "param", index: 1 } } });
@@ -1494,7 +1503,7 @@ describe("the patch", () => {
 
     test("names two cables of two modulators of one name apart", async () => {
       const snapshot: Snapshot = structuredClone(tracerSnapshot);
-      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7, retrigger: false, fade: 0, sync: 0 } });
+      snapshot.graph.nodes.push({ id: 90, parent: null, hears: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 7, retrigger: false, fade: 0, sync: 0 } });
       snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 0 } } });
       await rig(<PatchView />, { snapshot });
       expect(await screen.findByRole("button", { name: "Remove cable LFO 1 → Filter: cutoff" })).toBeTruthy();
@@ -1776,7 +1785,7 @@ describe("the patch while it plays", () => {
 
     test("has the output of an envelope across 0 to 1, which an LFO's range would give another number for", async () => {
       const snapshot: Snapshot = structuredClone(tracerSnapshot);
-      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
+      snapshot.graph.nodes.push({ id: 90, parent: null, hears: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
       snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 1 } } });
       const { client, clock, view } = await rig(<PatchView />, { snapshot: withOutput(snapshot, 90) });
       await nodeOf(90);
@@ -1792,7 +1801,7 @@ describe("the patch while it plays", () => {
 
     test("is lit by the modulator that drives it: two cables of two modulators have each their own", async () => {
       const snapshot: Snapshot = structuredClone(tracerSnapshot);
-      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 1, retrigger: false, fade: 0, sync: 0 } });
+      snapshot.graph.nodes.push({ id: 90, parent: null, hears: 0, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 1, retrigger: false, fade: 0, sync: 0 } });
       snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.3, from: { node: 90, port: { type: "modOut" } }, to: { node: filter.id, port: { type: "param", index: 1 } } });
       const { clock, time, view } = await rig(<PatchView />, { snapshot: withOutput(snapshot, 90) });
       await nodeOf(90);
@@ -1809,7 +1818,7 @@ describe("the patch while it plays", () => {
 
     test("is lit by an LFO's cable to the setting of another modulator as by a cable to a parameter", async () => {
       const snapshot: Snapshot = structuredClone(tracerSnapshot);
-      snapshot.graph.nodes.push({ id: 90, parent: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
+      snapshot.graph.nodes.push({ id: 90, parent: null, hears: 0, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
       snapshot.graph.edges.push({ kind: "modulation", id: 1, amount: 0.5, from: { node: lfo.id, port: { type: "modOut" } }, to: { node: 90, port: { type: "release" } } });
       const { clock, time, view } = await rig(<PatchView />, { snapshot });
       await nodeOf(90);

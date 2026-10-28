@@ -14,44 +14,44 @@ afterEach(cleanup);
 const BOX = { width: ENVELOPE_WIDTH, height: ENVELOPE_HEIGHT, pad: ENVELOPE_PAD };
 const NEW = { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 };
 
-// The reach fixture's modulators: LFOs (6, 15, 17), envelopes (16, which the graph lists first, and 8: "ADSR 1" and "ADSR 2") and a MIDI control (13).
+// The reach fixture's modulators: LFOs (12, 15, 17), envelopes (13 and 16: "ADSR 1" and "ADSR 2") and a MIDI control (14).
 const nodeOf = (id: number): Promise<HTMLElement> => screen.findByTestId(`rf__node-${String(id)}`);
 
 describe("the shape of an envelope on its node", () => {
   test("is an image named for the envelope and its four settings, on the node of an envelope and on no other", async () => {
     await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-    for (const [id, name] of [[8, "ADSR 2"], [16, "ADSR 1"]] as const) {
+    for (const [id, name] of [[13, "ADSR 1"], [16, "ADSR 2"]] as const) {
       const image = within(await nodeOf(id)).getByRole("img");
       expect(image.getAttribute("aria-label")).toBe(`${name} shape: attack 10 ms, decay 300 ms, sustain 0.7, release 500 ms`);
       expect(image.querySelector(".tang-envelope__line")?.getAttribute("d")).toBe(envelopePath(shapeOf(NEW), BOX));
     }
     // An LFO draws what it puts out, a MIDI control is bound to a control: neither has stages to draw.
-    for (const id of [6, 13, 15, 17]) expect(within(await nodeOf(id)).queryByRole("img"), String(id)).toBeNull();
+    for (const id of [12, 14, 15, 17]) expect(within(await nodeOf(id)).queryByRole("img"), String(id)).toBeNull();
     // (A plugin's node has none either.)
     expect(within(await nodeOf(5)).queryByRole("img")).toBeNull();
   });
 
   test("follows a stage that is turned, the line and the words, and no other node's", async () => {
     const { server } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-    const first = within(await nodeOf(8)).getByRole("img");
+    const first = within(await nodeOf(13)).getByRole("img");
     const second = within(await nodeOf(16)).getByRole("img");
     act(() => {
-      server.apply({ type: "setModulatorField", node: 8, field: "attack", value: 2 });
-      server.apply({ type: "setModulatorField", node: 8, field: "release", value: 0.002 });
-      server.apply({ type: "setModulatorField", node: 8, field: "sustain", value: 0.25 });
+      server.apply({ type: "setModulatorField", node: 13, field: "attack", value: 2 });
+      server.apply({ type: "setModulatorField", node: 13, field: "release", value: 0.002 });
+      server.apply({ type: "setModulatorField", node: 13, field: "sustain", value: 0.25 });
     });
     const stages = { attack: 2, decay: 0.3, sustain: 0.25, release: 0.002 };
     await waitFor(() => {
-      expect(first.getAttribute("aria-label")).toBe("ADSR 2 shape: attack 2 s, decay 300 ms, sustain 0.25, release 2 ms");
+      expect(first.getAttribute("aria-label")).toBe("ADSR 1 shape: attack 2 s, decay 300 ms, sustain 0.25, release 2 ms");
     });
     expect(first.querySelector(".tang-envelope__line")?.getAttribute("d")).toBe(envelopePath(shapeOf(stages), BOX));
-    expect(second.getAttribute("aria-label")).toBe("ADSR 1 shape: attack 10 ms, decay 300 ms, sustain 0.7, release 500 ms");
+    expect(second.getAttribute("aria-label")).toBe("ADSR 2 shape: attack 10 ms, decay 300 ms, sustain 0.7, release 500 ms");
     expect(second.querySelector(".tang-envelope__line")?.getAttribute("d")).toBe(envelopePath(shapeOf(NEW), BOX));
   });
 
   test("has its dot at the start at rest, along the hold while a note is held (the mock's envelope puts out the sustain) and at the start when it is let go", async () => {
     const { client, clock } = await rig(<PatchView />, { snapshot: reachFixture.snapshot });
-    const dot = (await nodeOf(8)).querySelector(".tang-envelope__dot");
+    const dot = (await nodeOf(13)).querySelector(".tang-envelope__dot");
     if (!dot) throw new Error("the envelope has no dot");
     const at = () => ({ x: Number(dot.getAttribute("cx")), y: Number(dot.getAttribute("cy")) });
     // (Frames are turned by hand, with real time between them for the mock's telemetry to come. Not inside `waitFor`: what a frame writes to

@@ -29,8 +29,8 @@ interface Driver {
 
 /**
  * The button that modulates the port `port` of the node `node`: a parameter of its plugin, a setting of a modulator or the depth of one of its cables.
- * `name` is what the control is called, for the button. A new modulator goes in the rack that reaches the port, the lane's for a lane's plugin and the
- * rack of the modulator for a setting of it; a MIDI control is armed, and learns the next controller that is moved. One that is there gets a cable.
+ * `name` is what the control is called, for the button. A new modulator hears the lane of a lane's plugin, the group of a bus effect and what the modulator hears for a setting of it;
+ * a MIDI control is armed, and learns the next controller that is moved. One that is there gets a cable.
  */
 export function ModulateMenu({ node, port, name, className }: { node: NodeId; port: Port; name: string; className?: string }) {
   const client = useClient();

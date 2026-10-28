@@ -11,7 +11,7 @@ source: src/tui/golden_tests.rs
 │  ╰ fx Filter  [Built-in]                       ││  attack                   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
 │  fx Reverb  [Built-in]  (bus)                  ││  decay                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.10│
 │  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)││  sustain                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     1.00│
-│  ~ ADSR → Mod 0 rate (30%)  (bus)              ││  release                  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.01│
+│  ~ ADSR → Mod 1 rate (30%)  (bus)              ││  release                  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.01│
 │♪ Oscillator  [Built-in]  -B3                   ││  pan                      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
 │├ fx Filter  [Built-in]         ┌ Assign to group ───────────────────────────────────┐                                │
 │╰ ~ LFO 0.2Hz triangle → Filter:│/                                                   │░░░░░░░░░░░░░░░░░░░░░░░     0.15│

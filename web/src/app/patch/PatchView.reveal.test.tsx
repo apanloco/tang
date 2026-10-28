@@ -135,7 +135,7 @@ describe("showing a node the page added", () => {
       expect(canvas.setViewport).toHaveBeenCalledTimes(1);
     });
     act(() => {
-      server.apply({ type: "addModulator", parent: 0, kind: "lfo" });
+      server.apply({ type: "addFreeModulator", kind: "lfo", hears: 0 });
     });
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -320,7 +320,7 @@ describe("showing a node whose scope is opened", () => {
     });
     const nodes = server.snapshot.graph.nodes.length;
     act(() => {
-      server.apply({ type: "addModulator", parent: 0, kind: "lfo" });
+      server.apply({ type: "addFreeModulator", kind: "lfo", hears: 0 });
     });
     await waitFor(() => {
       expect(server.snapshot.graph.nodes.length).toBe(nodes + 1);

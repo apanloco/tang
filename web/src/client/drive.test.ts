@@ -449,7 +449,7 @@ describe("a control of steps against the engine that answers", () => {
     await vi.waitFor(() => {
       expect(client.state.status).toBe("open");
     });
-    await client.request({ type: "addModulator", parent: 0, kind: "steps" });
+    await client.request({ type: "addFreeModulator", kind: "steps", hears: 0 });
     const sequencer = client.state.snapshot?.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
     const node = sequencer?.id ?? -1;
     const clock = new Clock();

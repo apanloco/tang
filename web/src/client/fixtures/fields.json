@@ -1,8 +1,89 @@
 {
   "fields": {
-    "10": [],
-    "12": [],
-    "13": [
+    "10": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
       {
         "node": 14,
         "port": {
@@ -40,74 +121,448 @@
           "edge": 6,
           "type": "depth"
         }
-      },
+      }
+    ],
+    "11": [
       {
-        "node": 4,
+        "node": 7,
         "port": {
           "type": "rate"
         }
       },
       {
-        "node": 4,
+        "node": 7,
         "port": {
           "edge": 0,
           "type": "depth"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "attack"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "decay"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "sustain"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "release"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "edge": 1,
           "type": "depth"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "edge": 2,
           "type": "depth"
         }
       },
       {
-        "node": 6,
+        "node": 9,
         "port": {
           "edge": 3,
           "type": "depth"
         }
       },
       {
-        "node": 8,
+        "node": 10,
         "port": {
           "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ],
+    "12": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ],
+    "13": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
         }
       }
     ],
     "14": [
       {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
         "node": 13,
         "port": {
           "type": "rate"
@@ -126,73 +581,194 @@
           "edge": 6,
           "type": "depth"
         }
-      },
+      }
+    ],
+    "15": [
       {
-        "node": 4,
+        "node": 7,
         "port": {
           "type": "rate"
         }
       },
       {
-        "node": 4,
+        "node": 7,
         "port": {
           "edge": 0,
           "type": "depth"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "attack"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "decay"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "sustain"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "release"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "edge": 1,
           "type": "depth"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "edge": 2,
           "type": "depth"
         }
       },
       {
-        "node": 6,
+        "node": 9,
         "port": {
           "edge": 3,
           "type": "depth"
         }
       },
       {
-        "node": 8,
+        "node": 10,
         "port": {
           "type": "rate"
         }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
       }
     ],
-    "15": [
+    "7": [
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
       {
         "node": 13,
         "port": {
@@ -238,193 +814,226 @@
         }
       },
       {
-        "node": 4,
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ],
+    "8": [
+      {
+        "node": 7,
         "port": {
           "type": "rate"
         }
       },
       {
-        "node": 4,
+        "node": 7,
         "port": {
           "edge": 0,
           "type": "depth"
         }
       },
       {
-        "node": 5,
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
         "port": {
           "type": "attack"
         }
       },
       {
-        "node": 5,
+        "node": 14,
         "port": {
           "type": "decay"
         }
       },
       {
-        "node": 5,
+        "node": 14,
         "port": {
           "type": "sustain"
         }
       },
       {
-        "node": 5,
+        "node": 14,
         "port": {
           "type": "release"
         }
       },
       {
-        "node": 5,
+        "node": 14,
         "port": {
-          "edge": 1,
+          "edge": 5,
           "type": "depth"
         }
       },
       {
-        "node": 5,
+        "node": 15,
         "port": {
-          "edge": 2,
+          "edge": 6,
           "type": "depth"
+        }
+      }
+    ],
+    "9": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
         }
       },
       {
-        "node": 6,
+        "node": 7,
         "port": {
-          "edge": 3,
+          "edge": 0,
           "type": "depth"
         }
       },
       {
         "node": 8,
         "port": {
-          "type": "rate"
-        }
-      }
-    ],
-    "4": [
-      {
-        "node": 5,
-        "port": {
           "type": "attack"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "decay"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "sustain"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "type": "release"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "edge": 1,
           "type": "depth"
         }
       },
       {
-        "node": 5,
+        "node": 8,
         "port": {
           "edge": 2,
           "type": "depth"
         }
       },
       {
-        "node": 6,
-        "port": {
-          "edge": 3,
-          "type": "depth"
-        }
-      }
-    ],
-    "5": [
-      {
-        "node": 4,
+        "node": 10,
         "port": {
           "type": "rate"
         }
       },
       {
-        "node": 4,
-        "port": {
-          "edge": 0,
-          "type": "depth"
-        }
-      },
-      {
-        "node": 6,
-        "port": {
-          "edge": 3,
-          "type": "depth"
-        }
-      }
-    ],
-    "6": [
-      {
-        "node": 4,
+        "node": 11,
         "port": {
           "type": "rate"
         }
       },
       {
-        "node": 4,
+        "node": 12,
         "port": {
-          "edge": 0,
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
           "type": "depth"
         }
       },
       {
-        "node": 5,
+        "node": 14,
         "port": {
           "type": "attack"
         }
       },
       {
-        "node": 5,
+        "node": 14,
         "port": {
           "type": "decay"
         }
       },
       {
-        "node": 5,
+        "node": 14,
         "port": {
           "type": "sustain"
         }
       },
       {
-        "node": 5,
+        "node": 14,
         "port": {
           "type": "release"
         }
       },
       {
-        "node": 5,
+        "node": 14,
         "port": {
-          "edge": 1,
+          "edge": 5,
           "type": "depth"
         }
       },
       {
-        "node": 5,
+        "node": 15,
         "port": {
-          "edge": 2,
+          "edge": 6,
           "type": "depth"
         }
       }
-    ],
-    "8": []
+    ]
   },
   "snapshot": {
     "graph": {
@@ -491,7 +1100,7 @@
         },
         {
           "from": {
-            "node": 7,
+            "node": 4,
             "port": {
               "type": "audioOut"
             }
@@ -506,7 +1115,7 @@
         },
         {
           "from": {
-            "node": 9,
+            "node": 5,
             "port": {
               "type": "audioOut"
             }
@@ -521,7 +1130,7 @@
         },
         {
           "from": {
-            "node": 11,
+            "node": 6,
             "port": {
               "type": "audioOut"
             }
@@ -531,6 +1140,78 @@
             "node": 2,
             "port": {
               "type": "audioIn"
+            }
+          }
+        },
+        {
+          "amount": 0.1,
+          "from": {
+            "node": 7,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 0,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 1,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.2,
+          "from": {
+            "node": 8,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 1,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 2,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.7,
+          "from": {
+            "node": 8,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 2,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 1,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.3,
+          "from": {
+            "node": 9,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 3,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 7,
+              "type": "param"
             }
           }
         },
@@ -581,81 +1262,9 @@
           "id": 6,
           "kind": "modulation",
           "to": {
-            "node": 7,
-            "port": {
-              "index": 2,
-              "type": "param"
-            }
-          }
-        },
-        {
-          "amount": 0.1,
-          "from": {
             "node": 4,
             "port": {
-              "type": "modOut"
-            }
-          },
-          "id": 0,
-          "kind": "modulation",
-          "to": {
-            "node": 3,
-            "port": {
-              "index": 1,
-              "type": "param"
-            }
-          }
-        },
-        {
-          "amount": 0.2,
-          "from": {
-            "node": 5,
-            "port": {
-              "type": "modOut"
-            }
-          },
-          "id": 1,
-          "kind": "modulation",
-          "to": {
-            "node": 3,
-            "port": {
               "index": 2,
-              "type": "param"
-            }
-          }
-        },
-        {
-          "amount": 0.7,
-          "from": {
-            "node": 5,
-            "port": {
-              "type": "modOut"
-            }
-          },
-          "id": 2,
-          "kind": "modulation",
-          "to": {
-            "node": 3,
-            "port": {
-              "index": 1,
-              "type": "param"
-            }
-          }
-        },
-        {
-          "amount": 0.3,
-          "from": {
-            "node": 6,
-            "port": {
-              "type": "modOut"
-            }
-          },
-          "id": 3,
-          "kind": "modulation",
-          "to": {
-            "node": 3,
-            "port": {
-              "index": 7,
               "type": "param"
             }
           }
@@ -834,47 +1443,6 @@
                 "name": "Ambient Wash"
               }
             ]
-          }
-        },
-        {
-          "id": 13,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 0,
-          "source": {
-            "fade": 0.0,
-            "rate": 0.5,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
-          }
-        },
-        {
-          "id": 14,
-          "kind": "modulator",
-          "name": "ADSR",
-          "parent": 0,
-          "source": {
-            "attack": 0.2,
-            "decay": 0.3,
-            "release": 0.5,
-            "sustain": 0.7,
-            "type": "envelope"
-          }
-        },
-        {
-          "id": 15,
-          "kind": "modulator",
-          "name": "CC 74",
-          "parent": 0,
-          "source": {
-            "control": {
-              "number": 74,
-              "type": "cc"
-            },
-            "learning": false,
-            "type": "midiLearn"
           }
         },
         {
@@ -1235,47 +1803,6 @@
         },
         {
           "id": 4,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 3,
-          "source": {
-            "fade": 0.0,
-            "rate": 3.0,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
-          }
-        },
-        {
-          "id": 5,
-          "kind": "modulator",
-          "name": "ADSR",
-          "parent": 3,
-          "source": {
-            "attack": 0.01,
-            "decay": 0.3,
-            "release": 0.5,
-            "sustain": 0.4,
-            "type": "envelope"
-          }
-        },
-        {
-          "id": 6,
-          "kind": "modulator",
-          "name": "CC 1",
-          "parent": 3,
-          "source": {
-            "control": {
-              "number": 1,
-              "type": "cc"
-            },
-            "learning": false,
-            "type": "midiLearn"
-          }
-        },
-        {
-          "id": 7,
           "kind": "instrument",
           "muted": false,
           "name": "Oscillator",
@@ -1620,21 +2147,7 @@
           "volume": 1.0
         },
         {
-          "id": 8,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 7,
-          "source": {
-            "fade": 0.0,
-            "rate": 1.0,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
-          }
-        },
-        {
-          "id": 9,
+          "id": 5,
           "kind": "instrument",
           "muted": false,
           "name": "Oscillator",
@@ -1979,21 +2492,7 @@
           "volume": 1.0
         },
         {
-          "id": 10,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 9,
-          "source": {
-            "fade": 0.0,
-            "rate": 2.0,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
-          }
-        },
-        {
-          "id": 11,
+          "id": 6,
           "kind": "instrument",
           "muted": false,
           "name": "Oscillator",
@@ -2338,10 +2837,85 @@
           "volume": 1.0
         },
         {
+          "hears": 3,
+          "id": 7,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 3.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 3,
+          "id": 8,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": null,
+          "source": {
+            "attack": 0.01,
+            "decay": 0.3,
+            "release": 0.5,
+            "sustain": 0.4,
+            "type": "envelope"
+          }
+        },
+        {
+          "hears": 3,
+          "id": 9,
+          "kind": "modulator",
+          "name": "CC 1",
+          "parent": null,
+          "source": {
+            "control": {
+              "number": 1,
+              "type": "cc"
+            },
+            "learning": false,
+            "type": "midiLearn"
+          }
+        },
+        {
+          "hears": 4,
+          "id": 10,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 1.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 5,
+          "id": 11,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 2.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 6,
           "id": 12,
           "kind": "modulator",
           "name": "LFO",
-          "parent": 11,
+          "parent": null,
           "source": {
             "fade": 0.0,
             "rate": 4.0,
@@ -2349,6 +2923,50 @@
             "sync": 0,
             "type": "lfo",
             "waveform": "sine"
+          }
+        },
+        {
+          "hears": 0,
+          "id": 13,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 0.5,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 0,
+          "id": 14,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": null,
+          "source": {
+            "attack": 0.2,
+            "decay": 0.3,
+            "release": 0.5,
+            "sustain": 0.7,
+            "type": "envelope"
+          }
+        },
+        {
+          "hears": 0,
+          "id": 15,
+          "kind": "modulator",
+          "name": "CC 74",
+          "parent": null,
+          "source": {
+            "control": {
+              "number": 74,
+              "type": "cc"
+            },
+            "learning": false,
+            "type": "midiLearn"
           }
         },
         {
@@ -2449,54 +3067,102 @@
         },
         {
           "kind": "peak",
-          "node": 7,
+          "node": 4,
           "port": {
             "type": "audioOut"
           },
-          "slot": 15
+          "slot": 8
         },
         {
           "kind": "clips",
-          "node": 7,
+          "node": 4,
           "port": {
             "type": "audioOut"
+          },
+          "slot": 9
+        },
+        {
+          "kind": "peak",
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 10
+        },
+        {
+          "kind": "clips",
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 11
+        },
+        {
+          "kind": "peak",
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 12
+        },
+        {
+          "kind": "clips",
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 13
+        }
+      ],
+      "modulation": [
+        {
+          "kind": "modOutput",
+          "node": 7,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 14
+        },
+        {
+          "kind": "modOutput",
+          "node": 8,
+          "port": {
+            "type": "modOut"
           },
           "slot": 16
         },
         {
-          "kind": "peak",
+          "kind": "modOutput",
           "node": 9,
           "port": {
-            "type": "audioOut"
-          },
-          "slot": 18
-        },
-        {
-          "kind": "clips",
-          "node": 9,
-          "port": {
-            "type": "audioOut"
+            "type": "modOut"
           },
           "slot": 19
         },
         {
-          "kind": "peak",
-          "node": 11,
+          "kind": "modOutput",
+          "node": 10,
           "port": {
-            "type": "audioOut"
+            "type": "modOut"
           },
           "slot": 21
         },
         {
-          "kind": "clips",
+          "kind": "modOutput",
           "node": 11,
           "port": {
-            "type": "audioOut"
+            "type": "modOut"
           },
           "slot": 22
-        }
-      ],
-      "modulation": [
+        },
+        {
+          "kind": "modOutput",
+          "node": 12,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 23
+        },
         {
           "kind": "modOutput",
           "node": 13,
@@ -2522,61 +3188,13 @@
           "slot": 28
         },
         {
-          "kind": "modOutput",
-          "node": 4,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 8
-        },
-        {
-          "kind": "modOutput",
-          "node": 5,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 10
-        },
-        {
-          "kind": "modOutput",
-          "node": 6,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 13
-        },
-        {
-          "kind": "modOutput",
-          "node": 8,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 17
-        },
-        {
-          "kind": "modOutput",
-          "node": 10,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 20
-        },
-        {
-          "kind": "modOutput",
-          "node": 12,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 23
-        },
-        {
           "kind": "effective",
           "node": 3,
           "port": {
             "index": 1,
             "type": "param"
           },
-          "slot": 9
+          "slot": 15
         },
         {
           "kind": "effective",
@@ -2585,7 +3203,7 @@
             "index": 2,
             "type": "param"
           },
-          "slot": 11
+          "slot": 17
         },
         {
           "kind": "effective",
@@ -2594,7 +3212,7 @@
             "index": 7,
             "type": "param"
           },
-          "slot": 14
+          "slot": 20
         },
         {
           "kind": "effective",
@@ -2607,7 +3225,7 @@
         },
         {
           "kind": "effective",
-          "node": 7,
+          "node": 4,
           "port": {
             "index": 2,
             "type": "param"

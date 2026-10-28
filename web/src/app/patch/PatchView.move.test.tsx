@@ -269,7 +269,7 @@ describe("moving a node", () => {
     expect(inHand).not.toEqual(laidOut(filter.id));
     // Another front-end adds a modulator to the lane: the session is laid out again, with the filter where the layout has it.
     act(() => {
-      server.apply({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+      server.apply({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
     });
     await waitFor(() => {
       expect(screen.getAllByText("ADSR", { selector: ".tang-node__name" })).toHaveLength(1);

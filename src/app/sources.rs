@@ -471,8 +471,8 @@ mod tests {
         let lanes = [m.instruments[0].node, m.instruments[1].node, m.instruments[2].node];
         let fx = m.instruments[0].effects[0].node;
         let (group, bus) = (m.groups[0].node, m.groups[0].effects[0].node);
-        let lfo = m.instruments[0].modulators[0].node;
-        let modulation = m.instruments[0].modulators[0].targets[0].edge;
+        let lfo = m.free_modulators[0].node;
+        let modulation = m.free_modulators[0].targets[0].edge;
         let (notes_cable, audio_cable) = (m.event_cables[0].id, m.cables[0].id);
         let ghost = NodeId(9_999);
         let everything = [keys, launchkey, lanes[0], lanes[1], lanes[2], fx, group, bus, lfo, NodeId::MASTER, ghost];
@@ -560,7 +560,7 @@ mod tests {
                 Intent::SetPinned { node, params: vec![0] },
                 Intent::RenameGroup { node, name: "A name".to_string() },
                 Intent::AddEffect { parent: node, plugin: "builtin:reverb".to_string() },
-                Intent::AddModulator { parent: node, kind: ModulatorKind::Lfo },
+                Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: Some(node) },
                 Intent::AddModEdge { modulator: node, to: Endpoint { node: lanes[0], port: Port::Param { index: 0 } } },
                 Intent::AddModEdge { modulator: lfo, to: ends(Port::Param { index: 0 }) },
                 Intent::AddModEdge { modulator: lfo, to: ends(Port::Rate) },

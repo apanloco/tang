@@ -1,10 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Graph, Node, NodeId, Param, Plugin } from "../../protocol";
-import { MASTER, audioCablesFixture, groupsFixture, reachFixture, sideCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
-import { moved } from "../../client/moved";
+import { MASTER, audioCablesFixture, sideCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
 import { DEFAULT_KNOBS } from "../../client/pinning";
-import { stressSnapshot } from "../../client/stress";
 import {
   CABLE_GAP,
   CABLE_ROW_HEIGHT,
@@ -74,6 +72,16 @@ const modulator = (id: NodeId, parent: NodeId): Node => ({
   name: `Mod ${String(id)}`,
   kind: "modulator",
   source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 },
+});
+
+/** A modulator of the session's own that hears the lane or the group `hears`. */
+const hearing = (id: NodeId, hears: NodeId): Node => ({
+  id,
+  parent: null,
+  name: `Mod ${String(id)}`,
+  kind: "modulator",
+  source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 },
+  hears,
 });
 
 const envelope = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 } });
@@ -1926,9 +1934,9 @@ describe("an audio cable that has been drawn between two places", () => {
   test("is an edge of its own from the output of its start to the input of its end, with the id of the cable and its words, in the order of the graph", () => {
     const sends = toFlow(patched).edges.filter((edge) => edge.type === "send");
     expect(sends.map((edge) => [edge.id, edge.source, edge.sourceHandle, edge.target, edge.targetHandle])).toEqual([
-      ["send:1", "8", "audioOut", "5", "audioIn"],
+      ["send:1", "7", "audioOut", "5", "audioIn"],
       ["send:2", "5", "audioOut", "6", "audioIn"],
-      ["send:3", "0", "audioOut", "9", "audioIn"],
+      ["send:3", "0", "audioOut", "8", "audioIn"],
       ["send:4", "1", "audioOut", "2", "audioIn"],
       ["send:5", "6", "audioOut", "0", "audioIn"],
       ["send:6", "2", "audioOut", String(MASTER), "audioIn"],
@@ -1971,9 +1979,9 @@ describe("an audio cable that has been drawn between two places", () => {
 });
 
 describe("a cable of notes, and the links by which a lane hears every source", () => {
-  // The session of the sources fixture (`testutil::NOTES`): the keys (7) and a device (8, Launchkey Mini MK4 37) are the sources; group 0 (Pad) has Reverb 1 on its bus, lane 2 is in it with Filter 3 and LFO 4,
-  // lane 5 is outside it and lane 6 is empty. A cable of notes (1) goes from the keys to lane 5, so that lanes 2 and 6, which no cable of notes ends at, hear both sources by a link each (the graph has them
-  // after the links of the audio path); an audio cable (2) goes from lane 5 to Filter 3 and a cable of modulation (0) from LFO 4 to a parameter of Filter 3.
+  // The session of the sources fixture (`testutil::NOTES`): the keys (7) and a device (8, Launchkey Mini MK4 37) are the sources; group 0 (Pad) has Reverb 1 on its bus, lane 2 is in it with Filter 3,
+  // lane 4 is outside it and lane 5 is empty, and LFO 6 hears lane 2. A cable of notes (1) goes from the keys to lane 4, so that lanes 2 and 5, which no cable of notes ends at, hear both sources by a link each (the graph has them
+  // after the links of the audio path); an audio cable (2) goes from lane 4 to Filter 3 and a cable of modulation (0) from LFO 6 to a parameter of Filter 3.
   const found = sourcesFixture.cases.find((entry) => entry.name === "wired");
   if (!found) throw new Error("the fixture has the session of the sources");
   const wired = found.snapshot.graph;
@@ -1981,7 +1989,7 @@ describe("a cable of notes, and the links by which a lane hears every source", (
 
   test("a cable of notes is an edge of its own from the output of events of its source to the input of events of its lane, with the id of the cable and its words", () => {
     const notes = toFlow(wired).edges.filter((edge) => edge.type === "notes");
-    expect(notes.map((edge) => [edge.id, edge.source, edge.sourceHandle, edge.target, edge.targetHandle, edge.deletable])).toEqual([["notes:1", "7", "eventsOut", "5", "eventsIn", false]]);
+    expect(notes.map((edge) => [edge.id, edge.source, edge.sourceHandle, edge.target, edge.targetHandle, edge.deletable])).toEqual([["notes:1", "7", "eventsOut", "4", "eventsIn", false]]);
     // (Told by the names the canvas gives the nodes, the numbers of the ones that share a name among them.)
     expect(notes.map((edge) => edge.data)).toEqual([{ cable: 1, label: "Keys → Oscillator 2" }]);
   });
@@ -1990,9 +1998,9 @@ describe("a cable of notes, and the links by which a lane hears every source", (
     const links = toFlow(wired).edges.filter((edge) => edge.type === "hears");
     expect(links.map((edge) => [edge.id, edge.source, edge.sourceHandle, edge.target, edge.targetHandle, edge.deletable])).toEqual([
       ["hears:7>2", "7", "eventsOut", "2", "eventsIn", false],
-      ["hears:7>6", "7", "eventsOut", "6", "eventsIn", false],
+      ["hears:7>5", "7", "eventsOut", "5", "eventsIn", false],
       ["hears:8>2", "8", "eventsOut", "2", "eventsIn", false],
-      ["hears:8>6", "8", "eventsOut", "6", "eventsIn", false],
+      ["hears:8>5", "8", "eventsOut", "5", "eventsIn", false],
     ]);
     expect(links.map((edge) => edge.data)).toEqual([{}, {}, {}, {}]);
   });
@@ -2263,11 +2271,11 @@ describe("a lane that only holds effects", () => {
     expect(at(flow, 3).data.heldIn).toEqual({ lane: 1, first: false, alone: false });
     // (The effect of a lane that has an instrument, the modulator, the source and the master are held by nobody.)
     for (const id of [4, 5, 6, 9, MASTER]) expect(at(flow, id).data.heldIn, String(id)).toBeNull();
-    // On its own: the only effect of its lane, and no modulator in the lane to be left behind when the lane goes with it (and another lane in the session, since a session keeps its last).
+    // On its own: the only effect of its lane, which goes with it (and another lane in the session, since a session keeps its last); the modulators that hear the lane stay, and do not keep it.
     const alone: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), instrument(5), master], edges: [audio(1, 2), audio(2, MASTER), audio(5, MASTER)] };
     expect(at(toFlow(alone), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: true });
-    const driven: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), modulator(3, 1), instrument(5), master], edges: [audio(1, 2), audio(2, MASTER), audio(5, MASTER)] };
-    expect(at(toFlow(driven), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: false });
+    const heard: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), hearing(3, 1), instrument(5), master], edges: [audio(1, 2), audio(2, MASTER), audio(5, MASTER)] };
+    expect(at(toFlow(heard), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: true });
     const chain: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), effect(3, 1), instrument(5), master], edges: [audio(1, 2), audio(2, 3), audio(3, MASTER), audio(5, MASTER)] };
     expect([2, 3].map((id) => at(toFlow(chain), id).data.heldIn?.alone)).toEqual([false, false]);
     // The last lane of the session is not taken out with it, though it has nothing else: the controller keeps it (`a session keeps its last lane`), and the effect is taken out alone.
@@ -2522,17 +2530,6 @@ describe("a modulator of the session's own that hears a lane or a group", () => 
     }
   });
 
-  test("lays the sessions of the fixtures out as the program has them once it has loaded them as it laid them out with the modulators in their racks: the same places for every node", () => {
-    for (const [name, snapshot] of [
-      ["the tracer", tracerSnapshot],
-      ["groups", groupsFixture.snapshot],
-      ["reach", reachFixture.snapshot],
-      ["the stress scene", stressSnapshot()],
-    ] as const) {
-      expect(placesOf(toFlow(moved(snapshot).graph)), name).toEqual(placesOf(toFlow(snapshot.graph)));
-    }
-  });
-
   test("does not overlap another node, whichever modulators hear what, hear every note or are a lane's or a group's own (graphs made up)", () => {
     for (const { round, graph } of madeUpGraphs()) {
       // (Every third modulator stays where it is, every third hears every note, and the rest hear what they were in.)
@@ -2602,11 +2599,9 @@ describe("a modulator of the session's own that hears a lane or a group", () => 
     expect(overlapsIn(holder, flow)).toBeNull();
   });
 
-  test("does not keep a lane that only holds effects from being taken out alone: the module's × asks for the lane, which a modulator that hears it is not in", () => {
+  test("does not keep a lane that only holds effects from being taken out alone: the module's × asks for the lane, whatever hears it", () => {
     const holder: Graph = { nodes: [instrumentOf(1, null), effect(2, 1), own(30, 1), instrument(5), master], edges: [audio(1, 2), audio(2, MASTER), audio(5, MASTER)] };
     expect(at(toFlow(holder), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: true });
-    const inRack: Graph = { ...holder, nodes: holder.nodes.map((node) => (node.id === 30 ? modulator(30, 1) : node)) };
-    expect(at(toFlow(inRack), 2).data.heldIn).toEqual({ lane: 1, first: true, alone: false });
   });
 
   describe("on a canvas that remembers where it put the nodes", () => {

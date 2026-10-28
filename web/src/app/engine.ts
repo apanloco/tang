@@ -4,7 +4,6 @@ import { Client } from "../client/connection";
 import { tracerSnapshot } from "../client/fixtures";
 import { MockServer } from "../client/mock";
 import type { MockOptions } from "../client/mock";
-import { moved } from "../client/moved";
 import { stressSnapshot } from "../client/stress";
 import { serverUrl, tokenFromHash, webSocketTransport } from "../client/websocket";
 
@@ -30,15 +29,15 @@ export function sceneFor(search: string): SceneKind {
   return scene === "stress" || scene === "lanes" ? scene : "tracer";
 }
 
-/** The snapshot of a scene, as the program has the session once it has loaded it: the modulators of its lanes and groups are the session's own and hear them (`moved`, step 94). */
+/** The snapshot of a scene, as the program has the session once it has loaded it: every modulator is the session's own, and hears the lane or the group it was made for. */
 function snapshotOf(scene: SceneKind): MockOptions {
   switch (scene) {
     case "stress":
-      return { snapshot: moved(stressSnapshot()) };
+      return { snapshot: stressSnapshot() };
     case "lanes":
-      return { snapshot: moved(stressSnapshot({ lanes: 2, lfosPerLane: 1, targetsPerLfo: 1 })) };
+      return { snapshot: stressSnapshot({ lanes: 2, lfosPerLane: 1, targetsPerLfo: 1 }) };
     case "tracer":
-      return { snapshot: moved(tracerSnapshot) };
+      return { snapshot: tracerSnapshot };
   }
 }
 

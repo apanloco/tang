@@ -18,8 +18,8 @@ vi.mock("../../client/sends", async (importOriginal) => {
 
 afterEach(cleanup);
 
-// The session of the audio cables fixture: group 0 ("Pad") with Filter 1 (node 1), Reverb (2) and Delay 1 (3) on its bus; lane 4 ("Oscillator 1") in it with Filter 2 (5), Delay 2 (6) and an LFO (7) that drives
-// Filter 2's cutoff; lane 8 ("Oscillator 2") with Drive (9); an empty lane (10). The audio cables, by id, with what the canvas calls what they join and their levels.
+// The session of the audio cables fixture: group 0 ("Pad") with Filter 1 (node 1), Reverb (2) and Delay 1 (3) on its bus; lane 4 ("Oscillator 1") in it with Filter 2 (5), Delay 2 (6) and an LFO (10) that drives
+// Filter 2's cutoff; lane 7 ("Oscillator 2") with Drive (8); an empty lane (9). The audio cables, by id, with what the canvas calls what they join and their levels.
 const { snapshot } = audioCablesFixture;
 const CABLES: readonly [number, string, number][] = [
   [1, "Oscillator 2 → Filter 2", 0.5],
@@ -154,7 +154,7 @@ describe("the audio cables of the canvas", () => {
 
   test("give the focus, when one is taken out, to the button that sends audio from the node it started at, which is where the next one is drawn from", async () => {
     await rig(<PatchView />, { snapshot });
-    const menu = within(await nodeOf(8)).getByRole("button", { name: "Send audio from Oscillator 2" });
+    const menu = within(await nodeOf(7)).getByRole("button", { name: "Send audio from Oscillator 2" });
     fireEvent.click(await screen.findByRole("button", { name: "Remove cable Oscillator 2 → Filter 2" }));
     await waitFor(() => {
       expect(document.activeElement).toBe(menu);
@@ -163,7 +163,7 @@ describe("the audio cables of the canvas", () => {
 
   test("keep the modulation cable's own button, which gives the focus to the list of its modulator", async () => {
     await rig(<PatchView />, { snapshot });
-    const list = within(await nodeOf(7)).getByRole("button", { name: /^Add a cable from / });
+    const list = within(await nodeOf(10)).getByRole("button", { name: /^Add a cable from / });
     fireEvent.click(await screen.findByRole("button", { name: "Remove cable LFO → Filter 2: cutoff" }));
     await waitFor(() => {
       expect(document.activeElement).toBe(list);
@@ -175,8 +175,8 @@ describe("the audio ports of the canvas", () => {
   test("are an output on each node that has audio to send (a lane's instrument, an effect, a group, an empty lane too) and an input on each that takes it (an effect, a group, the master)", async () => {
     const { view } = await rig(<PatchView />, { snapshot });
     await nodeOf(MASTER);
-    expect(nodesWith(view, "audioOut")).toEqual([0, 1, 2, 3, 4, 5, 6, 8, 9, 10]);
-    expect(nodesWith(view, "audioIn")).toEqual([0, 1, 2, 3, 5, 6, 9, MASTER]);
+    expect(nodesWith(view, "audioOut")).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(nodesWith(view, "audioIn")).toEqual([0, 1, 2, 3, 5, 6, 8, MASTER]);
   });
 
   test("start a cable at an output and end it at an input, and not the other way round", async () => {
@@ -204,21 +204,21 @@ describe("the menu that sends the audio of a node", () => {
     expect(buttons.sort()).toEqual(
       ["Delay 1", "Delay 2", "Drive", "Filter 1", "Filter 2", "Oscillator 1", "Oscillator 2", "Pad", "Reverb"].map((name) => `Send audio from ${name}`).sort(),
     );
-    for (const id of [7, 10, MASTER]) {
+    for (const id of [10, 9, MASTER]) {
       expect(within(await nodeOf(id)).queryByRole("button", { name: /^Send audio from / }), String(id)).toBeNull();
     }
   });
 
   test("has an id of its own among the ids of the page: the number of the node after `send-`, which what takes a cable out gives the focus to", async () => {
     await rig(<PatchView />, { snapshot });
-    expect((await buttonIn(8, "Oscillator 2")).id).toBe("send-8");
+    expect((await buttonIn(7, "Oscillator 2")).id).toBe("send-7");
     expect((await buttonIn(0, "Pad")).id).toBe("send-0");
     expect((await buttonIn(5, "Filter 2")).id).toBe("send-5");
   });
 
   test("lists, when it is opened, the places that take audio from the node, by the names the canvas gives them, under what each is", async () => {
     await rig(<PatchView />, { snapshot });
-    fireEvent.click(await buttonIn(8, "Oscillator 2"));
+    fireEvent.click(await buttonIn(7, "Oscillator 2"));
     // (Not Drive, which is the lane's own first effect: the link of its chain is a cable that is there already, and so is the cable to Filter 2.)
     expect(listed()).toEqual([
       ["Effects", ["Filter 1", "Reverb", "Delay 1", "Delay 2"]],
@@ -235,11 +235,11 @@ describe("the menu that sends the audio of a node", () => {
 
   test("draws the cable that is chosen, at the level a new cable has, and the place is not listed again", async () => {
     const { requests, view } = await rig(<PatchView />, { snapshot });
-    const menu = await buttonIn(8, "Oscillator 2");
+    const menu = await buttonIn(7, "Oscillator 2");
     fireEvent.click(menu);
     fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Reverb" }));
     await waitFor(() => {
-      expect(requests()).toEqual([{ intent: { type: "addCable", from: { node: 8, port: { type: "audioOut" } }, to: { node: 2, port: { type: "audioIn" } }, gain: null } }]);
+      expect(requests()).toEqual([{ intent: { type: "addCable", from: { node: 7, port: { type: "audioOut" } }, to: { node: 2, port: { type: "audioIn" } }, gain: null } }]);
     });
     const level = await levelOf("Oscillator 2 → Reverb");
     expect([level.value, level.getAttribute("aria-valuetext")]).toEqual(["1", "100%"]);
@@ -252,9 +252,9 @@ describe("the menu that sends the audio of a node", () => {
 
   test("follows the session: a cable that is drawn by somebody else takes its end off the list", async () => {
     const { server } = await rig(<PatchView />, { snapshot });
-    const menu = await buttonIn(8, "Oscillator 2");
+    const menu = await buttonIn(7, "Oscillator 2");
     act(() => {
-      server.apply({ type: "addCable", from: { node: 8, port: { type: "audioOut" } }, to: { node: 3, port: { type: "audioIn" } }, gain: null });
+      server.apply({ type: "addCable", from: { node: 7, port: { type: "audioOut" } }, to: { node: 3, port: { type: "audioIn" } }, gain: null });
     });
     await levelOf("Oscillator 2 → Delay 1");
     fireEvent.click(menu);
@@ -273,7 +273,7 @@ describe("the menu that sends the audio of a node", () => {
     act(() => {
       server.apply({ type: "setCableGain", edge: 1, gain: 1.2 });
       server.apply({ type: "setParam", node: 5, param: 1, value: 6 });
-      server.apply({ type: "setGain", node: 8, gain: "volume", value: 0.5 });
+      server.apply({ type: "setGain", node: 7, gain: "volume", value: 0.5 });
     });
     await waitFor(() => {
       expect(screen.getByRole<HTMLInputElement>("slider", { name: "Level of Oscillator 2 → Filter 2" }).value).toBe("1.2");
@@ -281,7 +281,7 @@ describe("the menu that sends the audio of a node", () => {
     expect(looked()).toBe(settled);
     // A cable that is drawn is a change of the structure: every menu looks again (the one that has the cable's end has one place fewer).
     act(() => {
-      server.apply({ type: "addCable", from: { node: 8, port: { type: "audioOut" } }, to: { node: 2, port: { type: "audioIn" } }, gain: null });
+      server.apply({ type: "addCable", from: { node: 7, port: { type: "audioOut" } }, to: { node: 2, port: { type: "audioIn" } }, gain: null });
     });
     await levelOf("Oscillator 2 → Reverb");
     expect(looked()).toBeGreaterThan(settled);

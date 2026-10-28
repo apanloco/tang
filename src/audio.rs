@@ -1494,7 +1494,6 @@ mod tests {
         // The file's `to` names a plugin by its place in the session: the first effect of the first lane and of the second. They are the two filters, and the cables are the two depths.
         let run = crate::app::testutil::load(&example("shared-lfo.toml"));
         assert_eq!(run.model.free_modulators.len(), 1, "one modulator that is nobody's");
-        assert!(run.model.instruments.iter().all(|lane| lane.modulators.is_empty()), "and none in a lane");
         let lfo = &run.model.free_modulators[0];
         let filters: Vec<_> = run.model.instruments.iter().map(|lane| (lane.effects[0].name.as_str(), lane.effects[0].node)).collect();
         assert_eq!(filters.iter().map(|(name, _)| *name).collect::<Vec<_>>(), ["Filter", "Filter"]);

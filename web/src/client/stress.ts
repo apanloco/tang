@@ -1,9 +1,9 @@
 // A session much bigger than the tracer, for the performance test of the interface
 // (docs/web-ui.md §9.4: 60 fps with 32 modulators and 64 live knobs): eight lanes, each an
-// oscillator through a filter, with four LFOs above it that between them drive eight of the
-// lane's parameters. It has the shape the server makes (ids, cables, a telemetry layout with
-// a slot for every output and every modulated parameter), so that the mock engine serves it
-// and makes the telemetry for it like it does for the tracer.
+// oscillator through a filter, with four LFOs that hear it (they are the session's own, as every
+// modulator is since step 96) and that between them drive eight of the lane's parameters. It has the
+// shape the server makes (ids, cables, a telemetry layout with a slot for every output and every
+// modulated parameter), so that the mock engine serves it and makes the telemetry for it like it does for the tracer.
 import type { Edge, LayoutEntry, Node, NodeId, Param, Plugin, Snapshot } from "../protocol";
 import { MASTER, tracerSnapshot } from "./fixtures";
 
@@ -35,6 +35,8 @@ export function stressSnapshot(size: StressSize = { lanes: LANES, lfosPerLane: L
   const oscillator = pluginOf(tracerSnapshot, "instrument");
   const filter = pluginOf(tracerSnapshot, "effect");
   const nodes: Node[] = [];
+  // The modulators, which the graph lists after the lanes and before the master.
+  const modulators: Node[] = [];
   const edges: Edge[] = [];
   const meters: LayoutEntry[] = [];
   const outputs: LayoutEntry[] = [];
@@ -80,7 +82,7 @@ export function stressSnapshot(size: StressSize = { lanes: LANES, lfosPerLane: L
     for (let k = 0; k < size.lfosPerLane; k += 1) {
       const lfo: NodeId = id++;
       const rate = 0.25 + 0.15 * (lane * size.lfosPerLane + k);
-      nodes.push({ id: lfo, parent: instrument, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate, retrigger: false, fade: 0, sync: 0 } });
+      modulators.push({ id: lfo, parent: null, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate, retrigger: false, fade: 0, sync: 0 }, hears: instrument });
       outputs.push({ slot: slot++, node: lfo, port: { type: "modOut" }, kind: "modOutput" });
       for (let t = 0; t < size.targetsPerLfo; t += 1) {
         const target = driveable[next % driveable.length];
@@ -101,7 +103,7 @@ export function stressSnapshot(size: StressSize = { lanes: LANES, lfosPerLane: L
       }
     }
   }
-  nodes.push({ id: MASTER, parent: null, name: "Master", kind: "master" });
+  nodes.push(...modulators, { id: MASTER, parent: null, name: "Master", kind: "master" });
 
   return {
     rev: 0,

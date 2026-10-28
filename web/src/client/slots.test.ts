@@ -26,20 +26,20 @@ describe("the slots of the telemetry that the mock engine hands out", () => {
 
   test("are used up by a cable to a parameter that another cable drives, which the layout does not name", () => {
     const server = new MockServer({ snapshot: historyFixture.snapshot });
-    const first = made(server, { type: "addModulator", parent: lane.id, kind: "lfo" });
+    const first = made(server, { type: "addFreeModulator", kind: "lfo", hears: lane.id });
     const effective = (): number => server.snapshot.telemetry.modulation.filter((entry) => entry.kind === "effective").length;
     const taken = Math.max(...slotsOf(server.snapshot));
     const named = effective();
     server.apply({ type: "addModEdge", modulator: first.id, to: { node: lane.id, port: { type: "param", index: detune } } });
     expect(effective(), "the cable drives a parameter that is named already").toBe(named);
-    const next = made(server, { type: "addModulator", parent: lane.id, kind: "envelope" });
+    const next = made(server, { type: "addFreeModulator", kind: "envelope", hears: lane.id });
     const output = server.snapshot.telemetry.modulation.find((entry) => entry.kind === "modOutput" && entry.node === next.id);
     expect(output?.slot, "the cable took the slot after the last, and the modulator the one after that").toBe(taken + 2);
   });
 
   test("are used up by a cable to a parameter that no cable drives, which the layout names", () => {
     const server = new MockServer({ snapshot: historyFixture.snapshot });
-    const first = made(server, { type: "addModulator", parent: lane.id, kind: "lfo" });
+    const first = made(server, { type: "addFreeModulator", kind: "lfo", hears: lane.id });
     const filter = server.snapshot.graph.nodes.find((n) => n.kind === "effect" && n.parent === lane.id && n.name === "Filter");
     if (!filter) throw new Error("the lane has a filter");
     const taken = Math.max(...slotsOf(server.snapshot));

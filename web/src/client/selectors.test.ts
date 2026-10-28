@@ -216,17 +216,17 @@ describe("finding the presets a plugin can be given", () => {
   const reach = stateOf(reachFixture.snapshot);
 
   test("those of an effect of a lane, with none loaded to begin with", () => {
-    const found = presetsOf(reach, 10);
+    const found = presetsOf(reach, 8);
     expect(found?.presets.map((p) => p.id)).toEqual(["arcadia", "cathedral", "plate", "room", "ambient"]);
     expect(found?.current).toBeNull();
   });
 
   test("and the one that was loaded last, by its name", () => {
     const loaded = structuredClone(reachFixture.snapshot);
-    const reverb = loaded.graph.nodes.find((n) => n.id === 10);
+    const reverb = loaded.graph.nodes.find((n) => n.id === 8);
     if (reverb?.kind !== "effect") throw new Error("no reverb");
     reverb.plugin.currentPreset = "Cathedral";
-    expect(presetsOf(stateOf(loaded), 10)?.current).toBe("Cathedral");
+    expect(presetsOf(stateOf(loaded), 8)?.current).toBe("Cathedral");
   });
 
   test("those of an instrument", () => {
@@ -245,10 +245,10 @@ describe("finding the presets a plugin can be given", () => {
   test("none for a node that has no plugin, a lane that has none, a node that is not there, or before there is a session", () => {
     expect(presetsOf(reach, 15)).toBeNull(); // a modulator
     expect(presetsOf(reach, 0)).toBeNull(); // a group
-    expect(presetsOf(reach, 14)).toBeNull(); // a lane with no instrument
+    expect(presetsOf(reach, 11)).toBeNull(); // a lane with no instrument
     expect(presetsOf(reach, 424242)).toBeNull();
     expect(presetsOf(reach, MASTER)).toBeNull();
-    expect(presetsOf(stateOf(null), 10)).toBeNull();
+    expect(presetsOf(stateOf(null), 8)).toBeNull();
   });
 
   test("a plugin that has no presets has an empty list: the caller decides what that is worth", () => {
@@ -359,25 +359,25 @@ describe("counting the parameters of a plugin", () => {
 });
 
 describe("finding the settings of an envelope", () => {
-  // The reach fixture's modulators: LFOs (6, 15, 17), envelopes (8, 16) and a MIDI control (13), the envelopes at the engine's defaults.
+  // The reach fixture's modulators: LFOs (12, 15, 17), envelopes (13, 16) and a MIDI control (14), the envelopes at the engine's defaults.
   const reach = stateOf(reachFixture.snapshot);
 
   test("are its four stages, by name: the three times and the sustain level", () => {
-    expect(envelopeStagesOf(reach, 8)).toEqual({ attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 });
+    expect(envelopeStagesOf(reach, 13)).toEqual({ attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 });
     expect(envelopeStagesOf(reach, 16)).toEqual({ attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 });
   });
 
   test("are none for what is no envelope: an LFO, a MIDI control, a plugin, a node that is not there, or before there is a session", () => {
-    for (const id of [6, 13, 15, 17, 0, 12345, MASTER]) expect(envelopeStagesOf(reach, id), String(id)).toBeNull();
-    expect(envelopeStagesOf(stateOf(null), 8)).toBeNull();
+    for (const id of [12, 14, 15, 17, 0, 12345, MASTER]) expect(envelopeStagesOf(reach, id), String(id)).toBeNull();
+    expect(envelopeStagesOf(stateOf(null), 13)).toBeNull();
   });
 
   test("follow a stage that changes, and are the same settings while nothing of them does", () => {
     const changed = structuredClone(reachFixture.snapshot);
-    const envelope = changed.graph.nodes.find((n) => n.id === 8);
+    const envelope = changed.graph.nodes.find((n) => n.id === 13);
     if (envelope?.kind === "modulator" && envelope.source.type === "envelope") envelope.source.release = 4;
-    expect(envelopeStagesOf(stateOf(changed), 8)).toEqual({ attack: 0.01, decay: 0.3, sustain: 0.7, release: 4 });
-    expect(sameStages(envelopeStagesOf(reach, 8), envelopeStagesOf(stateOf(structuredClone(reachFixture.snapshot)), 8))).toBe(true);
+    expect(envelopeStagesOf(stateOf(changed), 13)).toEqual({ attack: 0.01, decay: 0.3, sustain: 0.7, release: 4 });
+    expect(sameStages(envelopeStagesOf(reach, 13), envelopeStagesOf(stateOf(structuredClone(reachFixture.snapshot)), 13))).toBe(true);
     for (const stage of ["attack", "decay", "sustain", "release"] as const) {
       const a = { attack: 1, decay: 2, sustain: 0.5, release: 3 };
       expect(sameStages(a, { ...a, [stage]: a[stage] + 1 }), stage).toBe(false);
@@ -389,15 +389,15 @@ describe("finding the settings of an envelope", () => {
 });
 
 describe("finding where an effect is in its chain", () => {
-  // The moves fixture: a bus of four effects (1 to 4) of the group 0, a lane (5) in it with four effects (6 to 9) and a lane (11) in none with three (12 to 14).
+  // The moves fixture: a bus of four effects (1 to 4) of the group 0, a lane (5) in it with four effects (6 to 9) and a lane (10) in none with three (11 to 13).
   const moves = stateOf(movesFixture.snapshot);
 
   test("is its place, counted from 0, and how many effects the chain has: of a lane's chain and of a bus", () => {
     expect(chainPlaceOf(moves, 6)).toEqual({ index: 0, count: 4 });
     expect(chainPlaceOf(moves, 8)).toEqual({ index: 2, count: 4 });
     expect(chainPlaceOf(moves, 9)).toEqual({ index: 3, count: 4 });
-    expect(chainPlaceOf(moves, 12)).toEqual({ index: 0, count: 3 });
-    expect(chainPlaceOf(moves, 14)).toEqual({ index: 2, count: 3 });
+    expect(chainPlaceOf(moves, 11)).toEqual({ index: 0, count: 3 });
+    expect(chainPlaceOf(moves, 13)).toEqual({ index: 2, count: 3 });
     expect(chainPlaceOf(moves, 1)).toEqual({ index: 0, count: 4 });
     expect(chainPlaceOf(moves, 3)).toEqual({ index: 2, count: 4 });
   });
@@ -408,7 +408,7 @@ describe("finding where an effect is in its chain", () => {
   });
 
   test("is none for a node that is no effect, a node that is not there, or before there is a session", () => {
-    for (const id of [0, 5, 10, 11, 16, MASTER, 12345]) expect(chainPlaceOf(moves, id), String(id)).toBeNull();
+    for (const id of [0, 5, 10, 14, 16, MASTER, 12345]) expect(chainPlaceOf(moves, id), String(id)).toBeNull();
     expect(chainPlaceOf(stateOf(null), 6)).toBeNull();
   });
 
@@ -443,7 +443,7 @@ describe("finding the keys of a lane", () => {
   });
 
   test("is there for a lane that has no instrument", () => {
-    expect(rangeOf(reach, 14)).toBeNull();
+    expect(rangeOf(reach, 11)).toBeNull();
   });
 
   test("is not there for what is not a lane, a node that is not there, or before there is a session", () => {
@@ -473,7 +473,7 @@ describe("the pattern of a lane", () => {
   });
 
   test("is there for a lane that has no instrument", () => {
-    expect(patternOf(stateOf(reachFixture.snapshot), 14)).toBeNull();
+    expect(patternOf(stateOf(reachFixture.snapshot), 11)).toBeNull();
   });
 
   test("is not there for what is not a lane, a node that is not there, or before there is a session", () => {
@@ -545,17 +545,17 @@ describe("which group a lane is in, and which there are to choose from", () => {
 
   test("the group a lane is in, and every group of the session in the order of the graph", () => {
     expect(groupChoicesOf(groups, 3)).toEqual({ current: 0, groups: everyGroup });
-    expect(groupChoicesOf(groups, 9)).toEqual({ current: 1, groups: everyGroup });
-    expect(groupChoicesOf(groups, 10)).toEqual({ current: 0, groups: everyGroup });
+    expect(groupChoicesOf(groups, 6)).toEqual({ current: 1, groups: everyGroup });
+    expect(groupChoicesOf(groups, 7)).toEqual({ current: 0, groups: everyGroup });
   });
 
   test("none, for a lane that is in no group", () => {
-    expect(groupChoicesOf(groups, 5)).toEqual({ current: null, groups: everyGroup });
+    expect(groupChoicesOf(groups, 4)).toEqual({ current: null, groups: everyGroup });
     expect(groupChoicesOf(state, oscillator.id)).toEqual({ current: null, groups: [] });
   });
 
   test("nothing for what is no lane: a group, an effect, a modulator, the master, a node that is not there, and before there is a session", () => {
-    for (const node of [0, 6, 4, 13, MASTER, 9999]) expect(groupChoicesOf(groups, node), `node ${String(node)}`).toBeUndefined();
+    for (const node of [0, 5, 8, 13, MASTER, 9999]) expect(groupChoicesOf(groups, node), `node ${String(node)}`).toBeUndefined();
     expect(groupChoicesOf(stateOf(null), 3)).toBeUndefined();
   });
 
@@ -564,7 +564,7 @@ describe("which group a lane is in, and which there are to choose from", () => {
       ...groupsFixture.snapshot,
       graph: { ...groupsFixture.snapshot.graph, nodes: groupsFixture.snapshot.graph.nodes.map((n) => (n.id === 1 ? { ...n, name: "Strings" } : n)) },
     };
-    expect(groupChoicesOf(stateOf(named), 5)?.groups.map((g) => g.name)).toEqual(["Group 1", "Strings", "Lead"]);
+    expect(groupChoicesOf(stateOf(named), 4)?.groups.map((g) => g.name)).toEqual(["Group 1", "Strings", "Lead"]);
   });
 
   test("is the same choice when it is the same group and the same groups by the same names, and not otherwise", () => {
@@ -572,9 +572,9 @@ describe("which group a lane is in, and which there are to choose from", () => {
     const b = groupChoicesOf(groups, 3);
     expect(a).not.toBe(b);
     expect(sameGroupChoices(a, b)).toBe(true);
-    expect(sameGroupChoices(a, groupChoicesOf(groups, 10))).toBe(true);
-    expect(sameGroupChoices(a, groupChoicesOf(groups, 9))).toBe(false);
-    expect(sameGroupChoices(a, groupChoicesOf(groups, 5))).toBe(false);
+    expect(sameGroupChoices(a, groupChoicesOf(groups, 7))).toBe(true);
+    expect(sameGroupChoices(a, groupChoicesOf(groups, 6))).toBe(false);
+    expect(sameGroupChoices(a, groupChoicesOf(groups, 4))).toBe(false);
     expect(sameGroupChoices(a, { current: 0, groups: everyGroup.slice(0, 2) })).toBe(false);
     expect(sameGroupChoices(a, { current: 0, groups: everyGroup.map((g) => ({ ...g, name: g.id === 2 ? "Pad" : g.name })) })).toBe(false);
     // The same names at the same places, but other nodes: an option's value is its node, so the choice that was drawn is stale.
@@ -588,36 +588,38 @@ describe("which group a lane is in, and which there are to choose from", () => {
 describe("what goes when a lane or a group is taken out", () => {
   const groups = stateOf(groupsFixture.snapshot);
 
-  test("counts the modulators of the session's own that hear a lane or a group, which stay when it goes: not the ones that hear another or every note, and not the ones in its rack", () => {
+  test("counts the modulators that hear a lane or a group, which stay when it goes: not the ones that hear another or every note", () => {
     const base = groupsFixture.snapshot;
     const own = (id: number, hears?: number): Node => ({ id, parent: null, name: `LFO ${String(id)}`, kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 }, ...(hears === undefined ? {} : { hears }) });
     const master = base.graph.nodes.findIndex((node) => node.kind === "master");
-    const nodes = [...base.graph.nodes.slice(0, master), own(100, 5), own(101, 5), own(102, 0), own(103, 10), own(104), ...base.graph.nodes.slice(master)];
+    // (The fixture's own: one hears lane 3, two hear lane 4, one lane 7, two group 0 and one group 1.)
+    const nodes = [...base.graph.nodes.slice(0, master), own(100, 4), own(101, 0), own(102, 6), own(103), ...base.graph.nodes.slice(master)];
     const heard = stateOf({ ...base, graph: { ...base.graph, nodes } });
-    expect(removalOf(heard, 5)).toMatchObject({ kind: "lane", modulators: 2, hearing: 2 });
-    expect(removalOf(heard, 10)).toMatchObject({ kind: "lane", modulators: 1, hearing: 1 });
-    expect(removalOf(heard, 0)).toMatchObject({ kind: "group", modulators: 2, hearing: 1 });
-    expect(removalOf(heard, 1)).toMatchObject({ kind: "group", modulators: 1, hearing: 0 });
-    expect(removalOf(heard, 3)).toMatchObject({ kind: "lane", hearing: 0 });
+    expect(removalOf(heard, 4)).toMatchObject({ kind: "lane", hearing: 3 });
+    expect(removalOf(heard, 7)).toMatchObject({ kind: "lane", hearing: 1 });
+    expect(removalOf(heard, 6)).toMatchObject({ kind: "lane", hearing: 1 });
+    expect(removalOf(heard, 0)).toMatchObject({ kind: "group", hearing: 3 });
+    expect(removalOf(heard, 1)).toMatchObject({ kind: "group", hearing: 1 });
+    expect(removalOf(heard, 2)).toMatchObject({ kind: "group", hearing: 0 });
   });
 
   test("is not the same removal when the number that hear it is not", () => {
-    const base = removalOf(groups, 5);
+    const base = removalOf(groups, 4);
     if (!base) throw new Error("a lane");
     expect(sameRemoval(base, { ...base })).toBe(true);
     expect(sameRemoval(base, { ...base, hearing: base.hearing + 1 })).toBe(false);
   });
 
-  test("for a group: what it is called, the effects of its bus and its modulators that go with it, and the lanes that stay", () => {
-    expect(removalOf(groups, 0)).toEqual({ kind: "group", name: "Group 1", instrument: false, effects: 0, modulators: 2, hearing: 0, lanes: 2, last: false });
-    expect(removalOf(groups, 1)).toEqual({ kind: "group", name: "Group 2", instrument: false, effects: 0, modulators: 1, hearing: 0, lanes: 1, last: false });
-    expect(removalOf(groups, 2)).toEqual({ kind: "group", name: "Lead", instrument: false, effects: 0, modulators: 0, hearing: 0, lanes: 0, last: false });
+  test("for a group: what it is called, the effects of its bus that go with it, the modulators that hear it and the lanes that stay", () => {
+    expect(removalOf(groups, 0)).toEqual({ kind: "group", name: "Group 1", instrument: false, effects: 0, hearing: 2, lanes: 2, last: false });
+    expect(removalOf(groups, 1)).toEqual({ kind: "group", name: "Group 2", instrument: false, effects: 0, hearing: 1, lanes: 1, last: false });
+    expect(removalOf(groups, 2)).toEqual({ kind: "group", name: "Lead", instrument: false, effects: 0, hearing: 0, lanes: 0, last: false });
   });
 
-  test("for a lane: what it is called, its effects and its modulators that go with it, whether it is in a group, and whether it is the last", () => {
-    expect(removalOf(groups, 5)).toEqual({ kind: "lane", name: "Oscillator 2", instrument: true, effects: 1, modulators: 2, hearing: 0, lanes: 0, last: false });
-    expect(removalOf(groups, 10)).toEqual({ kind: "lane", name: "Oscillator 4", instrument: true, effects: 1, modulators: 1, hearing: 0, lanes: 0, last: false });
-    expect(removalOf(state, oscillator.id)).toEqual({ kind: "lane", name: "Oscillator", instrument: true, effects: 1, modulators: 1, hearing: 0, lanes: 0, last: true });
+  test("for a lane: what it is called, its effects that go with it, the modulators that hear it, whether it is in a group, and whether it is the last", () => {
+    expect(removalOf(groups, 4)).toEqual({ kind: "lane", name: "Oscillator 2", instrument: true, effects: 1, hearing: 2, lanes: 0, last: false });
+    expect(removalOf(groups, 7)).toEqual({ kind: "lane", name: "Oscillator 4", instrument: true, effects: 1, hearing: 1, lanes: 0, last: false });
+    expect(removalOf(state, oscillator.id)).toEqual({ kind: "lane", name: "Oscillator", instrument: true, effects: 1, hearing: 1, lanes: 0, last: true });
   });
 
   test("says whether a lane has an instrument, which can be taken out alone: a lane that has none does not, and a group never does", () => {
@@ -625,22 +627,22 @@ describe("what goes when a lane or a group is taken out", () => {
       ...tracerSnapshot,
       graph: { ...tracerSnapshot.graph, nodes: tracerSnapshot.graph.nodes.map((node) => (node.id === oscillator.id && node.kind === "instrument" ? { ...node, name: "(empty)", plugin: null } : node)) },
     });
-    // (The lane keeps what else it has: its filter and its LFO are still what goes with it. It has nothing else that a card would show, so the canvas draws no card for it and it is called by its
+    // (The lane keeps what else it has: its filter goes with it, and its LFO still hears it. It has nothing else that a card would show, so the canvas draws no card for it and it is called by its
     // filter; with a key range it has a card, and is called as the server calls a lane that has no instrument.)
-    expect(removalOf(emptied, oscillator.id)).toEqual({ kind: "lane", name: "Filter", instrument: false, effects: 1, modulators: 1, hearing: 0, lanes: 0, last: true });
+    expect(removalOf(emptied, oscillator.id)).toEqual({ kind: "lane", name: "Filter", instrument: false, effects: 1, hearing: 1, lanes: 0, last: true });
     const base = emptied.snapshot;
     if (base === null) throw new Error("the session is there");
     const keyed = stateOf({
       ...base,
       graph: { ...base.graph, nodes: base.graph.nodes.map((node) => (node.id === oscillator.id && node.kind === "instrument" ? { ...node, range: { low: 36, high: 60 } } : node)) },
     });
-    expect(removalOf(keyed, oscillator.id)).toEqual({ kind: "lane", name: "(empty)", instrument: false, effects: 1, modulators: 1, hearing: 0, lanes: 0, last: true });
+    expect(removalOf(keyed, oscillator.id)).toEqual({ kind: "lane", name: "(empty)", instrument: false, effects: 1, hearing: 1, lanes: 0, last: true });
     expect([0, 1, 2].map((group) => removalOf(groups, group)?.instrument)).toEqual([false, false, false]);
-    expect([3, 5, 9, 10].map((lane) => removalOf(groups, lane)?.instrument)).toEqual([true, true, true, true]);
+    expect([3, 4, 6, 7].map((lane) => removalOf(groups, lane)?.instrument)).toEqual([true, true, true, true]);
   });
 
   test("nothing for what is neither: an effect, a modulator, the master, a node that is not there, and before there is a session", () => {
-    for (const node of [6, 4, 13, MASTER, 9999]) expect(removalOf(groups, node), `node ${String(node)}`).toBeUndefined();
+    for (const node of [5, 8, 13, MASTER, 9999]) expect(removalOf(groups, node), `node ${String(node)}`).toBeUndefined();
     expect(removalOf(stateOf(null), 0)).toBeUndefined();
   });
 
@@ -666,7 +668,7 @@ describe("what goes when a lane or a group is taken out", () => {
       { ...a, name: "Pad" },
       { ...a, instrument: !a.instrument },
       { ...a, effects: a.effects + 1 },
-      { ...a, modulators: a.modulators + 1 },
+      { ...a, hearing: a.hearing + 1 },
       { ...a, lanes: a.lanes + 1 },
       { ...a, last: !a.last },
     ];
@@ -691,7 +693,7 @@ describe("the mute and the solo of a lane or a group", () => {
   test("are both off for a lane or a group that was not touched, and for a lane that has no instrument", () => {
     expect(flagsOf(state, oscillator.id)).toEqual({ muted: false, solo: false });
     expect(flagsOf(groups, 0)).toEqual({ muted: false, solo: false }); // a group
-    expect(flagsOf(stateOf(reachFixture.snapshot), 14)).toEqual({ muted: false, solo: false }); // a lane that has no instrument
+    expect(flagsOf(stateOf(reachFixture.snapshot), 11)).toEqual({ muted: false, solo: false }); // a lane that has no instrument
   });
 
   test("are what the node says of them, each by itself: of a lane and of a group", () => {
@@ -748,17 +750,17 @@ describe("whether a node can be heard at the master", () => {
     const cut = stateOf(copy);
     expect(audibleAt(cut, 0)).toBe(false);
     expect(audibleAt(cut, 3)).toBe(false); // a lane of the group
-    expect(audibleAt(cut, 11)).toBe(false); // an effect of another lane of the group
-    expect(audibleAt(cut, 10)).toBe(false);
-    expect(audibleAt(cut, 5)).toBe(true); // a lane that is in no group
-    expect(audibleAt(cut, 6)).toBe(true);
-    expect(audibleAt(cut, 9)).toBe(true); // a lane of the other group
+    expect(audibleAt(cut, 8)).toBe(false); // an effect of another lane of the group
+    expect(audibleAt(cut, 7)).toBe(false);
+    expect(audibleAt(cut, 4)).toBe(true); // a lane that is in no group
+    expect(audibleAt(cut, 5)).toBe(true);
+    expect(audibleAt(cut, 6)).toBe(true); // a lane of the other group
     expect(audibleAt(cut, 1)).toBe(true);
   });
 
   describe("with cables that carry audio", () => {
-    // The audio cables fixture: the group Pad (0) with the lane 4 in it, that has the effects 5 and 6, the lane 8 (effect 9) that is in none, and the lane 10, which is empty. Cable 1 goes from the
-    // instrument of lane 8 to the effect 5 of lane 4.
+    // The audio cables fixture: the group Pad (0) with the lane 4 in it, that has the effects 5 and 6, the lane 7 (effect 8) that is in none, and the lane 9, which is empty. Cable 1 goes from the
+    // instrument of lane 7 to the effect 5 of lane 4.
     const soloed = (lane: number): ClientState => {
       const copy = structuredClone(audioCablesFixture.snapshot);
       const node = copy.graph.nodes.find((n) => n.id === lane);
@@ -777,27 +779,27 @@ describe("whether a node can be heard at the master", () => {
 
     test("is yes for every lane, group and effect when nothing is soloed", () => {
       const quiet = stateOf(audioCablesFixture.snapshot);
-      for (const node of [0, 1, 2, 3, 4, 5, 6, 8, 9, 10]) expect(audibleAt(quiet, node), `node ${String(node)}`).toBe(true);
+      for (const node of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(audibleAt(quiet, node), `node ${String(node)}`).toBe(true);
     });
 
     test("is yes for the effects of a lane that a lane that is soloed sends to, and for its group, and no for the instrument of that lane, which is not heard for what it is", () => {
-      const state = soloed(8);
+      const state = soloed(7);
+      expect(audibleAt(state, 7)).toBe(true);
       expect(audibleAt(state, 8)).toBe(true);
-      expect(audibleAt(state, 9)).toBe(true);
       expect(audibleAt(state, 5)).toBe(true);
       expect(audibleAt(state, 6)).toBe(true);
       expect(audibleAt(state, 0)).toBe(true);
       expect(audibleAt(state, 4)).toBe(false);
       // (Nothing is sent to the empty lane.)
-      expect(audibleAt(state, 10)).toBe(false);
+      expect(audibleAt(state, 9)).toBe(false);
     });
 
-    test("is yes for the effect that the output of a group that is heard goes to and no for the instrument of the lane that has it: with the lane of the group soloed, cable 3 carries the group into lane 8", () => {
+    test("is yes for the effect that the output of a group that is heard goes to and no for the instrument of the lane that has it: with the lane of the group soloed, cable 3 carries the group into lane 7", () => {
       const state = soloed(4);
       expect(audibleAt(state, 4)).toBe(true);
-      expect(audibleAt(state, 9)).toBe(true);
-      expect(audibleAt(state, 8)).toBe(false);
-      expect(audibleAt(state, 10)).toBe(false);
+      expect(audibleAt(state, 8)).toBe(true);
+      expect(audibleAt(state, 7)).toBe(false);
+      expect(audibleAt(state, 9)).toBe(false);
     });
   });
 

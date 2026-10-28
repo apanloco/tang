@@ -4,8 +4,8 @@ import type { Graph, Node } from "../protocol";
 import { MASTER, sourcesFixture, tracerSnapshot } from "./fixtures";
 import { noteFromItems, noteToItems, sourceChosen, sourceItems } from "./noteItems";
 
-// The session of the sources fixture (`testutil::NOTES`): the keys (7) and a device (8, Launchkey Mini MK4 37) are the sources; group 0 (Pad) with Reverb 1 on its bus, lane 2 in it (with Filter 3 and an LFO 4), lane 5
-// (an Oscillator, as lane 2 is: the canvas numbers them) and an empty lane 6; a cable of notes (1) from the keys to lane 5.
+// The session of the sources fixture (`testutil::NOTES`): the keys (7) and a device (8, Launchkey Mini MK4 37) are the sources; group 0 (Pad) with Reverb 1 on its bus, lane 2 in it (with Filter 3), lane 4
+// (an Oscillator, as lane 2 is: the canvas numbers them) and an empty lane 5, and an LFO (6) that hears lane 2; a cable of notes (1) from the keys to lane 4.
 const found = sourcesFixture.cases.find((entry) => entry.name === "wired");
 if (!found) throw new Error("the fixture has the session of the sources");
 const wired = found.snapshot.graph;
@@ -77,13 +77,13 @@ describe("the sources that a lane can be given notes from", () => {
       { id: "7", label: "Keys" },
       { id: "8", label: "Launchkey Mini MK4 37" },
     ]);
-    // (Lane 5 has a cable from the keys already.)
-    expect(noteFromItems(wired, 5)).toEqual([{ id: "8", label: "Launchkey Mini MK4 37" }]);
-    expect(noteFromItems(wired, 6).map((item) => item.id)).toEqual(["7", "8"]);
+    // (Lane 4 has a cable from the keys already.)
+    expect(noteFromItems(wired, 4)).toEqual([{ id: "8", label: "Launchkey Mini MK4 37" }]);
+    expect(noteFromItems(wired, 5).map((item) => item.id)).toEqual(["7", "8"]);
   });
 
   test("are none for a node that is no lane: an effect, a modulator, a group, the mix, a source, or no node", () => {
-    for (const node of [3, 4, 0, MASTER, 7, 77]) expect(noteFromItems(wired, node), String(node)).toEqual([]);
+    for (const node of [3, 6, 0, MASTER, 7, 77]) expect(noteFromItems(wired, node), String(node)).toEqual([]);
   });
 
   test("are none when the session has no source, and none left when each has a cable to the lane", () => {
@@ -92,40 +92,40 @@ describe("the sources that a lane can be given notes from", () => {
       nodes: wired.nodes,
       edges: [
         ...wired.edges,
-        { kind: "events", id: 60, from: { node: 8, port: { type: "eventsOut" } }, to: { node: 5, port: { type: "eventsIn" } } },
+        { kind: "events", id: 60, from: { node: 8, port: { type: "eventsOut" } }, to: { node: 4, port: { type: "eventsIn" } } },
       ],
     };
-    expect(noteFromItems(both, 5)).toEqual([]);
+    expect(noteFromItems(both, 4)).toEqual([]);
   });
 });
 
 describe("the lanes that a source can send notes to", () => {
   test("are those that it has no cable of notes to, by the id of the node, in the names of the canvas, in the order of the graph", () => {
-    // (Lanes 2 and 5 are both Oscillators, which the canvas numbers; lane 6 has no instrument.)
+    // (Lanes 2 and 4 are both Oscillators, which the canvas numbers; lane 5 has no instrument.)
     expect(noteToItems(wired, 7)).toEqual([
       { id: "2", label: "Oscillator 1" },
-      { id: "6", label: "(empty)" },
+      { id: "5", label: "(empty)" },
     ]);
     expect(noteToItems(wired, 8)).toEqual([
       { id: "2", label: "Oscillator 1" },
-      { id: "5", label: "Oscillator 2" },
-      { id: "6", label: "(empty)" },
+      { id: "4", label: "Oscillator 2" },
+      { id: "5", label: "(empty)" },
     ]);
   });
 
   test("are none for a node that is no source: a lane, an effect, the mix, or no node", () => {
-    for (const node of [2, 3, 4, 0, MASTER, 77]) expect(noteToItems(wired, node), String(node)).toEqual([]);
+    for (const node of [2, 3, 6, 0, MASTER, 77]) expect(noteToItems(wired, node), String(node)).toEqual([]);
   });
 
   test("are not those that only hold effects: the canvas draws no card for such a lane, and has nothing to show a cable of notes to it by", () => {
     const filter = wired.nodes.find((node) => node.id === 3);
     if (filter?.kind !== "effect") throw new Error("the session has a filter in lane 2");
-    // (Lane 6 holds a filter now, and nothing else: it is the filter that is on the canvas.)
-    const holding: Graph = { nodes: [...wired.nodes, { ...filter, id: 90, parent: 6 }], edges: wired.edges };
+    // (Lane 5 holds a filter now, and nothing else: it is the filter that is on the canvas.)
+    const holding: Graph = { nodes: [...wired.nodes, { ...filter, id: 90, parent: 5 }], edges: wired.edges };
     expect(noteToItems(holding, 7)).toEqual([{ id: "2", label: "Oscillator 1" }]);
     expect(noteToItems(holding, 8)).toEqual([
       { id: "2", label: "Oscillator 1" },
-      { id: "5", label: "Oscillator 2" },
+      { id: "4", label: "Oscillator 2" },
     ]);
   });
 });

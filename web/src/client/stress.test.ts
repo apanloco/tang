@@ -43,14 +43,15 @@ describe("the session for the performance test", () => {
     for (const node of nodes) if (node.parent !== null) expect(parents.has(node.parent)).toBe(true);
   });
 
-  test("has each filter, and each LFO, in the lane of the oscillator it belongs to", () => {
+  test("has each filter in the lane of the oscillator it belongs to, and each LFO hearing that lane (every modulator is the session's own)", () => {
     const lanes = nodes.filter((node) => node.kind === "instrument");
     for (const lane of lanes) {
       const children = nodes.filter((node) => node.parent === lane.id);
       expect(children.filter((node) => node.kind === "effect")).toHaveLength(1);
-      expect(children.filter((node) => node.kind === "modulator")).toHaveLength(4);
+      expect(children.filter((node) => node.kind === "modulator")).toHaveLength(0);
+      expect(nodes.filter((node) => node.kind === "modulator" && node.hears === lane.id)).toHaveLength(4);
     }
-    expect(nodes.filter((node) => node.parent === null).map((node) => node.kind).sort()).toEqual(["instrument", "instrument", "instrument", "instrument", "instrument", "instrument", "instrument", "instrument", "master"]);
+    expect(nodes.filter((node) => node.parent === null).map((node) => node.kind).sort()).toEqual([...Array<string>(8).fill("instrument"), "master", ...Array<string>(32).fill("modulator")]);
   });
 
   test("has cables that do something: every depth is more than nothing, and not more than all", () => {

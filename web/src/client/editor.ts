@@ -41,8 +41,7 @@ const DOING: Record<Intent["type"], string> = {
   setSteps: "change the steps of a step sequencer",
   setEdgeDepth: "change the depth of a cable",
   removeEdge: "take out a cable",
-  addModulator: "add a modulator",
-  addFreeModulator: "add a modulator of its own",
+  addFreeModulator: "add a modulator",
   addModEdge: "draw a cable",
   modulate: "modulate a parameter",
   addCable: "draw an audio cable",
@@ -98,28 +97,15 @@ export class Editor {
   }
 
   /**
-   * Add a modulator of `kind` to the lane or group `parent`. Resolves with the id of the node it
-   * made, or with null if it was refused (the page says why). The node is the last modulator of
-   * `parent` the session did not have before: two clients adding at once to one parent may be given
-   * each other's, which is as good.
-   */
-  async addModulator(parent: NodeId, kind: ModulatorKind): Promise<NodeId | null> {
-    const before = new Set(this.#graph?.nodes.map((node) => node.id));
-    if (!(await this.#attempt(`add ${MODULATOR_LABELS[kind]} to ${this.#name(parent)}`, { type: "addModulator", parent, kind }))) return null;
-    const added = this.#graph?.nodes.filter((node) => node.kind === "modulator" && node.parent === parent && !before.has(node.id));
-    return this.#shown(added?.at(-1)?.id);
-  }
-
-  /**
-   * Add a modulator of `kind` that is in no lane and no group, the session's own: a cable from it can end at a parameter of any plugin, and at the settings of the other modulators like it. It hears the notes
+   * Add a modulator of `kind` (every modulator is the session's own since step 96: it is in no lane and no group): a cable from it can end at a parameter of any plugin, and at the settings of the other modulators. It hears the notes
    * of the lane or the group `hears` (the "+" of a lane and of a group asks it so), or every note for none (the bar's "+ Modulator"). Resolves with the id of the node it made, which the canvas is asked to show,
-   * or with null if it was refused (the page says why). As for `addModulator`: the node is the last modulator with no parent that the session did not have before.
+   * or with null if it was refused (the page says why). The node is the last modulator the session did not have before: two clients adding at once may be given each other's, which is as good.
    */
   async addFreeModulator(kind: ModulatorKind, hears: NodeId | null = null): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
     const what = hears === null ? `add ${MODULATOR_LABELS[kind]} of its own` : `add ${MODULATOR_LABELS[kind]} that hears ${this.#name(hears)}`;
     if (!(await this.#attempt(what, { type: "addFreeModulator", kind, hears }))) return null;
-    const added = this.#graph?.nodes.filter((node) => node.kind === "modulator" && node.parent === null && !before.has(node.id));
+    const added = this.#graph?.nodes.filter((node) => node.kind === "modulator" && !before.has(node.id));
     return this.#shown(added?.at(-1)?.id);
   }
 
@@ -137,7 +123,7 @@ export class Editor {
   /**
    * Put the plugin `plugin` (the `id` of an entry of the catalog the server told) at the end of the effect chain of the lane
    * or group `parent`. Resolves with the id of the node it made, or with null if it was refused (the page says why). As for
-   * `addModulator`: the node is the last effect of `parent` the session did not have before.
+   * `addFreeModulator`: the node is the last effect of `parent` the session did not have before.
    */
   async addEffect(parent: NodeId, plugin: string): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
@@ -149,7 +135,7 @@ export class Editor {
   /**
    * Add the plugin `plugin` (the `id` of an entry of the catalog the server told) as an effect that stands by itself: a lane of its own at the end of the session that holds it and has no instrument, so that
    * what the effect is fed is what cables bring. Resolves with the id of the effect it made (the lane is the effect's holder, and the canvas draws no card for it), which the canvas is asked to show, or with null
-   * if it was refused (the page says why). As for `addModulator`: the node is the last effect the session did not have before.
+   * if it was refused (the page says why). As for `addFreeModulator`: the node is the last effect the session did not have before.
    */
   async addFreeEffect(plugin: string): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
@@ -161,7 +147,7 @@ export class Editor {
   /**
    * Add a lane at the end of the session with the instrument `plugin` (the `id` of an entry of the catalog the server told) in it.
    * Resolves with the id of the lane it made (its instrument's node), or with null if it was refused (the page says why). As for
-   * `addModulator`: the node is the last lane the session did not have before.
+   * `addFreeModulator`: the node is the last lane the session did not have before.
    */
   async addInstrument(plugin: string): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
@@ -173,7 +159,7 @@ export class Editor {
   /**
    * Add a group, a submix bus, at the end of the session, and put the lanes `members` (each the node of a lane) in it at once, whatever group
    * they were in; none makes an empty one. Resolves with the id of the group it made, or with null if it was refused (the page says why). As for
-   * `addModulator`: the node is the last group the session did not have before.
+   * `addFreeModulator`: the node is the last group the session did not have before.
    */
   async addGroup(members: readonly NodeId[] = []): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));

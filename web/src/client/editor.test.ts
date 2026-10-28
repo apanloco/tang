@@ -54,61 +54,61 @@ const param = (node: typeof filter, name: string): number => {
 /** The port of a parameter of a node, by its name. */
 const paramPort = (node: typeof filter, name: string): Port => ({ type: "param", index: param(node, name) });
 
-describe("adding a modulator", () => {
-  test("resolves with the node it made, which is in the session then, and says nothing", async () => {
+describe("adding a modulator for a lane or a group", () => {
+  test("resolves with the node it made, which is in the session's own rack and hears the lane, is in the session then and says nothing", async () => {
     const { client, notices, editor } = await open();
-    const id = await editor.addModulator(oscillator.id, "envelope");
+    const id = await editor.addFreeModulator("envelope", oscillator.id);
     expect(id).toBe(3);
     const node = client.state.snapshot?.graph.nodes.find((n) => n.id === id);
-    expect(node).toMatchObject({ kind: "modulator", parent: oscillator.id, name: "ADSR" });
+    expect(node).toMatchObject({ kind: "modulator", parent: null, hears: oscillator.id, name: "ADSR" });
     expect(said(notices)).toEqual([]);
     // The next is the next.
-    expect(await editor.addModulator(oscillator.id, "lfo")).toBe(4);
+    expect(await editor.addFreeModulator("lfo", oscillator.id)).toBe(4);
   });
 
-  test("finds its own node when another front-end added one to another lane at the same time", async () => {
+  test("finds its own node when another front-end added one that hears another lane at the same time", async () => {
     const { server, editor } = await open({ snapshot: reachFixture.snapshot });
-    server.apply({ type: "addModulator", parent: 7, kind: "lfo" }); // another front-end's, to the second lane, before this one is answered
-    const id = await editor.addModulator(4, "lfo");
+    server.apply({ type: "addFreeModulator", kind: "lfo", hears: 6 }); // another front-end's, for the second lane, before this one is answered
+    const id = await editor.addFreeModulator("lfo", 4);
     const mine = server.snapshot.graph.nodes.find((n) => n.id === id);
-    expect(mine?.parent).toBe(4);
-    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.parent === 7).length).toBe(2);
+    expect(mine).toMatchObject({ kind: "modulator", hears: 4 });
+    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.hears === 6).length).toBe(2);
   });
 
-  test("takes the last of the modulators that are new to the lane, which is its own, when another front-end added one to the same lane just before", async () => {
+  test("takes the last of the modulators that are new and hear the lane, which is its own, when another front-end added one for the same lane just before", async () => {
     const { server, editor } = await open();
-    server.apply({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
-    const id = await editor.addModulator(oscillator.id, "lfo");
-    const names = server.snapshot.graph.nodes.filter((n) => n.parent === oscillator.id && n.kind === "modulator").map((n) => [n.id, n.name]);
+    server.apply({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
+    const id = await editor.addFreeModulator("lfo", oscillator.id);
+    const names = server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.hears === oscillator.id).map((n) => [n.id, n.name]);
     expect(names).toEqual([[2, "LFO"], [3, "ADSR"], [4, "LFO"]]);
     expect(id).toBe(4);
   });
 
   test("is refused for what is no lane or group: it resolves with null, and the page says what it could not do and why", async () => {
     const { client, notices, editor } = await open();
-    expect(await editor.addModulator(filter.id, "lfo")).toBeNull();
-    expect(await editor.addModulator(lfo.id, "midiLearn")).toBeNull();
-    expect(await editor.addModulator(MASTER, "envelope")).toBeNull();
+    expect(await editor.addFreeModulator("lfo", filter.id)).toBeNull();
+    expect(await editor.addFreeModulator("midiLearn", lfo.id)).toBeNull();
+    expect(await editor.addFreeModulator("envelope", MASTER)).toBeNull();
     expect(said(notices)).toEqual([
-      "Could not add an LFO to Filter: a modulator goes in a lane or in a group",
-      "Could not add a MIDI control to LFO: a modulator goes in a lane or in a group",
-      "Could not add an envelope to Master: there is no node 4294967295",
+      "Could not add an LFO that hears Filter: only a lane or a group can be heard",
+      "Could not add a MIDI control that hears LFO: only a lane or a group can be heard",
+      "Could not add an envelope that hears Master: there is no node 4294967295",
     ]);
     expect(client.state.snapshot).toEqual(tracerSnapshot);
   });
 
   test("says a macro that it could not add is a macro", async () => {
     const { client, notices, editor } = await open();
-    expect(await editor.addModulator(filter.id, "macro")).toBeNull();
-    expect(said(notices)).toEqual(["Could not add a macro to Filter: a modulator goes in a lane or in a group"]);
+    expect(await editor.addFreeModulator("macro", filter.id)).toBeNull();
+    expect(said(notices)).toEqual(["Could not add a macro that hears Filter: only a lane or a group can be heard"]);
     expect(client.state.snapshot).toEqual(tracerSnapshot);
   });
 
   test("with no connection says so", async () => {
     const { client, notices, editor } = await open();
     client.stop();
-    expect(await editor.addModulator(oscillator.id, "lfo")).toBeNull();
-    expect(said(notices)).toEqual(["Could not add an LFO to Oscillator: Not connected to the server."]);
+    expect(await editor.addFreeModulator("lfo", oscillator.id)).toBeNull();
+    expect(said(notices)).toEqual(["Could not add an LFO that hears Oscillator: Not connected to the server."]);
   });
 });
 
@@ -125,13 +125,13 @@ describe("adding a modulator that is in no lane and no group", () => {
     expect(shown).toEqual([3, 4]);
   });
 
-  test("takes the one that is new to the session's own rack, which is its own, when another front-end added one just before, and not one that was added to a lane", async () => {
+  test("takes the one that is new to the session's own rack, which is its own, when another front-end added one just before, and not one that hears a lane", async () => {
     const { server, editor } = await open();
     server.apply({ type: "addFreeModulator", kind: "envelope", hears: null });
     const id = await editor.addFreeModulator("lfo");
-    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.parent === null).map((n) => [n.id, n.name])).toEqual([[3, "ADSR"], [4, "LFO"]]);
+    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.hears === undefined).map((n) => [n.id, n.name])).toEqual([[3, "ADSR"], [4, "LFO"]]);
     expect(id).toBe(4);
-    server.apply({ type: "addModulator", parent: oscillator.id, kind: "macro" });
+    server.apply({ type: "addFreeModulator", kind: "macro", hears: oscillator.id });
     expect(await editor.addFreeModulator("steps")).toBe(6);
   });
 
@@ -201,13 +201,13 @@ describe("choosing whose notes a modulator that is in no lane hears", () => {
     expect(server.snapshot.graph.nodes.find((n) => n.id === 3)).toMatchObject({ hears: oscillator.id });
   });
 
-  test("says why when it is refused: the modulator of a lane hears its own, and a plugin is no lane or group", async () => {
+  test("says why when it is refused: only a modulator has an ear, and a plugin is no lane or group", async () => {
     const { client, notices, editor } = await open();
     await editor.addFreeModulator("lfo");
-    expect(await editor.setModulatorEar(lfo.id, oscillator.id)).toBe(false);
+    expect(await editor.setModulatorEar(filter.id, oscillator.id)).toBe(false);
     expect(await editor.setModulatorEar(3, filter.id)).toBe(false);
     expect(said(notices)).toEqual([
-      "Could not make LFO 1 hear Oscillator: only a modulator that is in no lane and no group has an ear: a lane's or a group's hears its own",
+      "Could not make Filter hear Oscillator: only a modulator has an ear",
       "Could not make LFO 2 hear Filter: only a lane or a group can be heard",
     ]);
     expect(hears(client, 3)).toBeUndefined();
@@ -449,9 +449,9 @@ describe("adding an instrument", () => {
   });
 });
 
-// The session of the groups fixture: three groups (0, 1 and 2, the last empty and called Lead; the first has two modulators, 13 and 14, the second one,
-// 15), four lanes (3 and 10 in the first group, 9 in the second, 5 in none; each has an instrument called Oscillator, and the canvas numbers what is called
-// alike across the session in the order of its graph), and the cables of the groups to their lanes.
+// The session of the groups fixture: three groups (0, 1 and 2, the last empty and called Lead; two modulators hear the first, 13 and 14, and one the second,
+// 15), four lanes (3 and 7 in the first group, 6 in the second, 4 in none; each has an instrument called Oscillator, and the canvas numbers what is called
+// alike across the session in the order of its graph), and the cables of the modulators that hear the groups and the lanes.
 describe("adding a group", () => {
   const groups = { snapshot: groupsFixture.snapshot };
   const parentOf = (client: Client, node: number) => client.state.snapshot?.graph.nodes.find((n) => n.id === node)?.parent;
@@ -469,9 +469,9 @@ describe("adding a group", () => {
 
   test("puts the lanes it is given in the group it makes, whatever group they were in", async () => {
     const { client, editor } = await open(groups);
-    const id = await editor.addGroup([5, 10]);
+    const id = await editor.addGroup([4, 7]);
     expect(id).toBe(16);
-    expect([3, 5, 9, 10].map((lane) => parentOf(client, lane))).toEqual([0, id, 1, id]);
+    expect([3, 4, 6, 7].map((lane) => parentOf(client, lane))).toEqual([0, id, 1, id]);
   });
 
   test("takes the group that is new to the session, which is its own, when another front-end added one just before", async () => {
@@ -484,7 +484,7 @@ describe("adding a group", () => {
   test("is refused for a member that is not a lane: it resolves with null, no group is made, and the page says what it could not do and why", async () => {
     const { client, notices, shown, editor } = await open(groups);
     expect(await editor.addGroup([0])).toBeNull();
-    expect(await editor.addGroup([5, 9999])).toBeNull();
+    expect(await editor.addGroup([4, 9999])).toBeNull();
     expect(said(notices)).toEqual([
       "Could not put Group 1 in a new group: only a lane can be put in a group",
       "Could not put Oscillator 2, that node in a new group: there is no node 9999",
@@ -497,7 +497,7 @@ describe("adding a group", () => {
     const { client, notices, editor } = await open(groups);
     client.stop();
     expect(await editor.addGroup()).toBeNull();
-    expect(await editor.addGroup([5])).toBeNull();
+    expect(await editor.addGroup([4])).toBeNull();
     expect(said(notices)).toEqual(["Could not add a group: Not connected to the server.", "Could not put Oscillator 2 in a new group: Not connected to the server."]);
   });
 });
@@ -508,32 +508,31 @@ describe("putting a lane in a group", () => {
 
   test("resolves true when the lane is in the group, which the session shows, and says nothing; and for null when it is in none", async () => {
     const { client, notices, editor } = await open(groups);
-    expect(await editor.setLaneGroup(5, 1)).toBe(true);
-    expect(parentOf(client, 5)).toBe(1);
-    expect(await editor.setLaneGroup(5, null)).toBe(true);
-    expect(parentOf(client, 5)).toBeNull();
+    expect(await editor.setLaneGroup(4, 1)).toBe(true);
+    expect(parentOf(client, 4)).toBe(1);
+    expect(await editor.setLaneGroup(4, null)).toBe(true);
+    expect(parentOf(client, 4)).toBeNull();
     expect(said(notices)).toEqual([]);
   });
 
   test("asks the canvas to show the group the lane was put in, which moves with it, and nothing when the lane is taken out of its group or the lane was refused", async () => {
     const { shown, editor } = await open(groups);
-    expect(await editor.setLaneGroup(5, 1)).toBe(true);
+    expect(await editor.setLaneGroup(4, 1)).toBe(true);
     expect(shown).toEqual([1]);
-    expect(await editor.setLaneGroup(5, null)).toBe(true);
-    expect(await editor.setLaneGroup(5, 5)).toBe(false);
-    expect(await editor.setLaneGroup(5, 9999)).toBe(false);
+    expect(await editor.setLaneGroup(4, null)).toBe(true);
+    expect(await editor.setLaneGroup(4, 4)).toBe(false);
+    expect(await editor.setLaneGroup(4, 9999)).toBe(false);
     expect(shown).toEqual([1]);
   });
 
-  test("takes the group's cables to a lane that leaves it out of the session, and the cable that drives the depth of one of them", async () => {
+  test("leaves every cable where it is when a lane leaves its group or is put in another: a cable names the plugin it drives, and the modulator that hears the group goes on hearing it (step 96)", async () => {
     const { client, editor } = await open(groups);
     const cables = () => client.state.snapshot?.graph.edges.flatMap((e) => (e.kind === "modulation" ? [e.id] : []));
     expect(cables()).toEqual([0, 1, 2, 3, 4]);
     expect(await editor.setLaneGroup(3, null)).toBe(true);
-    expect(cables()).toEqual([1, 2, 3, 4]);
-    // Cable 3 (the first group's envelope) drives the depth of cable 1 (the LFO's, to the pan of lane 10), so it goes when cable 1 does.
-    expect(await editor.setLaneGroup(10, 1)).toBe(true);
-    expect(cables()).toEqual([4]);
+    expect(cables()).toEqual([0, 1, 2, 3, 4]);
+    expect(await editor.setLaneGroup(7, 1)).toBe(true);
+    expect(cables()).toEqual([0, 1, 2, 3, 4]);
   });
 
   test("is refused for a node that is not a lane and for one that is not a group: it resolves false, and the page says what it could not do and why", async () => {
@@ -541,8 +540,8 @@ describe("putting a lane in a group", () => {
     // (The notices keep the last few: each is read as it is said.)
     const cases: [number, number | null, string][] = [
       [0, 1, "Could not put Group 1 in Group 2: only a lane can be put in a group"],
-      [5, 3, "Could not put Oscillator 2 in Oscillator 1: that node is not a group"],
-      [5, 9999, "Could not put Oscillator 2 in that node: there is no node 9999"],
+      [4, 3, "Could not put Oscillator 2 in Oscillator 1: that node is not a group"],
+      [4, 9999, "Could not put Oscillator 2 in that node: there is no node 9999"],
       [9999, null, "Could not take that node out of its group: there is no node 9999"],
     ];
     for (const [lane, group, words] of cases) {
@@ -555,7 +554,7 @@ describe("putting a lane in a group", () => {
   test("with no connection says so", async () => {
     const { client, notices, editor } = await open(groups);
     client.stop();
-    expect(await editor.setLaneGroup(5, 1)).toBe(false);
+    expect(await editor.setLaneGroup(4, 1)).toBe(false);
     expect(await editor.setLaneGroup(3, null)).toBe(false);
     expect(said(notices)).toEqual([
       "Could not put Oscillator 2 in Group 2: Not connected to the server.",
@@ -730,8 +729,8 @@ describe("moving an effect", () => {
 });
 
 describe("loading a preset", () => {
-  /** The tracer's reverb on a lane that has one (an effect with presets: the reach fixture's reverb of lane 9, in a group). */
-  const LANE_REVERB = 10;
+  /** The tracer's reverb on a lane that has one (an effect with presets: the reach fixture's reverb of lane 7, in a group). */
+  const LANE_REVERB = 8;
 
   test("resolves true when the plugin has the preset, which the session shows, and says nothing", async () => {
     const { client, notices, editor } = await open({ snapshot: reachFixture.snapshot });
@@ -1377,7 +1376,7 @@ describe("locking the piano to its scale", () => {
 describe("showing what was added", () => {
   test("is asked for each node the page added, in the order they were, once the session has it", async () => {
     const { editor, shown } = await open();
-    const lfo = await editor.addModulator(oscillator.id, "lfo");
+    const lfo = await editor.addFreeModulator("lfo", oscillator.id);
     const effect = await editor.addEffect(oscillator.id, "builtin:reverb");
     const lane = await editor.addInstrument("builtin:osc");
     expect(shown).toEqual([lfo, effect, lane]);
@@ -1436,7 +1435,7 @@ describe("drawing a cable", () => {
 
   test("names two nodes of one name by their numbers", async () => {
     const { notices, editor } = await open();
-    await editor.addModulator(oscillator.id, "lfo");
+    await editor.addFreeModulator("lfo", oscillator.id);
     expect(await editor.addCable(3, filter.id, paramPort(filter, "cutoff"))).toBe(true);
     expect(await editor.addCable(3, filter.id, paramPort(filter, "cutoff"))).toBe(false);
     expect(said(notices)).toEqual(["Could not draw a cable from LFO 2 to Filter: cutoff: that modulator drives that parameter already"]);
@@ -1447,7 +1446,7 @@ describe("drawing a cable to a setting of another modulator", () => {
   /** The tracer with an envelope added to the oscillator's lane, whose node is 3. */
   async function withEnvelope() {
     const rig = await open();
-    expect(await rig.editor.addModulator(oscillator.id, "envelope")).toBe(3);
+    expect(await rig.editor.addFreeModulator("envelope", oscillator.id)).toBe(3);
     return rig;
   }
 
@@ -1485,7 +1484,7 @@ describe("drawing a cable to a setting of another modulator", () => {
 
   test("names two modulators of one name by their numbers", async () => {
     const { notices, editor } = await open();
-    expect(await editor.addModulator(oscillator.id, "lfo")).toBe(3);
+    expect(await editor.addFreeModulator("lfo", oscillator.id)).toBe(3);
     expect(await editor.addCable(3, lfo.id, { type: "rate" })).toBe(true);
     expect(await editor.addCable(3, lfo.id, { type: "rate" })).toBe(false);
     expect(said(notices)).toEqual(["Could not draw a cable from LFO 2 to LFO 1: rate: that modulator drives that setting already"]);
@@ -1504,7 +1503,7 @@ describe("drawing a cable to the depth of a cable", () => {
   /** The tracer with an envelope added to the oscillator's lane, whose node is 3; the LFO's cable to the filter's cutoff is the cable 0. */
   async function withEnvelope() {
     const rig = await open();
-    expect(await rig.editor.addModulator(oscillator.id, "envelope")).toBe(3);
+    expect(await rig.editor.addFreeModulator("envelope", oscillator.id)).toBe(3);
     return rig;
   }
 

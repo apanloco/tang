@@ -20,8 +20,7 @@ pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>
     let save_groups = model
         .groups
         .iter()
-        .enumerate()
-        .map(|(group, g)| SaveGroup {
+        .map(|g| SaveGroup {
             name: g.name.clone(),
             volume: g.volume,
             pan: g.pan,
@@ -29,22 +28,19 @@ pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>
             route: g.route,
             solo: g.solo,
             effects: g.effects.iter().map(|fx| effect_to_save(fx, ui)).collect(),
-            modulators: modulators_to_save(model, ModulatorLocation::Group(group)),
             ui: ui.get(&g.node).copied(),
         })
         .collect();
     let save_instruments = model
         .instruments
         .iter()
-        .enumerate()
-        .map(|(inst, lane)| SaveInstrumentSlot {
+        .map(|lane| SaveInstrumentSlot {
             range: lane.range,
             transpose: lane.transpose,
             muted: lane.muted,
             route: lane.route,
             solo: lane.solo,
             group: lane.group,
-            modulators: modulators_to_save(model, ModulatorLocation::Lane(inst)),
             instrument: lane.instrument.as_ref().map(|inst| SaveInstrument {
                 plugin: inst.id.clone(),
                 volume: lane.volume,
@@ -102,7 +98,7 @@ fn lane_place_of(model: &SessionModel, node: NodeId) -> Option<CablePlace> {
     model.instruments.iter().position(|lane| lane.node == node).map(CablePlace::Instrument)
 }
 
-/// Where the plugin in `node` is, as the file names a place: a lane's instrument, an effect of a lane's chain or of a group's bus. It is how a free modulator's cable names what it drives.
+/// Where the plugin in `node` is, as the file names a place: a lane's instrument, an effect of a lane's chain or of a group's bus. It is how a modulator's cable names what it drives.
 fn plugin_place_of(model: &SessionModel, node: NodeId) -> Option<CablePlace> {
     lane_place_of(model, node).or_else(|| effect_place_of(model, node))
 }
@@ -174,7 +170,7 @@ fn sync_for_file(sync: usize) -> Option<String> {
 }
 
 /// The modulators of the rack at `at`, as the file writes them: each cable by the place that the rack names what it drives by (`SessionModel::kind_of`: the file names a plugin by its
-/// slot in the chain, a member by its place in the group, a sibling by its index), which is the same as what the audio thread has.
+/// place in the session, a sibling by its index).
 fn modulators_to_save(model: &SessionModel, at: ModulatorLocation) -> Vec<SaveModulator> {
     let ui = &model.ui;
     let mods: &[ModulatorSlot] = model.modulators(at).map_or(&[], |rack| rack.as_slice());
@@ -214,16 +210,12 @@ fn modulators_to_save(model: &SessionModel, at: ModulatorLocation) -> Vec<SaveMo
                     // (A cable that drives nothing that is in reach is not in the model: this leaves out none.)
                     .filter_map(|t| {
                         let kind = model.kind_of(at, index, t.aim)?;
-                        let slot = match kind {
-                            ModTargetKind::PluginParam { slot, .. } | ModTargetKind::GroupMember { slot, .. } => slot,
-                            _ => 0,
-                        };
-                        // (A free modulator's cable names the plugin by its place in the session.)
+                        // (A cable to a plugin names it by its place in the session.)
                         let to = match kind {
                             ModTargetKind::FreeParam { plugin, .. } => Some(plugin_place_of(model, plugin)?),
                             _ => None,
                         };
-                        Some(SaveModTarget { kind, label: t.param_name.clone(), depth: t.depth, slot, to })
+                        Some(SaveModTarget { kind, label: t.param_name.clone(), depth: t.depth, to })
                     })
                     .collect(),
                 ui: ui.get(&m.node).copied(),
@@ -356,7 +348,8 @@ velocity = 100
     #[test]
     fn a_cross_mod_depth_target_stays_on_one_line() {
         let file = saved(&load(GROUPS).model);
-        assert!(file.contains("mod_depth = [0, 2]"), "{file}");
+        // (The group's LFO is the second of the session's own, after the lane's: `mod_depth` names the modulator by its place there.)
+        assert!(file.contains("mod_depth = [1, 2]"), "{file}");
     }
 
     #[test]
@@ -382,9 +375,9 @@ depth = 0.4
         let file = saved(&first.model);
         let second = try_load(&file).unwrap_or_else(|e| panic!("the saved file does not load: {e:#}\n{file}"));
         let rack = |model: &SessionModel| {
-            let at = ModulatorLocation::Lane(0);
-            model.instruments[0]
-                .modulators
+            let at = ModulatorLocation::Free;
+            model
+                .free_modulators
                 .iter()
                 .enumerate()
                 .map(|(m, modulator)| {
@@ -408,7 +401,7 @@ depth = 0.4
             let file = saved(&first.model);
             assert!(file.contains(&format!("waveform = \"{name}\"")), "{name}:\n{file}");
             let second = load(&file);
-            let source = |run: &crate::app::testutil::Run| format!("{:?}", run.model.instruments[0].modulators[0].source);
+            let source = |run: &crate::app::testutil::Run| format!("{:?}", run.model.free_modulators[0].source);
             assert_eq!(source(&second), source(&first), "{name}");
             assert_eq!(source(&first), format!("Lfo {{ waveform: {waveform:?}, rate: 3.0, retrigger: false, fade: 0.0, sync: 0 }}"), "{name}");
         }
@@ -420,7 +413,7 @@ depth = 0.4
         let file = saved(&first.model);
         assert!(file.contains("retrigger = true") && file.contains("fade = 0.3"), "{file}");
         let second = load(&file);
-        let source = |run: &crate::app::testutil::Run| format!("{:?}", run.model.instruments[0].modulators[0].source);
+        let source = |run: &crate::app::testutil::Run| format!("{:?}", run.model.free_modulators[0].source);
         assert_eq!(source(&second), source(&first));
         assert_eq!(source(&first), "Lfo { waveform: Sine, rate: 3.0, retrigger: true, fade: 0.3, sync: 0 }");
         // A session that was written before an LFO had a key is saved as it was.
@@ -440,10 +433,7 @@ depth = 0.4
             assert!(file.contains(line), "{line}:\n{file}");
         }
         let second = load(&file);
-        let sources = |run: &crate::app::testutil::Run| {
-            let lane = run.model.instruments[0].modulators.iter().map(|m| format!("{:?}", m.source));
-            lane.chain(run.model.groups[0].modulators.iter().map(|m| format!("{:?}", m.source))).collect::<Vec<_>>()
-        };
+        let sources = |run: &crate::app::testutil::Run| run.model.free_modulators.iter().map(|m| format!("{:?}", m.source)).collect::<Vec<_>>();
         assert_eq!(sources(&second), sources(&first));
         assert_eq!(saved(&second.model), file, "and saving it again gives the same file");
         let sync = |run: &crate::app::testutil::Run| {
@@ -451,9 +441,9 @@ depth = 0.4
                 ModSourceSlot::Lfo { sync, .. } | ModSourceSlot::Steps { sync, .. } => *sync,
                 other => panic!("{other:?}"),
             };
-            run.model.groups[0].modulators.iter().chain(&run.model.instruments[0].modulators).map(of).collect::<Vec<_>>()
+            run.model.free_modulators.iter().map(of).collect::<Vec<_>>()
         };
-        assert_eq!(sync(&second), [2, 12, 13, 0], "the group's, then the lane's three");
+        assert_eq!(sync(&second), [12, 13, 0, 2], "the lane's three, then the group's");
     }
 
     #[test]
@@ -465,13 +455,13 @@ depth = 0.4
             lines("ui = "),
             [
                 "ui = { x = 0, y = 0 }",
-                "ui = { x = 376, y = -200 }",
                 "ui = { x = 376, y = 0.25 }",
                 "ui = { x = 800, y = 40 }",
                 "ui = { x = 1100, y = 40 }",
+                "ui = { x = 376, y = -200 }",
                 "ui = { x = 800, y = -120 }",
             ],
-            "the lane, its modulator and its effect, then the group, its effect and its modulator:\n{file}"
+            "the lane and its effect, then the group and its effect, then the modulators of the session's own, the lane's first and the group's after it:\n{file}"
         );
     }
 
@@ -614,7 +604,7 @@ pinned = ["cutoff", "resonance"]
         let mut run = load(SEQUENCERS);
         let mut values = [0.0; 16];
         values[..3].copy_from_slice(&[-1.0, 0.125, 0.75]);
-        run.model.instruments[0].modulators[0].source = ModSourceSlot::Steps { values, length: 3, rate: 12.5, glide: 1.0, retrigger: false, sync: 0 };
+        run.model.free_modulators[0].source = ModSourceSlot::Steps { values, length: 3, rate: 12.5, glide: 1.0, retrigger: false, sync: 0 };
         let file = saved(&run.model);
         assert!(file.contains("steps = [-1.0, 0.125, 0.75, 0.0,"), "{file}");
         assert!(file.contains("length = 3") && file.contains("rate = 12.5") && file.contains("glide = 1.0"), "{file}");
@@ -625,8 +615,9 @@ pinned = ["cutoff", "resonance"]
     #[test]
     fn a_macro_that_is_turned_is_saved_at_the_value_it_has_and_a_macro_at_rest_says_so() {
         let mut run = load(MACROS);
-        run.model.instruments[0].modulators[0].source = ModSourceSlot::Macro { value: 0.8 };
-        run.model.groups[0].modulators[0].source = ModSourceSlot::Macro { value: 0.0 };
+        // (The lane's macro is the first of the session's own, and the group's the second.)
+        run.model.free_modulators[0].source = ModSourceSlot::Macro { value: 0.8 };
+        run.model.free_modulators[1].source = ModSourceSlot::Macro { value: 0.0 };
         let file = saved(&run.model);
         assert!(file.contains("value = 0.8") && file.contains("value = 0.0"), "{file}");
         assert!(!file.contains("value = 0.25") && !file.contains("value = 0.5"), "{file}");
@@ -642,7 +633,7 @@ pinned = ["cutoff", "resonance"]
     fn a_control_learned_after_loading_is_saved_as_bound() {
         let mut run = load(MIDI);
         // The second modulator is the armed, unbound one (see `MIDI`).
-        let m = &mut run.model.instruments[0].modulators[1];
+        let m = &mut run.model.free_modulators[1];
         assert!(matches!(m.source, ModSourceSlot::MidiLearn { source: None, learning: true }));
         m.source = ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(7)), learning: false };
         let file = saved(&run.model);

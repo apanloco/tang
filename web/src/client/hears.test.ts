@@ -5,12 +5,11 @@ import { freeReachFixture } from "./fixtures";
 import { EVERY_NOTE, earItems, earWords, hearsOf } from "./hears";
 import { displayNames } from "./names";
 
-// Whose notes a modulator that is in no lane and no group hears, as the menu on its node has it (step 93). The fixture is a session of groups, lanes and two modulators that are in neither: the nodes
-// 18 (an LFO) and 19 (an envelope) are in the session's own rack; the lanes are 4, 7, 9, 11 (oscillators) and 14 (empty), the groups 0 and 2, and 6 is the LFO of lane 4.
+// Whose notes a modulator hears, as the menu on its node has it (step 93; every modulator is the session's own since step 96). The fixture is a session of groups, lanes and modulators: the nodes
+// 18 (an LFO) and 19 (an envelope) hear every note, 12 to 17 hear a lane or a group or nothing; the lanes are 4, 6, 7, 9 (oscillators) and 11 (empty), the groups 0 and 2.
 
 const base = freeReachFixture.snapshot.graph;
 const FREE = 18;
-const LANE_MODULATOR = 6;
 
 /** The graph with the modulator `node` hearing `hears` (nothing for none). */
 const hearing = (node: NodeId, hears?: NodeId, graph: Graph = base): Graph => ({
@@ -25,14 +24,14 @@ const hearing = (node: NodeId, hears?: NodeId, graph: Graph = base): Graph => ({
 });
 
 describe("whom a modulator hears", () => {
-  test("is every note for a modulator that has no ear, a lane or a group that is there for one that has, and none for what is not a modulator of the session's own", () => {
+  test("is every note for a modulator that has no ear, a lane or a group that is there for one that has, and none for what is not a modulator", () => {
     expect(hearsOf(base, FREE)).toBeUndefined();
     expect(hearsOf(hearing(FREE, 7), FREE)).toBe(7);
     expect(hearsOf(hearing(FREE, 2), FREE)).toBe(2);
     // An ear that names an effect, a modulator, the master or a node that is not there is no ear (the graph the server gives says none for a lane that is gone).
     for (const lost of [5, 19, 4294967295, 9999]) expect(hearsOf(hearing(FREE, lost), FREE), String(lost)).toBeUndefined();
-    // A lane's modulator hears its own lane, whatever its node says, and what is no modulator hears nothing.
-    expect(hearsOf(hearing(LANE_MODULATOR, 7), LANE_MODULATOR)).toBeUndefined();
+    // The fixture's modulators that have an ear hear it, and what is no modulator hears nothing.
+    expect([12, 15, 16, 17].map((modulator) => hearsOf(base, modulator))).toEqual([4, 0, 2, undefined]);
     expect(hearsOf(base, 4)).toBeUndefined();
     expect(hearsOf(base, 9999)).toBeUndefined();
   });
@@ -53,10 +52,10 @@ describe("the items of the menu that chooses whom a modulator hears", () => {
     expect(items[0]).toEqual({ id: EVERY_NOTE, label: "Every note", current: true });
     expect(items.slice(1).map((item) => [item.id, item.label, item.group])).toEqual([
       ["4", names.get(4), "Lanes"],
+      ["6", names.get(6), "Lanes"],
       ["7", names.get(7), "Lanes"],
       ["9", names.get(9), "Lanes"],
       ["11", names.get(11), "Lanes"],
-      ["14", names.get(14), "Lanes"],
       ["0", "Group 1", "Groups"],
       ["2", "Group 2", "Groups"],
     ]);
@@ -74,18 +73,18 @@ describe("the items of the menu that chooses whom a modulator hears", () => {
   });
 
   test("leave out a lane that only holds effects, which the canvas draws no card for", () => {
-    // The empty lane (14) is given an effect and nothing else: a holder, drawn as the effect it holds.
+    // The empty lane (11) is given an effect and nothing else: a holder, drawn as the effect it holds.
     const reverb = base.nodes.find((n) => n.kind === "effect" && n.name === "Reverb");
     if (reverb?.kind !== "effect") throw new Error("the fixture has a reverb");
-    const held: Graph = { ...base, nodes: [...base.nodes, { ...reverb, id: 99, parent: 14 }] };
+    const held: Graph = { ...base, nodes: [...base.nodes, { ...reverb, id: 99, parent: 11 }] };
     const ids = earItems(held, FREE).map((item) => item.id);
-    expect(ids).not.toContain("14");
+    expect(ids).not.toContain("11");
     expect(ids).toContain("4");
   });
 
-  test("are none for a modulator of a lane or a group, which hears its own, and for what is no modulator", () => {
-    expect(earItems(base, LANE_MODULATOR)).toEqual([]);
-    expect(earItems(base, 16)).toEqual([]);
+  test("are the same for every modulator, the one it hears marked, and none for what is no modulator", () => {
+    expect(earItems(base, 12).filter((item) => item.current).map((item) => item.id)).toEqual(["4"]);
+    expect(earItems(base, 16).filter((item) => item.current).map((item) => item.id)).toEqual(["2"]);
     expect(earItems(base, 4)).toEqual([]);
     expect(earItems(base, 9999)).toEqual([]);
   });

@@ -13,10 +13,10 @@ import { PatchView } from "./PatchView";
 afterEach(cleanup);
 
 // The session of the moves fixture: a group (0) with four bus effects (1 to 4), a lane in it (5) with four effects (6 to 9), and a lane in no
-// group (11) with three (12 to 14). The canvas numbers the nodes of one name across the session in the order of the graph: the bus's are
+// group (10) with three (11 to 13). The canvas numbers the nodes of one name across the session in the order of the graph: the bus's are
 // Filter 1, Reverb 1, Filter 2 and Reverb 2, the first lane's Filter 3, Reverb 3, Filter 4 and Reverb 4, the second lane's Filter 5, Reverb 5
 // and Filter 6.
-const NAMES: Record<number, string> = { 1: "Filter 1", 2: "Reverb 1", 3: "Filter 2", 4: "Reverb 2", 6: "Filter 3", 7: "Reverb 3", 8: "Filter 4", 9: "Reverb 4", 12: "Filter 5", 13: "Reverb 5", 14: "Filter 6" };
+const NAMES: Record<number, string> = { 1: "Filter 1", 2: "Reverb 1", 3: "Filter 2", 4: "Reverb 2", 6: "Filter 3", 7: "Reverb 3", 8: "Filter 4", 9: "Reverb 4", 11: "Filter 5", 12: "Reverb 5", 13: "Filter 6" };
 
 const nodeOf = (id: number): Promise<HTMLElement> => screen.findByTestId(`rf__node-${String(id)}`);
 
@@ -39,7 +39,7 @@ describe("moving an effect along its chain", () => {
     }
     expect(screen.getAllByRole("button", { name: /^Move .* (earlier|later) in its chain$/ })).toHaveLength(22);
     // None on a group, a lane, a modulator or the master: what is moved is in a chain.
-    for (const id of [0, 5, 11, 10, 15, 16, 4294967295]) {
+    for (const id of [0, 5, 10, 14, 15, 16, 4294967295]) {
       expect(within(await nodeOf(id)).queryByRole("button", { name: /^Move / })).toBeNull();
     }
   });
@@ -47,8 +47,8 @@ describe("moving an effect along its chain", () => {
   test("says of the first effect of a chain that it cannot go earlier and of the last that it cannot go later, and the others can go both ways", async () => {
     await rig(<PatchView />, { snapshot: movesFixture.snapshot });
     const unavailable = async (id: number, direction: "earlier" | "later") => (await button(id, direction)).getAttribute("aria-disabled") === "true";
-    // A lane's chain (6 to 9), a bus (1 to 4), and the chain of a lane in no group (12 to 14).
-    for (const [first, last] of [[6, 9], [1, 4], [12, 14]] as const) {
+    // A lane's chain (6 to 9), a bus (1 to 4), and the chain of a lane in no group (11 to 13).
+    for (const [first, last] of [[6, 9], [1, 4], [11, 13]] as const) {
       expect([await unavailable(first, "earlier"), await unavailable(first, "later")]).toEqual([true, false]);
       expect([await unavailable(last, "earlier"), await unavailable(last, "later")]).toEqual([false, true]);
     }
@@ -100,7 +100,7 @@ describe("moving an effect along its chain", () => {
 
   test("moves a bus effect in the bus, and the effects of the lanes are where they were", async () => {
     const { requests, server } = await rig(<PatchView />, { snapshot: movesFixture.snapshot });
-    const lanes = [placeOf(await nodeOf(6)), placeOf(await nodeOf(12))];
+    const lanes = [placeOf(await nodeOf(6)), placeOf(await nodeOf(11))];
     fireEvent.click(await button(1, "later"));
     await waitFor(() => {
       expect(requests().map((request) => request.intent)).toEqual([{ type: "moveEffect", node: 1, index: 1 }]);
@@ -108,7 +108,7 @@ describe("moving an effect along its chain", () => {
     await waitFor(() => {
       expect(placeOf(screen.getByTestId("rf__node-1")).x).toBeGreaterThan(placeOf(screen.getByTestId("rf__node-2")).x);
     });
-    expect([placeOf(await nodeOf(6)), placeOf(await nodeOf(12))]).toEqual(lanes);
+    expect([placeOf(await nodeOf(6)), placeOf(await nodeOf(11))]).toEqual(lanes);
     expect(server.snapshot.graph.nodes.filter((n) => n.kind === "effect" && n.parent === 0).map((n) => n.id)).toEqual([2, 1, 3, 4]);
   });
 
@@ -151,11 +151,11 @@ describe("moving an effect along its chain", () => {
   test("does not give the focus to a button that was pressed without having it (a browser does not give a button the focus when it is clicked, in Safari)", async () => {
     await rig(<PatchView />, { snapshot: movesFixture.snapshot });
     // (Another effect than the one above: what is kept for a button goes on for a few frames, into the next test.)
-    const later = await button(12, "later");
+    const later = await button(11, "later");
     expect(document.activeElement).toBe(document.body);
     fireEvent.click(later);
     await waitFor(() => {
-      expect(placeOf(screen.getByTestId("rf__node-12")).x).toBeGreaterThan(placeOf(screen.getByTestId("rf__node-13")).x);
+      expect(placeOf(screen.getByTestId("rf__node-11")).x).toBeGreaterThan(placeOf(screen.getByTestId("rf__node-12")).x);
     });
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(document.activeElement).toBe(document.body);

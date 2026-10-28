@@ -374,7 +374,7 @@ describe("a request", () => {
 
   test("makes a step sequencer as the controller makes one: all sixteen steps of a staircase in use, eight a second, no glide, started again by a note", async () => {
     const client = await open(new MockServer());
-    await client.request({ type: "addModulator", parent: nodeNamed(tracerSnapshot, "Oscillator").id, kind: "steps" });
+    await client.request({ type: "addFreeModulator", kind: "steps", hears: nodeNamed(tracerSnapshot, "Oscillator").id });
     const added = client.state.snapshot?.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
     expect(added?.name).toBe("Steps");
     expect(added?.kind === "modulator" ? added.source : null).toEqual({ type: "steps", values: [...NEW_STEPS.values], length: 16, rate: 8, glide: 0, retrigger: true, sync: 0 });
@@ -384,8 +384,8 @@ describe("a request", () => {
   test("lists the position of a step sequencer that is added right after its output, in the slot after it, and no other modulator has one", async () => {
     const client = await open(new MockServer());
     const parent = nodeNamed(tracerSnapshot, "Oscillator").id;
-    await client.request({ type: "addModulator", parent, kind: "steps" });
-    await client.request({ type: "addModulator", parent, kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "steps", hears: parent });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: parent });
     const modulation = client.state.snapshot?.telemetry.modulation ?? [];
     const sequencer = client.state.snapshot?.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
     const output = modulation.findIndex((entry) => entry.node === sequencer?.id && entry.kind === "modOutput");
@@ -396,7 +396,7 @@ describe("a request", () => {
 
   test("takes the position of a step sequencer out of the layout with it", async () => {
     const client = await open(new MockServer());
-    await client.request({ type: "addModulator", parent: nodeNamed(tracerSnapshot, "Oscillator").id, kind: "steps" });
+    await client.request({ type: "addFreeModulator", kind: "steps", hears: nodeNamed(tracerSnapshot, "Oscillator").id });
     const sequencer = client.state.snapshot?.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
     expect(client.state.snapshot?.telemetry.modulation.filter((entry) => entry.node === sequencer?.id).map((entry) => entry.kind)).toEqual(["modOutput", "modPosition"]);
     await client.request({ type: "removeNode", node: sequencer?.id ?? -1 });
@@ -667,34 +667,35 @@ describe("adding a modulator", () => {
     return { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: [group, ...nodes] } };
   }
 
-  test("puts a modulator that is in no lane after the nodes of the lanes and before the master, and the next after the last of its own, whether or not the last lane has a modulator", async () => {
+  test("puts a modulator after the nodes of the lanes and before the master, and the next after the last of its own, whatever it hears", async () => {
     const server = new MockServer();
     const client = await open(server);
-    // A second lane, which has nothing in it: the last node before the master is its own, and no modulator's.
+    // A second lane, which has nothing in it: the last node before the modulators is its own (a lane is listed with the lanes, and the modulators, which are all the session's own, after them).
     await client.request({ type: "addInstrument", plugin: "builtin:osc" });
     await client.request({ type: "addFreeModulator", kind: "envelope", hears: null });
     await until(() => nodesOf(client).some((n) => n.id === 4), "the modulator");
-    expect(nodesOf(client).map((n) => n.id)).toEqual([0, 1, 2, 3, 4, MASTER]);
+    expect(nodesOf(client).map((n) => n.id)).toEqual([0, 1, 3, 2, 4, MASTER]);
     expect(nodesOf(client).find((n) => n.id === 4)).toMatchObject({ kind: "modulator", parent: null, name: "ADSR" });
-    // Another modulator of the lane's: it goes with the lane's, and the one that is in no lane is after both.
-    await client.request({ type: "addModulator", parent: lane.id, kind: "macro" });
+    // Another that hears the first lane, and one that hears every note: each goes after the last.
+    await client.request({ type: "addFreeModulator", kind: "macro", hears: lane.id });
     await client.request({ type: "addFreeModulator", kind: "lfo", hears: null });
     await until(() => nodesOf(client).some((n) => n.id === 6), "the second");
-    expect(nodesOf(client).map((n) => n.id)).toEqual([0, 1, 2, 5, 3, 4, 6, MASTER]);
+    expect(nodesOf(client).map((n) => n.id)).toEqual([0, 1, 3, 2, 4, 5, 6, MASTER]);
   });
 
-  test("puts a node of that kind after what the lane has, and the client is told by a snapshot, the revision after the intent's", async () => {
+  test("puts a node of that kind after the session's own, hearing the lane, and the client is told by a snapshot, the revision after the intent's", async () => {
     const server = new MockServer();
     const client = await open(server);
-    expect(await client.request({ type: "addModulator", parent: lane.id, kind: "envelope" })).toBe(1);
+    expect(await client.request({ type: "addFreeModulator", kind: "envelope", hears: lane.id })).toBe(1);
     await until(() => client.state.snapshot?.rev === 2, "the snapshot");
     expect(names(client)).toEqual(["Oscillator", "Filter", "LFO", "ADSR", "Master"]);
     expect(nodesOf(client)[3]).toEqual({
       id: 3,
-      parent: lane.id,
+      parent: null,
       name: "ADSR",
       kind: "modulator",
       source: { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
+      hears: lane.id,
     });
     // It drives nothing yet.
     expect(client.state.snapshot?.graph.edges).toEqual(tracerSnapshot.graph.edges);
@@ -705,7 +706,7 @@ describe("adding a modulator", () => {
   test("makes each kind what the controller makes it", async () => {
     const server = new MockServer();
     const client = await open(server);
-    for (const kind of ["lfo", "envelope", "midiLearn", "macro"] as const) await client.request({ type: "addModulator", parent: lane.id, kind });
+    for (const kind of ["lfo", "envelope", "midiLearn", "macro"] as const) await client.request({ type: "addFreeModulator", kind: kind, hears: lane.id });
     const added = nodesOf(client).slice(3, 7);
     expect(added.map((n) => n.name)).toEqual(["LFO", "ADSR", "MIDI (learning…)", "Macro"]);
     expect(added.map((n) => (n.kind === "modulator" ? n.source : null))).toEqual([
@@ -721,8 +722,8 @@ describe("adding a modulator", () => {
   test("hands out ids that nobody had, whichever front-end asks", async () => {
     const server = new MockServer();
     const client = await open(server);
-    server.apply({ type: "addModulator", parent: lane.id, kind: "lfo" });
-    await client.request({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    server.apply({ type: "addFreeModulator", kind: "lfo", hears: lane.id });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: lane.id });
     const ids = nodesOf(client).filter((n) => n.id !== MASTER).map((n) => n.id);
     expect(ids).toEqual([0, 1, 2, 3, 4]);
   });
@@ -730,7 +731,7 @@ describe("adding a modulator", () => {
   test("gives the modulator's output a slot of its own in the layout, among the outputs and with a new fingerprint", async () => {
     const server = new MockServer();
     const client = await open(server);
-    await client.request({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: lane.id });
     const layout = client.state.snapshot?.telemetry;
     expect(layout?.modulation).toEqual([
       ...tracerSnapshot.telemetry.modulation.slice(0, 1),
@@ -739,24 +740,25 @@ describe("adding a modulator", () => {
     ]);
     expect(layout?.rev).not.toBe(tracerSnapshot.telemetry.rev);
     expect(layout?.meters).toEqual(tracerSnapshot.telemetry.meters);
-    await client.request({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: lane.id });
     const slots = client.state.snapshot?.telemetry.modulation.filter((e) => e.kind === "modOutput").map((e) => e.slot);
     expect(slots).toEqual([4, 6, 7]);
   });
 
-  test("in a group goes in the group's strip: after the group, not after the lanes that are its members", async () => {
+  test("that hears a group goes after the session's own, whatever the group is: the lanes that are its members are before it, and the modulators are all one rack", async () => {
     const server = new MockServer({ snapshot: inAGroup() });
     const client = await open(server);
-    await client.request({ type: "addModulator", parent: 10, kind: "lfo" });
-    expect(names(client)).toEqual(["Group 1", "LFO", "Oscillator", "Filter", "LFO", "Master"]);
-    expect(nodesOf(client)[1]).toMatchObject({ parent: 10, kind: "modulator" });
-    // (A second goes after the first, still in the group's strip.)
-    await client.request({ type: "addModulator", parent: 10, kind: "envelope" });
-    expect(names(client)).toEqual(["Group 1", "LFO", "ADSR", "Oscillator", "Filter", "LFO", "Master"]);
-    // (The lane is in the group, and so are the two modulators: the lane's own is in the lane.)
-    expect(nodesOf(client).map((n) => n.parent)).toEqual([null, 10, 10, 10, 0, 0, null]);
-    // The output of the group's modulator is listed before the lane's, as the controller lists them.
-    expect(client.state.snapshot?.telemetry.modulation.filter((e) => e.kind === "modOutput").map((e) => e.node)).toEqual([11, 12, 2]);
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: 10 });
+    expect(names(client)).toEqual(["Group 1", "Oscillator", "Filter", "LFO", "LFO", "Master"]);
+    expect(nodesOf(client)[4]).toMatchObject({ parent: null, hears: 10, kind: "modulator" });
+    // (A second goes after the first.)
+    await client.request({ type: "addFreeModulator", kind: "envelope", hears: 10 });
+    expect(names(client)).toEqual(["Group 1", "Oscillator", "Filter", "LFO", "LFO", "ADSR", "Master"]);
+    // (The lane is in the group, and none of the modulators is in anything: the tracer's hears the lane, the two new ones the group.)
+    expect(nodesOf(client).map((n) => n.parent)).toEqual([null, 10, 0, null, null, null, null]);
+    expect(nodesOf(client).map((n) => (n.kind === "modulator" ? n.hears : undefined))).toEqual([undefined, undefined, undefined, 0, 10, 10, undefined]);
+    // The outputs of the modulators are listed in the order of the graph.
+    expect(client.state.snapshot?.telemetry.modulation.filter((e) => e.kind === "modOutput").map((e) => e.node)).toEqual([2, 11, 12]);
   });
 
   test("goes after the lane's effects when it has no modulator yet", async () => {
@@ -767,27 +769,27 @@ describe("adding a modulator", () => {
     };
     const server = new MockServer({ snapshot: bare });
     const client = await open(server);
-    await client.request({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: lane.id });
     expect(names(client)).toEqual(["Oscillator", "Filter", "LFO", "Master"]);
     // (Ids go on from what the session has, and slots from what the layout has: the meters', here, which end at 3.)
     expect(client.state.snapshot?.telemetry.modulation).toEqual([{ kind: "modOutput", node: 2, port: { type: "modOut" }, slot: 4 }]);
   });
 
-  test("to something that is not a lane or a group is refused, and changes nothing", async () => {
+  test("that hears something that is not a lane or a group is refused, and changes nothing", async () => {
     const server = new MockServer();
     const client = await open(server);
-    const refusal = async (parent: number): Promise<RequestError> => (await client.request({ type: "addModulator", parent, kind: "lfo" }).catch((e: unknown) => e)) as RequestError;
+    const refusal = async (parent: number): Promise<RequestError> => (await client.request({ type: "addFreeModulator", kind: "lfo", hears: parent }).catch((e: unknown) => e)) as RequestError;
     for (const parent of [filter.id, lfo.id]) {
       const failure = await refusal(parent);
       expect(failure).toBeInstanceOf(RequestError);
-      expect([failure.code, failure.message]).toEqual(["invalid", "a modulator goes in a lane or in a group"]);
+      expect([failure.code, failure.message]).toEqual(["invalid", "only a lane or a group can be heard"]);
     }
     expect((await refusal(99)).code).toBe("notFound");
     // (The master is a node of the graph and not of the model: the controller does not find it.)
     expect((await refusal(MASTER)).code).toBe("notFound");
     expect(client.state.snapshot).toEqual(tracerSnapshot);
     // And what was refused used up no id.
-    await client.request({ type: "addModulator", parent: lane.id, kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: lane.id });
     expect(nodesOf(client)[3]?.id).toBe(3);
   });
 });
@@ -878,9 +880,9 @@ describe("taking a modulator out", () => {
     const server = new MockServer();
     const client = await open(server);
     const parent = nodeNamed(tracerSnapshot, "Oscillator").id;
-    await client.request({ type: "addModulator", parent, kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: parent });
     await client.request({ type: "removeNode", node: 3 });
-    await client.request({ type: "addModulator", parent, kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: parent });
     expect(names(client.state.snapshot)).toEqual(["Oscillator#0", "Filter#1", "LFO#2", "LFO#4", "Master#4294967295"]);
   });
 });
@@ -931,21 +933,21 @@ describe("taking an effect out", () => {
     expect(audioPath(client.state.snapshot).slice(0, 2)).toEqual(["audio 0→1", `audio 1→${String(MASTER)}`]);
     await client.request({ type: "removeNode", node: 1 });
     expect(audioPath(client.state.snapshot).slice(0, 1)).toEqual([`audio 0→${String(MASTER)}`]);
-    expect(strip(client.state.snapshot).slice(0, 3)).toEqual(["0 Group 1", "15 LFO", "2 Group 2"]);
+    expect(strip(client.state.snapshot).slice(0, 3)).toEqual(["0 Group 1", "2 Group 2", "3 Reverb"]);
   });
 
   test("takes the cables to it out, whoever's they are, and the ones that drive the depths of those", async () => {
-    // The scene's modulators 15 (group 0's), 6 (lane 4's own) reach the filter 5 of lane 4; the cables are the fixture's own.
+    // The scene's modulators 15 (the one that hears group 0) and 12 (the one that hears lane 4) drive the filter 5 of lane 4; the cables are the fixture's own.
     const withCables: Snapshot = {
       ...reach,
       graph: {
         ...reach.graph,
         edges: [
           ...reach.graph.edges,
-          { kind: "modulation", id: 100, amount: 0.5, from: { node: 6, port: { type: "modOut" } }, to: { node: 5, port: { type: "param", index: 0 } } },
+          { kind: "modulation", id: 100, amount: 0.5, from: { node: 12, port: { type: "modOut" } }, to: { node: 5, port: { type: "param", index: 0 } } },
           { kind: "modulation", id: 101, amount: 0.4, from: { node: 15, port: { type: "modOut" } }, to: { node: 5, port: { type: "param", index: 1 } } },
           { kind: "modulation", id: 102, amount: 0.3, from: { node: 15, port: { type: "modOut" } }, to: { node: 4, port: { type: "param", index: 1 } } },
-          { kind: "modulation", id: 103, amount: 0.2, from: { node: 6, port: { type: "modOut" } }, to: { node: 15, port: { type: "depth", edge: 100 } } },
+          { kind: "modulation", id: 103, amount: 0.2, from: { node: 12, port: { type: "modOut" } }, to: { node: 15, port: { type: "depth", edge: 100 } } },
         ],
       },
     };
@@ -1058,7 +1060,7 @@ describe("drawing a cable", () => {
     expect(client.state.snapshot?.telemetry.rev).not.toBe(tracerSnapshot.telemetry.rev);
     expect(client.state.snapshot?.telemetry.meters).toEqual(tracerSnapshot.telemetry.meters);
     // A second modulator on the cutoff the first one drives: one value, one slot in the layout (as the controller lists it).
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    await client.request({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
     const layout = client.state.snapshot?.telemetry;
     const added = client.state.snapshot?.graph.nodes.find((n) => n.name === "ADSR");
     await client.request(draw(added?.id ?? -1, filter.id, 0));
@@ -1078,24 +1080,25 @@ describe("drawing a cable", () => {
 
   describe("in a session of groups and lanes", () => {
     const { snapshot } = reachFixture;
-    const [groupLfo, lane0Lfo, lane3Control] = [15, 6, 13];
-    const [osc0, osc1, osc3, osc2] = [4, 7, 11, 9];
+    // The session's own rack: lane 0's LFO (12), lane 1's envelope (13), lane 3's control (14), group 1's LFO (15), group 2's envelope (16) and an LFO that hears every note (17).
+    const [lane0Lfo, lane3Control, groupLfo] = [12, 14, 15];
+    const [osc0, osc1, osc2, osc3] = [4, 6, 7, 9];
     const detune0 = indexOf(snapshot, osc0, "detune");
     const refused = async (client: Client, intent: Intent): Promise<RequestError> => (await client.request(intent).catch((e: unknown) => e)) as RequestError;
 
-    test("lists the cables of the groups' modulators before the lanes', as the controller does, whichever was drawn first", async () => {
+    test("lists the cables by the places of their modulators in the session's rack, as the controller does, whichever was drawn first", async () => {
       const server = new MockServer({ snapshot });
       const client = await open(server);
       await client.request(draw(lane0Lfo, osc0, detune0));
       await client.request(draw(groupLfo, osc0, detune0));
       await client.request(draw(lane3Control, osc3, indexOf(snapshot, osc3, "volume")));
-      expect(modulations(client.state.snapshot).map((e) => e.from.node)).toEqual([groupLfo, lane0Lfo, lane3Control]);
+      expect(modulations(client.state.snapshot).map((e) => e.from.node)).toEqual([lane0Lfo, lane3Control, groupLfo]);
       // And ahead of them, the audio path as it was.
       const edges = client.state.snapshot?.graph.edges ?? [];
       expect(edges.slice(0, edges.length - 3)).toEqual(snapshot.graph.edges);
     });
 
-    test("names the value a lane's modulator drives before the value a group's drives, whichever cable was drawn first (the controller's layout lists the lanes' targets first)", async () => {
+    test("names the value that the first modulator of the rack drives before the value of a later one, whichever cable was drawn first (the controller's layout goes by the places of the modulators)", async () => {
       const server = new MockServer({ snapshot });
       const client = await open(server);
       const named = (): string[] =>
@@ -1104,7 +1107,7 @@ describe("drawing a cable", () => {
       const [laneValue, groupValue] = [`${String(osc0)}:${String(detune0)}`, `${String(osc1)}:0`];
       expect(before).not.toContain(laneValue);
       expect(before).not.toContain(groupValue);
-      // The group's modulator draws first, to a parameter of lane 1's oscillator; then lane 0's, to one of lane 0's.
+      // The later modulator (a group's) draws first, to a parameter of lane 1's oscillator; then the earlier (lane 0's), to one of lane 0's.
       await client.request(draw(groupLfo, osc1, 0));
       await client.request(draw(lane0Lfo, osc0, detune0));
       const after = named();
@@ -1112,14 +1115,23 @@ describe("drawing a cable", () => {
       expect(after.indexOf(laneValue)).toBeLessThan(after.indexOf(groupValue));
     });
 
-    test("is for a parameter of a plugin the modulator reaches, which a client can tell from the graph", async () => {
+    test("is for a parameter of any plugin of the session, whichever lane or group the modulator hears, which a client can tell from the graph", async () => {
       const server = new MockServer({ snapshot });
       const client = await open(server);
-      // A group's modulator reaches its members' chains and its bus effects: lane 1's oscillator, lane 0's filter, the bus filter.
-      for (const [from, to] of [[groupLfo, osc1], [groupLfo, 5], [groupLfo, 1]] as const) {
-        await client.request(draw(from, to, 0));
-      }
-      expect(modulations(client.state.snapshot)).toHaveLength(3);
+      // A group's modulator and a lane's alike: a plugin of a lane of another group, a lane of its own, a bus of another group, a bus effect and a chain of the lane that is heard.
+      const pairs = [
+        [groupLfo, osc1],
+        [groupLfo, 5],
+        [groupLfo, 1],
+        [groupLfo, osc3],
+        [groupLfo, osc2],
+        [groupLfo, 3],
+        [lane0Lfo, osc1],
+        [lane0Lfo, osc3],
+        [lane0Lfo, 1],
+      ] as const;
+      for (const [from, to] of pairs) await client.request(draw(from, to, 0));
+      expect(modulations(client.state.snapshot)).toHaveLength(pairs.length);
     });
 
     test("is refused when it starts at what is not a modulator, or ends at what is not a parameter, and nothing changes", async () => {
@@ -1148,30 +1160,12 @@ describe("drawing a cable", () => {
       expect((await failure(draw(lane0Lfo, MASTER, 0)))[0]).toBe("notFound");
       expect(await failure(draw(lane0Lfo, 0, 0))).toEqual(["invalid", "that node has no plugin"]); // a group
       expect(await failure(draw(lane0Lfo, groupLfo, 0))).toEqual(["invalid", "that node has no plugin"]); // a modulator
-      expect(await failure(draw(lane0Lfo, 14, 0))).toEqual(["invalid", "that instrument has no plugin"]); // a lane with nothing in it
+      expect(await failure(draw(lane0Lfo, 11, 0))).toEqual(["invalid", "that instrument has no plugin"]); // a lane with nothing in it
       expect(await failure(draw(lane0Lfo, osc0, 999))).toEqual(["invalid", "the plugin has no parameter 999"]);
       expect(client.state.snapshot).toEqual(snapshot);
       // And no cable id was used up.
       await client.request(draw(lane0Lfo, osc0, detune0));
       expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([0]);
-    });
-
-    test("is refused for a plugin out of the modulator's reach, as the controller refuses it", async () => {
-      const server = new MockServer({ snapshot });
-      const client = await open(server);
-      const inLane = ["invalid", "a modulator of this lane cannot reach that plugin"];
-      const inGroup = ["invalid", "a modulator of this group cannot reach that plugin"];
-      const failure = async (intent: Intent) => {
-        const error = await refused(client, intent);
-        return [error.code, error.message];
-      };
-      expect(await failure(draw(lane0Lfo, osc1, 0))).toEqual(inLane); // the other lane of the same group
-      expect(await failure(draw(lane0Lfo, osc3, 0))).toEqual(inLane); // a lane of its own
-      expect(await failure(draw(lane0Lfo, 1, 0))).toEqual(inLane); // the bus filter of its group
-      expect(await failure(draw(groupLfo, osc3, 0))).toEqual(inGroup); // a lane outside the group
-      expect(await failure(draw(groupLfo, osc2, 0))).toEqual(inGroup); // a lane of another group
-      expect(await failure(draw(groupLfo, 3, 0))).toEqual(inGroup); // the bus of another group
-      expect(client.state.snapshot).toEqual(snapshot);
     });
 
     test("is refused when the modulator drives the parameter already, and allowed for another modulator", async () => {
@@ -1188,10 +1182,10 @@ describe("drawing a cable", () => {
 
 describe("drawing a cable to a setting of another modulator", () => {
   const { snapshot, fields } = fieldsFixture;
-  // Group 1's rack: an LFO, an envelope and a MIDI control; its first member (3) has an LFO, an envelope and a MIDI control of its own,
-  // the second member (7) an LFO; a lane in no group (9) has an LFO, and a lane of the second group (11) has an LFO.
+  // The session's own rack, in order: the first lane (3) is heard by an LFO, an envelope and a MIDI control (7, 8, 9), its group's second member (4) by an LFO (10),
+  // a lane in no group (5) by an LFO (11) and a lane of the second group (6) by an LFO (12); the first group by an LFO, an envelope and a MIDI control (13, 14, 15).
   const [groupLfo, groupEnvelope, groupControl] = [13, 14, 15];
-  const [laneLfo, laneEnvelope, laneControl, member2Lfo, lane9Lfo, lane11Lfo] = [4, 5, 6, 8, 10, 12];
+  const [laneLfo, laneEnvelope, laneControl, member2Lfo] = [7, 8, 9, 10];
   const modulators = snapshot.graph.nodes.filter((n) => n.kind === "modulator");
   type Cable = Edge & { kind: "modulation"; id: number };
   const modulations = (s: Snapshot | null | undefined): Cable[] => (s?.graph.edges ?? []).filter((e): e is Cable => e.kind === "modulation");
@@ -1247,14 +1241,14 @@ describe("drawing a cable to a setting of another modulator", () => {
     await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" }));
     const added = modulations(client.state.snapshot).find((e) => e.id === 7);
     expect(added).toEqual({ kind: "modulation", id: 7, amount: 0.5, from: { node: laneEnvelope, port: { type: "modOut" } }, to: { node: laneLfo, port: { type: "rate" } } });
-    // The groups' cables first, then the lanes': the envelope's cables are 1 and 2, and the new one comes after them and before the control's.
-    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 0, 1, 2, 7, 3]);
+    // By the places of the modulators in the rack: the envelope's cables are 1 and 2, and the new one comes after them and before the control's.
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([0, 1, 2, 7, 3, 4, 5, 6]);
     // The setting's value is a slot of the layout (f132), named at the port the cable ends at and with the next slot, and the fingerprint is another; the rest is as it was.
-    // The controller lists the values that cables drive lane by lane and by the places of the modulators and of their cables: the envelope's come before the control's
-    // (the value of the cable 3, slot 14), which this one comes before.
+    // The controller lists the values that cables drive by the places of the modulators and of their cables: the envelope's come before the control's
+    // (the value of the cable 3, slot 20), which this one comes before.
     const layout = client.state.snapshot?.telemetry;
     const entry = { kind: "effective", node: laneLfo, port: { type: "rate" }, slot: Math.max(...slotsOf(snapshot.telemetry)) + 1 } as const;
-    const controls = snapshot.telemetry.modulation.findIndex((e) => e.slot === 14);
+    const controls = snapshot.telemetry.modulation.findIndex((e) => e.slot === 20);
     expect(controls).toBeGreaterThan(0);
     expect(layout?.modulation).toEqual([...snapshot.telemetry.modulation.slice(0, controls), entry, ...snapshot.telemetry.modulation.slice(controls)]);
     expect(layout?.rev).not.toBe(snapshot.telemetry.rev);
@@ -1263,7 +1257,7 @@ describe("drawing a cable to a setting of another modulator", () => {
   });
 
   test("names the value of the depth of each cable of a modulator that is driven, and takes out that of the cable that goes and no other", async () => {
-    // The envelope (5) has two cables, 1 and 2; the LFO (4) drives the depth of both.
+    // The envelope (8) has two cables, 1 and 2; the LFO (7) drives the depth of both.
     const client = await open(new MockServer({ snapshot }));
     await done(client, drawTo(laneLfo, laneEnvelope, { type: "depth", edge: 1 })); // 7
     await done(client, drawTo(laneLfo, laneEnvelope, { type: "depth", edge: 2 })); // 8
@@ -1279,7 +1273,7 @@ describe("drawing a cable to a setting of another modulator", () => {
     await done(client, drawTo(laneEnvelope, laneLfo, { type: "rate" })); // 7
     await done(client, drawTo(laneControl, laneLfo, { type: "rate" })); // 8: the same rate, from the control
     await done(client, drawTo(laneEnvelope, laneLfo, { type: "depth", edge: 0 })); // 9: and the depth of the LFO's cable, from the envelope
-    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 0, 1, 2, 7, 9, 3, 8]);
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([0, 1, 2, 7, 9, 3, 8, 4, 5, 6]);
     // A value has one entry in the layout, whichever cables drive it: the rate is named once (by the first cable, 7) and the depth once; each cable took a slot (9 is the third).
     const layout = client.state.snapshot?.telemetry;
     const first = Math.max(...slotsOf(snapshot.telemetry)) + 1;
@@ -1305,8 +1299,6 @@ describe("drawing a cable to a setting of another modulator", () => {
 
   test("is refused as the controller refuses it, and nothing changes", async () => {
     const client = await open(new MockServer({ snapshot }));
-    const reachLane = ["invalid", "a modulator of this lane cannot reach that modulator"];
-    const reachGroup = ["invalid", "a modulator of this group cannot reach that modulator"];
     const notModulator = ["invalid", "a cable ends at the settings of a modulator, and that is not one"];
     const own = ["invalid", "a modulator cannot drive its own settings"];
     const table: [string, Intent, string[]][] = [
@@ -1318,11 +1310,6 @@ describe("drawing a cable to a setting of another modulator", () => {
       ["a group", drawTo(laneLfo, 0, { type: "rate" }), notModulator],
       ["a bus effect", drawTo(groupLfo, 1, { type: "attack" }), notModulator],
       ["a parameter's port of a modulator", drawTo(laneEnvelope, laneLfo, { type: "param", index: 0 }), ["invalid", "that node has no plugin"]],
-      ["a modulator of another lane of its group", drawTo(laneLfo, member2Lfo, { type: "rate" }), reachLane],
-      ["a modulator of the group of its lane", drawTo(laneLfo, groupLfo, { type: "rate" }), reachLane],
-      ["a modulator of a lane in no group", drawTo(laneLfo, lane9Lfo, { type: "rate" }), reachLane],
-      ["a modulator of a lane in another group, from a group", drawTo(groupLfo, lane11Lfo, { type: "rate" }), reachGroup],
-      ["a modulator of a lane in no group, from a group", drawTo(groupLfo, lane9Lfo, { type: "rate" }), reachGroup],
       ["the rate of an envelope", drawTo(laneLfo, laneEnvelope, { type: "rate" }), ["invalid", "that modulator has no rate"]],
       ["the rate of a MIDI control", drawTo(laneLfo, laneControl, { type: "rate" }), ["invalid", "that modulator has no rate"]],
       ["the attack of an LFO", drawTo(laneEnvelope, laneLfo, { type: "attack" }), ["invalid", "that modulator has no attack"]],
@@ -1366,10 +1353,10 @@ describe("drawing a cable to a setting of another modulator", () => {
     await done(client, drawTo(laneControl, laneEnvelope, { type: "attack" })); // 8: the control drives the envelope's attack
     await done(client, { type: "removeNode", node: laneLfo });
     // The LFO's own cable (0) went with it, and the one that drove its rate (7); the control's cable to the envelope stays.
-    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 1, 2, 3, 8]);
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([1, 2, 3, 8, 4, 5, 6]);
     await done(client, { type: "removeNode", node: laneEnvelope });
     // Now the envelope's cables (1 and 2) and the one that drove its attack (8) have gone.
-    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 3]);
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([3, 4, 5, 6]);
   });
 
   test("goes with the cable whose depth it drives, and what drives the depth of that goes in turn", async () => {
@@ -1378,16 +1365,16 @@ describe("drawing a cable to a setting of another modulator", () => {
     await done(client, drawTo(laneControl, laneLfo, { type: "depth", edge: 7 })); // 8: the control drives the depth of that
     expect(modulations(client.state.snapshot)).toHaveLength(cables.length + 2);
     await done(client, { type: "removeEdge", edge: 1 });
-    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 5, 6, 0, 2, 3]);
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([0, 2, 3, 4, 5, 6]);
   });
 
-  test("is drawn from a group's modulator to the settings of its members' modulators, and of the others in its rack", async () => {
+  test("is drawn from a modulator that hears a group to the settings of those that hear its members, and of those that hear the group too", async () => {
     const client = await open(new MockServer({ snapshot }));
     await done(client, drawTo(groupLfo, laneEnvelope, { type: "attack" })); // 7
     await done(client, drawTo(groupLfo, member2Lfo, { type: "rate" })); // 8
     await done(client, drawTo(groupLfo, groupEnvelope, { type: "release" })); // 9
     await done(client, drawTo(groupControl, laneLfo, { type: "rate" })); // 10
-    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([4, 7, 8, 9, 5, 6, 10, 0, 1, 2, 3]);
+    expect(modulations(client.state.snapshot).map((e) => e.id)).toEqual([0, 1, 2, 3, 4, 7, 8, 9, 5, 6, 10]);
   });
 });
 
@@ -1761,12 +1748,12 @@ describe("adding an effect", () => {
     const client = await open(server);
     // Group 0: its bus has a filter (1). The new effect is the node 18.
     await client.request(add(0, "builtin:reverb"));
-    expect(strip(client.state.snapshot).slice(0, 5)).toEqual(["0 Group 1", "1 Filter", "18 Reverb", "15 LFO", "2 Group 2"]);
+    expect(strip(client.state.snapshot).slice(0, 5)).toEqual(["0 Group 1", "1 Filter", "18 Reverb", "2 Group 2", "3 Reverb"]);
     expect(audioPath(client.state.snapshot).slice(0, 4)).toEqual(["audio 0→1", "audio 1→18", `audio 18→${String(MASTER)}`, "audio 2→3"]);
-    // The lane 4 is a member of group 0, with a filter (5) and an LFO (6): the effect goes between them, and the path still ends in the group.
+    // The lane 4 is a member of group 0, with a filter (5), and the next lane (6) comes after it: the effect goes after the filter, and the path still ends in the group.
     await client.request(add(4, "builtin:filter"));
     const snapshot = client.state.snapshot;
-    expect(strip(snapshot).slice(strip(snapshot).indexOf("4 Oscillator"), strip(snapshot).indexOf("4 Oscillator") + 4)).toEqual(["4 Oscillator", "5 Filter", "19 Filter", "6 LFO"]);
+    expect(strip(snapshot).slice(strip(snapshot).indexOf("4 Oscillator"), strip(snapshot).indexOf("4 Oscillator") + 4)).toEqual(["4 Oscillator", "5 Filter", "19 Filter", "6 Oscillator"]);
     expect(audioPath(snapshot)).toContain("audio 5→19");
     expect(audioPath(snapshot)).toContain("member 19→0");
     expect(audioPath(snapshot)).not.toContain("member 5→0");
@@ -1775,31 +1762,30 @@ describe("adding an effect", () => {
   test("goes into a lane that has nothing in it, and into one that is a member of a group and has no effects", async () => {
     const server = new MockServer({ snapshot: reach });
     const client = await open(server);
-    await client.request(add(14, "builtin:filter")); // the lane with no instrument
-    await client.request(add(7, "builtin:reverb")); // a member of group 0 with no effects
+    await client.request(add(11, "builtin:filter")); // the lane with no instrument
+    await client.request(add(6, "builtin:reverb")); // a member of group 0 with no effects
     const path = audioPath(client.state.snapshot);
-    expect(path).toContain("audio 14→18");
+    expect(path).toContain("audio 11→18");
     expect(path).toContain(`audio 18→${String(MASTER)}`);
-    expect(path).toContain("audio 7→19");
+    expect(path).toContain("audio 6→19");
     expect(path).toContain("member 19→0");
-    expect(path).not.toContain("member 7→0");
+    expect(path).not.toContain("member 6→0");
     const nodes = strip(client.state.snapshot);
-    expect(nodes.slice(nodes.indexOf("7 Oscillator"), nodes.indexOf("7 Oscillator") + 3)).toEqual(["7 Oscillator", "19 Reverb", "8 ADSR"]);
+    expect(nodes.slice(nodes.indexOf("6 Oscillator"), nodes.indexOf("6 Oscillator") + 3)).toEqual(["6 Oscillator", "19 Reverb", "7 Oscillator"]);
   });
 
-  test("makes a node a modulator can be drawn to at once, if the modulator reaches the lane or group it is in", async () => {
+  test("makes a node that every modulator can be drawn to at once, whichever lane or group it hears", async () => {
     const server = new MockServer({ snapshot: reach });
     const client = await open(server);
-    await client.request(add(4, "builtin:reverb")); // node 18, in lane 4, which group 0's modulator (15) and lane 4's own (6) reach
+    await client.request(add(4, "builtin:reverb")); // node 18, in lane 4
     const damping = (builtinEffects["builtin:reverb"]?.plugin.params ?? []).find((p) => p.name === "damping")?.index ?? -1;
     const draw = (modulator: number): Intent => ({ type: "addModEdge", modulator, to: { node: 18, port: { type: "param", index: damping } } });
-    await client.request(draw(6));
-    await client.request(draw(15));
-    const refused = await client.request(draw(8)).catch((e: unknown) => e); // lane 7's modulator does not reach lane 4
-    expect(refused).toBeInstanceOf(RequestError);
-    expect((refused as RequestError).message).toBe("a modulator of this lane cannot reach that plugin");
+    await client.request(draw(12)); // the one that hears lane 4
+    await client.request(draw(15)); // the one that hears its group
+    await client.request(draw(13)); // and the one that hears another lane of the group
+    await client.request(draw(16)); // and one that hears another group
     const cables = (client.state.snapshot?.graph.edges ?? []).filter((e) => e.kind === "modulation" && e.to.node === 18);
-    expect(cables.map((e) => e.from.node).sort((a, b) => a - b)).toEqual([6, 15]);
+    expect(cables.map((e) => e.from.node).sort((a, b) => a - b)).toEqual([12, 13, 15, 16]);
   });
 
   test("numbers the nodes after the ones that have been made, whatever has been taken out", async () => {
@@ -1864,7 +1850,7 @@ describe("adding an instrument", () => {
     const client = await open(server);
     await client.request(add("builtin:osc"));
     const snapshot = client.state.snapshot;
-    expect(strip(snapshot)).toEqual(["0 Oscillator", "1 Filter", "2 LFO", "3 Oscillator", `${String(MASTER)} Master`]);
+    expect(strip(snapshot)).toEqual(["0 Oscillator", "1 Filter", "3 Oscillator", "2 LFO", `${String(MASTER)} Master`]);
     expect(audioPath(snapshot)).toEqual(["audio 0→1", `audio 1→${String(MASTER)}`, `audio 3→${String(MASTER)}`]);
     // (The graph lists the links of the audio path first, and the modulation cables after them all.)
     expect(snapshot?.graph.edges.map((e) => e.kind)).toEqual(["audio", "audio", "audio", "modulation"]);
@@ -1904,8 +1890,8 @@ describe("adding an instrument", () => {
     const client = await open(server);
     await client.request(add("builtin:osc"));
     const nodes = strip(client.state.snapshot);
-    // (The lanes come after the groups, each with its effects and modulators; the last is the empty lane 14, with an LFO.)
-    expect(nodes.slice(-4)).toEqual(["14 (empty)", "17 LFO", "18 Oscillator", `${String(MASTER)} Master`]);
+    // (The lanes come after the groups, each with its effects, and the session's modulators after the lanes; the last lane is the empty lane 11.)
+    expect(nodes.slice(nodes.indexOf("11 (empty)"), nodes.indexOf("11 (empty)") + 3)).toEqual(["11 (empty)", "18 Oscillator", "12 LFO"]);
     expect(client.state.snapshot?.graph.nodes.find((n) => n.id === 18)?.parent).toBeNull();
     expect(audioPath(client.state.snapshot).at(-1)).toBe(`audio 18→${String(MASTER)}`);
     // The links of the lanes that were there, and the groups', are where they were.
@@ -2012,26 +1998,26 @@ describe("replacing an instrument", () => {
   test("takes the cables of a group's modulator to the member's instrument out too, and those that drive the depth of a cable that goes, and no other", async () => {
     const volume = (builtinInstruments["builtin:osc"]?.plugin.params ?? []).find((p) => p.name === "volume")?.index ?? -1;
     const draw = (modulator: number, node: number, param: number): Intent => ({ type: "addModEdge", modulator, to: { node, port: { type: "param", index: param } } });
-    // Lane 4 (a member of group 0, with a filter 5 and an LFO 6): its LFO drives the instrument's detune, the group's LFO (15) its volume, and
-    // a second modulator of the lane (18) the filter's cutoff.
+    // Lane 4 (a member of group 0, with a filter 5): the LFO that hears it (12) drives the instrument's detune, the one that hears its group (15) its volume, and
+    // a second modulator that hears the lane (18) the filter's cutoff.
     const server = new MockServer({ snapshot: reach });
     const first = await open(server);
-    await first.request({ type: "addModulator", parent: 4, kind: "lfo" });
-    await first.request(draw(6, 4, detune));
+    await first.request({ type: "addFreeModulator", kind: "lfo", hears: 4 });
+    await first.request(draw(12, 4, detune));
     await first.request(draw(15, 4, volume));
     await first.request(draw(18, 5, 0));
-    // (The graph lists the groups' cables first.)
-    const [fromTheGroup, fromTheLane, toTheFilter] = cables(first.state.snapshot);
+    // (The graph lists the cables by the places of their modulators in the session's rack.)
+    const [fromTheLane, fromTheGroup, toTheFilter] = cables(first.state.snapshot);
     if (fromTheGroup?.kind !== "modulation" || fromTheLane?.kind !== "modulation" || toTheFilter?.kind !== "modulation") throw new Error("the three cables were not drawn");
-    expect([fromTheGroup, fromTheLane, toTheFilter].map((e) => [e.from.node, e.to.node])).toEqual([
+    expect([fromTheLane, fromTheGroup, toTheFilter].map((e) => [e.from.node, e.to.node])).toEqual([
+      [12, 4],
       [15, 4],
-      [6, 4],
       [18, 5],
     ]);
     // The depth of the lane's own cable to the detune is driven by the second modulator, which no intent draws: a session that has it is made by hand.
     const snapshot = first.state.snapshot;
     if (!snapshot) throw new Error("no session");
-    const drivesTheDepth: Edge = { kind: "modulation", id: 99, amount: 0.5, from: { node: 18, port: { type: "modOut" } }, to: { node: 6, port: { type: "depth", edge: fromTheLane.id } } };
+    const drivesTheDepth: Edge = { kind: "modulation", id: 99, amount: 0.5, from: { node: 18, port: { type: "modOut" } }, to: { node: 12, port: { type: "depth", edge: fromTheLane.id } } };
     const byHand: Snapshot = { ...snapshot, graph: { ...snapshot.graph, edges: [...snapshot.graph.edges, drivesTheDepth] } };
     const client = await open(new MockServer({ snapshot: byHand }));
 
@@ -2043,9 +2029,9 @@ describe("replacing an instrument", () => {
   test("fills a lane that has no instrument, which has a name then, and leaves its audio path and its meters as they were", async () => {
     const server = new MockServer({ snapshot: reach });
     const client = await open(server);
-    await client.request(replace(14, "builtin:osc"));
-    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === 14);
-    expect(node).toEqual({ id: 14, parent: null, ...builtinInstruments["builtin:osc"] });
+    await client.request(replace(11, "builtin:osc"));
+    const node = client.state.snapshot?.graph.nodes.find((n) => n.id === 11);
+    expect(node).toEqual({ id: 11, parent: null, ...builtinInstruments["builtin:osc"] });
     expect(client.state.snapshot?.graph.edges).toEqual(reach.graph.edges);
     expect(client.state.snapshot?.telemetry).toEqual(reach.telemetry);
   });
@@ -2092,8 +2078,8 @@ describe("replacing an instrument", () => {
 describe("loading a preset", () => {
   const reach = reachFixture.snapshot;
   const load = (node: number, preset: string): Intent => ({ type: "loadPreset", node, preset });
-  /** The reverb of lane 9, which is in a group, and the one on group 2's bus. */
-  const LANE_REVERB = 10;
+  /** The reverb of lane 7, which is in a group, and the one on group 2's bus. */
+  const LANE_REVERB = 8;
   const BUS_REVERB = 3;
   const paramsOf = (snapshot: Snapshot | null, node: number) => {
     const found = snapshot?.graph.nodes.find((n) => n.id === node);
@@ -2156,7 +2142,7 @@ describe("loading a preset", () => {
       [load(BUS_REVERB, "cathedral"), "invalid", "a bus effect has no presets to load"],
       [load(0, "cathedral"), "invalid", "that node has no plugin"], // a group
       [load(15, "cathedral"), "invalid", "that node has no plugin"], // a modulator
-      [load(14, "cathedral"), "invalid", "that instrument has no plugin"], // a lane with no instrument
+      [load(11, "cathedral"), "invalid", "that instrument has no plugin"], // a lane with no instrument
       [load(LANE_REVERB, "no-such-preset"), "invalid", "the plugin has no preset no-such-preset"],
       [load(4, "cathedral"), "invalid", "the plugin has no preset cathedral"], // an oscillator has no presets
       [load(424242, "cathedral"), "notFound", "there is no node 424242"],
@@ -2243,8 +2229,8 @@ describe("setting the keys of a lane", () => {
 
   test("is for a lane that has no instrument too", async () => {
     const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
-    await client.request(set({ low: 0, high: 59 }, 14));
-    expect(keys(client, 14)).toEqual({ low: 0, high: 59 });
+    await client.request(set({ low: 0, high: 59 }, 11));
+    expect(keys(client, 11)).toEqual({ low: 0, high: 59 });
   });
 });
 
@@ -2258,7 +2244,7 @@ describe("muting and soloing a lane or a group", () => {
   const solo = (node: number, soloed: boolean): Intent => ({ type: "setSolo", node, solo: soloed });
   const lane = reachFixture.snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null)?.id ?? -1;
   const GROUP = 0;
-  const EMPTY_LANE = 14;
+  const EMPTY_LANE = 11;
 
   test("is what the controller says it is: the lane or the group has the flag, the other flag is as it was, and the session has something unsaved", async () => {
     const client = await open(new MockServer({ snapshot: reachFixture.snapshot }));
@@ -2312,10 +2298,11 @@ describe("muting and soloing a lane or a group", () => {
 });
 
 describe("the meters and the scope of the mock for a lane or a group that is muted or soloed", () => {
-  // The reach fixture: groups 0 (lanes 4 and 7) and 2 (lane 9), lane 11 in none, and lane 14, which has no instrument.
+  // The reach fixture: groups 0 (lanes 4 and 6) and 2 (lane 7), lane 9 in none, and lane 11, which has no instrument.
   const GROUP_A = 0;
   const GROUP_B = 2;
-  const [LANE_1, LANE_2, LANE_3, LANE_4] = [4, 7, 9, 11];
+  const [LANE_1, LANE_2, LANE_3, LANE_4] = [4, 6, 7, 9];
+  const EMPTY_LANE = 11;
   const LEVEL = 0.35;
   const SILENT = 0;
 
@@ -2358,7 +2345,7 @@ describe("the meters and the scope of the mock for a lane or a group that is mut
     await flag(client, { type: "setMute", node: LANE_1, muted: true });
     await flag(client, { type: "setMute", node: LANE_2, muted: true });
     near(peaks(server), { [GROUP_A]: SILENT, [GROUP_B]: LEVEL, [MASTER]: LEVEL });
-    for (const node of [LANE_3, LANE_4, 14]) await flag(client, { type: "setMute", node, muted: true });
+    for (const node of [LANE_3, LANE_4, EMPTY_LANE]) await flag(client, { type: "setMute", node, muted: true });
     near(peaks(server), { [MASTER]: SILENT, [GROUP_A]: SILENT, [GROUP_B]: SILENT });
   });
 
@@ -2428,7 +2415,7 @@ describe("the meters and the scope of the mock for a lane or a group that is mut
     const { server, client } = await playing();
     const loud = (seconds = 1) => (decodeFrame(server.frame("scope", seconds, new Map(), 0))?.values ?? new Float32Array(0)).some((sample) => sample !== 0);
     expect(loud()).toBe(true);
-    for (const node of [LANE_1, LANE_2, LANE_3, LANE_4, 14]) await flag(client, { type: "setMute", node, muted: true });
+    for (const node of [LANE_1, LANE_2, LANE_3, LANE_4, EMPTY_LANE]) await flag(client, { type: "setMute", node, muted: true });
     expect(loud()).toBe(false);
     await flag(client, { type: "setMute", node: LANE_4, muted: false });
     expect(loud()).toBe(true);
@@ -3262,7 +3249,7 @@ describe("telemetry", () => {
     const server = new MockServer(fast);
     const client = await open(server, { telemetry: ["modulation"] });
     const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    await client.request({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
     const envelope = client.state.snapshot?.graph.nodes.find((n) => n.name === "ADSR");
     const edge = tracerSnapshot.graph.edges.find((e) => e.kind === "modulation");
     expect(edge?.kind === "modulation" ? edge.amount : undefined).toBe(0.4);
@@ -3287,7 +3274,7 @@ describe("the value of a setting that an LFO drives, and of each stage of an env
     const server = new MockServer({ telemetryPeriod: 2, clock: () => time.seconds });
     const client = await open(server, { telemetry: ["modulation"] });
     const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: oscillator.id });
     const second = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "modulator" && n.id !== lfo.id).at(-1);
     await client.request({ type: "addModEdge", modulator: second?.id ?? -1, to: { node: lfo.id, port: { type: "rate" } } });
     const rate = (): number | undefined => client.telemetry.value("modulation", lfo.id, { type: "rate" }, "effective");
@@ -3301,8 +3288,8 @@ describe("the value of a setting that an LFO drives, and of each stage of an env
     const server = new MockServer({ telemetryPeriod: 2, clock: () => time.seconds });
     const client = await open(server, { telemetry: ["modulation"] });
     const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "steps" });
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "steps", hears: oscillator.id });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: oscillator.id });
     const nodes = client.state.snapshot?.graph.nodes ?? [];
     const sequencer = nodes.find((n) => n.kind === "modulator" && n.source.type === "steps");
     const second = nodes.filter((n) => n.kind === "modulator" && n.source.type === "lfo" && n.id !== lfo.id).at(-1);
@@ -3320,8 +3307,8 @@ describe("the value of a setting that an LFO drives, and of each stage of an env
     const server = new MockServer({ telemetryPeriod: 2, clock: () => time.seconds });
     const client = await open(server, { telemetry: ["modulation"] });
     const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "lfo" });
+    await client.request({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: oscillator.id });
     const nodes = client.state.snapshot?.graph.nodes ?? [];
     const envelope = nodes.filter((n) => n.kind === "modulator" && n.source.type === "envelope").at(-1);
     const second = nodes.filter((n) => n.kind === "modulator" && n.source.type === "lfo" && n.id !== lfo.id).at(-1);
@@ -3340,8 +3327,8 @@ describe("the value of a setting that an LFO drives, and of each stage of an env
     const server = new MockServer({ telemetryPeriod: 2 });
     const client = await open(server, { telemetry: ["modulation"] });
     const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    await client.request({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
+    await client.request({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
     const [driver, driven] = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.name === "ADSR");
     await client.request({ type: "addModEdge", modulator: driver?.id ?? -1, to: { node: driven?.id ?? -1, port: { type: stage } } });
     const value = (): number | undefined => client.telemetry.value("modulation", driven?.id ?? -1, { type: stage }, "effective");
@@ -3360,8 +3347,8 @@ describe("the value of a setting that two cables drive", () => {
     // way down the knob to the lowest, and the later one writes last.
     const client = await open(new MockServer({ telemetryPeriod: 2 }), { telemetry: ["modulation"] });
     const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    await client.request({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
+    await client.request({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
     const [first, second] = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.name === "ADSR");
     for (const modulator of [first, second]) await client.request({ type: "addModEdge", modulator: modulator?.id ?? -1, to: { node: lfo.id, port: { type: "rate" } } });
     const cables = (client.state.snapshot?.graph.edges ?? []).filter((e) => e.kind === "modulation" && e.to.port.type === "rate");
@@ -3384,8 +3371,8 @@ describe("the value of a parameter that several cables drive", () => {
     const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
     await client.request({ type: "addGroup", members: [oscillator.id] });
     const group = (client.state.snapshot?.graph.nodes ?? []).find((n) => n.kind === "group");
-    await client.request({ type: "addModulator", parent: group?.id ?? -1, kind: "lfo" });
-    const groupLfo = (client.state.snapshot?.graph.nodes ?? []).find((n) => n.kind === "modulator" && n.parent === group?.id);
+    await client.request({ type: "addFreeModulator", kind: "lfo", hears: group?.id ?? -1 });
+    const groupLfo = (client.state.snapshot?.graph.nodes ?? []).find((n) => n.kind === "modulator" && n.hears === group?.id);
     for (const index of [0, 1]) await client.request({ type: "addModEdge", modulator: groupLfo?.id ?? -1, to: { node: filter.id, port: { type: "param", index } } });
   }
 
@@ -3395,7 +3382,7 @@ describe("the value of a parameter that several cables drive", () => {
     const server = new MockServer({ telemetryPeriod: 2, clock: () => 0.5 });
     const client = await open(server, { telemetry: ["modulation"] });
     const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
-    await client.request({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+    await client.request({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
     const envelope = (client.state.snapshot?.graph.nodes ?? []).find((n) => n.name === "ADSR");
     await client.request({ type: "addModEdge", modulator: envelope?.id ?? -1, to: { node: filter.id, port: { type: "param", index: 0 } } });
     await until(() => Math.abs((cutoffOf(client) ?? 0) - (0.5 + 0.4 - 0.25)) < 1e-5, "the cutoff with both");
@@ -3412,15 +3399,17 @@ describe("the value of a parameter that several cables drive", () => {
     await until(() => cutoffOf(client) === 1, "the cutoff at the top of its range");
   });
 
-  test("is what the lane's own modulators make of it alone where they drive it too: the group's offset is not added, as the engine does it", async () => {
-    // A quarter of a period of the group's LFO (1 Hz, at its top) is 0.25 s, when the lane's LFO (0.5 Hz) is at sin(pi/4) of the way: the group's LFO would add 0.5 to the cutoff.
+  test("is the sum of what the modulators that hear the lane and the group make of it, each from the value the user set, as the engine adds them (every modulator is the session's own: step 96)", async () => {
+    // A quarter of a period of the group's LFO (1 Hz, at its top) is 0.25 s, when the lane's LFO (0.5 Hz) is at sin(pi/4) of the way: the group's LFO adds 0.5 of the range to the 0.1 that the user set,
+    // and the lane's 0.4 of it times the sine.
     const server = new MockServer({ telemetryPeriod: 2, clock: () => 0.25 / MODULATOR_FIELD_DEFAULTS.rate });
     const client = await open(server, { telemetry: ["modulation"] });
+    await client.request(cutoff(0.1));
     await groupWithAnLfo(client);
-    await until(() => Math.abs((cutoffOf(client) ?? 9) - (0.5 + 0.4 * Math.sin(Math.PI / 4))) < 1e-5, "the cutoff the lane's LFO makes of it");
+    await until(() => Math.abs((cutoffOf(client) ?? 9) - (0.1 + 0.4 * Math.sin(Math.PI / 4) + 0.5)) < 1e-5, "the cutoff with both LFOs");
   });
 
-  test("is what the group's modulators make of it where no modulator of the lane drives it", async () => {
+  test("is what a modulator that hears a group makes of it where no other modulator drives it", async () => {
     const server = new MockServer({ telemetryPeriod: 2, clock: () => 0.25 / MODULATOR_FIELD_DEFAULTS.rate });
     const client = await open(server, { telemetry: ["modulation"] });
     await groupWithAnLfo(client);
@@ -3471,7 +3460,7 @@ describe("what a MIDI control puts out and does in the mock engine, which has no
       const server = new MockServer({ telemetryPeriod: 2, snapshot: withControl(control) });
       const client = await open(server, { telemetry: ["modulation"] });
       const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
-      await client.request({ type: "addModulator", parent: oscillator.id, kind: "lfo" });
+      await client.request({ type: "addFreeModulator", kind: "lfo", hears: oscillator.id });
       const second = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "modulator" && n.id !== lfo.id).at(-1);
       // The control drives the rate of the LFO that is new (a rate of 1 Hz, which the user set): the rate is 1.
       await client.request({ type: "addModEdge", modulator: lfo.id, to: { node: second?.id ?? -1, port: { type: "rate" } } });
@@ -3636,8 +3625,8 @@ describe("what a velocity and a key put out and do in the mock engine: they foll
       await client.request({ type: "addGroup", members: [lane.id] });
       const group = client.state.snapshot?.graph.nodes.find((n) => n.kind === "group");
       if (!group) throw new Error("a group was made");
-      await client.request({ type: "addModulator", parent: group.id, kind: control.type === "key" ? "key" : "velocity" });
-      const made = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "modulator" && n.parent === group.id).at(-1);
+      await client.request({ type: "addFreeModulator", kind: control.type === "key" ? "key" : "velocity", hears: group.id });
+      const made = (client.state.snapshot?.graph.nodes ?? []).filter((n) => n.kind === "modulator" && n.hears === group.id).at(-1);
       if (!made) throw new Error("the group has a control");
       return { client, output: made.id };
     }

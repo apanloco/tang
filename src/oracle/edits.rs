@@ -256,7 +256,7 @@ impl Edit {
             }
             Edit::RemoveModulator { lane: l, index } => {
                 let lane = lane(*l)?;
-                let modulators: Vec<_> = lane.modulators.iter().chain(model.free_modulators.iter().filter(|m| model.ear_of(m) == Some(lane.node))).collect();
+                let modulators: Vec<_> = model.free_modulators.iter().filter(|m| model.ear_of(m) == Some(lane.node)).collect();
                 if modulators.is_empty() {
                     return None;
                 }
@@ -451,27 +451,25 @@ plugin = "builtin:osc"
     }
 
     #[test]
-    fn a_lanes_modulator_is_one_in_its_rack_and_then_one_of_the_sessions_own_that_hears_it_by_a_place_that_wraps_round() {
+    fn a_lanes_modulator_is_one_of_the_sessions_own_that_hears_it_and_is_aimed_at_by_a_place_that_wraps_round() {
         let mut ctl = controller(TWO_LANES);
         let (lane0, lane1) = (ctl.model.instruments[0].node, ctl.model.instruments[1].node);
-        // A session that was built by intents can have a modulator in a lane's rack (the controller's own method makes one): it is the only one of the first lane, to begin with.
-        ctl.add_modulator(crate::plugin::chain::ModulatorLocation::Lane(0), crate::app::model::ModSourceSlot::new_lfo()).unwrap();
-        let own = ctl.model.instruments[0].modulators.iter().map(|m| m.node).collect::<Vec<_>>();
-        assert_eq!(own.len(), 1);
-        assert_eq!(Edit::RemoveModulator { lane: 0, index: 5 }.resolve(&ctl), Some(Intent::RemoveNode { node: own[0] }));
-        // The "+" of the lane makes one of the session's own that hears it, and that is the lane's next after those that its rack has.
+        // A lane that nothing hears has no modulator to take out.
+        assert_eq!(Edit::RemoveModulator { lane: 0, index: 5 }.resolve(&ctl), None);
+        // The "+" of a lane makes one of the session's own that hears it.
         assert_eq!(Edit::AddModulator { lane: 0, kind: ModulatorKind::Envelope }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddModulator { lane: 0, kind: ModulatorKind::Lfo }.make(&mut ctl), Outcome::Applied);
         assert_eq!(Edit::AddModulator { lane: 1, kind: ModulatorKind::Lfo }.make(&mut ctl), Outcome::Applied);
-        assert_eq!(ctl.model.free_modulators.iter().map(|m| m.ear).collect::<Vec<_>>(), [Some(lane0), Some(lane1)]);
-        let hearing = ctl.model.free_modulators[0].node;
-        let lane_modulators: Vec<NodeId> = own.iter().copied().chain([hearing]).collect();
+        assert_eq!(ctl.model.free_modulators.iter().map(|m| m.ear).collect::<Vec<_>>(), [Some(lane0), Some(lane0), Some(lane1)]);
+        let nodes = ctl.model.free_modulators.iter().map(|m| m.node).collect::<Vec<_>>();
+        // The first lane's are the first two, counted from a place that wraps round the number it has.
         for index in 0..7 {
-            assert_eq!(Edit::RemoveModulator { lane: 0, index }.resolve(&ctl), Some(Intent::RemoveNode { node: lane_modulators[index % lane_modulators.len()] }), "{index}");
+            assert_eq!(Edit::RemoveModulator { lane: 0, index }.resolve(&ctl), Some(Intent::RemoveNode { node: nodes[index % 2] }), "{index}");
         }
         // The second lane has the one that hears it and no other.
-        assert_eq!(Edit::RemoveModulator { lane: 1, index: 3 }.resolve(&ctl), Some(Intent::RemoveNode { node: ctl.model.free_modulators[1].node }));
+        assert_eq!(Edit::RemoveModulator { lane: 1, index: 3 }.resolve(&ctl), Some(Intent::RemoveNode { node: nodes[2] }));
         assert_eq!(Edit::RemoveModulator { lane: 1, index: 0 }.make(&mut ctl), Outcome::Applied);
-        assert_eq!(ctl.model.free_modulators.len(), 1, "it is taken out");
+        assert_eq!(ctl.model.free_modulators.len(), 2, "it is taken out");
         assert_eq!(Edit::RemoveModulator { lane: 1, index: 0 }.make(&mut ctl), Outcome::Skipped, "and then the lane has none");
     }
 

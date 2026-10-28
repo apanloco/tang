@@ -11,7 +11,7 @@ import { PatchView } from "./PatchView";
 afterEach(cleanup);
 
 // The session of the sources fixture (`testutil::NOTES`): the keys (node 7) and a device (8, "Launchkey Mini MK4 37") are the sources; group 0 ("Pad") with Reverb 1 on its bus; lane 2 ("Oscillator 1") in it with
-// Filter 3 and an LFO (4); lane 5 ("Oscillator 2"), which has a cable of notes (1) from the keys, and an empty lane (6). The lanes that no cable of notes ends at, 2 and 6, hear both sources by a link each.
+// Filter 3; lane 4 ("Oscillator 2"), which has a cable of notes (1) from the keys, and an empty lane (5); and an LFO (6) that hears lane 2. The lanes that no cable of notes ends at, 2 and 5, hear both sources by a link each.
 const found = sourcesFixture.cases.find((entry) => entry.name === "wired");
 if (!found) throw new Error("the fixture has the session of the sources");
 const snapshot: Snapshot = found.snapshot;
@@ -112,7 +112,7 @@ describe("the ports of notes of the canvas", () => {
     const { view } = await rig(<PatchView />, { snapshot, inputs: INPUTS });
     await nodeOf(MASTER);
     expect(nodesWith(view, "eventsOut")).toEqual([7, 8]);
-    expect(nodesWith(view, "eventsIn")).toEqual([2, 5, 6]);
+    expect(nodesWith(view, "eventsIn")).toEqual([2, 4, 5]);
   });
 
   test("start a cable at an output and end it at an input, and not the other way round", async () => {
@@ -136,7 +136,7 @@ describe("the handles of the nodes that move notes", () => {
     expect(await handles(7)).toEqual(["eventsOut:source:right"]);
     expect(await handles(8)).toEqual(["eventsOut:source:right"]);
     expect(await handles(2)).toEqual(["eventsIn:target:left", "audioOut:source:right"]);
-    expect(await handles(6)).toEqual(["eventsIn:target:left", "audioOut:source:right"]);
+    expect(await handles(5)).toEqual(["eventsIn:target:left", "audioOut:source:right"]);
   });
 });
 
@@ -147,7 +147,7 @@ describe("the cables of notes and the links by which the lanes hear the sources"
       expect(cablesOf(view, "hears")).toHaveLength(4);
     });
     expect(cablesOf(view, "notes").map((path) => path.id)).toEqual(["notes:1"]);
-    expect(cablesOf(view, "hears").map((path) => path.id)).toEqual(["hears:7>2", "hears:7>6", "hears:8>2", "hears:8>6"]);
+    expect(cablesOf(view, "hears").map((path) => path.id)).toEqual(["hears:7>2", "hears:7>5", "hears:8>2", "hears:8>5"]);
     expect(view.container.querySelectorAll(".react-flow__edge-notes")).toHaveLength(1);
     expect(view.container.querySelectorAll(".react-flow__edge-hears")).toHaveLength(4);
     // (The links of the audio path, the audio cable and the cable of modulation are as they were: 6 + 1 + 1.)
@@ -186,8 +186,8 @@ describe("the cables of notes and the links by which the lanes hear the sources"
     await waitFor(() => {
       expect(cablesOf(view, "notes")).toHaveLength(0);
     });
-    // (Lane 5 hears both sources now, as the lanes 2 and 6 do.)
-    expect(cablesOf(view, "hears").map((path) => path.id)).toEqual(["hears:7>2", "hears:7>5", "hears:7>6", "hears:8>2", "hears:8>5", "hears:8>6"]);
+    // (Lane 4 hears both sources now, as the lanes 2 and 5 do.)
+    expect(cablesOf(view, "hears").map((path) => path.id)).toEqual(["hears:7>2", "hears:7>4", "hears:7>5", "hears:8>2", "hears:8>4", "hears:8>5"]);
     expect(server.history).toEqual({ undo: "remove a cable of notes", redo: null });
     await client.request({ type: "undo" });
     await waitFor(() => {
@@ -212,7 +212,7 @@ describe("the cables of notes and the links by which the lanes hear the sources"
     });
     await screen.findByRole("button", { name: "Remove cable Launchkey Mini MK4 37 → Oscillator 1" });
     expect(cablesOf(view, "notes").map((path) => path.id)).toEqual(["notes:1", "notes:3"]);
-    expect(cablesOf(view, "hears").map((path) => path.id)).toEqual(["hears:7>6", "hears:8>6"]);
+    expect(cablesOf(view, "hears").map((path) => path.id)).toEqual(["hears:7>5", "hears:8>5"]);
   });
 });
 
@@ -236,7 +236,7 @@ describe("the menu that sends the notes of a source", () => {
   test("lists, when it is opened, the lanes that take notes from the source, by the names the canvas gives them, in the order of the session", async () => {
     await rig(<PatchView />, { snapshot, inputs: INPUTS });
     fireEvent.click(await buttonIn(7, "Keys"));
-    // (Lane 5 has a cable from the keys already.)
+    // (Lane 4 has a cable from the keys already.)
     expect(listed()).toEqual(["Oscillator 1", "(empty)"]);
   });
 
@@ -256,7 +256,7 @@ describe("the menu that sends the notes of a source", () => {
     });
     await screen.findByRole("button", { name: "Remove cable Keys → Oscillator 1" });
     expect(cablesOf(view, "notes").map((path) => path.id)).toEqual(["notes:1", "notes:3"]);
-    expect(cablesOf(view, "hears").map((path) => path.id)).toEqual(["hears:7>6", "hears:8>6"]);
+    expect(cablesOf(view, "hears").map((path) => path.id)).toEqual(["hears:7>5", "hears:8>5"]);
     // (The focus is on the button that opened the menu, so that the next one is a key away.)
     expect(document.activeElement).toBe(menu);
     fireEvent.click(menu);
@@ -267,7 +267,7 @@ describe("the menu that sends the notes of a source", () => {
     const { server } = await rig(<PatchView />, { snapshot, inputs: INPUTS });
     const menu = await buttonIn(7, "Keys");
     act(() => {
-      server.apply({ type: "addCable", from: { node: 7, port: { type: "eventsOut" } }, to: { node: 6, port: { type: "eventsIn" } }, gain: null });
+      server.apply({ type: "addCable", from: { node: 7, port: { type: "eventsOut" } }, to: { node: 5, port: { type: "eventsIn" } }, gain: null });
     });
     await screen.findByRole("button", { name: "Remove cable Keys → (empty)" });
     fireEvent.click(menu);
@@ -280,7 +280,7 @@ describe("the menu that sends the notes of a source", () => {
     expect(menu.disabled).toBe(false);
     act(() => {
       server.apply({ type: "addCable", from: { node: 7, port: { type: "eventsOut" } }, to: { node: 2, port: { type: "eventsIn" } }, gain: null });
-      server.apply({ type: "addCable", from: { node: 7, port: { type: "eventsOut" } }, to: { node: 6, port: { type: "eventsIn" } }, gain: null });
+      server.apply({ type: "addCable", from: { node: 7, port: { type: "eventsOut" } }, to: { node: 5, port: { type: "eventsIn" } }, gain: null });
     });
     await waitFor(() => {
       expect(menu.disabled).toBe(true);
@@ -302,7 +302,7 @@ describe("the menu by which a lane takes notes", () => {
   test("has an id of its own among the ids of the page: the number of the node after `notes-from-`", async () => {
     await rig(<PatchView />, { snapshot, inputs: INPUTS });
     expect((await buttonIn(2, "Oscillator 1")).id).toBe("notes-from-2");
-    expect((await buttonIn(6, "(empty)")).id).toBe("notes-from-6");
+    expect((await buttonIn(5, "(empty)")).id).toBe("notes-from-5");
   });
 
   test("lists, when it is opened, the sources that have no cable to the lane, by the names the canvas gives them", async () => {
@@ -311,19 +311,19 @@ describe("the menu by which a lane takes notes", () => {
     expect(listed()).toEqual(["Keys", "Launchkey Mini MK4 37"]);
   });
 
-  test("lists the sources that the lane has no cable from, and not the one it has: lane 5 has a cable from the keys", async () => {
+  test("lists the sources that the lane has no cable from, and not the one it has: lane 4 has a cable from the keys", async () => {
     await rig(<PatchView />, { snapshot, inputs: INPUTS });
-    fireEvent.click(await buttonIn(5, "Oscillator 2"));
+    fireEvent.click(await buttonIn(4, "Oscillator 2"));
     expect(listed()).toEqual(["Launchkey Mini MK4 37"]);
   });
 
   test("draws the cable that is chosen, from the source to the lane, and the source is not listed again", async () => {
     const { requests } = await rig(<PatchView />, { snapshot, inputs: INPUTS });
-    const menu = await buttonIn(6, "(empty)");
+    const menu = await buttonIn(5, "(empty)");
     fireEvent.click(menu);
     fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Launchkey Mini MK4 37" }));
     await waitFor(() => {
-      expect(requests()).toEqual([{ intent: { type: "addCable", from: { node: 8, port: { type: "eventsOut" } }, to: { node: 6, port: { type: "eventsIn" } }, gain: null } }]);
+      expect(requests()).toEqual([{ intent: { type: "addCable", from: { node: 8, port: { type: "eventsOut" } }, to: { node: 5, port: { type: "eventsIn" } }, gain: null } }]);
     });
     await screen.findByRole("button", { name: "Remove cable Launchkey Mini MK4 37 → (empty)" });
     expect(document.activeElement).toBe(menu);
@@ -333,10 +333,10 @@ describe("the menu by which a lane takes notes", () => {
 
   test("is shut when no source is left to take notes from: a lane that has a cable from each", async () => {
     const { server } = await rig(<PatchView />, { snapshot, inputs: INPUTS });
-    const menu = await buttonIn(5, "Oscillator 2");
+    const menu = await buttonIn(4, "Oscillator 2");
     expect(menu.disabled).toBe(false);
     act(() => {
-      server.apply({ type: "addCable", from: { node: 8, port: { type: "eventsOut" } }, to: { node: 5, port: { type: "eventsIn" } }, gain: null });
+      server.apply({ type: "addCable", from: { node: 8, port: { type: "eventsOut" } }, to: { node: 4, port: { type: "eventsIn" } }, gain: null });
     });
     await waitFor(() => {
       expect(menu.disabled).toBe(true);

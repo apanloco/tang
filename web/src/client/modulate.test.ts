@@ -21,9 +21,9 @@ const effectOf = (parent: NodeId, name: string): Node => {
 };
 const filter = effectOf(lane0.id, "Filter");
 const bus = effectOf(group.id, "Filter");
-const lfo = nodes.find((n) => n.kind === "modulator" && n.parent === lane0.id && n.source.type === "lfo");
-const envelope = nodes.find((n) => n.kind === "modulator" && n.parent === lane0.id && n.source.type === "envelope");
-if (!lfo || !envelope) throw new Error("the fixture has an LFO and an envelope in the first lane");
+const lfo = nodes.find((n) => n.kind === "modulator" && n.hears === lane0.id && n.source.type === "lfo");
+const envelope = nodes.find((n) => n.kind === "modulator" && n.hears === lane0.id && n.source.type === "envelope");
+if (!lfo || !envelope) throw new Error("the fixture has an LFO and an envelope that hear the first lane");
 const cableOfLfo = snapshot.graph.edges.find((e) => e.kind === "modulation" && e.from.node === lfo.id);
 if (cableOfLfo?.kind !== "modulation") throw new Error("the LFO has a cable");
 
@@ -125,9 +125,9 @@ describe("the mock engine's modulate", () => {
     expect(list.findIndex((n) => n.id === node.id)).toBe(list.findIndex((n) => n.kind === "master") - 1);
     // A second one goes after the first.
     server.apply(modulate(filter.id, param(filter, "cutoff")));
-    const free = server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.parent === null);
-    expect(free.length).toBe(2);
-    const [, second] = free;
+    const free = server.snapshot.graph.nodes.filter((n) => n.kind === "modulator");
+    expect(free.length).toBe(snapshot.graph.nodes.filter((n) => n.kind === "modulator").length + 2); // (the session's own, and the two that were made)
+    const second = free.at(-1);
     expect(server.snapshot.graph.nodes.findIndex((n) => n.id === second?.id)).toBe(server.snapshot.graph.nodes.findIndex((n) => n.kind === "master") - 1);
   });
 
@@ -136,7 +136,7 @@ describe("the mock engine's modulate", () => {
     for (const hears of [lane0.id, group.id, null] as const) {
       const server = fresh();
       server.apply({ type: "addFreeModulator", kind: "lfo", hears });
-      const free = server.snapshot.graph.nodes.find((n) => n.kind === "modulator" && n.parent === null);
+      const free = server.snapshot.graph.nodes.filter((n) => n.kind === "modulator").at(-1);
       if (!free) throw new Error("a modulator of the session's own was made");
       const before = server.snapshot;
       server.apply(modulate(free.id, rate));
@@ -207,7 +207,7 @@ describe("the mock engine's modulate", () => {
       expect(server.history, what).toEqual({ undo: null, redo: null });
       // What is made next has the ids and the slots it would have had if nothing had been asked.
       const next = fresh();
-      for (const server_ of [server, next]) server_.apply({ type: "addModulator", parent: lane0.id, kind: "lfo" });
+      for (const server_ of [server, next]) server_.apply({ type: "addFreeModulator", kind: "lfo", hears: lane0.id });
       expect(server.snapshot, what).toEqual(next.snapshot);
     }
   });

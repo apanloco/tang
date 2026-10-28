@@ -180,7 +180,7 @@ describe("the mock engine's audio cables", () => {
 
   test("refuse a level that is not a number, in the controller's words, for a cable that is drawn and for one that is turned, and change nothing", () => {
     const server = new MockServer({ snapshot: audioCablesFixture.snapshot });
-    const draw = (gain: number): Intent => ({ type: "addCable", from: { node: 10, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } }, gain });
+    const draw = (gain: number): Intent => ({ type: "addCable", from: { node: 9, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } }, gain });
     // (Rust writes the infinite 32-bit numbers `inf` and `-inf`; a number that is finite to the page and too big for 32 bits is one of them there.)
     for (const [gain, words] of [[Number.NaN, "NaN"], [Infinity, "inf"], [-Infinity, "-inf"], [1e39, "inf"], [-1e39, "-inf"]] as const) {
       expect(() => server.apply(draw(gain)), `draw ${words}`).toThrow(`${words} is not a value for the level of a cable`);
@@ -192,7 +192,7 @@ describe("the mock engine's audio cables", () => {
 
   test("take out, for a draw, the one cable it made and no more: not what made two, none, a node besides, or a cable that is not there", () => {
     const { snapshot } = audioCablesFixture;
-    const draw: Intent = { type: "addCable", from: { node: 10, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } }, gain: null };
+    const draw: Intent = { type: "addCable", from: { node: 9, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } }, gain: null };
     expect(takesOut(snapshot, draw, { nodes: [], edges: [3] })).toEqual({ type: "removeEdge", edge: 3 });
     expect(takesOut(snapshot, draw, { nodes: [], edges: [] })).toBeNull();
     expect(takesOut(snapshot, draw, { nodes: [], edges: [3, 4] })).toBeNull();

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP } from "../protocol";
-import type { Edge, Event, Intent, ModulatorKind, Node, Port, Snapshot } from "../protocol";
+import type { Event, Intent, ModulatorKind, Node, Port, Snapshot } from "../protocol";
 import { builtinCatalog, groupsFixture, historyFixture, shapeOf } from "./fixtures";
 import type { HistoryRow } from "./fixtures";
 import { History, planOf, stepOf, takesOut } from "./history";
@@ -183,12 +183,12 @@ describe("what an add is to the history", () => {
     expect(labelOf({ type: "addEffect", parent: lane0, plugin: "builtin:reverb" })).toBe("add Reverb");
     expect(labelOf({ type: "addInstrument", plugin: "builtin:osc" })).toBe("add Oscillator as an instrument");
     expect(labelOf({ type: "addFreeEffect", plugin: "builtin:reverb" })).toBe("add Reverb");
-    expect(labelOf({ type: "addModulator", parent: lane0, kind: "lfo" })).toBe("add an LFO");
-    expect(labelOf({ type: "addModulator", parent: lane0, kind: "envelope" })).toBe("add an envelope");
-    expect(labelOf({ type: "addModulator", parent: lane0, kind: "midiLearn" })).toBe("add a MIDI control");
-    expect(labelOf({ type: "addModulator", parent: lane0, kind: "macro" })).toBe("add a macro");
-    expect(labelOf({ type: "addModulator", parent: lane0, kind: "velocity" })).toBe("add a velocity control");
-    expect(labelOf({ type: "addModulator", parent: lane0, kind: "key" })).toBe("add a key control");
+    expect(labelOf({ type: "addFreeModulator", kind: "lfo", hears: lane0 })).toBe("add an LFO");
+    expect(labelOf({ type: "addFreeModulator", kind: "envelope", hears: lane0 })).toBe("add an envelope");
+    expect(labelOf({ type: "addFreeModulator", kind: "midiLearn", hears: lane0 })).toBe("add a MIDI control");
+    expect(labelOf({ type: "addFreeModulator", kind: "macro", hears: lane0 })).toBe("add a macro");
+    expect(labelOf({ type: "addFreeModulator", kind: "velocity", hears: lane0 })).toBe("add a velocity control");
+    expect(labelOf({ type: "addFreeModulator", kind: "key", hears: lane0 })).toBe("add a key control");
     expect(labelOf({ type: "addModEdge", modulator: nodeOf("LFO"), to: { node: lane0, port: { type: "param", index: 1 } } })).toBe("draw a cable");
     expect(labelOf({ type: "addGroup", members: [] })).toBe("add a group");
     expect(labelOf({ type: "setLaneGroup", node: lane1, group: other })).toBe("put a lane in a group");
@@ -473,7 +473,7 @@ describe("what changing a step sequencer is to the history", () => {
 
   test("taking one out, and adding one, are steps in the words of the button that adds one", () => {
     expect(plan({ type: "removeNode", node: sequencer.id })).toEqual({ removed: { label: "remove a step sequencer", intent: { type: "removeNode", node: sequencer.id }, at: 7 } });
-    expect(plan({ type: "addModulator", parent: lane0.id, kind: "steps" })).toEqual({ added: { label: "add a step sequencer", intent: { type: "addModulator", parent: lane0.id, kind: "steps" }, at: 7 } });
+    expect(plan({ type: "addFreeModulator", kind: "steps", hears: lane0.id })).toEqual({ added: { label: "add a step sequencer", intent: { type: "addFreeModulator", kind: "steps", hears: lane0.id }, at: 7 } });
   });
 });
 
@@ -744,29 +744,6 @@ describe("what a removal of a group is to the history", () => {
     }
   });
 
-  test("is what cannot be put back when cables of its modulators, or that drive their depths, drive each other's depths round to themselves", () => {
-    // A group with two modulators whose cables drive each other's depths (the fixture has none: a file can make that, and the controller does not put it back).
-    const [group] = groups;
-    if (!group) throw new Error("the fixture has a group");
-    const modulators: Node[] = [
-      { id: 9_001, parent: group.id, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } },
-      { id: 9_002, parent: group.id, name: "LFO 2", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 2, retrigger: false, fade: 0, sync: 0 } },
-    ];
-    const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument");
-    if (!lane) throw new Error("the fixture has a lane");
-    const cable = (id: number, from: number, to: Edge["to"]): Edge => ({ from: { node: from, port: { type: "modOut" } }, to, kind: "modulation", id, amount: 0.5 });
-    // Cable 9101 drives the depth of 9102 and the other way round; both belong to the group's modulators.
-    const edges = [
-      ...snapshot.graph.edges,
-      cable(9_101, 9_001, { node: 9_002, port: { type: "depth", edge: 9_102 } }),
-      cable(9_102, 9_002, { node: 9_001, port: { type: "depth", edge: 9_101 } }),
-    ];
-    const cycle = { ...snapshot, graph: { ...snapshot.graph, nodes: [...snapshot.graph.nodes, ...modulators], edges } };
-    expect(plan({ type: "removeNode", node: group.id }, cycle)).toBe("barrier");
-    // (One of the two driving a place that is not a cable's depth is no cycle.)
-    const chain = { ...cycle, graph: { ...cycle.graph, edges: edges.map((e) => (e.kind === "modulation" && e.id === 9_102 ? { ...e, to: { node: lane.id, port: { type: "param" as const, index: 1 } } } : e)) } };
-    expect(plan({ type: "removeNode", node: group.id }, chain)).toEqual({ removed: { label: `remove ${group.name}`, intent: { type: "removeNode", node: group.id }, at: 7 } });
-  });
 });
 
 describe("what saving is to the history", () => {
@@ -901,7 +878,7 @@ describe("the mock engine's undo of what is added", () => {
     const filter = server.snapshot.graph.nodes.find((n) => n.name === "Filter" && n.parent === lane0);
     if (!filter) throw new Error("no filter");
     const before = graphOf(server);
-    const lfo = made(server, { type: "addModulator", parent: lane0, kind: "lfo" });
+    const lfo = made(server, { type: "addFreeModulator", kind: "lfo", hears: lane0 });
     const withModulator = graphOf(server);
     server.apply({ type: "addModEdge", modulator: lfo.id, to: { node: filter.id, port: { type: "param", index: 1 } } });
     const withCable = graphOf(server);
@@ -982,7 +959,7 @@ describe("the mock engine's undo of what is added", () => {
     expect(labels(server)).toEqual([null, null]);
   });
 
-  test("moves a lane between groups and back, and forgets what came before a lane that leaves a group that drives it", () => {
+  test("moves a lane between groups and back, and the cables of a modulator that hears the group stay when a lane leaves it", () => {
     const server = fresh();
     const before = graphOf(server);
     server.apply({ type: "setLaneGroup", node: lane1, group: other });
@@ -991,12 +968,13 @@ describe("the mock engine's undo of what is added", () => {
     server.apply({ type: "setLaneGroup", node: lane0, group: other });
     server.apply({ type: "undo" });
     expect(graphOf(server)).toBe(before);
-    // A group's own modulator drives the lane: the cable goes when the lane leaves, and a step does not bring it back.
-    const lfo = made(server, { type: "addModulator", parent: pad, kind: "lfo" });
+    // A modulator that hears the group drives the lane: the cable stays when the lane leaves (it names the plugin it drives), and the move is a step like every other.
+    const lfo = made(server, { type: "addFreeModulator", kind: "lfo", hears: pad });
     server.apply({ type: "addModEdge", modulator: lfo.id, to: { node: lane0, port: { type: "param", index: 1 } } });
     expect(server.history.undo).toBe("draw a cable");
     server.apply({ type: "setLaneGroup", node: lane0, group: null });
-    expect(labels(server)).toEqual([null, null]);
+    expect(labels(server)).toEqual(["take a lane out of its group", null]);
+    expect(server.snapshot.graph.edges.some((edge) => edge.kind === "modulation" && edge.from.node === lfo.id)).toBe(true);
   });
 
   test("leaves the history as it was for an add that is refused", () => {
@@ -1007,7 +985,7 @@ describe("the mock engine's undo of what is added", () => {
       { type: "addEffect", parent: lane0, plugin: "builtin:nothing" },
       { type: "addEffect", parent: 9_999, plugin: "builtin:reverb" },
       { type: "addInstrument", plugin: "builtin:reverb" },
-      { type: "addModulator", parent: 9_999, kind: "lfo" },
+      { type: "addFreeModulator", kind: "lfo", hears: 9_999 },
       { type: "addGroup", members: [9_999] },
       { type: "setLaneGroup", node: 9_999, group: null },
     ];
@@ -1029,9 +1007,9 @@ describe("the mock engine's undo of what is taken out", () => {
   const fresh = (): MockServer => new MockServer({ snapshot: historyFixture.snapshot });
   const lanes = historyFixture.snapshot.graph.nodes.flatMap((n) => (n.kind === "instrument" ? [n.id] : []));
   const [lane0] = lanes;
-  const modulators = historyFixture.snapshot.graph.nodes.flatMap((n) => (n.kind === "modulator" && n.parent === lane0 ? [n] : []));
+  const modulators = historyFixture.snapshot.graph.nodes.flatMap((n) => (n.kind === "modulator" && n.hears === lane0 ? [n] : []));
   const [lfo, envelope] = modulators;
-  if (lane0 === undefined || !lfo || !envelope) throw new Error("the fixture has a lane with two modulators");
+  if (lane0 === undefined || !lfo || !envelope) throw new Error("the fixture has a lane that two modulators hear");
   const cableOf = (server: MockServer, modulator: number): number => {
     const found = server.snapshot.graph.edges.find((e) => e.kind === "modulation" && e.from.node === modulator);
     if (found?.kind !== "modulation") throw new Error("no cable");
@@ -1276,10 +1254,11 @@ describe("the mock engine's undo of what is taken out", () => {
 
   test("puts back a member lane with the cables of its group to it, and what drives their depths, each where it was", () => {
     const server = new MockServer({ snapshot: groupsFixture.snapshot });
-    // (Lane 10 is in group 0, whose modulators drive a parameter of it and the rate of its LFO; the envelope drives the depth of the first of those cables.)
+    // (Lane 7 is in group 0, whose modulator drives a parameter of it and the rate of the LFO that hears it; the envelope drives the depth of the first of those cables.)
     const before = pieces(server);
-    server.apply({ type: "removeNode", node: 10 });
-    expect(server.snapshot.graph.edges.filter((e) => e.kind === "modulation").map((e) => e.id)).toEqual([0, 4]);
+    server.apply({ type: "removeNode", node: 7 });
+    // (The cable to the lane's plugin goes, and the one that drove its depth; the modulators stay.)
+    expect(server.snapshot.graph.edges.filter((e) => e.kind === "modulation").map((e) => e.id)).toEqual([0, 2, 4]);
     expect(labels(server)).toEqual(["remove the lane of Oscillator", null]);
     server.apply({ type: "undo" });
     expect(pieces(server)).toBe(before);
@@ -1289,7 +1268,7 @@ describe("the mock engine's undo of what is taken out", () => {
   test("puts a group back with its bus effects, its members and its cables, by undo, and takes it out again by redo", () => {
     const server = new MockServer({ snapshot: groupsFixture.snapshot });
     const before = pieces(server);
-    // (Group 0 has two lanes, 3 and 10, an LFO and an envelope whose cables drive them; group 1 has the lane 9.)
+    // (Group 0 has two lanes, 3 and 7, and an LFO and an envelope hear it whose cables drive them; group 1 has the lane 6.)
     const [first, second] = groupsFixture.snapshot.graph.nodes.flatMap((n) => (n.kind === "group" ? [n.id] : []));
     if (first === undefined || second === undefined) throw new Error("the fixture has two groups");
     for (const group of [first, second]) {
@@ -1421,7 +1400,7 @@ describe("the mock engine's history", () => {
       "removeEdge",
       "addEffect",
       "addInstrument",
-      "addModulator",
+      "addFreeModulator",
       "addModEdge",
       "addCable",
       "setCableGain",
@@ -1440,7 +1419,7 @@ describe("the mock engine's history", () => {
     expect(refusals).toContain("there is nothing to undo");
     expect(refusals).toContain("there is nothing to redo");
     expect(refusals).toContain("only an effect has a feed");
-    expect(refusals).toContain("only a modulator that is in no lane and no group has an ear: a lane's or a group's hears its own");
+    expect(refusals).toContain("only a modulator has an ear");
     expect(refusals).toContain("only a lane or a group can be heard");
     expect(refusals).toContain("giving that effect its input back would make the audio go round, by the cables there are");
     expect(refusals).toContain("the lane has no instrument to take out");

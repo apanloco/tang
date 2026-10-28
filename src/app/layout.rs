@@ -26,7 +26,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::graph::{Endpoint, Port};
 use crate::app::model::{NodeId, SessionModel};
-use crate::plugin::chain::ModulatorLocation;
 use crate::telemetry::{self, MeterSlots, Slot};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -97,10 +96,7 @@ impl SessionModel {
         }
 
         let mut modulation = Vec::new();
-        let groups = self.groups.iter().enumerate().map(|(g, group)| (ModulatorLocation::Group(g), &group.modulators));
-        let lanes = self.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
-        let free = std::iter::once((ModulatorLocation::Free, &self.free_modulators));
-        for (_, rack) in groups.clone().chain(lanes.clone()).chain(free.clone()) {
+        for (_, rack) in self.racks() {
             for modulator in rack {
                 if let Some(slot) = modulator.output {
                     modulation.push(entry(slot, modulator.node, Port::ModOut, SlotKind::ModOutput));
@@ -110,10 +106,9 @@ impl SessionModel {
                 }
             }
         }
-        // The lanes' targets first, then the groups' and then the free modulators': of two slots for one parameter, the one that is nearer to the plugin holds the final value, and is
-        // the one that is named (a lane's modulators write it last, a group's before them and a free modulator's before those).
+        // Of two cables on one parameter, the first is the one that is named (they add up, and each publishes the same value).
         let mut named: HashSet<(NodeId, Port)> = HashSet::new();
-        for (at, rack) in lanes.chain(groups).chain(free) {
+        for (at, rack) in self.racks() {
             for (index, modulator) in rack.iter().enumerate() {
                 for target in &modulator.targets {
                     let Some(slot) = target.effective else { continue };
@@ -202,15 +197,16 @@ mod tests {
         let filter = model.instruments[1].effects[0].node;
         let bus = group.effects[0].node;
         let slot = |s: Option<Slot>| s.unwrap().index();
-        let (lfo, env) = (&group.modulators[0], &group.modulators[1]);
-        let lane_lfo = &model.instruments[1].modulators[0];
+        // The modulators are the session's own: the second lane's, and then the group's two.
+        let (lane_lfo, lfo, env) = (&model.free_modulators[0], &model.free_modulators[1], &model.free_modulators[2]);
+        assert_eq!(model.free_modulators.len(), 3);
         assert_eq!(
             entries(&layout.modulation),
             [
-                // The outputs: the group's modulators, then the lanes'.
+                // The outputs, in the order of the rack.
+                (slot(lane_lfo.output), lane_lfo.node, Port::ModOut, SlotKind::ModOutput),
                 (slot(lfo.output), lfo.node, Port::ModOut, SlotKind::ModOutput),
                 (slot(env.output), env.node, Port::ModOut, SlotKind::ModOutput),
-                (slot(lane_lfo.output), lane_lfo.node, Port::ModOut, SlotKind::ModOutput),
                 // The values of the parameters the group's LFO drives: member 0's detune, member 1's
                 // filter cutoff, the bus effect's damping.
                 (slot(lfo.targets[0].effective), lane0, Port::Param { index: 1 }, SlotKind::Effective),
@@ -227,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn the_free_modulators_outputs_come_after_the_lanes_and_what_they_drive_is_named_after_what_the_lanes_and_the_groups_do() {
+    fn the_outputs_are_listed_in_the_order_of_the_rack_and_a_parameter_that_several_cables_drive_is_named_by_the_first() {
         let model = load(
             r#"
 [[group]]
@@ -259,14 +255,16 @@ param = "pan"
         let layout = model.telemetry_layout();
         let lane = model.instruments[0].node;
         let slot = |s: Option<Slot>| s.unwrap().index();
-        let (group_lfo, lane_lfo, free_lfo, free_second) = (&model.groups[0].modulators[0], &model.instruments[0].modulators[0], &model.free_modulators[0], &model.free_modulators[1]);
+        // A loaded session has the modulators of its lanes and its groups first, as the session's own, and then the file's own.
+        assert_eq!(model.free_modulators.len(), 4);
+        let (lane_lfo, group_lfo, free_lfo, free_second) = (&model.free_modulators[0], &model.free_modulators[1], &model.free_modulators[2], &model.free_modulators[3]);
         let index = |name: &str| model.instruments[0].instrument.as_ref().unwrap().params.iter().find(|row| row.name == name).unwrap().index;
         assert_eq!(
             entries(&layout.modulation),
             [
-                // The outputs: the group's, the lanes' and then the free modulators'.
-                (slot(group_lfo.output), group_lfo.node, Port::ModOut, SlotKind::ModOutput),
+                // The outputs: the lane's, the group's and then the file's own.
                 (slot(lane_lfo.output), lane_lfo.node, Port::ModOut, SlotKind::ModOutput),
+                (slot(group_lfo.output), group_lfo.node, Port::ModOut, SlotKind::ModOutput),
                 (slot(free_lfo.output), free_lfo.node, Port::ModOut, SlotKind::ModOutput),
                 (slot(free_second.output), free_second.node, Port::ModOut, SlotKind::ModOutput),
                 // The values: the lane's cable, then the group's, which the free LFO's cable to the same detune does not name again; the free LFO's volume, and the setting that the second one drives.
@@ -279,7 +277,7 @@ param = "pan"
     }
 
     #[test]
-    fn a_parameter_several_targets_drive_is_named_once_by_the_lanes_slot() {
+    fn a_parameter_several_targets_drive_is_named_once_by_the_first_cable_that_drives_it() {
         let model = load(
             r#"
 [[group]]
@@ -301,7 +299,7 @@ param = "detune"
 "#,
         )
         .model;
-        let lane = &model.instruments[0];
+        let first = &model.free_modulators[0];
         let layout = model.telemetry_layout();
         let effective: Vec<(u32, Port)> = layout
             .modulation
@@ -312,10 +310,10 @@ param = "detune"
         assert_eq!(
             effective,
             [
-                (lane.modulators[0].targets[0].effective.unwrap().index(), Port::Param { index: 1 }),
-                (lane.modulators[0].targets[1].effective.unwrap().index(), Port::Param { index: 2 }),
+                (first.targets[0].effective.unwrap().index(), Port::Param { index: 1 }),
+                (first.targets[1].effective.unwrap().index(), Port::Param { index: 2 }),
             ],
-            "detune once, by the first lane target (the group's and the second lane modulator's are the same parameter), then volume"
+            "detune once, by the first cable (the others, the second modulator's and the group's, are the same parameter), then volume"
         );
     }
 
@@ -324,14 +322,14 @@ param = "detune"
         let mut model = load(GROUPS).model;
         let before = model.telemetry_layout().modulation.len();
         // No slot (they ran out): the target is left out, its parameter is not named.
-        model.groups[0].modulators[0].targets[0].effective = None;
+        model.free_modulators[1].targets[0].effective = None;
         assert_eq!(model.telemetry_layout().modulation.len(), before - 1);
         // A target whose aim is gone.
-        let target = &mut model.groups[0].modulators[0].targets[1];
+        let target = &mut model.free_modulators[1].targets[1];
         target.aim = crate::app::model::Driven::Param { plugin: NodeId(9_999), index: 0 };
         assert_eq!(model.telemetry_layout().modulation.len(), before - 2);
         // And a modulator with no output slot.
-        model.groups[0].modulators[1].output = None;
+        model.free_modulators[2].output = None;
         assert_eq!(model.telemetry_layout().modulation.len(), before - 3);
     }
 
@@ -349,7 +347,7 @@ param = "detune"
 
         // A slot being somebody else's, or a node being someone else's, is.
         let mut other = load(GROUPS).model;
-        other.groups[0].modulators[0].output = other.groups[0].modulators[1].output;
+        other.free_modulators[1].output = other.free_modulators[2].output;
         assert_ne!(other.telemetry_layout().rev, layout.rev, "a modulator's slot");
         let mut other = load(GROUPS).model;
         other.groups[0].meter = None;
@@ -358,8 +356,8 @@ param = "detune"
         other.instruments[0].node = NodeId(9_000);
         assert_ne!(other.telemetry_layout().rev, layout.rev, "a node's id");
         let mut other = load(GROUPS).model;
-        let target = &mut other.groups[0].modulators[0].targets[0];
-        let crate::app::model::Driven::Param { index, .. } = &mut target.aim else { panic!("the first cable of the group drives a parameter") };
+        let target = &mut other.free_modulators[1].targets[0];
+        let crate::app::model::Driven::Param { index, .. } = &mut target.aim else { panic!("the first cable of the group's modulator drives a parameter") };
         *index = 5;
         assert_ne!(other.telemetry_layout().rev, layout.rev, "a parameter");
         let swapped = TelemetryLayout::new(layout.modulation.clone(), layout.meters.clone());
@@ -383,13 +381,13 @@ param = "detune"
             param_min: -24.0,
             param_max: 24.0,
         };
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, detune));
+        assert!(ctl.add_target(crate::plugin::chain::ModulatorLocation::Free, 0, detune));
         let after = ctl.model.telemetry_layout();
         assert_ne!(after.rev, before.rev);
         assert_eq!(after.modulation.len(), before.modulation.len() + 1);
         let added = after.modulation.last().unwrap();
         assert_eq!((added.kind, added.node, added.port), (SlotKind::Effective, ctl.model.instruments[0].node, Port::Param { index: 1 }));
-        assert_eq!(Some(added.slot), ctl.model.instruments[0].modulators[0].targets[0].effective.map(|s| s.index()));
+        assert_eq!(Some(added.slot), ctl.model.free_modulators[0].targets[0].effective.map(|s| s.index()));
     }
 
     #[test]
@@ -400,16 +398,17 @@ param = "detune"
              [[instrument.modulator]]\ntype = \"steps\"\n[[instrument.modulator]]\n",
         )
         .model;
-        let (group, lane_steps, lane_lfo) = (&model.groups[0].modulators[0], &model.instruments[0].modulators[0], &model.instruments[0].modulators[1]);
+        // The lane's two, and then the group's.
+        let (lane_steps, lane_lfo, group) = (&model.free_modulators[0], &model.free_modulators[1], &model.free_modulators[2]);
         let at = |slot: Option<crate::telemetry::Slot>| slot.unwrap().index();
         assert_eq!(
             entries(&model.telemetry_layout().modulation),
             [
-                (at(group.output), group.node, Port::ModOut, SlotKind::ModOutput),
-                (at(group.position), group.node, Port::ModOut, SlotKind::ModPosition),
                 (at(lane_steps.output), lane_steps.node, Port::ModOut, SlotKind::ModOutput),
                 (at(lane_steps.position), lane_steps.node, Port::ModOut, SlotKind::ModPosition),
                 (at(lane_lfo.output), lane_lfo.node, Port::ModOut, SlotKind::ModOutput),
+                (at(group.output), group.node, Port::ModOut, SlotKind::ModOutput),
+                (at(group.position), group.node, Port::ModOut, SlotKind::ModPosition),
             ]
         );
     }

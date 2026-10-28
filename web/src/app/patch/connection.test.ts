@@ -85,15 +85,14 @@ describe("a connection that is dragged on the canvas", () => {
     expect(canDraw(nodes, { modulator: 99, node: 1, port: param(1) })).toBe(false); // nothing
   });
 
-  test("can be drawn as far as the controller's reach goes: not to another lane, nor to another group", () => {
+  test("can be drawn as far as the controller's reach goes: to a plugin of any lane or group, whatever the modulator hears, and to nothing that is no plugin", () => {
     const { nodes } = toFlow(reachFixture.snapshot.graph);
-    // Lane 0's LFO (6) reaches its oscillator (4) and filter (5); not the second lane's oscillator (7), the bus filter (1) or a lane of its own (11).
-    expect(canDraw(nodes, { modulator: 6, node: 4, port: param(0) })).toBe(true);
-    expect(canDraw(nodes, { modulator: 6, node: 5, port: param(0) })).toBe(true);
-    for (const node of [7, 1, 11, 9, 14]) expect(canDraw(nodes, { modulator: 6, node, port: param(0) }), `to ${String(node)}`).toBe(false);
-    // The group's LFO (15) reaches the members' plugins and the bus.
-    for (const node of [1, 4, 5, 7]) expect(canDraw(nodes, { modulator: 15, node, port: param(0) }), `to ${String(node)}`).toBe(true);
-    for (const node of [3, 9, 10, 11, 12]) expect(canDraw(nodes, { modulator: 15, node, port: param(0) }), `to ${String(node)}`).toBe(false);
+    // The LFO that hears lane 4 (12) and the LFO that hears group 0 (15) reach the oscillators (4, 6, 7, 9), the filters (5, 10, and the bus's, 1) and the reverbs (8, and the bus's, 3).
+    for (const modulator of [12, 15]) {
+      for (const node of [1, 3, 4, 5, 6, 7, 8, 9, 10]) expect(canDraw(nodes, { modulator, node, port: param(0) }), `${String(modulator)} to ${String(node)}`).toBe(true);
+      // Not a group, a lane that has no instrument or a modulator.
+      for (const node of [0, 2, 11, 13]) expect(canDraw(nodes, { modulator, node, port: param(0) }), `${String(modulator)} to ${String(node)}`).toBe(false);
+    }
   });
 
   test("lists what can be drawn from a modulator, as the nodes and parameters a port of a canvas is of", () => {
@@ -116,41 +115,41 @@ describe("a connection that is dragged on the canvas", () => {
 });
 
 describe("a cable dragged to a setting of another modulator", () => {
-  // Group 1's rack has an LFO (13), an envelope (14) and a MIDI control (15); its first member (3) has an LFO (4), an envelope (5) and a MIDI control (6).
+  // An LFO (13), an envelope (14) and a MIDI control (15) hear Group 1; its first member (3) is heard by an LFO (7), an envelope (8) and a MIDI control (9), and the second (4) by an LFO (10).
   const { nodes } = toFlow(fieldsFixture.snapshot.graph);
   const settings = (modulator: number): string[] => [...drawableFrom(nodes, modulator)].filter((key) => !key.includes("param-")).sort();
 
-  test("can be drawn to the rate of an LFO and the stages of an envelope that the modulator reaches, and to nothing else of a modulator", () => {
-    expect(canDraw(nodes, { modulator: 5, node: 4, port: { type: "rate" } })).toBe(true); // the lane's envelope to its LFO's rate
-    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "attack" } })).toBe(true);
-    expect(canDraw(nodes, { modulator: 6, node: 5, port: { type: "release" } })).toBe(true);
-    expect(canDraw(nodes, { modulator: 13, node: 14, port: { type: "decay" } })).toBe(true); // within a group's rack
-    expect(canDraw(nodes, { modulator: 13, node: 8, port: { type: "rate" } })).toBe(true); // to a member's modulator
-    expect(canDraw(nodes, { modulator: 4, node: 4, port: { type: "rate" } })).toBe(false); // itself
-    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "rate" } })).toBe(false); // an envelope has no rate
-    expect(canDraw(nodes, { modulator: 5, node: 4, port: { type: "attack" } })).toBe(false); // an LFO has no attack
-    expect(canDraw(nodes, { modulator: 5, node: 6, port: { type: "rate" } })).toBe(false); // a MIDI control has no settings
-    expect(canDraw(nodes, { modulator: 4, node: 8, port: { type: "rate" } })).toBe(false); // another lane's, which a lane's modulator does not reach
-    expect(canDraw(nodes, { modulator: 4, node: 13, port: { type: "rate" } })).toBe(false); // the group's
-    expect(canDraw(nodes, { modulator: 13, node: 12, port: { type: "rate" } })).toBe(false); // a lane of another group
-    expect(canDraw(nodes, { modulator: 13, node: 10, port: { type: "rate" } })).toBe(false); // a lane in no group
+  test("can be drawn to the rate of an LFO and the stages of an envelope, whatever either of them hears, and to nothing else of a modulator", () => {
+    expect(canDraw(nodes, { modulator: 8, node: 7, port: { type: "rate" } })).toBe(true); // the envelope that hears the lane to the LFO's rate
+    expect(canDraw(nodes, { modulator: 7, node: 8, port: { type: "attack" } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 9, node: 8, port: { type: "release" } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 13, node: 14, port: { type: "decay" } })).toBe(true); // two that hear the group
+    expect(canDraw(nodes, { modulator: 13, node: 10, port: { type: "rate" } })).toBe(true); // to one that hears a member
+    expect(canDraw(nodes, { modulator: 7, node: 10, port: { type: "rate" } })).toBe(true); // to one that hears another lane
+    expect(canDraw(nodes, { modulator: 7, node: 13, port: { type: "rate" } })).toBe(true); // to one that hears the group
+    expect(canDraw(nodes, { modulator: 13, node: 12, port: { type: "rate" } })).toBe(true); // to one that hears a lane of another group
+    expect(canDraw(nodes, { modulator: 13, node: 11, port: { type: "rate" } })).toBe(true); // to one that hears a lane in no group
+    expect(canDraw(nodes, { modulator: 7, node: 7, port: { type: "rate" } })).toBe(false); // itself
+    expect(canDraw(nodes, { modulator: 7, node: 8, port: { type: "rate" } })).toBe(false); // an envelope has no rate
+    expect(canDraw(nodes, { modulator: 8, node: 7, port: { type: "attack" } })).toBe(false); // an LFO has no attack
+    expect(canDraw(nodes, { modulator: 8, node: 9, port: { type: "rate" } })).toBe(false); // a MIDI control has no settings
   });
 
-  test("can be drawn to the depth of a cable of a modulator that the modulator reaches, and to no other", () => {
-    // The lane's LFO (4) to the depth of the envelope's cables (1 and 2) and the MIDI control's (3), which it reaches; the envelope (5) to the LFO's (0).
-    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 1 } })).toBe(true);
-    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 2 } })).toBe(true);
-    expect(canDraw(nodes, { modulator: 4, node: 6, port: { type: "depth", edge: 3 } })).toBe(true);
-    expect(canDraw(nodes, { modulator: 5, node: 4, port: { type: "depth", edge: 0 } })).toBe(true);
-    expect(canDraw(nodes, { modulator: 13, node: 14, port: { type: "depth", edge: 5 } })).toBe(true); // within a group's rack
-    expect(canDraw(nodes, { modulator: 13, node: 4, port: { type: "depth", edge: 0 } })).toBe(true); // to a member's modulator
-    expect(canDraw(nodes, { modulator: 4, node: 4, port: { type: "depth", edge: 0 } })).toBe(false); // the depth of its own cable
-    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 0 } })).toBe(false); // a cable that is another modulator's
-    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 99 } })).toBe(false); // no such cable
-    expect(canDraw(nodes, { modulator: 4, node: 14, port: { type: "depth", edge: 5 } })).toBe(false); // the group's, which a lane's modulator does not reach
-    expect(canDraw(nodes, { modulator: 4, node: 8, port: { type: "depth", edge: 5 } })).toBe(false); // another lane's, which has no such cable
-    expect(canDraw(nodes, { modulator: 13, node: 12, port: { type: "depth", edge: 0 } })).toBe(false); // a lane of another group
-    expect(canDraw(nodes, { modulator: 0, node: 5, port: { type: "depth", edge: 1 } })).toBe(false); // not a modulator
+  test("can be drawn to the depth of a cable of another modulator, and to no other", () => {
+    // The LFO (7) to the depth of the envelope's cables (1 and 2) and the MIDI control's (3); the envelope (8) to the LFO's (0).
+    expect(canDraw(nodes, { modulator: 7, node: 8, port: { type: "depth", edge: 1 } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 7, node: 8, port: { type: "depth", edge: 2 } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 7, node: 9, port: { type: "depth", edge: 3 } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 8, node: 7, port: { type: "depth", edge: 0 } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 13, node: 14, port: { type: "depth", edge: 5 } })).toBe(true); // two that hear the group
+    expect(canDraw(nodes, { modulator: 13, node: 7, port: { type: "depth", edge: 0 } })).toBe(true); // to one that hears a member
+    expect(canDraw(nodes, { modulator: 7, node: 14, port: { type: "depth", edge: 5 } })).toBe(true); // to one that hears the group
+    expect(canDraw(nodes, { modulator: 7, node: 7, port: { type: "depth", edge: 0 } })).toBe(false); // the depth of its own cable
+    expect(canDraw(nodes, { modulator: 7, node: 8, port: { type: "depth", edge: 0 } })).toBe(false); // a cable that is another modulator's
+    expect(canDraw(nodes, { modulator: 7, node: 8, port: { type: "depth", edge: 99 } })).toBe(false); // no such cable
+    expect(canDraw(nodes, { modulator: 7, node: 10, port: { type: "depth", edge: 5 } })).toBe(false); // another modulator's, which has no such cable
+    expect(canDraw(nodes, { modulator: 13, node: 12, port: { type: "depth", edge: 0 } })).toBe(false); // the same
+    expect(canDraw(nodes, { modulator: 0, node: 8, port: { type: "depth", edge: 1 } })).toBe(false); // not a modulator
   });
 
   test("is what the controller allows: the settings of the modulators it reaches and the depths of their cables", () => {
@@ -167,34 +166,34 @@ describe("a cable dragged to a setting of another modulator", () => {
     const graph = fieldsFixture.snapshot.graph;
     const driven = {
       ...graph,
-      edges: [...graph.edges, { kind: "modulation" as const, id: 99, amount: 0.5, from: { node: 5, port: { type: "modOut" as const } }, to: { node: 4, port: { type: "rate" as const } } }],
+      edges: [...graph.edges, { kind: "modulation" as const, id: 99, amount: 0.5, from: { node: 8, port: { type: "modOut" as const } }, to: { node: 7, port: { type: "rate" as const } } }],
     };
     const after = toFlow(driven).nodes;
-    expect(canDraw(nodes, { modulator: 5, node: 4, port: { type: "rate" } })).toBe(true);
-    expect(canDraw(after, { modulator: 5, node: 4, port: { type: "rate" } })).toBe(false);
+    expect(canDraw(nodes, { modulator: 8, node: 7, port: { type: "rate" } })).toBe(true);
+    expect(canDraw(after, { modulator: 8, node: 7, port: { type: "rate" } })).toBe(false);
     // (Another modulator may drive it too: the two add up.)
-    expect(canDraw(after, { modulator: 6, node: 4, port: { type: "rate" } })).toBe(true);
+    expect(canDraw(after, { modulator: 9, node: 7, port: { type: "rate" } })).toBe(true);
   });
 
   test("is not a port of the depth it drives already, and the depths of the other cables of that modulator are other ports", () => {
     const graph = fieldsFixture.snapshot.graph;
     const driven = {
       ...graph,
-      edges: [...graph.edges, { kind: "modulation" as const, id: 99, amount: 0.5, from: { node: 4, port: { type: "modOut" as const } }, to: { node: 5, port: { type: "depth" as const, edge: 1 } } }],
+      edges: [...graph.edges, { kind: "modulation" as const, id: 99, amount: 0.5, from: { node: 7, port: { type: "modOut" as const } }, to: { node: 8, port: { type: "depth" as const, edge: 1 } } }],
     };
     const after = toFlow(driven).nodes;
-    expect(canDraw(nodes, { modulator: 4, node: 5, port: { type: "depth", edge: 1 } })).toBe(true);
-    expect(canDraw(after, { modulator: 4, node: 5, port: { type: "depth", edge: 1 } })).toBe(false);
-    expect(canDraw(after, { modulator: 4, node: 5, port: { type: "depth", edge: 2 } })).toBe(true);
+    expect(canDraw(nodes, { modulator: 7, node: 8, port: { type: "depth", edge: 1 } })).toBe(true);
+    expect(canDraw(after, { modulator: 7, node: 8, port: { type: "depth", edge: 1 } })).toBe(false);
+    expect(canDraw(after, { modulator: 7, node: 8, port: { type: "depth", edge: 2 } })).toBe(true);
     // (Another modulator may drive it too: the two add up.)
-    expect(canDraw(after, { modulator: 6, node: 5, port: { type: "depth", edge: 1 } })).toBe(true);
+    expect(canDraw(after, { modulator: 9, node: 8, port: { type: "depth", edge: 1 } })).toBe(true);
   });
 });
 
 describe("an audio cable dragged on the canvas", () => {
   const connection = (source: string, sourceHandle: string | null, target: string, targetHandle: string | null) => ({ source, sourceHandle, target, targetHandle });
-  // The session of the audio cables fixture: group 0 (Pad) with Filter 1, Reverb 2 and Delay 3 on its bus; lane 4 in it with Filter 5 and Delay 6; lane 8 with Drive 9; empty lane 10.
-  // The cables: 1 from lane 8 to Filter 5, 2 from Filter 5 to Delay 6, 3 from the group's output to Drive 9, 4 from Filter 1 to Reverb 2, 5 from Delay 6 to the group's bus, 6 from Reverb 2 to the mix.
+  // The session of the audio cables fixture: group 0 (Pad) with Filter 1, Reverb 2 and Delay 3 on its bus; lane 4 in it with Filter 5 and Delay 6; lane 7 with Drive 8; empty lane 9; an LFO (10).
+  // The cables: 1 from lane 7 to Filter 5, 2 from Filter 5 to Delay 6, 3 from the group's output to Drive 8, 4 from Filter 1 to Reverb 2, 5 from Delay 6 to the group's bus, 6 from Reverb 2 to the mix.
   const { graph } = audioCablesFixture.snapshot;
 
   test("is read when it goes from an output of audio to an input of audio, by the ids of the nodes", () => {
@@ -243,24 +242,24 @@ describe("an audio cable dragged on the canvas", () => {
   });
 
   test("can be drawn where the controller would draw it: not where one is drawn already, not where the audio would go round, not from the mix or to a lane", () => {
-    expect(canDrawAudio(graph, { from: 8, to: 9, side: false })).toBe(false); // the link of the chain, which is a cable that is there (a link that is cut is given back by one: step 88)
-    expect(canDrawAudio(graph, { from: 9, to: MASTER, side: false })).toBe(false); // the way out of the lane, the same
-    expect(canDrawAudio(graph, { from: 8, to: 1, side: false })).toBe(true); // a bus effect
-    expect(canDrawAudio(graph, { from: 8, to: MASTER, side: false })).toBe(true); // beside the way out of the lane, which starts at the end of its chain
-    expect(canDrawAudio(graph, { from: 8, to: 5, side: false })).toBe(false); // there already
-    expect(canDrawAudio(graph, { from: 9, to: 5, side: false })).toBe(false); // round
+    expect(canDrawAudio(graph, { from: 7, to: 8, side: false })).toBe(false); // the link of the chain, which is a cable that is there (a link that is cut is given back by one: step 88)
+    expect(canDrawAudio(graph, { from: 8, to: MASTER, side: false })).toBe(false); // the way out of the lane, the same
+    expect(canDrawAudio(graph, { from: 7, to: 1, side: false })).toBe(true); // a bus effect
+    expect(canDrawAudio(graph, { from: 7, to: MASTER, side: false })).toBe(true); // beside the way out of the lane, which starts at the end of its chain
+    expect(canDrawAudio(graph, { from: 7, to: 5, side: false })).toBe(false); // there already
+    expect(canDrawAudio(graph, { from: 8, to: 5, side: false })).toBe(false); // round
     expect(canDrawAudio(graph, { from: 0, to: 0, side: false })).toBe(false); // a group's output to its own bus
     expect(canDrawAudio(graph, { from: MASTER, to: 5, side: false })).toBe(false); // the mix has no output
-    expect(canDrawAudio(graph, { from: 8, to: 10, side: false })).toBe(false); // a lane has no input
-    expect(canDrawAudio(graph, { from: 7, to: 5, side: false })).toBe(false); // a modulator has no audio
-    expect(canDrawAudio(graph, { from: 8, to: 77, side: false })).toBe(false); // nothing
+    expect(canDrawAudio(graph, { from: 7, to: 9, side: false })).toBe(false); // a lane has no input
+    expect(canDrawAudio(graph, { from: 10, to: 5, side: false })).toBe(false); // a modulator has no audio
+    expect(canDrawAudio(graph, { from: 7, to: 77, side: false })).toBe(false); // nothing
     expect(canDrawAudio(graph, { from: 77, to: 5, side: false })).toBe(false);
   });
 
   test("has, for the ports of the canvas, the inputs that take a cable from an output, by the name of the node and of the handle", () => {
-    expect([...audioTakersOf(graph, 8)].sort()).toEqual(["0:audioIn", "1:audioIn", "2:audioIn", "3:audioIn", `${String(MASTER)}:audioIn`, "6:audioIn"].sort());
+    expect([...audioTakersOf(graph, 7)].sort()).toEqual(["0:audioIn", "1:audioIn", "2:audioIn", "3:audioIn", `${String(MASTER)}:audioIn`, "6:audioIn"].sort());
     expect([...audioTakersOf(graph, 0)]).toEqual([`${String(MASTER)}:audioIn`]);
-    expect(audioTakersOf(graph, 7).size).toBe(0);
+    expect(audioTakersOf(graph, 10).size).toBe(0);
     expect(audioTakersOf(graph, MASTER).size).toBe(0);
     expect(audioTakersOf(graph, 77).size).toBe(0);
     // (A key of an input is not that of a parameter's or a setting's port of the same node.)
@@ -276,7 +275,7 @@ describe("an audio cable dragged on the canvas", () => {
   });
 });
 
-/** The session of the sources fixture (`testutil::NOTES`): the keys (7) and a device (8) are the sources; lane 2 is in the group Pad, lane 5 is outside it and lane 6 is empty; a cable of notes (1) goes from the keys to lane 5. */
+/** The session of the sources fixture (`testutil::NOTES`): the keys (7) and a device (8) are the sources; lane 2 is in the group Pad, lane 4 is outside it and lane 5 is empty, and an LFO (6) hears lane 2; a cable of notes (1) goes from the keys to lane 4. */
 describe("an audio cable dragged to the second input of an effect", () => {
   const connection = (source: string, sourceHandle: string | null, target: string, targetHandle: string | null) => ({ source, sourceHandle, target, targetHandle });
   // The session of the second input's fixture: group 0 has a math effect 1 on its bus; lane 2 has Filter 3 and Math 4, and three cables end at the second input of Math 4 (from lane 5's instrument, from the
@@ -366,21 +365,21 @@ describe("a cable of notes dragged on the canvas", () => {
 
   test("can be drawn where the controller would draw it: from a source to a lane that has none from it yet, and not from a lane, to a source, to the mix or to nothing", () => {
     expect(canDrawNotes(graph, { source: 7, lane: 2 })).toBe(true);
-    expect(canDrawNotes(graph, { source: 7, lane: 6 })).toBe(true); // an empty lane is a lane
-    expect(canDrawNotes(graph, { source: 8, lane: 5 })).toBe(true); // another source's, to a lane that has one from the keys
-    expect(canDrawNotes(graph, { source: 7, lane: 5 })).toBe(false); // there already
-    expect(canDrawNotes(graph, { source: 2, lane: 5 })).toBe(false); // a lane is no source
+    expect(canDrawNotes(graph, { source: 7, lane: 5 })).toBe(true); // an empty lane is a lane
+    expect(canDrawNotes(graph, { source: 8, lane: 4 })).toBe(true); // another source's, to a lane that has one from the keys
+    expect(canDrawNotes(graph, { source: 7, lane: 4 })).toBe(false); // there already
+    expect(canDrawNotes(graph, { source: 2, lane: 4 })).toBe(false); // a lane is no source
     expect(canDrawNotes(graph, { source: 7, lane: 8 })).toBe(false); // a source is no lane
     expect(canDrawNotes(graph, { source: 7, lane: 3 })).toBe(false); // an effect has no input of events
     expect(canDrawNotes(graph, { source: 7, lane: MASTER })).toBe(false); // the mix has none
-    expect(canDrawNotes(graph, { source: MASTER, lane: 5 })).toBe(false); // nor an output
+    expect(canDrawNotes(graph, { source: MASTER, lane: 4 })).toBe(false); // nor an output
     expect(canDrawNotes(graph, { source: 7, lane: 77 })).toBe(false);
-    expect(canDrawNotes(graph, { source: 77, lane: 5 })).toBe(false);
+    expect(canDrawNotes(graph, { source: 77, lane: 4 })).toBe(false);
   });
 
   test("has, for the ports of the canvas, the inputs that take a cable from a source, by the name of the node and of the handle", () => {
-    expect([...notesTakersOf(graph, 7)]).toEqual(["2:eventsIn", "6:eventsIn"]);
-    expect([...notesTakersOf(graph, 8)]).toEqual(["2:eventsIn", "5:eventsIn", "6:eventsIn"]);
+    expect([...notesTakersOf(graph, 7)]).toEqual(["2:eventsIn", "5:eventsIn"]);
+    expect([...notesTakersOf(graph, 8)]).toEqual(["2:eventsIn", "4:eventsIn", "5:eventsIn"]);
     expect(notesTakersOf(graph, 2).size).toBe(0); // (a lane is no source)
     expect(notesTakersOf(graph, MASTER).size).toBe(0);
     expect(notesTakersOf(graph, 77).size).toBe(0);
@@ -397,10 +396,10 @@ describe("a drag that starts at a handle of the canvas", () => {
   const connection = (source: string, sourceHandle: string | null, target: string, targetHandle: string | null) => ({ source, sourceHandle, target, targetHandle });
 
   test("from an output of audio can end at the inputs that take audio from it, by the name of the node and of the handle, whatever the canvas has laid out", () => {
-    const keys = takersOf(audio, [], start("8", "source", "audioOut"));
-    expect([...(keys ?? [])].sort()).toEqual([...audioTakersOf(audio, 8)].sort());
+    const keys = takersOf(audio, [], start("7", "source", "audioOut"));
+    expect([...(keys ?? [])].sort()).toEqual([...audioTakersOf(audio, 7)].sort());
     expect(keys?.has("1:audioIn")).toBe(true); // a bus effect
-    expect(keys?.has("9:audioIn")).toBe(false); // the link of the lane's chain, which is a cable that is there
+    expect(keys?.has("8:audioIn")).toBe(false); // the link of the lane's chain, which is a cable that is there
     expect(keys?.has("5:audioIn")).toBe(false); // there is a cable there already
     expect([...(takersOf(audio, [], start("0", "source", "audioOut")) ?? [])]).toEqual([`${String(MASTER)}:audioIn`]);
   });
@@ -413,9 +412,9 @@ describe("a drag that starts at a handle of the canvas", () => {
 
   test("from an output of events can end at the inputs of the lanes that take notes from that source, by the name of the node and of the handle", () => {
     const notes = notesSession();
-    expect([...(takersOf(notes, [], start("7", "source", "eventsOut")) ?? [])]).toEqual(["2:eventsIn", "6:eventsIn"]);
+    expect([...(takersOf(notes, [], start("7", "source", "eventsOut")) ?? [])]).toEqual(["2:eventsIn", "5:eventsIn"]);
     expect([...(takersOf(notes, [], start("8", "source", "eventsOut")) ?? [])]).toEqual([...notesTakersOf(notes, 8)]);
-    expect(takersOf(notes, [], start("8", "source", "eventsOut"))?.has("5:eventsIn")).toBe(true);
+    expect(takersOf(notes, [], start("8", "source", "eventsOut"))?.has("4:eventsIn")).toBe(true);
   });
 
   test("from an output of events that no lane takes ends nowhere, and the set that says so is empty and not none: a node that is no source, a node that is not there", () => {
@@ -424,7 +423,7 @@ describe("a drag that starts at a handle of the canvas", () => {
     expect(takersOf(notes, [], start("77", "source", "eventsOut"))?.size).toBe(0);
     expect(takersOf(notes, [], start(String(MASTER), "source", "eventsOut"))?.size).toBe(0);
     // (A source that has a cable to every lane has nowhere to go.)
-    const full: typeof notes = { nodes: notes.nodes, edges: [...notes.edges, ...[2, 6].map((lane, i) => ({ kind: "events" as const, id: 50 + i, from: { node: 7, port: { type: "eventsOut" as const } }, to: { node: lane, port: { type: "eventsIn" as const } } }))] };
+    const full: typeof notes = { nodes: notes.nodes, edges: [...notes.edges, ...[2, 5].map((lane, i) => ({ kind: "events" as const, id: 50 + i, from: { node: 7, port: { type: "eventsOut" as const } }, to: { node: lane, port: { type: "eventsIn" as const } } }))] };
     expect(takersOf(full, [], start("7", "source", "eventsOut"))?.size).toBe(0);
   });
 
@@ -440,7 +439,7 @@ describe("a drag that starts at a handle of the canvas", () => {
 
   test("from an output that nothing is drawn from ends nowhere, and the set that says so is empty and not none: a cable is being dragged", () => {
     expect(takersOf(audio, [], start(String(MASTER), "source", "audioOut"))?.size).toBe(0);
-    expect(takersOf(audio, [], start("7", "source", "audioOut"))?.size).toBe(0);
+    expect(takersOf(audio, [], start("10", "source", "audioOut"))?.size).toBe(0); // (an LFO)
     expect(takersOf(audio, [], start("77", "source", "audioOut"))?.size).toBe(0);
   });
 
@@ -462,12 +461,12 @@ describe("a drag that starts at a handle of the canvas", () => {
 
   test("is a cable when the controller would take it: an audio cable where one can be drawn, and a cable of modulation where the modulator can drive the port", () => {
     const { nodes } = toFlow(tracer);
-    expect(canConnect(audio, [], connection("8", "audioOut", "1", "audioIn"))).toBe(true);
-    expect(canConnect(audio, [], connection("8", "audioOut", String(MASTER), "audioIn"))).toBe(true);
-    expect(canConnect(audio, [], connection("8", "audioOut", "9", "audioIn"))).toBe(false); // the link of the chain, which is a cable that is there
-    expect(canConnect(audio, [], connection("8", "audioOut", "5", "audioIn"))).toBe(false); // there already
-    expect(canConnect(audio, [], connection("9", "audioOut", "5", "audioIn"))).toBe(false); // round
-    expect(canConnect(audio, [], connection("8", "audioOut", "10", "audioIn"))).toBe(false); // a lane has no input
+    expect(canConnect(audio, [], connection("7", "audioOut", "1", "audioIn"))).toBe(true);
+    expect(canConnect(audio, [], connection("7", "audioOut", String(MASTER), "audioIn"))).toBe(true);
+    expect(canConnect(audio, [], connection("7", "audioOut", "8", "audioIn"))).toBe(false); // the link of the chain, which is a cable that is there
+    expect(canConnect(audio, [], connection("7", "audioOut", "5", "audioIn"))).toBe(false); // there already
+    expect(canConnect(audio, [], connection("8", "audioOut", "5", "audioIn"))).toBe(false); // round
+    expect(canConnect(audio, [], connection("7", "audioOut", "9", "audioIn"))).toBe(false); // a lane has no input
     expect(canConnect(tracer, nodes, connection("2", "modOut", "0", "param-1"))).toBe(true);
     expect(canConnect(tracer, nodes, connection("2", "modOut", "1", "param-0"))).toBe(false); // already driven
   });
@@ -475,9 +474,9 @@ describe("a drag that starts at a handle of the canvas", () => {
   test("is a cable of notes when the controller would take it: where a source has none to the lane yet", () => {
     const notes = notesSession();
     expect(canConnect(notes, [], connection("7", "eventsOut", "2", "eventsIn"))).toBe(true);
-    expect(canConnect(notes, [], connection("8", "eventsOut", "5", "eventsIn"))).toBe(true);
-    expect(canConnect(notes, [], connection("7", "eventsOut", "5", "eventsIn"))).toBe(false); // there already
-    expect(canConnect(notes, [], connection("2", "eventsOut", "5", "eventsIn"))).toBe(false); // a lane is no source
+    expect(canConnect(notes, [], connection("8", "eventsOut", "4", "eventsIn"))).toBe(true);
+    expect(canConnect(notes, [], connection("7", "eventsOut", "4", "eventsIn"))).toBe(false); // there already
+    expect(canConnect(notes, [], connection("2", "eventsOut", "4", "eventsIn"))).toBe(false); // a lane is no source
     expect(canConnect(notes, [], connection("7", "eventsOut", "8", "eventsIn"))).toBe(false); // a source is no lane
     expect(canConnect(null, [], connection("7", "eventsOut", "2", "eventsIn"))).toBe(false); // no session to say
   });
@@ -485,8 +484,8 @@ describe("a drag that starts at a handle of the canvas", () => {
   test("is no cable of notes when it ends where it does not fit: notes at an input of audio, audio at an input of events, a modulator at one", () => {
     const notes = notesSession();
     expect(canConnect(notes, [], connection("7", "eventsOut", "3", "audioIn"))).toBe(false);
-    expect(canConnect(notes, [], connection("5", "audioOut", "2", "eventsIn"))).toBe(false);
-    expect(canConnect(notes, [], connection("4", "modOut", "2", "eventsIn"))).toBe(false);
+    expect(canConnect(notes, [], connection("4", "audioOut", "2", "eventsIn"))).toBe(false);
+    expect(canConnect(notes, [], connection("6", "modOut", "2", "eventsIn"))).toBe(false);
     expect(canConnect(notes, [], connection("7", "eventsOut", "3", "param-0"))).toBe(false);
   });
 

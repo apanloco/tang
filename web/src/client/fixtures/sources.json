@@ -19,19 +19,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -40,14 +43,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -57,13 +60,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -75,7 +78,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -100,19 +103,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -121,14 +127,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -138,13 +144,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -156,7 +162,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -181,19 +187,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -202,14 +211,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -219,13 +228,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -237,7 +246,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -282,19 +291,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -303,14 +315,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -320,13 +332,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -338,7 +350,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -363,19 +375,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -384,14 +399,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -401,13 +416,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -419,7 +434,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -444,19 +459,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -465,14 +483,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -482,13 +500,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -500,7 +518,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -555,19 +573,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -576,14 +597,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -593,13 +614,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -611,7 +632,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -646,19 +667,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -667,14 +691,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -684,13 +708,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -702,7 +726,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -787,19 +811,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -808,14 +835,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -825,13 +852,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -843,7 +870,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -868,19 +895,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -889,14 +919,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -906,13 +936,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -924,7 +954,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -949,19 +979,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6",
+              "8>5",
               "9>2",
-              "9>6"
+              "9>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -970,14 +1003,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -987,13 +1020,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -1005,7 +1038,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -1068,15 +1101,18 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
-              "7>6",
-              "8>6"
+              "7>5",
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -1085,14 +1121,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -1101,13 +1137,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5",
+              "#1 7>4",
               "#3 7>2"
             ],
             "order": [
@@ -1120,7 +1156,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -1157,7 +1193,7 @@
             },
             "gain": null,
             "to": {
-              "node": 5,
+              "node": 4,
               "port": {
                 "type": "eventsIn"
               }
@@ -1172,11 +1208,14 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
@@ -1189,14 +1228,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -1205,14 +1244,14 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5",
-              "#3 7>6"
+              "#1 7>4",
+              "#3 7>5"
             ],
             "order": [
               "audio×3",
@@ -1224,7 +1263,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -1241,7 +1280,7 @@
             },
             "gain": null,
             "to": {
-              "node": 6,
+              "node": 5,
               "port": {
                 "type": "eventsIn"
               }
@@ -1318,7 +1357,7 @@
             },
             "gain": null,
             "to": {
-              "node": 4,
+              "node": 6,
               "port": {
                 "type": "eventsIn"
               }
@@ -1409,15 +1448,18 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
-              "7>6",
-              "8>6"
+              "7>5",
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -1426,14 +1468,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -1442,13 +1484,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5",
+              "#1 7>4",
               "#3 8>2"
             ],
             "order": [
@@ -1461,7 +1503,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -1494,17 +1536,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -1513,14 +1558,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -1529,14 +1574,14 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5",
-              "#3 8>5"
+              "#1 7>4",
+              "#3 8>4"
             ],
             "order": [
               "audio×3",
@@ -1548,7 +1593,95 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
+            ],
+            "sources": [
+              "7 keys",
+              "8 device Launchkey Mini MK4 37"
+            ]
+          },
+          "events": [],
+          "intent": {
+            "from": {
+              "node": 8,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          },
+          "restructured": true
+        },
+        {
+          "after": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>3 audio",
+              "3>0 member",
+              "4>4294967295 audio",
+              "5>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
+            ],
+            "hears": [
+              "7>2",
+              "8>2"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
+              "8 5 audioOut peak",
+              "9 5 audioOut clips"
+            ],
+            "modulation": [
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
+            ],
+            "nodes": [
+              "7 - Keys",
+              "8 - Launchkey Mini MK4 37",
+              "0 - Pad",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
+              "4294967295 - Master"
+            ],
+            "notes": [
+              "#1 7>4",
+              "#3 8>5"
+            ],
+            "order": [
+              "audio×3",
+              "member×1",
+              "audio×2",
+              "hears×2",
+              "cable×1",
+              "events×2",
+              "modulation×1"
+            ],
+            "sends": [
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -1566,91 +1699,6 @@
             "gain": null,
             "to": {
               "node": 5,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          },
-          "restructured": true
-        },
-        {
-          "after": {
-            "audio": [
-              "0>1 audio",
-              "1>4294967295 audio",
-              "2>3 audio",
-              "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
-            ],
-            "cables": [
-              "#0 4>3 param0 @0.5"
-            ],
-            "hears": [
-              "7>2",
-              "8>2"
-            ],
-            "meters": [
-              "0 4294967295 audioIn peak",
-              "1 4294967295 audioIn clips",
-              "2 0 audioOut peak",
-              "3 0 audioOut clips",
-              "4 2 audioOut peak",
-              "5 2 audioOut clips",
-              "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
-            ],
-            "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
-            ],
-            "nodes": [
-              "7 - Keys",
-              "8 - Launchkey Mini MK4 37",
-              "0 - Pad",
-              "1 0 Reverb",
-              "2 0 Oscillator",
-              "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
-              "4294967295 - Master"
-            ],
-            "notes": [
-              "#1 7>5",
-              "#3 8>6"
-            ],
-            "order": [
-              "audio×3",
-              "member×1",
-              "audio×2",
-              "hears×2",
-              "cable×1",
-              "events×2",
-              "modulation×1"
-            ],
-            "sends": [
-              "#2 5>3 @0.5"
-            ],
-            "sources": [
-              "7 keys",
-              "8 device Launchkey Mini MK4 37"
-            ]
-          },
-          "events": [],
-          "intent": {
-            "from": {
-              "node": 8,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 6,
               "port": {
                 "type": "eventsIn"
               }
@@ -1727,7 +1775,7 @@
             },
             "gain": null,
             "to": {
-              "node": 4,
+              "node": 6,
               "port": {
                 "type": "eventsIn"
               }
@@ -1841,7 +1889,7 @@
             },
             "gain": null,
             "to": {
-              "node": 5,
+              "node": 4,
               "port": {
                 "type": "eventsIn"
               }
@@ -1860,7 +1908,7 @@
             },
             "gain": null,
             "to": {
-              "node": 6,
+              "node": 5,
               "port": {
                 "type": "eventsIn"
               }
@@ -1936,7 +1984,7 @@
             },
             "gain": null,
             "to": {
-              "node": 4,
+              "node": 6,
               "port": {
                 "type": "eventsIn"
               }
@@ -1968,1051 +2016,6 @@
           "intent": {
             "from": {
               "node": 2,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 9999,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 7,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 8,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 2,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 5,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 6,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 3,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 0,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 1,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 4,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 4294967295,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 5,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 9999,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 7,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 8,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 2,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 5,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 6,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 3,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 0,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 1,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 4,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 4294967295,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 6,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 9999,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 7,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 8,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 2,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 5,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 6,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 3,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 0,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 1,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 4,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 4294967295,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 3,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 9999,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 7,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 8,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 2,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 5,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 6,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 3,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 0,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 1,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 4,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 4294967295,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 0,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 9999,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 7,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 8,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 2,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 5,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 6,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 3,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 0,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 1,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 4,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
-              "port": {
-                "type": "eventsOut"
-              }
-            },
-            "gain": null,
-            "to": {
-              "node": 4294967295,
-              "port": {
-                "type": "eventsIn"
-              }
-            },
-            "type": "addCable"
-          }
-        },
-        {
-          "error": "only a source of notes has an output of events",
-          "intent": {
-            "from": {
-              "node": 1,
               "port": {
                 "type": "eventsOut"
               }
@@ -3095,7 +2098,7 @@
             },
             "gain": null,
             "to": {
-              "node": 5,
+              "node": 4,
               "port": {
                 "type": "eventsIn"
               }
@@ -3114,7 +2117,7 @@
             },
             "gain": null,
             "to": {
-              "node": 6,
+              "node": 5,
               "port": {
                 "type": "eventsIn"
               }
@@ -3190,7 +2193,7 @@
             },
             "gain": null,
             "to": {
-              "node": 4,
+              "node": 6,
               "port": {
                 "type": "eventsIn"
               }
@@ -3222,6 +2225,1051 @@
           "intent": {
             "from": {
               "node": 4,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 9999,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 7,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 8,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 2,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 5,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 3,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 0,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 1,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 6,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4294967295,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 5,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 9999,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 7,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 8,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 2,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 5,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 3,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 0,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 1,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 6,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4294967295,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 3,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 9999,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 7,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 8,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 2,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 5,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 3,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 0,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 1,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 6,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4294967295,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 0,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 9999,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 7,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 8,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 2,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 5,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 3,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 0,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 1,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 6,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4294967295,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 1,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 9999,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 7,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 8,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 2,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 5,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 3,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 0,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 1,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 6,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
+              "port": {
+                "type": "eventsOut"
+              }
+            },
+            "gain": null,
+            "to": {
+              "node": 4294967295,
+              "port": {
+                "type": "eventsIn"
+              }
+            },
+            "type": "addCable"
+          }
+        },
+        {
+          "error": "only a source of notes has an output of events",
+          "intent": {
+            "from": {
+              "node": 6,
               "port": {
                 "type": "eventsOut"
               }
@@ -3304,7 +3352,7 @@
             },
             "gain": null,
             "to": {
-              "node": 5,
+              "node": 4,
               "port": {
                 "type": "eventsIn"
               }
@@ -3323,7 +3371,7 @@
             },
             "gain": null,
             "to": {
-              "node": 6,
+              "node": 5,
               "port": {
                 "type": "eventsIn"
               }
@@ -3399,7 +3447,7 @@
             },
             "gain": null,
             "to": {
-              "node": 4,
+              "node": 6,
               "port": {
                 "type": "eventsIn"
               }
@@ -3513,7 +3561,7 @@
             },
             "gain": null,
             "to": {
-              "node": 5,
+              "node": 4,
               "port": {
                 "type": "eventsIn"
               }
@@ -3532,7 +3580,7 @@
             },
             "gain": null,
             "to": {
-              "node": 6,
+              "node": 5,
               "port": {
                 "type": "eventsIn"
               }
@@ -3608,7 +3656,7 @@
             },
             "gain": null,
             "to": {
-              "node": 4,
+              "node": 6,
               "port": {
                 "type": "eventsIn"
               }
@@ -3946,7 +3994,7 @@
           "error": "a source of notes has no input of audio",
           "intent": {
             "from": {
-              "node": 5,
+              "node": 4,
               "port": {
                 "type": "audioOut"
               }
@@ -3968,17 +4016,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -3987,14 +4038,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -4003,13 +4054,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -4021,8 +4072,8 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5",
-              "#3 5>1 @1"
+              "#2 4>3 @0.5",
+              "#3 4>1 @1"
             ],
             "sources": [
               "7 keys",
@@ -4032,7 +4083,7 @@
           "events": [],
           "intent": {
             "from": {
-              "node": 5,
+              "node": 4,
               "port": {
                 "type": "audioOut"
               }
@@ -4192,7 +4243,7 @@
             },
             "gain": 1.0,
             "to": {
-              "node": 5,
+              "node": 4,
               "port": {
                 "type": "eventsIn"
               }
@@ -4223,17 +4274,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -4242,14 +4296,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -4258,13 +4312,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -4276,7 +4330,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -4321,17 +4375,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -4340,14 +4397,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -4356,13 +4413,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -4374,7 +4431,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -4419,19 +4476,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
+              "7>4",
               "7>5",
-              "7>6",
               "8>2",
-              "8>5",
-              "8>6"
+              "8>4",
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -4440,14 +4500,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -4456,9 +4516,9 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "order": [
@@ -4470,7 +4530,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -4491,17 +4551,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -4510,14 +4573,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -4526,13 +4589,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -4561,15 +4624,18 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [],
+            "ears": [
+              "6 2"
+            ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -4578,13 +4644,13 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput"
+              "10 6 modOut modOutput"
             ],
             "nodes": [
               "7 - Keys",
@@ -4593,13 +4659,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -4610,7 +4676,7 @@
               "events×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -4638,16 +4704,19 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "8>2",
-              "8>5",
-              "8>6"
+              "8>4",
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -4656,14 +4725,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "8 - Launchkey Mini MK4 37",
@@ -4671,9 +4740,9 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "order": [
@@ -4685,7 +4754,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "8 device Launchkey Mini MK4 37"
@@ -4705,15 +4774,18 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6"
+              "7>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -4722,14 +4794,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -4737,13 +4809,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -4755,7 +4827,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys"
@@ -4773,36 +4845,39 @@
             "audio": [
               "0>1 audio",
               "1>4294967295 audio",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [],
             "hears": [
-              "7>6",
-              "8>6"
+              "7>5",
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
               "2 0 audioOut peak",
               "3 0 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
-            "modulation": [],
+            "modulation": [
+              "10 6 modOut modOutput"
+            ],
             "nodes": [
               "7 - Keys",
               "8 - Launchkey Mini MK4 37",
               "0 - Pad",
               "1 0 Reverb",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×4",
@@ -4828,16 +4903,19 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "6>4294967295 audio"
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -4846,12 +4924,12 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "8 5 audioOut peak",
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -4860,8 +4938,8 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "6 - (empty)",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "order": [
@@ -4870,6 +4948,77 @@
               "audio×1",
               "hears×4",
               "modulation×1"
+            ],
+            "sources": [
+              "7 keys",
+              "8 device Launchkey Mini MK4 37"
+            ]
+          },
+          "events": [],
+          "intent": {
+            "node": 4,
+            "type": "removeNode"
+          },
+          "restructured": true
+        },
+        {
+          "after": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>3 audio",
+              "3>0 member",
+              "4>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
+            ],
+            "hears": [
+              "7>2",
+              "8>2"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips"
+            ],
+            "modulation": [
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
+            ],
+            "nodes": [
+              "7 - Keys",
+              "8 - Launchkey Mini MK4 37",
+              "0 - Pad",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 - Oscillator",
+              "6 - LFO",
+              "4294967295 - Master"
+            ],
+            "notes": [
+              "#1 7>4"
+            ],
+            "order": [
+              "audio×3",
+              "member×1",
+              "audio×1",
+              "hears×2",
+              "cable×1",
+              "events×1",
+              "modulation×1"
+            ],
+            "sends": [
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -4888,16 +5037,19 @@
             "audio": [
               "0>1 audio",
               "1>4294967295 audio",
-              "2>3 audio",
-              "3>0 member",
+              "2>0 member",
+              "4>4294967295 audio",
               "5>4294967295 audio"
             ],
-            "cables": [
-              "#0 4>3 param0 @0.5"
+            "cables": [],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "8>2"
+              "7>5",
+              "8>2",
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -4906,12 +5058,13 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
               "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput"
             ],
             "nodes": [
               "7 - Keys",
@@ -4919,82 +5072,13 @@
               "0 - Pad",
               "1 0 Reverb",
               "2 0 Oscillator",
-              "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
-            ],
-            "order": [
-              "audio×3",
-              "member×1",
-              "audio×1",
-              "hears×2",
-              "cable×1",
-              "events×1",
-              "modulation×1"
-            ],
-            "sends": [
-              "#2 5>3 @0.5"
-            ],
-            "sources": [
-              "7 keys",
-              "8 device Launchkey Mini MK4 37"
-            ]
-          },
-          "events": [],
-          "intent": {
-            "node": 6,
-            "type": "removeNode"
-          },
-          "restructured": true
-        },
-        {
-          "after": {
-            "audio": [
-              "0>1 audio",
-              "1>4294967295 audio",
-              "2>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
-            ],
-            "cables": [],
-            "hears": [
-              "7>2",
-              "7>6",
-              "8>2",
-              "8>6"
-            ],
-            "meters": [
-              "0 4294967295 audioIn peak",
-              "1 4294967295 audioIn clips",
-              "2 0 audioOut peak",
-              "3 0 audioOut clips",
-              "4 2 audioOut peak",
-              "5 2 audioOut clips",
-              "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
-            ],
-            "modulation": [
-              "6 4 modOut modOutput"
-            ],
-            "nodes": [
-              "7 - Keys",
-              "8 - Launchkey Mini MK4 37",
-              "0 - Pad",
-              "1 0 Reverb",
-              "2 0 Oscillator",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
-              "4294967295 - Master"
-            ],
-            "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×2",
@@ -5020,44 +5104,47 @@
             "audio": [
               "2>3 audio",
               "3>4294967295 audio",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
               "1 4294967295 audioIn clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
               "8 - Launchkey Mini MK4 37",
               "2 - Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×4",
@@ -5067,7 +5154,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5087,17 +5174,20 @@
               "0>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -5106,14 +5196,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -5121,13 +5211,13 @@
               "0 - Pad",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×2",
@@ -5139,7 +5229,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5160,15 +5250,15 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -5177,10 +5267,10 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [],
             "nodes": [
@@ -5190,12 +5280,12 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -5206,7 +5296,7 @@
               "events×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5215,7 +5305,7 @@
           },
           "events": [],
           "intent": {
-            "node": 4,
+            "node": 6,
             "type": "removeNode"
           },
           "restructured": true
@@ -5241,19 +5331,22 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
+              "4>4294967295 audio",
               "5>4294967295 audio",
-              "6>4294967295 audio",
               "9>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "7>9",
               "8>2",
-              "8>6",
+              "8>5",
               "8>9"
             ],
             "meters": [
@@ -5263,16 +5356,16 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
               "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips",
               "12 9 audioOut peak",
               "13 9 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -5281,14 +5374,14 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
               "9 - Oscillator",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -5300,7 +5393,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5322,17 +5415,20 @@
               "9>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>9 member",
-              "6>9 member"
+              "4>9 member",
+              "5>9 member"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -5343,14 +5439,14 @@
               "13 9 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -5360,13 +5456,13 @@
               "9 - Group 2",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 9 Oscillator",
-              "6 9 (empty)",
+              "4 9 Oscillator",
+              "5 9 (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×4",
@@ -5377,7 +5473,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5387,8 +5483,8 @@
           "events": [],
           "intent": {
             "members": [
-              5,
-              6
+              4,
+              5
             ],
             "type": "addGroup"
           },
@@ -5411,17 +5507,20 @@
               "9>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -5432,14 +5531,14 @@
               "13 9 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -5449,13 +5548,13 @@
               "9 - Group 2",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×4",
@@ -5467,7 +5566,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5488,17 +5587,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>4294967295 audio",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -5507,14 +5609,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -5523,13 +5625,13 @@
               "1 0 Reverb",
               "2 - Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×6",
@@ -5539,7 +5641,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5561,17 +5663,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -5580,14 +5685,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -5596,13 +5701,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -5614,7 +5719,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5636,17 +5741,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -5655,14 +5763,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -5671,13 +5779,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -5689,7 +5797,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5699,7 +5807,7 @@
           "events": [],
           "intent": {
             "group": null,
-            "node": 5,
+            "node": 4,
             "type": "setLaneGroup"
           },
           "restructured": true
@@ -5711,17 +5819,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>0 member",
-              "6>4294967295 audio"
+              "4>0 member",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -5730,14 +5841,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -5746,13 +5857,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 0 Oscillator",
-              "6 - (empty)",
+              "4 0 Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -5764,7 +5875,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5774,6 +5885,84 @@
           "events": [],
           "intent": {
             "group": 0,
+            "node": 4,
+            "type": "setLaneGroup"
+          },
+          "restructured": true
+        },
+        {
+          "after": {
+            "audio": [
+              "0>1 audio",
+              "1>4294967295 audio",
+              "2>3 audio",
+              "3>0 member",
+              "4>4294967295 audio",
+              "5>4294967295 audio"
+            ],
+            "cables": [
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
+            ],
+            "hears": [
+              "7>2",
+              "7>5",
+              "8>2",
+              "8>5"
+            ],
+            "meters": [
+              "0 4294967295 audioIn peak",
+              "1 4294967295 audioIn clips",
+              "2 0 audioOut peak",
+              "3 0 audioOut clips",
+              "4 2 audioOut peak",
+              "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
+              "8 5 audioOut peak",
+              "9 5 audioOut clips"
+            ],
+            "modulation": [
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
+            ],
+            "nodes": [
+              "7 - Keys",
+              "8 - Launchkey Mini MK4 37",
+              "0 - Pad",
+              "1 0 Reverb",
+              "2 0 Oscillator",
+              "3 2 Filter",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
+              "4294967295 - Master"
+            ],
+            "notes": [
+              "#1 7>4"
+            ],
+            "order": [
+              "audio×3",
+              "member×1",
+              "audio×2",
+              "hears×4",
+              "cable×1",
+              "events×1",
+              "modulation×1"
+            ],
+            "sends": [
+              "#2 4>3 @0.5"
+            ],
+            "sources": [
+              "7 keys",
+              "8 device Launchkey Mini MK4 37"
+            ]
+          },
+          "events": [],
+          "intent": {
+            "group": null,
             "node": 5,
             "type": "setLaneGroup"
           },
@@ -5786,17 +5975,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>0 member"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -5805,14 +5997,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -5821,88 +6013,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 0 (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
-            ],
-            "order": [
-              "audio×3",
-              "member×1",
-              "audio×2",
-              "hears×4",
-              "cable×1",
-              "events×1",
-              "modulation×1"
-            ],
-            "sends": [
-              "#2 5>3 @0.5"
-            ],
-            "sources": [
-              "7 keys",
-              "8 device Launchkey Mini MK4 37"
-            ]
-          },
-          "events": [],
-          "intent": {
-            "group": null,
-            "node": 6,
-            "type": "setLaneGroup"
-          },
-          "restructured": true
-        },
-        {
-          "after": {
-            "audio": [
-              "0>1 audio",
-              "1>4294967295 audio",
-              "2>3 audio",
-              "3>0 member",
-              "5>4294967295 audio",
-              "6>0 member"
-            ],
-            "cables": [
-              "#0 4>3 param0 @0.5"
-            ],
-            "hears": [
-              "7>2",
-              "7>6",
-              "8>2",
-              "8>6"
-            ],
-            "meters": [
-              "0 4294967295 audioIn peak",
-              "1 4294967295 audioIn clips",
-              "2 0 audioOut peak",
-              "3 0 audioOut clips",
-              "4 2 audioOut peak",
-              "5 2 audioOut clips",
-              "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
-            ],
-            "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
-            ],
-            "nodes": [
-              "7 - Keys",
-              "8 - Launchkey Mini MK4 37",
-              "0 - Pad",
-              "1 0 Reverb",
-              "2 0 Oscillator",
-              "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 0 (empty)",
-              "4294967295 - Master"
-            ],
-            "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -5915,7 +6032,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -5925,7 +6042,7 @@
           "events": [],
           "intent": {
             "group": 0,
-            "node": 6,
+            "node": 5,
             "type": "setLaneGroup"
           },
           "restructured": true
@@ -6080,17 +6197,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -6099,14 +6219,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -6115,13 +6235,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -6133,7 +6253,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -6168,17 +6288,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -6187,14 +6310,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -6203,13 +6326,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -6221,7 +6344,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -6278,11 +6401,11 @@
           }
         },
         {
-          "error": "a modulator goes in a lane or in a group",
+          "error": "only a lane or a group can be heard",
           "intent": {
+            "hears": 7,
             "kind": "lfo",
-            "parent": 7,
-            "type": "addModulator"
+            "type": "addFreeModulator"
           }
         },
         {
@@ -6302,7 +6425,7 @@
         {
           "error": "that node has no plugin",
           "intent": {
-            "modulator": 4,
+            "modulator": 6,
             "to": {
               "node": 7,
               "port": {
@@ -6316,7 +6439,7 @@
         {
           "error": "a cable ends at the settings of a modulator, and that is not one",
           "intent": {
-            "modulator": 4,
+            "modulator": 6,
             "to": {
               "node": 7,
               "port": {
@@ -6530,17 +6653,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -6549,14 +6675,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -6565,13 +6691,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -6583,7 +6709,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -6618,17 +6744,20 @@
               "1>4294967295 audio",
               "2>3 audio",
               "3>0 member",
-              "5>4294967295 audio",
-              "6>4294967295 audio"
+              "4>4294967295 audio",
+              "5>4294967295 audio"
             ],
             "cables": [
-              "#0 4>3 param0 @0.5"
+              "#0 6>3 param0 @0.5"
+            ],
+            "ears": [
+              "6 2"
             ],
             "hears": [
               "7>2",
-              "7>6",
+              "7>5",
               "8>2",
-              "8>6"
+              "8>5"
             ],
             "meters": [
               "0 4294967295 audioIn peak",
@@ -6637,14 +6766,14 @@
               "3 0 audioOut clips",
               "4 2 audioOut peak",
               "5 2 audioOut clips",
+              "6 4 audioOut peak",
+              "7 4 audioOut clips",
               "8 5 audioOut peak",
-              "9 5 audioOut clips",
-              "10 6 audioOut peak",
-              "11 6 audioOut clips"
+              "9 5 audioOut clips"
             ],
             "modulation": [
-              "6 4 modOut modOutput",
-              "7 3 param0 effective"
+              "10 6 modOut modOutput",
+              "11 3 param0 effective"
             ],
             "nodes": [
               "7 - Keys",
@@ -6653,13 +6782,13 @@
               "1 0 Reverb",
               "2 0 Oscillator",
               "3 2 Filter",
-              "4 2 LFO",
-              "5 - Oscillator",
-              "6 - (empty)",
+              "4 - Oscillator",
+              "5 - (empty)",
+              "6 - LFO",
               "4294967295 - Master"
             ],
             "notes": [
-              "#1 7>5"
+              "#1 7>4"
             ],
             "order": [
               "audio×3",
@@ -6671,7 +6800,7 @@
               "modulation×1"
             ],
             "sends": [
-              "#2 5>3 @0.5"
+              "#2 4>3 @0.5"
             ],
             "sources": [
               "7 keys",
@@ -6728,11 +6857,11 @@
           }
         },
         {
-          "error": "a modulator goes in a lane or in a group",
+          "error": "only a lane or a group can be heard",
           "intent": {
+            "hears": 8,
             "kind": "lfo",
-            "parent": 8,
-            "type": "addModulator"
+            "type": "addFreeModulator"
           }
         },
         {
@@ -6752,7 +6881,7 @@
         {
           "error": "that node has no plugin",
           "intent": {
-            "modulator": 4,
+            "modulator": 6,
             "to": {
               "node": 8,
               "port": {
@@ -6766,7 +6895,7 @@
         {
           "error": "a cable ends at the settings of a modulator, and that is not one",
           "intent": {
-            "modulator": 4,
+            "modulator": 6,
             "to": {
               "node": 8,
               "port": {
@@ -6896,7 +7025,7 @@
             },
             {
               "from": {
-                "node": 5,
+                "node": 4,
                 "port": {
                   "type": "audioOut"
                 }
@@ -6911,7 +7040,7 @@
             },
             {
               "from": {
-                "node": 6,
+                "node": 5,
                 "port": {
                   "type": "audioOut"
                 }
@@ -6948,7 +7077,7 @@
               },
               "kind": "hears",
               "to": {
-                "node": 6,
+                "node": 5,
                 "port": {
                   "type": "eventsIn"
                 }
@@ -6978,7 +7107,7 @@
               },
               "kind": "hears",
               "to": {
-                "node": 6,
+                "node": 5,
                 "port": {
                   "type": "eventsIn"
                 }
@@ -6986,7 +7115,7 @@
             },
             {
               "from": {
-                "node": 5,
+                "node": 4,
                 "port": {
                   "type": "audioOut"
                 }
@@ -7011,7 +7140,7 @@
               "id": 1,
               "kind": "events",
               "to": {
-                "node": 5,
+                "node": 4,
                 "port": {
                   "type": "eventsIn"
                 }
@@ -7020,7 +7149,7 @@
             {
               "amount": 0.5,
               "from": {
-                "node": 4,
+                "node": 6,
                 "port": {
                   "type": "modOut"
                 }
@@ -7655,20 +7784,6 @@
             },
             {
               "id": 4,
-              "kind": "modulator",
-              "name": "LFO",
-              "parent": 2,
-              "source": {
-                "fade": 0.0,
-                "rate": 1.0,
-                "retrigger": false,
-                "sync": 0,
-                "type": "lfo",
-                "waveform": "sine"
-              }
-            },
-            {
-              "id": 5,
               "kind": "instrument",
               "muted": false,
               "name": "Oscillator",
@@ -8013,7 +8128,7 @@
               "volume": 1.0
             },
             {
-              "id": 6,
+              "id": 5,
               "kind": "instrument",
               "muted": false,
               "name": "(empty)",
@@ -8025,6 +8140,21 @@
               "solo": false,
               "transpose": 0,
               "volume": 1.0
+            },
+            {
+              "hears": 2,
+              "id": 6,
+              "kind": "modulator",
+              "name": "LFO",
+              "parent": null,
+              "source": {
+                "fade": 0.0,
+                "rate": 1.0,
+                "retrigger": false,
+                "sync": 0,
+                "type": "lfo",
+                "waveform": "sine"
+              }
             },
             {
               "id": 4294967295,
@@ -8108,6 +8238,22 @@
             },
             {
               "kind": "peak",
+              "node": 4,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 6
+            },
+            {
+              "kind": "clips",
+              "node": 4,
+              "port": {
+                "type": "audioOut"
+              },
+              "slot": 7
+            },
+            {
+              "kind": "peak",
               "node": 5,
               "port": {
                 "type": "audioOut"
@@ -8121,32 +8267,16 @@
                 "type": "audioOut"
               },
               "slot": 9
-            },
-            {
-              "kind": "peak",
-              "node": 6,
-              "port": {
-                "type": "audioOut"
-              },
-              "slot": 10
-            },
-            {
-              "kind": "clips",
-              "node": 6,
-              "port": {
-                "type": "audioOut"
-              },
-              "slot": 11
             }
           ],
           "modulation": [
             {
               "kind": "modOutput",
-              "node": 4,
+              "node": 6,
               "port": {
                 "type": "modOut"
               },
-              "slot": 6
+              "slot": 10
             },
             {
               "kind": "effective",
@@ -8155,7 +8285,7 @@
                 "index": 0,
                 "type": "param"
               },
-              "slot": 7
+              "slot": 11
             }
           ],
           "rev": 1

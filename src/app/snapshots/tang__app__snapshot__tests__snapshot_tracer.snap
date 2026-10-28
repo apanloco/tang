@@ -475,10 +475,11 @@ expression: tracer_json()
         }
       },
       {
+        "hears": 0,
         "id": 2,
         "kind": "modulator",
         "name": "LFO",
-        "parent": 0,
+        "parent": null,
         "source": {
           "fade": 0.0,
           "rate": 0.5,

@@ -102,8 +102,8 @@ export interface HeldIn {
   /** Whether it is the first of the lane's effects, which has what the card said of the lane as a whole: the mute, the solo and the way out, and the "+" that adds a modulator to the lane. */
   first: boolean;
   /**
-   * Whether it is on its own in the lane (its only effect, and the lane has no modulator in its rack, which a modulator that only hears the lane is not in): taking it out takes the lane out with it. A lane that keeps a modulator is not taken out with
-   * it, and neither is the last lane of the session, which a session keeps.
+   * Whether it is on its own in the lane (its only effect): taking it out takes the lane out with it, and the modulators that hear the lane stay, hearing every note. Not the last lane of the session,
+   * which a session keeps.
    */
   alone: boolean;
 }
@@ -283,9 +283,9 @@ interface Strip {
 }
 
 /**
- * Whose strip a node is in: the lane or group that an effect is in, and that a modulator is in or, for a modulator of the session's own (it has no parent), the lane or group that it hears (step 94: what the page and the
- * terminal make is of the session's own and hears the knob's lane or group, and is laid out above that lane's or group's row as a lane's modulator always was). None for a modulator that hears every note, which is in a
- * row of its own above the first lane, and for the nodes that are strips themselves. An ear that is not a lane or a group of the graph is no ear (the server tells none, but a graph can be anything).
+ * Whose strip a node is in: the lane or group that an effect is in and, for a modulator, the lane or group that it hears (every modulator is the session's own and has no parent since step 96: it is laid out above the row of
+ * the lane or group it hears, as a lane's modulator was when it was in the lane). None for a modulator that hears every note, which is in a row of its own above the first lane, and for the nodes that are strips themselves.
+ * An ear that is not a lane or a group of the graph is no ear (the server tells none, but a graph can be anything). (A modulator that has a parent, the old form that no server makes any more, is still laid out in its parent's strip.)
  */
 type OwnerOf = (node: Node) => NodeId | null;
 
@@ -736,11 +736,10 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
     shown.nodes.flatMap((node) => (node.ui ? [] : [[node.id, { ...(positions.get(node.id) ?? ORIGIN), slot: slots.get(node.id) ?? node.kind }] as const])),
   );
   /** What the module of an effect has of the lane that holds it, if the canvas draws no card for that lane. */
-  const racks = new Set(graph.nodes.flatMap((node) => (node.kind === "modulator" && node.parent !== null ? [node.parent] : [])));
   const lanes = graph.nodes.filter((node) => node.kind === "instrument").length;
   const heldIn = (node: Node): HeldIn | null => {
     const held = node.kind === "effect" && node.parent !== null ? holders.get(node.parent) : undefined;
-    return held === undefined || node.parent === null ? null : { lane: node.parent, first: held[0]?.id === node.id, alone: held.length === 1 && !racks.has(node.parent) && lanes > 1 };
+    return held === undefined || node.parent === null ? null : { lane: node.parent, first: held[0]?.id === node.id, alone: held.length === 1 && lanes > 1 };
   };
 
   const nodes: PatchNode[] = shown.nodes.map((node) => ({

@@ -10,7 +10,6 @@ import { HISTORY_MAX_STEPS, HISTORY_SAME_STEP, WAVEFORMS } from "../protocol";
 import type { CatalogEntry, EdgeId, Endpoint, Gain, Graph, Intent, ModulatorField, Node, NodeId, Snapshot, TelemetryLayout } from "../protocol";
 import { cablesThatGo, drivesRoundToItself, isAudioCable, isModulation, isNotesCable } from "./cables";
 import { trimmed } from "./inputs";
-import { cablesIntoLaneFromItsGroup } from "./membership";
 import { MODULATOR_LABELS, kindOf } from "./modulatorKinds";
 
 /** What a change is of, for a change that goes on to be told from the rest: a string that says which parameter, gain, setting or cable. */
@@ -407,8 +406,7 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       const name = catalogName(intent.plugin);
       return name === undefined ? "nothing" : added(`add ${name}`);
     }
-    // (A modulator that is in no lane and no group is added in the words of the button that adds one to a lane: undo takes it out, with its cables.)
-    case "addModulator":
+    // (Every modulator is the session's own: it is added in the words of the button that adds one, and undo takes it out, with its cables.)
     case "addFreeModulator":
       return added(`add ${MODULATOR_LABELS[intent.kind]}`);
     case "addModEdge":
@@ -424,7 +422,7 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
         const member = nodeOf(id);
         return member?.kind === "instrument" && member.parent !== null;
       });
-      // A lane that leaves its group is no longer driven by it, and the cables that did are gone: a step does not bring them back.
+      // A lane that leaves the group it is in goes back to none when the new group is taken out, and not to that one: a step does not bring it back.
       return leavesAGroup ? "barrier" : added("add a group");
     }
     case "setLaneGroup": {
@@ -432,8 +430,6 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       const lane = nodeOf(intent.node);
       if (lane?.kind !== "instrument") return "nothing";
       if (lane.parent === intent.group) return "nothing";
-      // The cables of the group it leaves are taken out, and a step does not bring them back.
-      if (cablesIntoLaneFromItsGroup(snapshot.graph, lane.id).length > 0) return "barrier";
       return step(intent.group === null ? "take a lane out of its group" : "put a lane in a group", { type: "setLaneGroup", node: intent.node, group: lane.parent }, null);
     }
     case "removeEdge": {
@@ -450,24 +446,16 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       // An effect goes with the cables that drive it, and with those that drive the depth of any of them, and comes back with them (the controller's
       // `Inverse::Effect`). None of them is on a cycle of cables that drive each other's depths: a cable drives one thing, and these are a tree of drivers.
       if (node?.kind === "effect") return { removed: { label: `remove ${node.name}`, intent, at: now } };
-      // A lane goes with its own modulators and their cables, its plugins and its pattern, after the cables of its group to it and those that drive the depth of any of them, and
-      // comes back with them, at its place among the lanes and in its group (the controller's `Inverse::Lane`). None of those cables is on a cycle of cables that drive each other's
-      // depths: a cable drives one thing, and those of its group drive a place in the lane, so the ones that drive their depths are a tree of drivers. (A lane with no instrument
-      // is "an empty lane".)
+      // A lane goes with its plugins and its pattern, after the cables that drive its plugins and those that drive the depth of any of them, and comes back with them, at its place among
+      // the lanes and in its group (the controller's `Inverse::Lane`). The modulators that heard it stay, hearing every note. None of those cables is on a cycle of cables that drive each
+      // other's depths: a cable drives one thing, so the ones that drive their depths are a tree of drivers. (A lane with no instrument is "an empty lane".)
       if (node?.kind === "instrument") return { removed: { label: `remove ${laneOrGroupWords(snapshot.graph.nodes, node)}`, intent, at: now } };
       // A source of notes goes with the cables of notes that start at it, and comes back with them, at its place among the sources (the controller's `Inverse::Source`), in the words of the button that
       // adds one: the keys, or the device by its name (what the node is called).
       if (node?.kind === "source") return { removed: { label: `remove ${node.name}`, intent, at: now } };
-      // A group goes with its bus effects, its modulators and their cables, and its members are in none; it comes back with them, at its place among the groups and with its members put in
-      // it again (the controller's `Inverse::Group`). The cables of its modulators, and those that drive the depth of any of them, are checked for cables that drive each other's depths,
-      // which are not put back (`RemovedCable::still_driven`), as for a modulator.
-      if (node?.kind === "group") {
-        const { edges, nodes } = snapshot.graph;
-        const parentOf = new Map(nodes.map((n) => [n.id, n.parent]));
-        const own = edges.flatMap((e) => (isModulation(e) && parentOf.get(e.from.node) === node.id ? [e.id] : []));
-        if (drivesRoundToItself(edges, cablesThatGo(edges, own))) return "barrier";
-        return { removed: { label: `remove ${laneOrGroupWords(snapshot.graph.nodes, node)}`, intent, at: now } };
-      }
+      // A group goes with its bus effects and the cables that drive them, and its members are in none; it comes back with them, at its place among the groups and with its members put in
+      // it again (the controller's `Inverse::Group`). The modulators that heard it stay, hearing every note.
+      if (node?.kind === "group") return { removed: { label: `remove ${laneOrGroupWords(snapshot.graph.nodes, node)}`, intent, at: now } };
       if (node?.kind !== "modulator") return node ? "barrier" : "nothing";
       // The cables that go with it: its own, those that drive its settings and those that drive the depth of any of them (`removeNodeOutcome`).
       const { edges } = snapshot.graph;

@@ -11,21 +11,21 @@ source: src/tui/golden_tests.rs
 │  ╰ fx Filter  [Built-in]                       ││  Sync                     ◂ free ▸                                 │
 │  fx Reverb  [Built-in]  (bus)                  ││  Retrigger                ◂ off ▸                                  │
 │  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)││  Fade (s)                 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
-│  ~ ADSR → Mod 0 rate (┌ Select Target Parameter ─────────────────────────────────────────────┐                       │
+│  ~ ADSR → Mod 1 rate (┌ Select Target Parameter ─────────────────────────────────────────────┐                       │
 │♪ Oscillator  [Built-in│/                                                                     │▓▓▓▓░░░░░░░░░░     0.40│
 │├ fx Filter  [Built-in]│Plugin              Parameter                                         │▓▓░░░░░░░░░░░░     0.25│
-│╰ ~ LFO 0.2Hz triangle │M0 Oscillator       waveform                                          │                       │
-│                       │M0 Oscillator       detune                                            │                       │
-│                       │M0 Oscillator       volume                                            │                       │
-│                       │M0 Oscillator       attack                                            │                       │
-│                       │M0 Oscillator       decay                                             │                       │
-│                       │M0 Oscillator       sustain                                           │                       │
-│                       │M0 Oscillator       release                                           │                       │
-│                       │M0 Oscillator       pan                                               │                       │
-│                       │M0 Oscillator       unison                                            │                       │
-│                       │M0 Oscillator       spread                                            │                       │
-│                       │M0 Oscillator       width                                             │                       │
-│                       │M0 Oscillator       pulse                                             │                       │
+│╰ ~ LFO 0.2Hz triangle │L1 Oscillator       waveform                                          │                       │
+│                       │L1 Oscillator       detune                                            │                       │
+│                       │L1 Oscillator       volume                                            │                       │
+│                       │L1 Oscillator       attack                                            │                       │
+│                       │L1 Oscillator       decay                                             │                       │
+│                       │L1 Oscillator       sustain                                           │                       │
+│                       │L1 Oscillator       release                                           │                       │
+│                       │L1 Oscillator       pan                                               │                       │
+│                       │L1 Oscillator       unison                                            │                       │
+│                       │L1 Oscillator       spread                                            │                       │
+│                       │L1 Oscillator       width                                             │                       │
+│                       │L1 Oscillator       pulse                                             │                       │
 │                       └──────────────────────────────────────────────────────────────────────┘                       │
 │                                                ││                                                                    │
 │                                                ││                                                                    │
@@ -34,7 +34,7 @@ source: src/tui/golden_tests.rs
 │                                                ││                                                                    │
 │                                                ││                                                                    │
 └────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
- t  add target  d  delete
+ F  new free  t  add target  h  hears  d  delete
 ── styles ('.' = default) ──
 aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -67,7 +67,7 @@ c................................................cb.............................
 c................................................cb....................................................................b
 c................................................cb....................................................................b
 ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-hhhccccccccccc.hhhccccccc
+hhhccccccccc.hhhccccccccccc.hhhcccccc.hhhccccccc
 ── legend ──
 a  fg=White bg=Reset mod=BOLD
 b  fg=Indexed(245) bg=Reset mod=-

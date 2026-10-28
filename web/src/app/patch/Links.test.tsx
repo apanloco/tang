@@ -174,7 +174,7 @@ describe("taking a link out", () => {
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Remove cable Oscillator 2 → Group 1" })).toBeNull();
     });
-    expect(requests().map((request) => request.intent)).toEqual([{ type: "setRoute", node: 7, route: "none" }]);
+    expect(requests().map((request) => request.intent)).toEqual([{ type: "setRoute", node: 6, route: "none" }]);
     expect(screen.getByRole("button", { name: "Remove cable Filter 1 → Master" })).toBeTruthy();
   });
 

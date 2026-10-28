@@ -213,91 +213,21 @@ describe("the modulators that drive a place on a modulator", () => {
   });
 });
 
-describe("the modulators that drive a parameter of a lane that is in a group", () => {
-  // A group with an LFO of its own, a lane in it with an effect and an envelope of its own (and one more LFO, and a control that is not bound yet).
-  const plugin: Plugin = { id: "builtin:filter", format: "Built-in", isInstrument: false, params: [], presets: [], currentPreset: null, pinned: [] };
-  const group: Node = { id: 1, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" };
-  const lane: Node = { id: 2, parent: 1, name: "Oscillator", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, route: "out", pattern: null };
-  const filter: Node = { id: 3, parent: 2, name: "Filter", kind: "effect", plugin, mix: 1, feed: "chain" };
-  const groupLfo: Node = { id: 4, parent: 1, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
-  const laneEnvelope: Node = { id: 5, parent: 2, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 } };
-  const laneLfo: Node = { id: 6, parent: 2, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "square", rate: 2, retrigger: false, fade: 0, sync: 0 } };
-  const laneControl: Node = { id: 7, parent: 2, name: "MIDI", kind: "modulator", source: { type: "midiLearn", control: null, learning: true } };
-  const nodes = [group, lane, filter, groupLfo, laneEnvelope, laneLfo, laneControl];
-  const cable = (from: number, index: number, amount: number, id: number): Edge => ({
-    kind: "modulation",
-    id,
-    amount,
-    from: { node: from, port: { type: "modOut" } },
-    to: { node: filter.id, port: { type: "param", index } },
-  });
-  const summary = (found: readonly Modulation[]): [string, number][] => found.map((m) => [m.source.type, m.amount]);
-
-  // The engine applies a group's modulators before its lanes render and a lane's own later, inside the lane, each from the value the user set: the lane's
-  // write stands, and the group's offset is not added to it (`a_lane_modulator_and_a_group_modulator_on_one_parameter_leave_what_the_lane_makes_of_it`).
-
-  test("are the lane's alone when the lane's own modulators drive it too: its write stands over the group's", () => {
-    const graph: Graph = { nodes, edges: [cable(groupLfo.id, 0, 0.2, 1), cable(laneEnvelope.id, 0, -0.5, 2)] };
-    expect(summary(modulationsOn(graph, filter.id, 0))).toEqual([["envelope", -0.5]]);
-  });
-
-  test("are the lane's alone in whatever order the graph lists the cables", () => {
-    const graph: Graph = { nodes, edges: [cable(laneEnvelope.id, 0, -0.5, 2), cable(groupLfo.id, 0, 0.2, 1)] };
-    expect(summary(modulationsOn(graph, filter.id, 0))).toEqual([["envelope", -0.5]]);
-  });
-
-  test("are all of the lane's, in the graph's order, when there are several: they add up, and the group's are not among them", () => {
-    const graph: Graph = { nodes, edges: [cable(groupLfo.id, 0, 0.2, 1), cable(laneEnvelope.id, 0, -0.5, 2), cable(laneLfo.id, 0, 0.1, 3)] };
-    expect(summary(modulationsOn(graph, filter.id, 0))).toEqual([
-      ["envelope", -0.5],
-      ["lfo", 0.1],
-    ]);
-  });
-
-  test("are the group's when no modulator of the lane drives that parameter, whatever the lane's drive of the others", () => {
-    const graph: Graph = { nodes, edges: [cable(groupLfo.id, 1, 0.3, 1), cable(laneEnvelope.id, 0, -0.5, 2)] };
-    expect(summary(modulationsOn(graph, filter.id, 1))).toEqual([["lfo", 0.3]]);
-    expect(summary(modulationsOn(graph, filter.id, 0))).toEqual([["envelope", -0.5]]);
-  });
-
-  test("are the lane's even when its control is not bound yet, which writes the value that the user set over the group's: nothing moves the parameter", () => {
-    const graph: Graph = { nodes, edges: [cable(groupLfo.id, 0, 0.2, 1), cable(laneControl.id, 0, 0.5, 2)] };
-    const found = modulationsOn(graph, filter.id, 0);
-    expect(summary(found)).toEqual([["midiLearn", 0.5]]);
-    expect(modulationExtent(0.5, 0, 1, found)).toBeUndefined();
-  });
-
-  test("are those of the group, all of them, when only the group's drive it: they add up, as they do for a lane's, and a bus effect has no others", () => {
-    const secondLfo: Node = { id: 8, parent: 1, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "triangle", rate: 3, retrigger: false, fade: 0, sync: 0 } };
-    const bus: Node = { id: 9, parent: 1, name: "Reverb", kind: "effect", plugin, mix: 0.5, feed: "chain" };
-    const toBus = (from: number, amount: number, id: number): Edge => ({
-      kind: "modulation",
-      id,
-      amount,
-      from: { node: from, port: { type: "modOut" } },
-      to: { node: bus.id, port: { type: "param", index: 0 } },
-    });
-    const graph: Graph = {
-      nodes: [...nodes, secondLfo, bus],
-      edges: [cable(groupLfo.id, 0, 0.2, 1), cable(secondLfo.id, 0, -0.1, 2), toBus(groupLfo.id, 0.4, 3), toBus(secondLfo.id, 0.6, 4)],
-    };
-    expect(summary(modulationsOn(graph, filter.id, 0))).toEqual([["lfo", 0.2], ["lfo", -0.1]]);
-    expect(summary(modulationsOn(graph, bus.id, 0))).toEqual([["lfo", 0.4], ["lfo", 0.6]]);
-  });
-});
-
-describe("the modulators that are in no lane and no group, among those that drive a parameter", () => {
-  // A group with an LFO and a bus effect, a lane in it with an effect and an envelope, and two modulators of the session's own rack (they have no parent): an LFO and an envelope.
+describe("the modulators that drive a parameter, whichever lane or group they hear", () => {
+  // A group with a bus effect, a lane in it with an effect, and modulators that are all the session's own (they have no parent, and hear the group, the lane or every note): an LFO each for
+  // the group and for every note, an envelope and an LFO for the lane, and a control that is not bound yet.
   const plugin: Plugin = { id: "builtin:filter", format: "Built-in", isInstrument: false, params: [], presets: [], currentPreset: null, pinned: [] };
   const group: Node = { id: 1, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" };
   const lane: Node = { id: 2, parent: 1, name: "Oscillator", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, route: "out", pattern: null };
   const filter: Node = { id: 3, parent: 2, name: "Filter", kind: "effect", plugin, mix: 1, feed: "chain" };
   const bus: Node = { id: 9, parent: 1, name: "Reverb", kind: "effect", plugin, mix: 0.5, feed: "chain" };
-  const groupLfo: Node = { id: 4, parent: 1, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } };
-  const laneEnvelope: Node = { id: 5, parent: 2, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 } };
-  const freeLfo: Node = { id: 10, parent: null, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 0.5, retrigger: false, fade: 0, sync: 0 } };
-  const freeEnvelope: Node = { id: 11, parent: null, name: "ADSR", kind: "modulator", source: { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 } };
-  const nodes = [group, lane, filter, bus, groupLfo, laneEnvelope, freeLfo, freeEnvelope];
+  const own = (id: number, name: string, source: ModulatorSource, hears?: number): Node => ({ id, parent: null, name, kind: "modulator", source, ...(hears === undefined ? {} : { hears }) });
+  const groupLfo = own(4, "LFO", { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 }, group.id);
+  const laneEnvelope = own(5, "ADSR", { type: "envelope", attack: 0.1, decay: 0.1, sustain: 0.5, release: 0.1 }, lane.id);
+  const laneLfo = own(6, "LFO", { type: "lfo", waveform: "square", rate: 2, retrigger: false, fade: 0, sync: 0 }, lane.id);
+  const laneControl = own(7, "MIDI", { type: "midiLearn", control: null, learning: true }, lane.id);
+  const everyNote = own(8, "LFO", { type: "lfo", waveform: "triangle", rate: 3, retrigger: false, fade: 0, sync: 0 });
+  const nodes = [group, lane, filter, bus, groupLfo, laneEnvelope, laneLfo, laneControl, everyNote];
   const cable = (from: Node, to: Node, index: number, amount: number, id: number): Edge => ({
     kind: "modulation",
     id,
@@ -307,35 +237,35 @@ describe("the modulators that are in no lane and no group, among those that driv
   });
   const summary = (found: readonly Modulation[]): [string, number][] => found.map((m) => [m.source.type, m.amount]);
 
-  // The engine applies the session's own modulators first, a group's before its lanes render, and a lane's own later, each from the value the user set, and what is written last stands
-  // (`two_free_modulators_on_one_parameter_add_up`, `a_group_modulator_on_a_parameter_that_a_free_one_drives_writes_it_after_and_wins`, `a_lane_modulator_…`).
+  // The engine applies every modulator as the session's own, each from the value the user set, and the offsets add up: what a lane's own and a group's did to the session's, which they won over,
+  // is gone with the racks (step 96: `two_free_modulators_on_one_parameter_add_up`, and `a_moved_session_adds_up_a_lanes_modulator_and_one_of_the_sessions_own_on_one_parameter_…`).
 
-  test("all count, and add up, for a parameter that no modulator of a lane or a group drives", () => {
-    const graph: Graph = { nodes, edges: [cable(freeLfo, filter, 0, 0.3, 1), cable(freeEnvelope, filter, 0, -0.5, 2)] };
-    expect(summary(modulationsOn(graph, filter.id, 0))).toEqual([["lfo", 0.3], ["envelope", -0.5]]);
-    // (And a bus effect, which has no lane's.)
-    const toBus: Graph = { nodes, edges: [cable(freeEnvelope, bus, 1, -0.5, 1), cable(freeLfo, bus, 1, 0.3, 2)] };
-    expect(summary(modulationsOn(toBus, bus.id, 1))).toEqual([["envelope", -0.5], ["lfo", 0.3]]);
+  test("are all of them, in the graph's order, whatever each hears and whichever the graph lists first: they add up", () => {
+    const edges = [cable(groupLfo, filter, 0, 0.2, 1), cable(laneEnvelope, filter, 0, -0.5, 2), cable(everyNote, filter, 0, 0.3, 3), cable(laneLfo, filter, 0, 0.1, 4)];
+    expect(summary(modulationsOn({ nodes, edges }, filter.id, 0))).toEqual([["lfo", 0.2], ["envelope", -0.5], ["lfo", 0.3], ["lfo", 0.1]]);
+    // (The order is the graph's edges', whatever the order of the nodes.)
+    expect(summary(modulationsOn({ nodes, edges: [...edges].reverse() }, filter.id, 0))).toEqual([["lfo", 0.1], ["lfo", 0.3], ["envelope", -0.5], ["lfo", 0.2]]);
   });
 
-  test("do not count where a group's modulator drives the parameter too, whichever the graph lists first: the group's write stands over theirs", () => {
-    const graph: Graph = { nodes, edges: [cable(freeLfo, filter, 0, 0.3, 1), cable(groupLfo, filter, 0, 0.2, 2)] };
-    expect(summary(modulationsOn(graph, filter.id, 0))).toEqual([["lfo", 0.2]]);
-    expect(modulationsOn({ nodes, edges: [...graph.edges].reverse() }, filter.id, 0)).toEqual(modulationsOn(graph, filter.id, 0));
-    // The same on a bus effect, which only a group's and the session's can drive: the group's alone, and a bus effect that the group does not drive has the session's.
-    const bus0: Graph = { nodes, edges: [cable(freeEnvelope, bus, 0, 0.7, 1), cable(groupLfo, bus, 0, 0.4, 2), cable(freeLfo, bus, 1, 0.3, 3)] };
-    expect(summary(modulationsOn(bus0, bus.id, 0))).toEqual([["lfo", 0.4]]);
-    expect(summary(modulationsOn(bus0, bus.id, 1))).toEqual([["lfo", 0.3]]);
-  });
-
-  test("do not count where a lane's own modulator drives the parameter, nor do a group's then: the lane's write stands over both", () => {
-    const graph: Graph = { nodes, edges: [cable(freeLfo, filter, 0, 0.3, 1), cable(laneEnvelope, filter, 0, -0.5, 2)] };
+  test("are those of that parameter only, whatever the others of the plugin are driven by", () => {
+    const graph: Graph = { nodes, edges: [cable(groupLfo, filter, 1, 0.3, 1), cable(laneEnvelope, filter, 0, -0.5, 2), cable(everyNote, filter, 1, 0.1, 3)] };
+    expect(summary(modulationsOn(graph, filter.id, 1))).toEqual([["lfo", 0.3], ["lfo", 0.1]]);
     expect(summary(modulationsOn(graph, filter.id, 0))).toEqual([["envelope", -0.5]]);
-    const all: Graph = { nodes, edges: [cable(freeLfo, filter, 0, 0.3, 1), cable(groupLfo, filter, 0, 0.2, 2), cable(laneEnvelope, filter, 0, -0.5, 3)] };
-    expect(summary(modulationsOn(all, filter.id, 0))).toEqual([["envelope", -0.5]]);
-    // (A parameter of the same plugin that only the session's modulator drives keeps its own.)
-    const other: Graph = { nodes, edges: [...all.edges, cable(freeEnvelope, filter, 1, 0.1, 4)] };
-    expect(summary(modulationsOn(other, filter.id, 1))).toEqual([["envelope", 0.1]]);
+  });
+
+  test("count a control that is not bound yet, which adds nothing: it does not take the others' offsets away, and alone it moves nothing", () => {
+    const withLfo: Graph = { nodes, edges: [cable(groupLfo, filter, 0, 0.2, 1), cable(laneControl, filter, 0, 0.5, 2)] };
+    const found = modulationsOn(withLfo, filter.id, 0);
+    expect(summary(found)).toEqual([["lfo", 0.2], ["midiLearn", 0.5]]);
+    expectExtent(modulationExtent(0.5, 0, 1, found), 0.3, 0.7);
+    const alone = modulationsOn({ nodes, edges: [cable(laneControl, filter, 0, 0.5, 1)] }, filter.id, 0);
+    expect(modulationExtent(0.5, 0, 1, alone)).toBeUndefined();
+  });
+
+  test("add up on a bus effect as they do on a lane's", () => {
+    const graph: Graph = { nodes, edges: [cable(groupLfo, bus, 0, 0.4, 1), cable(everyNote, bus, 0, 0.6, 2), cable(laneLfo, bus, 1, -0.2, 3)] };
+    expect(summary(modulationsOn(graph, bus.id, 0))).toEqual([["lfo", 0.4], ["lfo", 0.6]]);
+    expect(summary(modulationsOn(graph, bus.id, 1))).toEqual([["lfo", -0.2]]);
   });
 });
 

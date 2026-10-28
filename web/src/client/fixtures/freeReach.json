@@ -1,41 +1,678 @@
 {
   "fields": {
-    "13": [],
-    "15": [
+    "12": [
       {
-        "node": 6,
-        "port": {
-          "type": "rate"
-        }
-      },
-      {
-        "node": 8,
+        "node": 13,
         "port": {
           "type": "attack"
         }
       },
       {
-        "node": 8,
+        "node": 13,
         "port": {
           "type": "decay"
         }
       },
       {
-        "node": 8,
+        "node": 13,
         "port": {
           "type": "sustain"
         }
       },
       {
-        "node": 8,
+        "node": 13,
         "port": {
           "type": "release"
         }
+      },
+      {
+        "node": 15,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 17,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
       }
     ],
-    "16": [],
-    "17": [],
+    "13": [
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 17,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      }
+    ],
+    "14": [
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 17,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      }
+    ],
+    "15": [
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 17,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      }
+    ],
+    "16": [
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 17,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      }
+    ],
+    "17": [
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 18,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 19,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      }
+    ],
     "18": [
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 17,
+        "port": {
+          "type": "rate"
+        }
+      },
       {
         "node": 19,
         "port": {
@@ -70,6 +707,72 @@
     ],
     "19": [
       {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 16,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 17,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
         "node": 18,
         "port": {
           "type": "rate"
@@ -82,55 +785,96 @@
           "type": "depth"
         }
       }
-    ],
-    "6": [],
-    "8": []
+    ]
   },
   "reach": {
-    "13": [
-      11,
-      12
-    ],
-    "15": [
+    "12": [
       1,
+      3,
       4,
       5,
-      7
-    ],
-    "16": [
-      3,
+      6,
+      7,
+      8,
       9,
       10
     ],
-    "17": [],
+    "13": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "14": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "15": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "16": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "17": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
     "18": [
       1,
       3,
       4,
       5,
+      6,
       7,
+      8,
       9,
-      10,
-      11,
-      12
+      10
     ],
     "19": [
       1,
       3,
       4,
       5,
+      6,
       7,
+      8,
       9,
-      10,
-      11,
-      12
-    ],
-    "6": [
-      4,
-      5
-    ],
-    "8": [
-      7
+      10
     ]
   },
   "snapshot": {
@@ -228,7 +972,7 @@
         },
         {
           "from": {
-            "node": 7,
+            "node": 6,
             "port": {
               "type": "audioOut"
             }
@@ -236,6 +980,36 @@
           "kind": "member",
           "to": {
             "node": 0,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 7,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 8,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 8,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 2,
             "port": {
               "type": "audioIn"
             }
@@ -263,36 +1037,6 @@
               "type": "audioOut"
             }
           },
-          "kind": "member",
-          "to": {
-            "node": 2,
-            "port": {
-              "type": "audioIn"
-            }
-          }
-        },
-        {
-          "from": {
-            "node": 11,
-            "port": {
-              "type": "audioOut"
-            }
-          },
-          "kind": "audio",
-          "to": {
-            "node": 12,
-            "port": {
-              "type": "audioIn"
-            }
-          }
-        },
-        {
-          "from": {
-            "node": 12,
-            "port": {
-              "type": "audioOut"
-            }
-          },
           "kind": "audio",
           "to": {
             "node": 4294967295,
@@ -303,7 +1047,7 @@
         },
         {
           "from": {
-            "node": 14,
+            "node": 11,
             "port": {
               "type": "audioOut"
             }
@@ -437,20 +1181,6 @@
             ],
             "pinned": [],
             "presets": []
-          }
-        },
-        {
-          "id": 15,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 0,
-          "source": {
-            "fade": 0.0,
-            "rate": 1.0,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
           }
         },
         {
@@ -625,19 +1355,6 @@
                 "name": "Ambient Wash"
               }
             ]
-          }
-        },
-        {
-          "id": 16,
-          "kind": "modulator",
-          "name": "ADSR",
-          "parent": 2,
-          "source": {
-            "attack": 0.01,
-            "decay": 0.3,
-            "release": 0.5,
-            "sustain": 0.7,
-            "type": "envelope"
           }
         },
         {
@@ -1061,20 +1778,6 @@
         },
         {
           "id": 6,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 4,
-          "source": {
-            "fade": 0.0,
-            "rate": 1.0,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
-          }
-        },
-        {
-          "id": 7,
           "kind": "instrument",
           "muted": false,
           "name": "Oscillator",
@@ -1419,20 +2122,7 @@
           "volume": 1.0
         },
         {
-          "id": 8,
-          "kind": "modulator",
-          "name": "ADSR",
-          "parent": 7,
-          "source": {
-            "attack": 0.01,
-            "decay": 0.3,
-            "release": 0.5,
-            "sustain": 0.7,
-            "type": "envelope"
-          }
-        },
-        {
-          "id": 9,
+          "id": 7,
           "kind": "instrument",
           "muted": false,
           "name": "Oscillator",
@@ -1778,11 +2468,11 @@
         },
         {
           "feed": "chain",
-          "id": 10,
+          "id": 8,
           "kind": "effect",
           "mix": 1.0,
           "name": "Reverb",
-          "parent": 9,
+          "parent": 7,
           "plugin": {
             "currentPreset": null,
             "format": "Built-in",
@@ -1940,7 +2630,7 @@
           }
         },
         {
-          "id": 11,
+          "id": 9,
           "kind": "instrument",
           "muted": false,
           "name": "Oscillator",
@@ -2286,11 +2976,11 @@
         },
         {
           "feed": "chain",
-          "id": 12,
+          "id": 10,
           "kind": "effect",
           "mix": 1.0,
           "name": "Filter",
-          "parent": 11,
+          "parent": 9,
           "plugin": {
             "currentPreset": null,
             "format": "Built-in",
@@ -2359,18 +3049,7 @@
           }
         },
         {
-          "id": 13,
-          "kind": "modulator",
-          "name": "MIDI (learning…)",
-          "parent": 11,
-          "source": {
-            "control": null,
-            "learning": true,
-            "type": "midiLearn"
-          }
-        },
-        {
-          "id": 14,
+          "id": 11,
           "kind": "instrument",
           "muted": false,
           "name": "(empty)",
@@ -2384,10 +3063,80 @@
           "volume": 1.0
         },
         {
+          "hears": 4,
+          "id": 12,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 1.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 6,
+          "id": 13,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": null,
+          "source": {
+            "attack": 0.01,
+            "decay": 0.3,
+            "release": 0.5,
+            "sustain": 0.7,
+            "type": "envelope"
+          }
+        },
+        {
+          "hears": 9,
+          "id": 14,
+          "kind": "modulator",
+          "name": "MIDI (learning…)",
+          "parent": null,
+          "source": {
+            "control": null,
+            "learning": true,
+            "type": "midiLearn"
+          }
+        },
+        {
+          "hears": 0,
+          "id": 15,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 1.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 2,
+          "id": 16,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": null,
+          "source": {
+            "attack": 0.01,
+            "decay": 0.3,
+            "release": 0.5,
+            "sustain": 0.7,
+            "type": "envelope"
+          }
+        },
+        {
           "id": 17,
           "kind": "modulator",
           "name": "LFO",
-          "parent": 14,
+          "parent": null,
           "source": {
             "fade": 0.0,
             "rate": 1.0,
@@ -2522,11 +3271,27 @@
         },
         {
           "kind": "peak",
-          "node": 7,
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 8
+        },
+        {
+          "kind": "clips",
+          "node": 6,
           "port": {
             "type": "audioOut"
           },
           "slot": 9
+        },
+        {
+          "kind": "peak",
+          "node": 7,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 10
         },
         {
           "kind": "clips",
@@ -2534,7 +3299,7 @@
           "port": {
             "type": "audioOut"
           },
-          "slot": 10
+          "slot": 11
         },
         {
           "kind": "peak",
@@ -2567,25 +3332,33 @@
             "type": "audioOut"
           },
           "slot": 15
+        }
+      ],
+      "modulation": [
+        {
+          "kind": "modOutput",
+          "node": 12,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 16
         },
         {
-          "kind": "peak",
-          "node": 14,
+          "kind": "modOutput",
+          "node": 13,
           "port": {
-            "type": "audioOut"
+            "type": "modOut"
           },
           "slot": 17
         },
         {
-          "kind": "clips",
+          "kind": "modOutput",
           "node": 14,
           "port": {
-            "type": "audioOut"
+            "type": "modOut"
           },
           "slot": 18
-        }
-      ],
-      "modulation": [
+        },
         {
           "kind": "modOutput",
           "node": 15,
@@ -2601,30 +3374,6 @@
             "type": "modOut"
           },
           "slot": 20
-        },
-        {
-          "kind": "modOutput",
-          "node": 6,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 8
-        },
-        {
-          "kind": "modOutput",
-          "node": 8,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 11
-        },
-        {
-          "kind": "modOutput",
-          "node": 13,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 16
         },
         {
           "kind": "modOutput",

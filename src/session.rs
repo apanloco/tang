@@ -844,8 +844,15 @@ fn resolve_feeds(effects: &mut [EffectConfig], owner: &str) -> anyhow::Result<()
     Ok(())
 }
 
-/// Parse session TOML text (the body of `load`, usable without a file).
+/// Parse session TOML text (the body of `load`, usable without a file), with every modulator made the session's own (`SessionConfig::move_modulators_to_the_session`).
 pub fn parse(content: &str) -> anyhow::Result<SessionConfig> {
+    let mut config = parse_raw(content)?;
+    config.move_modulators_to_the_session();
+    Ok(config)
+}
+
+/// Parse session TOML text as it is written: the modulators of a lane and of a group are in the lane and the group (the old form of the file).
+pub fn parse_raw(content: &str) -> anyhow::Result<SessionConfig> {
     reject_non_finite(&content.parse::<toml::Table>()?)?;
     let mut raw: SessionRaw = toml::from_str(content)?;
     reject_backwards_lfos(&raw)?;
@@ -1252,8 +1259,6 @@ pub struct SaveInstrumentSlot {
     pub muted: bool,
     pub solo: bool,
     pub route: Route,
-    /// Lane-scoped modulators (targets carry their chain slot).
-    pub modulators: Vec<SaveModulator>,
     pub instrument: Option<SaveInstrument>,
     pub effects: Vec<SaveEffect>,
     pub pattern: Option<SavePattern>,
@@ -1272,8 +1277,6 @@ pub struct SaveGroup {
     pub solo: bool,
     pub route: Route,
     pub effects: Vec<SaveEffect>,
-    /// Group-scoped modulators (targets address members / bus effects).
-    pub modulators: Vec<SaveModulator>,
     /// Where the group is drawn.
     pub ui: Option<NodeUi>,
 }
@@ -1286,12 +1289,12 @@ pub struct SaveCable {
 }
 
 /// The nodes that stand outside the lanes and the groups, as a save writes them: the sources of notes (the keys, if it has them, and its devices in the order that a cable names them in)
-/// and the modulators that belong to no lane and no group.
+/// and the session's modulators.
 #[derive(Default)]
 pub struct SaveSources {
     pub keys: Option<SaveKeys>,
     pub devices: Vec<SaveDevice>,
-    /// The free modulators, in order: each cable names the plugin it drives by its place (`SaveModTarget::to`).
+    /// The modulators, in order: each cable names the plugin it drives by its place (`SaveModTarget::to`).
     pub modulators: Vec<SaveModulator>,
 }
 
@@ -1341,7 +1344,7 @@ pub struct SaveModulator {
     pub targets: Vec<SaveModTarget>,
     /// Where the modulator is drawn.
     pub ui: Option<NodeUi>,
-    /// (Free modulators) The place of the lane or the group whose notes it hears.
+    /// The place of the lane or the group whose notes it hears.
     pub hears: Option<CablePlace>,
 }
 
@@ -1350,9 +1353,7 @@ pub struct SaveModTarget {
     pub kind: crate::plugin::chain::ModTargetKind,
     pub label: String,
     pub depth: f32,
-    /// Chain slot the target lives on (0 = instrument, 1..N = effect).
-    pub slot: usize,
-    /// (Free modulators) The place of the plugin the target drives, which is how the file names it.
+    /// The place of the plugin the target drives, which is how the file names it.
     pub to: Option<CablePlace>,
 }
 
@@ -1480,8 +1481,6 @@ struct GroupOut {
     route: Route,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "effect")]
     effects: Vec<EffectOut>,
-    #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
-    modulators: Vec<ModulatorOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ui: Option<NodeUiOut>,
 }
@@ -1542,8 +1541,6 @@ struct InstrumentSlotOut {
     pitch_bend_range: Option<f64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     remap: BTreeMap<String, RemapTarget>,
-    #[serde(skip_serializing_if = "Vec::is_empty", rename = "modulator")]
-    modulators: Vec<ModulatorOut>,
     // Slot-level fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     range: Option<String>,
@@ -1634,7 +1631,7 @@ struct ModulatorOut {
     midi_velocity: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     midi_key: bool,
-    /// (Free modulators) The place of the lane or the group whose notes it hears.
+    /// The place of the lane or the group whose notes it hears.
     #[serde(skip_serializing_if = "Option::is_none")]
     hears: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "target")]
@@ -1651,18 +1648,9 @@ fn is_lfo_type(s: &String) -> bool {
 struct ModTargetOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     param: Option<String>,
-    /// (Free modulators) The place of the plugin a `param` target drives.
+    /// The place of the plugin a `param` target drives.
     #[serde(skip_serializing_if = "Option::is_none")]
     to: Option<String>,
-    /// Chain slot for a plugin-param target (omitted when 0 = instrument).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    slot: Option<usize>,
-    /// (Group modulators) member ordinal a `param` target lands on.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    member: Option<usize>,
-    /// (Group modulators) bus-effect index a `param` target lands on.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bus: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mod_rate: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1701,9 +1689,6 @@ fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
     let mut out = ModTargetOut {
         param: None,
         to: None,
-        slot: None,
-        member: None,
-        bus: None,
         mod_rate: None,
         mod_depth: None,
         mod_attack: None,
@@ -1713,42 +1698,9 @@ fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
         depth: clean_f64(t.depth),
     };
     match &t.kind {
-        ModTargetKind::PluginParam { .. } => {
-            out.param = Some(t.label.clone());
-            // 0 (instrument) is the default and omitted.
-            if t.slot != 0 {
-                out.slot = Some(t.slot);
-            }
-        }
-        ModTargetKind::GroupMember { member, slot, .. } => {
-            out.param = Some(t.label.clone());
-            out.member = Some(*member);
-            // 0 (member's instrument) is the default and omitted.
-            if *slot != 0 {
-                out.slot = Some(*slot);
-            }
-        }
-        ModTargetKind::GroupBus { effect_index, .. } => {
-            out.param = Some(t.label.clone());
-            out.bus = Some(*effect_index);
-        }
         ModTargetKind::FreeParam { .. } => {
             out.param = Some(t.label.clone());
             out.to = t.to.map(|place| place.to_string());
-        }
-        ModTargetKind::GroupMemberMod { member, mod_index, field } => {
-            use crate::plugin::chain::CrossModField;
-            // Serialized as `member` (discriminator) + the matching mod_* field
-            // carrying the member modulator's index.
-            out.member = Some(*member);
-            match field {
-                CrossModField::Rate => out.mod_rate = Some(*mod_index),
-                CrossModField::Attack => out.mod_attack = Some(*mod_index),
-                CrossModField::Decay => out.mod_decay = Some(*mod_index),
-                CrossModField::Sustain => out.mod_sustain = Some(*mod_index),
-                CrossModField::Release => out.mod_release = Some(*mod_index),
-                CrossModField::Depth(ti) => out.mod_depth = Some(vec![*mod_index, *ti]),
-            }
         }
         ModTargetKind::ModulatorRate { mod_index } => {
             out.mod_rate = Some(*mod_index);
@@ -1914,7 +1866,6 @@ pub fn to_toml(
                 solo: g.solo,
                 route: g.route,
                 effects: g.effects.iter().map(effect_to_out).collect(),
-                modulators: mods_to_out(&g.modulators),
                 ui: g.ui.map(NodeUiOut::from),
             })
             .collect(),
@@ -1960,8 +1911,6 @@ pub fn to_toml(
                     params,
                     pitch_bend_range,
                     remap,
-                    // Lane modulators serialize at the instrument level.
-                    modulators: mods_to_out(&slot.modulators),
                     range: slot.range.map(format_range),
                     transpose: slot.transpose,
                     group: slot.group,
@@ -2452,12 +2401,12 @@ mod tests {
     #[test]
     fn a_step_sequencer_is_read_with_what_the_file_says_and_what_it_leaves_out_is_left_to_the_loader() {
         let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
-        let config = parse(&format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\nsteps = [0.5, -0.25, 1.0]\nlength = 2\nrate = 4.5\nglide = 0.25\nretrigger = false\n")).unwrap();
+        let config = parse_raw(&format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\nsteps = [0.5, -0.25, 1.0]\nlength = 2\nrate = 4.5\nglide = 0.25\nretrigger = false\n")).unwrap();
         let m = &config.instruments[0].modulators[0];
         assert_eq!(m.mod_type, "steps");
         assert_eq!((m.steps.as_deref(), m.length, m.rate, m.glide, m.retrigger), (Some(&[0.5, -0.25, 1.0][..]), Some(2), Some(4.5), 0.25, Some(false)));
         // None of them: no values, no length, no rate (an LFO's is 1 Hz and its is 8), no glide, and a note starts it again.
-        let config = parse(&format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\n")).unwrap();
+        let config = parse_raw(&format!("{osc}[[instrument.modulator]]\ntype = \"steps\"\n")).unwrap();
         let m = &config.instruments[0].modulators[0];
         // (A switch that is not there is left to the loader, which says what it is by the kind of modulator: a note starts a step sequencer again and does not start an LFO.)
         assert_eq!((m.steps.as_deref(), m.length, m.rate, m.glide, m.retrigger), (None, None, None, 0.0, None));
@@ -2468,29 +2417,27 @@ mod tests {
     #[test]
     fn an_lfo_is_read_with_its_key_and_what_the_file_leaves_out_is_left_to_the_loader() {
         let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
-        let config = parse(&format!("{osc}[[instrument.modulator]]\ntype = \"lfo\"\nrate = 2.0\nretrigger = true\nfade = 0.5\n")).unwrap();
+        let config = parse_raw(&format!("{osc}[[instrument.modulator]]\ntype = \"lfo\"\nrate = 2.0\nretrigger = true\nfade = 0.5\n")).unwrap();
         let m = &config.instruments[0].modulators[0];
         assert_eq!((m.mod_type.as_str(), m.retrigger, m.fade), ("lfo", Some(true), 0.5));
-        let config = parse(&format!("{osc}[[instrument.modulator]]\n")).unwrap();
+        let config = parse_raw(&format!("{osc}[[instrument.modulator]]\n")).unwrap();
         let m = &config.instruments[0].modulators[0];
         assert_eq!((m.mod_type.as_str(), m.retrigger, m.fade), ("lfo", None, 0.0), "none of it: the loader makes it an LFO that runs free");
     }
 
     #[test]
     fn an_lfo_that_is_keyed_is_written_with_its_key_and_read_back_the_same_and_one_that_is_free_has_neither_key() {
-        let lane = |rack: Vec<SaveModulator>| SaveInstrumentSlot { modulators: rack, ..placed_lane(None) };
         let keyed = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: true, fade: 0.3, sync: None }, targets: vec![], ui: None, hears: None };
-        let text = to_toml(&[lane(vec![keyed])], &[], &[], &Default::default(), None, None, None).unwrap();
+        let (text, config) = saved_with(vec![keyed]);
         for line in ["retrigger = true", "fade = 0.3"] {
             assert!(text.contains(line), "{line} (as typed, and not what its 32 bits are): {text}");
         }
-        let config = parse(&text).unwrap();
-        let m = &config.instruments[0].modulators[0];
+        let m = &config.free_modulators[0];
         assert_eq!((m.mod_type.as_str(), m.retrigger, m.fade), ("lfo", Some(true), 0.3));
         // One that retriggers and does not fade has the one key, and the other way about.
         let only = |retrigger: bool, fade: f32| {
             let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger, fade, sync: None }, targets: vec![], ui: None, hears: None };
-            to_toml(&[lane(vec![lfo])], &[], &[], &Default::default(), None, None, None).unwrap()
+            saved_with(vec![lfo]).0
         };
         let (a, b) = (only(true, 0.0), only(false, 2.0));
         assert!(a.contains("retrigger = true") && !a.contains("fade"), "{a}");
@@ -2503,7 +2450,7 @@ mod tests {
     #[test]
     fn an_lfo_and_a_step_sequencer_are_read_with_the_note_length_they_follow_the_tempo_by_and_none_if_the_file_says_none() {
         let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
-        let config = parse(&format!(
+        let config = parse_raw(&format!(
             "{osc}[[instrument.modulator]]\nsync = \"1/8 triplet\"\nrate = 2.0\n[[instrument.modulator]]\ntype = \"steps\"\nsync = \"1/16\"\n[[instrument.modulator]]\ntype = \"lfo\"\nsync = \"free\"\n[[instrument.modulator]]\n"
         ))
         .unwrap();
@@ -2515,7 +2462,6 @@ mod tests {
 
     #[test]
     fn a_modulator_that_follows_the_tempo_is_written_with_the_name_of_its_note_length_and_read_back_the_same_and_one_that_is_free_has_no_sync_key() {
-        let lane = |rack: Vec<SaveModulator>| SaveInstrumentSlot { modulators: rack, ..placed_lane(None) };
         let lfo = |sync: Option<&str>| SaveModulator {
             source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: sync.map(str::to_string) },
             targets: vec![],
@@ -2528,13 +2474,12 @@ mod tests {
             ui: None,
             hears: None,
         };
-        let text = to_toml(&[lane(vec![lfo(Some("1/8 triplet")), steps(Some("1/16")), lfo(None), steps(None)])], &[], &[], &Default::default(), None, None, None).unwrap();
+        let (text, config) = saved_with(vec![lfo(Some("1/8 triplet")), steps(Some("1/16")), lfo(None), steps(None)]);
         assert_eq!(text.matches("sync = ").count(), 2, "only the two that follow the tempo: {text}");
         for line in ["sync = \"1/8 triplet\"", "sync = \"1/16\""] {
             assert!(text.contains(line), "{line}: {text}");
         }
-        let config = parse(&text).unwrap();
-        let synced = |i: usize| config.instruments[0].modulators[i].sync.as_deref();
+        let synced = |i: usize| config.free_modulators[i].sync.as_deref();
         assert_eq!([synced(0), synced(1), synced(2), synced(3)], [Some("1/8 triplet"), Some("1/16"), None, None]);
     }
 
@@ -2558,18 +2503,16 @@ mod tests {
 
     #[test]
     fn a_step_sequencer_is_written_with_all_that_it_has_and_read_back_the_same_and_the_others_have_none_of_it() {
-        let sequencer = |rack: Vec<SaveModulator>| SaveInstrumentSlot { modulators: rack, ..placed_lane(None) };
         let mut values: Vec<f32> = (0..16).map(|i| i as f32 / 8.0 - 1.0).collect();
         values[3] = 0.3;
         let steps = SaveModulator { source: SaveModSource::Steps { values: values.clone(), length: 5, rate: 6.5, glide: 0.25, retrigger: false, sync: None }, targets: vec![], ui: None, hears: None };
-        let text = to_toml(&[sequencer(vec![steps])], &[], &[], &Default::default(), None, None, None).unwrap();
+        let (text, config) = saved_with(vec![steps]);
         assert!(text.contains("type = \"steps\""), "{text}");
         assert!(text.contains("steps = [-1.0, -0.875, -0.75, 0.3, -0.5, -0.375, -0.25, -0.125, 0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]"), "every value, as typed: {text}");
         for line in ["length = 5", "rate = 6.5", "glide = 0.25", "retrigger = false"] {
             assert!(text.contains(line), "{line}: {text}");
         }
-        let config = parse(&text).unwrap();
-        let m = &config.instruments[0].modulators[0];
+        let m = &config.free_modulators[0];
         assert_eq!(m.mod_type, "steps");
         // (A value is written as it was typed: 0.3, and not the 0.30000001192092896 that its 32 bits are.)
         assert_eq!(m.steps.as_deref(), Some(&values.iter().map(|v| clean_f64(*v)).collect::<Vec<_>>()[..]));
@@ -2579,7 +2522,7 @@ mod tests {
         let lfo = SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: None, hears: None };
         let envelope = SaveModulator { source: SaveModSource::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 }, targets: vec![], ui: None, hears: None };
         let knob = SaveModulator { source: SaveModSource::Macro { value: 0.5 }, targets: vec![], ui: None, hears: None };
-        let text = to_toml(&[sequencer(vec![lfo, envelope, knob])], &[], &[], &Default::default(), None, None, None).unwrap();
+        let (text, _) = saved_with(vec![lfo, envelope, knob]);
         for key in ["steps", "length", "glide", "retrigger"] {
             assert!(!text.contains(key), "{key}: {text}");
         }
@@ -2601,7 +2544,7 @@ mod tests {
     #[test]
     fn mute_and_solo_are_written_by_to_toml_only_when_on() {
         let lane = |muted: bool, solo: bool| SaveInstrumentSlot { muted, solo, ..placed_lane(None) };
-        let group = |muted: bool, solo: bool| SaveGroup { name: None, volume: 1.0, pan: 0.0, muted, solo, effects: vec![], modulators: vec![], ui: None, route: Route::Out };
+        let group = |muted: bool, solo: bool| SaveGroup { name: None, volume: 1.0, pan: 0.0, muted, solo, effects: vec![], ui: None, route: Route::Out };
         let text = to_toml(&[lane(true, false), lane(false, true), lane(true, true), lane(false, false)], &[group(true, false), group(false, true), group(false, false)], &[], &Default::default(), None, None, None).unwrap();
         let config = parse(&text).unwrap();
         assert_eq!(config.instruments.iter().map(|l| (l.muted, l.solo)).collect::<Vec<_>>(), [(true, false), (false, true), (true, true), (false, false)]);
@@ -2642,7 +2585,7 @@ mod tests {
     #[test]
     fn a_route_is_written_by_to_toml_only_when_it_is_none() {
         let lane = |route: Route| SaveInstrumentSlot { route, ..placed_lane(None) };
-        let group = |route: Route| SaveGroup { name: None, volume: 1.0, pan: 0.0, muted: false, solo: false, route, effects: vec![], modulators: vec![], ui: None };
+        let group = |route: Route| SaveGroup { name: None, volume: 1.0, pan: 0.0, muted: false, solo: false, route, effects: vec![], ui: None };
         let text = to_toml(&[lane(Route::None), lane(Route::Out)], &[group(Route::Out), group(Route::None)], &[], &Default::default(), None, None, None).unwrap();
         let config = parse(&text).unwrap();
         assert_eq!(config.instruments.iter().map(|l| l.route).collect::<Vec<_>>(), [Route::None, Route::Out]);
@@ -2698,7 +2641,6 @@ mod tests {
             solo: false,
             route: Route::Out,
             effects: vec![bare_effect("builtin:reverb"), SaveEffect { feed: Feed::None, ..bare_effect("builtin:filter") }],
-            modulators: vec![],
             ui: None,
         };
         let text = to_toml(&[lane], &[group], &[], &Default::default(), None, None, None).unwrap();
@@ -2821,7 +2763,6 @@ range = "C4-C8"
                 range: Some((12, 59)), // C0-B3
                 transpose: 0,
                 group: None,
-                modulators: vec![],
                 instrument: Some(SaveInstrument {
                     pinned: vec![],
                     plugin: "builtin:sine".into(),
@@ -2850,7 +2791,6 @@ range = "C4-C8"
                 range: None,
                 transpose: 0,
                 group: None,
-                modulators: vec![],
                 instrument: Some(SaveInstrument {
                     pinned: vec![],
                     plugin: "builtin:sine".into(),
@@ -2892,7 +2832,6 @@ range = "C4-C8"
             range: None,
             transpose: 0,
             group: None,
-            modulators: vec![],
             instrument: Some(SaveInstrument {
                 pinned: vec![],
                 plugin: "builtin:sine".into(),
@@ -2931,109 +2870,42 @@ range = "C4-C8"
 
     #[test]
     fn save_and_reload_with_modulators() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mod_test.toml");
-
-        let instruments = vec![SaveInstrumentSlot {
-            muted: false,
-            solo: false,
-            range: None,
-            transpose: 0,
-            group: None,
-            modulators: vec![SaveModulator {
-                source: SaveModSource::Lfo {
-                    waveform: "sine".into(),
-                    rate: 2.5,
-                    retrigger: false,
-                    fade: 0.0, sync: None },
-                targets: vec![SaveModTarget {
-                    kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
-                    label: "cutoff".into(),
-                    depth: 0.75,
-                    slot: 0, to: None,
-                }],
-                ui: None,
-                hears: None,
-            }],
-            instrument: Some(SaveInstrument {
-                pinned: vec![],
-                plugin: "builtin:sine".into(),
-                volume: 1.0,
-                preset: None,
-                params: vec![],
-                pitch_bend_range: 2.0,
-                remap: HashMap::new(),
-            }),
-            effects: vec![],
-            pattern: None,
+        let lfo = SaveModulator {
+            source: SaveModSource::Lfo { waveform: "sine".into(), rate: 2.5, retrigger: false, fade: 0.0, sync: None },
+            targets: vec![cutoff_cable(0.75)],
             ui: None,
-            route: Route::Out,
-        }];
-
-        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
-
-        let config = load(path.to_str().unwrap()).unwrap();
-        assert_eq!(config.instruments.len(), 1);
-        let inst = &config.instruments[0];
-        assert_eq!(inst.modulators.len(), 1);
-        let m = &inst.modulators[0];
+            hears: Some(CablePlace::Instrument(0)),
+        };
+        let (_, config) = saved_with(vec![lfo]);
+        assert!(config.instruments[0].modulators.is_empty(), "none is written in a lane");
+        assert_eq!(config.free_modulators.len(), 1);
+        let m = &config.free_modulators[0];
         assert_eq!(m.waveform, "sine");
         assert!((m.rate.unwrap() - 2.5).abs() < 0.01);
         assert_eq!(m.targets.len(), 1);
         assert_eq!(m.targets[0].param.as_deref(), Some("cutoff"));
         assert!((m.targets[0].depth - 0.75).abs() < 0.01);
-        // Slot defaults to instrument (0).
-        assert_eq!(m.targets[0].slot, 0);
+        // The plugin it drives is named by its place, and it hears the lane.
+        assert_eq!(m.targets[0].to.as_deref(), Some("instrument[0].effect[0]"));
+        assert_eq!(m.hears.as_deref(), Some("instrument[0]"));
     }
 
     #[test]
     fn save_and_reload_midi_learn_modulator() {
         // A MIDI-learned modulator (bound to CC 74) must round-trip as
         // `type = "midi"` + `midi_cc = 74`.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("midi_learn.toml");
-
-        let instruments = vec![SaveInstrumentSlot {
-            muted: false,
-            solo: false,
-            range: None,
-            transpose: 0,
-            group: None,
-            modulators: vec![SaveModulator {
-                source: SaveModSource::MidiLearn { cc: Some(74), pitch_bend: false, aftertouch: false, velocity: false, key: false },
-                targets: vec![SaveModTarget {
-                    kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
-                    label: "cutoff".into(),
-                    depth: 1.0,
-                    slot: 0, to: None,
-                }],
-                ui: None,
-                hears: None,
-            }],
-            instrument: Some(SaveInstrument {
-                pinned: vec![],
-                plugin: "builtin:filter".into(),
-                volume: 1.0,
-                preset: None,
-                params: vec![],
-                pitch_bend_range: 2.0,
-                remap: HashMap::new(),
-            }),
-            effects: vec![],
-            pattern: None,
+        let control = SaveModulator {
+            source: SaveModSource::MidiLearn { cc: Some(74), pitch_bend: false, aftertouch: false, velocity: false, key: false },
+            targets: vec![cutoff_cable(0.5)],
             ui: None,
-            route: Route::Out,
-        }];
-
-        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
-        let raw = std::fs::read_to_string(&path).unwrap();
+            hears: None,
+        };
+        let (raw, config) = saved_with(vec![control]);
         assert!(raw.contains("type = \"midi\""), "expected midi modulator:\n{raw}");
         assert!(raw.contains("midi_cc = 74"), "expected bound CC:\n{raw}");
 
-        let config = load(path.to_str().unwrap()).unwrap();
-        let inst = &config.instruments[0];
-        assert_eq!(inst.modulators.len(), 1);
-        let m = &inst.modulators[0];
+        assert_eq!(config.free_modulators.len(), 1);
+        let m = &config.free_modulators[0];
         assert_eq!(m.mod_type, "midi");
         assert_eq!(m.midi_cc, Some(74));
         assert!(!m.midi_pitch_bend);
@@ -3045,47 +2917,16 @@ range = "C4-C8"
     fn save_and_reload_aftertouch_modulator() {
         // A MIDI-learned modulator bound to key pressure must round-trip as
         // `type = "midi"` + `midi_aftertouch = true`.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("aftertouch.toml");
-
-        let instruments = vec![SaveInstrumentSlot {
-            muted: false,
-            solo: false,
-            range: None,
-            transpose: 0,
-            group: None,
-            modulators: vec![SaveModulator {
-                source: SaveModSource::MidiLearn { cc: None, pitch_bend: false, aftertouch: true, velocity: false, key: false },
-                targets: vec![SaveModTarget {
-                    kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 0, param_index: 0 },
-                    label: "cutoff".into(),
-                    depth: 1.0,
-                    slot: 0, to: None,
-                }],
-                ui: None,
-                hears: None,
-            }],
-            instrument: Some(SaveInstrument {
-                pinned: vec![],
-                plugin: "builtin:filter".into(),
-                volume: 1.0,
-                preset: None,
-                params: vec![],
-                pitch_bend_range: 2.0,
-                remap: HashMap::new(),
-            }),
-            effects: vec![],
-            pattern: None,
+        let control = SaveModulator {
+            source: SaveModSource::MidiLearn { cc: None, pitch_bend: false, aftertouch: true, velocity: false, key: false },
+            targets: vec![cutoff_cable(0.5)],
             ui: None,
-            route: Route::Out,
-        }];
-
-        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
-        let raw = std::fs::read_to_string(&path).unwrap();
+            hears: None,
+        };
+        let (raw, config) = saved_with(vec![control]);
         assert!(raw.contains("midi_aftertouch = true"), "expected aftertouch binding:\n{raw}");
 
-        let config = load(path.to_str().unwrap()).unwrap();
-        let m = &config.instruments[0].modulators[0];
+        let m = &config.free_modulators[0];
         assert_eq!(m.mod_type, "midi");
         assert!(m.midi_aftertouch);
         assert!(m.midi_cc.is_none());
@@ -3095,104 +2936,21 @@ range = "C4-C8"
     #[test]
     fn save_and_reload_velocity_and_key_modulators() {
         // A control that follows the notes round-trips as `type = "midi"` + `midi_velocity = true` or `midi_key = true`, and only one of them is written for each.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("notes.toml");
         let modulator = |velocity, key| SaveModulator {
             source: SaveModSource::MidiLearn { cc: None, pitch_bend: false, aftertouch: false, velocity, key },
             targets: vec![],
             ui: None,
             hears: None,
         };
-        let instruments = vec![SaveInstrumentSlot {
-            muted: false,
-            solo: false,
-            range: None,
-            transpose: 0,
-            group: None,
-            modulators: vec![modulator(true, false), modulator(false, true)],
-            instrument: Some(SaveInstrument {
-                pinned: vec![],
-                plugin: "builtin:filter".into(),
-                volume: 1.0,
-                preset: None,
-                params: vec![],
-                pitch_bend_range: 2.0,
-                remap: HashMap::new(),
-            }),
-            effects: vec![],
-            pattern: None,
-            ui: None,
-            route: Route::Out,
-        }];
-
-        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
-        let raw = std::fs::read_to_string(&path).unwrap();
+        let (raw, config) = saved_with(vec![modulator(true, false), modulator(false, true)]);
         assert_eq!(raw.matches("midi_velocity = true").count(), 1, "{raw}");
         assert_eq!(raw.matches("midi_key = true").count(), 1, "{raw}");
         assert!(!raw.contains("midi_cc") && !raw.contains("midi_pitch_bend") && !raw.contains("midi_aftertouch"), "{raw}");
 
-        let config = load(path.to_str().unwrap()).unwrap();
-        let [first, second] = &config.instruments[0].modulators[..] else { panic!("two modulators") };
+        let [first, second] = &config.free_modulators[..] else { panic!("two modulators") };
         assert_eq!((first.mod_type.as_str(), first.midi_velocity, first.midi_key), ("midi", true, false));
         assert_eq!((second.mod_type.as_str(), second.midi_velocity, second.midi_key), ("midi", false, true));
         assert!(first.midi_cc.is_none() && !first.midi_pitch_bend && !first.midi_aftertouch);
-    }
-
-    #[test]
-    fn save_and_reload_cross_slot_modulator() {
-        // A lane modulator targeting an effect (slot 1) must round-trip the slot.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cross_slot.toml");
-
-        let instruments = vec![SaveInstrumentSlot {
-            muted: false,
-            solo: false,
-            range: None,
-            transpose: 0,
-            group: None,
-            modulators: vec![SaveModulator {
-                source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None },
-                targets: vec![SaveModTarget {
-                    kind: crate::plugin::chain::ModTargetKind::PluginParam { slot: 1, param_index: 0 },
-                    label: "cutoff".into(),
-                    depth: 0.5,
-                    slot: 1, to: None,
-                }],
-                ui: None,
-                hears: None,
-            }],
-            instrument: Some(SaveInstrument {
-                pinned: vec![],
-                plugin: "builtin:osc".into(),
-                volume: 1.0,
-                preset: None,
-                params: vec![],
-                pitch_bend_range: 2.0,
-                remap: HashMap::new(),
-            }),
-            effects: vec![SaveEffect {
-                pinned: vec![],
-                plugin: "builtin:filter".into(),
-                mix: 1.0,
-                feed: Feed::Chain,
-                preset: None,
-                params: vec![],
-                ui: None,
-            }],
-            pattern: None,
-            ui: None,
-            route: Route::Out,
-        }];
-        save(&path, &instruments, &[], &[], &Default::default(), None, None, None).unwrap();
-
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("slot = 1"), "saved target should record its slot:\n{raw}");
-
-        let config = load(path.to_str().unwrap()).unwrap();
-        let inst = &config.instruments[0];
-        assert_eq!(inst.modulators.len(), 1);
-        assert_eq!(inst.modulators[0].targets[0].slot, 1);
-        assert_eq!(inst.modulators[0].targets[0].param.as_deref(), Some("cutoff"));
     }
 
     #[test]
@@ -3208,7 +2966,6 @@ range = "C4-C8"
             range: None,
             transpose: 0,
             group,
-            modulators: vec![],
             instrument: Some(SaveInstrument {
                 pinned: vec![],
                 plugin: "builtin:osc".into(),
@@ -3239,7 +2996,6 @@ range = "C4-C8"
                 params: vec![],
                 ui: None,
             }],
-            modulators: vec![],
             ui: None,
             route: Route::Out,
         }];
@@ -3259,105 +3015,6 @@ range = "C4-C8"
         assert_eq!(config.instruments[0].group, Some(0));
         assert_eq!(config.instruments[1].group, Some(0));
         assert_eq!(config.instruments[2].group, None);
-    }
-
-    #[test]
-    fn save_and_reload_group_modulator() {
-        // A group-scoped modulator with a member target and a bus target must
-        // round-trip through `[[group.modulator]]` (member/bus + param name).
-        use crate::plugin::chain::ModTargetKind;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("group_mod.toml");
-
-        let member = SaveInstrumentSlot {
-            muted: false,
-            solo: false,
-            range: None,
-            transpose: 0,
-            group: Some(0),
-            modulators: vec![],
-            instrument: Some(SaveInstrument {
-                pinned: vec![],
-                plugin: "builtin:osc".into(),
-                volume: 1.0,
-                preset: None,
-                params: vec![],
-                pitch_bend_range: 2.0,
-                remap: HashMap::new(),
-            }),
-            effects: vec![],
-            pattern: None,
-            ui: None,
-            route: Route::Out,
-        };
-        let groups = vec![SaveGroup {
-            muted: false,
-            solo: false,
-            name: None,
-            volume: 1.0,
-            pan: 0.0,
-            effects: vec![SaveEffect {
-                pinned: vec![],
-                plugin: "builtin:filter".into(),
-                mix: 1.0,
-                feed: Feed::Chain,
-                preset: None,
-                params: vec![],
-                ui: None,
-            }],
-            modulators: vec![SaveModulator {
-                source: SaveModSource::Lfo { waveform: "sine".into(), rate: 2.0, retrigger: false, fade: 0.0, sync: None },
-                targets: vec![
-                    SaveModTarget {
-                        kind: ModTargetKind::GroupMember { member: 0, slot: 0, param_index: 0 },
-                        label: "cutoff".into(),
-                        depth: 0.5,
-                        slot: 0, to: None,
-                    },
-                    SaveModTarget {
-                        kind: ModTargetKind::GroupBus { effect_index: 0, param_index: 0 },
-                        label: "cutoff".into(),
-                        depth: 0.25,
-                        slot: 0, to: None,
-                    },
-                    // Group→member-modulator cross-mod: member 0's modulator 0 rate.
-                    SaveModTarget {
-                        kind: ModTargetKind::GroupMemberMod {
-                            member: 0,
-                            mod_index: 0,
-                            field: crate::plugin::chain::CrossModField::Rate,
-                        },
-                        label: "M0 Mod0 rate".into(),
-                        depth: 0.3,
-                        slot: 0, to: None,
-                    },
-                ],
-                ui: None,
-                hears: None,
-            }],
-            ui: None,
-            route: Route::Out,
-        }];
-        save(&path, &[member], &groups, &[], &Default::default(), None, None, None).unwrap();
-
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("[[group.modulator]]"), "expected group modulator:\n{raw}");
-        assert!(raw.contains("member = 0"), "member target should record member:\n{raw}");
-        assert!(raw.contains("bus = 0"), "bus target should record bus index:\n{raw}");
-
-        let config = load(path.to_str().unwrap()).unwrap();
-        assert_eq!(config.groups[0].modulators.len(), 1);
-        let m = &config.groups[0].modulators[0];
-        assert_eq!(m.targets.len(), 3);
-        assert_eq!(m.targets[0].member, Some(0));
-        assert_eq!(m.targets[0].param.as_deref(), Some("cutoff"));
-        assert_eq!(m.targets[1].bus, Some(0));
-        assert_eq!(m.targets[1].param.as_deref(), Some("cutoff"));
-        // The member-modulator target: member set, mod_rate carries the index,
-        // and no param name.
-        assert_eq!(m.targets[2].member, Some(0));
-        assert_eq!(m.targets[2].mod_rate, Some(0));
-        assert_eq!(m.targets[2].param, None);
     }
 
     #[test]
@@ -3386,7 +3043,6 @@ range = "C4-C8"
             range: None,
             transpose: 0,
             group: None,
-            modulators: vec![],
             instrument: Some(SaveInstrument {
                 pinned: vec![],
                 plugin: "builtin:sine".into(),
@@ -3463,7 +3119,7 @@ plugin = "builtin:osc"
 
     #[test]
     fn a_position_is_read_on_every_kind_of_node_and_a_node_without_one_has_none() {
-        let config = parse(PLACED).unwrap();
+        let config = parse_raw(PLACED).unwrap();
         let at = |x: f32, y: f32| Some(NodeUi { x, y });
         assert_eq!(config.master_ui, at(1200.0, 300.5));
         assert_eq!(config.groups[0].ui, at(800.0, 40.0));
@@ -3474,7 +3130,7 @@ plugin = "builtin:osc"
         assert_eq!(config.instruments[0].modulators[0].ui, at(376.0, -200.0));
         assert_eq!(config.instruments[1].ui, None);
         // (A session from before there were positions has none.)
-        let old = parse("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n").unwrap();
+        let old = parse_raw("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n").unwrap();
         assert_eq!((old.master_ui, old.instruments[0].ui, old.instruments[0].effects[0].ui), (None, None, None));
     }
 
@@ -3504,13 +3160,25 @@ plugin = "builtin:osc"
             range: None,
             transpose: 0,
             group: None,
-            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui, hears: None }],
             instrument: Some(SaveInstrument { pinned: vec![], plugin: "builtin:osc".into(), volume: 1.0, preset: None, params: vec![], pitch_bend_range: 2.0, remap: HashMap::new() }),
             effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:filter".into(), mix: 1.0, feed: Feed::Chain, preset: None, params: vec![], ui }],
             pattern: None,
             ui,
             route: Route::Out,
         }
+    }
+
+    /// The text of a session of one lane (`placed_lane`) and these modulators of the session's own, as `to_toml` writes it, and what `parse` makes of it.
+    fn saved_with(modulators: Vec<SaveModulator>) -> (String, SessionConfig) {
+        let sources = SaveSources { modulators, ..Default::default() };
+        let text = to_toml(&[placed_lane(None)], &[], &[], &sources, None, None, None).unwrap();
+        let config = parse(&text).unwrap();
+        (text, config)
+    }
+
+    /// A cable of a modulator to the cutoff of the filter of the first lane, as the saver is given it.
+    fn cutoff_cable(depth: f32) -> SaveModTarget {
+        SaveModTarget { kind: crate::plugin::chain::ModTargetKind::FreeParam { plugin: crate::ids::NodeId(1), param_index: 0 }, label: "cutoff".into(), depth, to: Some(CablePlace::Effect { instrument: 0, effect: 0 }) }
     }
 
     #[test]
@@ -3523,11 +3191,12 @@ plugin = "builtin:osc"
             volume: 1.0,
             pan: 0.0,
             effects: vec![SaveEffect { pinned: vec![], plugin: "builtin:reverb".into(), mix: 1.0, feed: Feed::Chain, preset: None, params: vec![], ui: at(1100.0, 40.0) }],
-            modulators: vec![SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui: at(800.0, -120.5), hears: None }],
             ui: at(800.0, 40.0),
             route: Route::Out,
         };
-        let text = to_toml(&[placed_lane(at(80.0, 120.0))], &[group], &[], &Default::default(), None, at(1200.0, 300.0), None).unwrap();
+        let lfo = |ui, hears| SaveModulator { source: SaveModSource::Lfo { waveform: "sine".into(), rate: 1.0, retrigger: false, fade: 0.0, sync: None }, targets: vec![], ui, hears: Some(hears) };
+        let sources = SaveSources { modulators: vec![lfo(at(80.0, 120.0), CablePlace::Instrument(0)), lfo(at(800.0, -120.5), CablePlace::Group(0))], ..Default::default() };
+        let text = to_toml(&[placed_lane(at(80.0, 120.0))], &[group], &[], &sources, None, at(1200.0, 300.0), None).unwrap();
         // Whole numbers are written without a point, and it is one line for a node, in the table of the node.
         assert!(text.contains("ui = { x = 80, y = 120 }"), "{text}");
         assert_eq!(text.matches("ui = { x = 80, y = 120 }").count(), 3, "the lane, its effect and its modulator: {text}");
@@ -3538,10 +3207,10 @@ plugin = "builtin:osc"
         assert_eq!(config.master_ui, at(1200.0, 300.0));
         assert_eq!(config.groups[0].ui, at(800.0, 40.0));
         assert_eq!(config.groups[0].effects[0].ui, at(1100.0, 40.0));
-        assert_eq!(config.groups[0].modulators[0].ui, at(800.0, -120.5));
+        assert_eq!(config.free_modulators[1].ui, at(800.0, -120.5), "the group's modulator is the session's own");
         assert_eq!(config.instruments[0].ui, at(80.0, 120.0));
         assert_eq!(config.instruments[0].effects[0].ui, at(80.0, 120.0));
-        assert_eq!(config.instruments[0].modulators[0].ui, at(80.0, 120.0));
+        assert_eq!(config.free_modulators[0].ui, at(80.0, 120.0), "and so is the lane's");
     }
 
     #[test]
@@ -3592,7 +3261,6 @@ plugin = "builtin:osc"
             volume: 1.0,
             pan: 0.0,
             effects: vec![SaveEffect { pinned: vec!["mix".into(), "width".into()], ..bare_effect("builtin:reverb") }],
-            modulators: vec![],
             ui: None,
             route: Route::Out,
         };
@@ -3657,7 +3325,6 @@ plugin = "builtin:osc"
             range: None,
             transpose: 0,
             group: None,
-            modulators: vec![],
             instrument: Some(SaveInstrument {
                 pinned: vec![],
                 plugin: "builtin:sine".into(),
@@ -3695,7 +3362,6 @@ plugin = "builtin:osc"
             range: None,
             transpose: 0,
             group: None,
-            modulators: vec![],
             instrument: None,
             effects: vec![],
             pattern: None,
@@ -3714,7 +3380,6 @@ plugin = "builtin:osc"
             range: None,
             transpose: 0,
             group: None,
-            modulators: vec![],
             instrument: Some(SaveInstrument {
                 pinned: vec![],
                 plugin: "builtin:sine".into(),
@@ -3796,7 +3461,6 @@ plugin = "builtin:osc"
                 range: None,
                 transpose: 0,
                 group: None,
-                modulators: vec![],
                 instrument: Some(SaveInstrument {
                     pinned: vec![],
                     plugin: "builtin:sine".into(),
@@ -3952,7 +3616,7 @@ plugin = "builtin:osc"
             cable(CablePlace::BusEffect { group: 0, effect: 0 }, CablePlace::Master, 0.3),
             cable(CablePlace::Group(0), CablePlace::Group(1), 2.0),
         ];
-        let bus = SaveGroup { name: None, volume: 1.0, pan: 0.0, muted: false, solo: false, effects: vec![], modulators: vec![], ui: None, route: Route::Out };
+        let bus = SaveGroup { name: None, volume: 1.0, pan: 0.0, muted: false, solo: false, effects: vec![], ui: None, route: Route::Out };
         let text = to_toml(&one_lane(), &[bus], &cables, &Default::default(), None, None, None).unwrap();
         assert!(text.contains("[[cable]]\nfrom = \"instrument[0]\"\nto = \"instrument[0].effect[1]\"\n\n"), "no level of one: {text}");
         assert!(text.contains("[[cable]]\nfrom = \"group[0].effect[0]\"\nto = \"master\"\ngain = 0.3\n"), "a level as it was typed: {text}");
@@ -4120,7 +3784,6 @@ to = "instrument[1]"
             range: None,
             transpose: 0,
             group: None,
-            modulators: vec![],
             instrument: Some(SaveInstrument {
                 pinned: vec![],
                 plugin: "builtin:sine".into(),
@@ -4199,15 +3862,21 @@ depth = 0.3
         let path = dir.path().join("test_mod.toml");
         std::fs::write(&path, toml).unwrap();
 
+        // What `load` gives is the session as the program has it: the lane's modulator is the session's own, and hears the lane.
         let config = load(path.to_str().unwrap()).unwrap();
-        let inst = &config.instruments[0];
-        assert_eq!(inst.modulators.len(), 1);
-        let m = &inst.modulators[0];
+        assert!(config.instruments[0].modulators.is_empty());
+        assert_eq!(config.free_modulators.len(), 1);
+        let m = &config.free_modulators[0];
         assert_eq!(m.waveform, "triangle");
         assert!((m.rate.unwrap() - 0.5).abs() < 0.01);
+        assert_eq!(m.hears.as_deref(), Some("instrument[0]"));
         assert_eq!(m.targets.len(), 1);
         assert_eq!(m.targets[0].param.as_deref(), Some("frequency"));
         assert!((m.targets[0].depth - 0.3).abs() < 0.01);
+        // What the file says is what `parse_raw` reads, in the lane.
+        let raw = parse_raw(toml).unwrap();
+        assert_eq!(raw.instruments[0].modulators.len(), 1);
+        assert_eq!(raw.instruments[0].modulators[0].targets[0].param.as_deref(), Some("frequency"));
     }
 
     // -- Every modulator the session's own (step 94) --

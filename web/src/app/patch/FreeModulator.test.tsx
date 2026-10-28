@@ -3,7 +3,6 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 import { afterEach, describe, expect, test } from "vitest";
 
 import { MASTER, freeReachFixture, nodeNamed, tracerSnapshot } from "../../client/fixtures";
-import { moved } from "../../client/moved";
 import { displayNames } from "../../client/names";
 import type { Intent } from "../../protocol";
 import { NoticeBoard } from "../../ui/NoticeBoard";
@@ -17,8 +16,8 @@ import { PatchView } from "./PatchView";
 
 afterEach(cleanup);
 
-// A modulator that is in no lane and no group (step 92, P5b-3; the controller's side is step 91): the bar's button that adds one, the node it is on the canvas, what it can be drawn to, and what a knob's "~" menu
-// offers of it. (The tracer has the nodes 0 to 2: a lane, its filter and its LFO; the first modulator that is added is the node 3.)
+// A modulator of the session's own (step 92, P5b-3; the controller's side is step 91; every modulator is one since step 96): the bar's button that adds one, the node it is on the canvas, what it can be drawn to, and what a knob's "~" menu
+// offers of it. (The tracer has the nodes 0 to 2: a lane, its filter and its LFO, which hears the lane; the first modulator that is added is the node 3.)
 
 const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
 const filter = nodeNamed(tracerSnapshot, "Filter");
@@ -53,17 +52,20 @@ async function add(label: string, id: number): Promise<HTMLElement> {
   return nodeOf(id);
 }
 
-describe("the menu that chooses whose notes a modulator that is in no lane and no group hears (step 93)", () => {
+describe("the menu that chooses whose notes a modulator hears (step 93)", () => {
   const hearsButton = (node: HTMLElement): HTMLElement => within(node).getByRole("button", { name: /^Whose notes / });
 
-  test("is on the node of a modulator that is in no lane and not on the node of a lane's, which hears its own", async () => {
+  test("is on the node of every modulator, lit for the one that hears a lane: the tracer's own LFO has one too", async () => {
     await page();
     const node = await add("LFO", 3);
     expect(hearsButton(node).textContent).toBe("\u266b");
     expect(hearsButton(node).getAttribute("aria-label")).toBe("Whose notes LFO 2 hears: every note");
     expect(hearsButton(node).id).toBe("hears-3");
-    // (The tracer's own LFO is the lane's.)
-    expect(within(await nodeOf(2)).queryByRole("button", { name: /^Whose notes / })).toBeNull();
+    expect(hearsButton(node).className).not.toContain("tang-node__notes--set");
+    // (The tracer's own LFO hears the lane.)
+    const first = hearsButton(await nodeOf(2));
+    expect(first.getAttribute("aria-label")).toBe("Whose notes LFO 1 hears: Oscillator");
+    expect(first.className).toContain("tang-node__notes--set");
   });
 
   test("lists every note, as the choice now, and the lanes and the groups of the session by the names that the canvas gives them", async () => {
@@ -119,7 +121,7 @@ describe("the menu that chooses whose notes a modulator that is in no lane and n
   });
 });
 
-describe("the bar's button that adds a modulator that is in no lane and no group", () => {
+describe("the bar's button that adds a modulator that hears every note", () => {
   test("is a menu of the kinds of modulator, as the menu of a lane's \"+\" is, which is not there until it is opened", async () => {
     await page();
     expect(addButton().textContent).toBe("+ Modulator");
@@ -139,20 +141,20 @@ describe("the bar's button that adds a modulator that is in no lane and no group
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
-  test("has a node with the controls of its kind and a list of what it can be drawn to that is not empty: every plugin of the session, which no lane's modulator could say", async () => {
+  test("has a node with the controls of its kind and a list of what it can be drawn to that is not empty: every plugin of the session, and the settings of the other modulators", async () => {
     await page();
     const node = await add("LFO", 3);
     const picker = within(node).getByRole("button", { name: /^Add a cable from / });
     expect(picker.hasAttribute("disabled")).toBe(false);
     expect(picker.textContent).toBe("Add a cable…");
     fireEvent.click(picker);
-    // (The oscillator's and the filter's parameters, plugin by plugin in the order of the graph; the tracer's LFO is a lane's, whose settings it cannot reach.)
-    expect(within(screen.getByRole("menu")).getAllByRole("group").map((group) => group.getAttribute("aria-label"))).toEqual(["Oscillator", "Filter"]);
+    // (The oscillator's and the filter's parameters, plugin by plugin in the order of the graph, and the settings of the tracer's LFO, which every modulator reaches.)
+    expect(within(screen.getByRole("menu")).getAllByRole("group").map((group) => group.getAttribute("aria-label"))).toEqual(["Oscillator", "Filter", "LFO 1"]);
     expect(screen.getByRole("menuitem", { name: "detune" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "cutoff" })).toBeTruthy();
   });
 
-  test("draws a cable from it to a parameter of a plugin, which the tracer's lane modulator could not have drawn to another lane: the cable is the controller's, from the node that has no parent", async () => {
+  test("draws a cable from it to a parameter of a plugin: the cable is the controller's, from a node that hears no lane", async () => {
     const { server, requests } = await page();
     const node = await add("LFO", 3);
     fireEvent.click(within(node).getByRole("button", { name: /^Add a cable from / }));
@@ -197,7 +199,7 @@ describe("the bar's button that adds a modulator that is in no lane and no group
         <PatchView />
         <AddFreeModulatorMenu />
       </>,
-      { snapshot: moved(tracerSnapshot) },
+      { snapshot: tracerSnapshot },
     );
     fireEvent.click(within(await nodeOf(2)).getByRole("button", { name: /^Remove LFO/ }));
     await waitFor(() => {
@@ -222,19 +224,19 @@ describe("the bar's button that adds a modulator that is in no lane and no group
     expect(server.snapshot.graph.nodes.find((n) => n.id === 3)).toMatchObject({ parent: null, name: "ADSR" });
   });
 
-  test("makes each kind there is, and a second is the next node: two of them can be drawn to each other's settings and not to the tracer's LFO, which a lane has", async () => {
+  test("makes each kind there is, and a second is the next node: two of them can be drawn to each other's settings and to the tracer's LFO's", async () => {
     const { server } = await page();
     await add("LFO", 3);
     await add("Envelope", 4);
     fireEvent.click(within(await nodeOf(3)).getByRole("button", { name: /^Add a cable from / }));
-    // The envelope's four stages are the settings it can be drawn to (the tracer's LFO is a lane's, and no cable from a modulator of no lane reaches it).
+    // The tracer's LFO's rate and the envelope's four stages are the settings it can be drawn to.
     expect(
       within(screen.getByRole("menu"))
         .getAllByRole("group")
         .map((group) => group.getAttribute("aria-label")),
-    ).toEqual(["Oscillator", "Filter", "ADSR"]);
+    ).toEqual(["Oscillator", "Filter", "LFO 1", "ADSR"]);
     expect(within(within(screen.getByRole("menu")).getByRole("group", { name: "ADSR" })).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["attack", "decay", "sustain", "release"]);
-    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.parent === null).map((n) => n.id)).toEqual([3, 4]);
+    expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator").map((n) => n.id)).toEqual([2, 3, 4]);
   });
 
   test("is refused for what the server cannot do, as every add is, and says so among the notices with no node made", async () => {
@@ -251,10 +253,10 @@ describe("the bar's button that adds a modulator that is in no lane and no group
 });
 
 describe("a session whose own rack has modulators in it", () => {
-  const { snapshot, reach } = freeReachFixture;
+  const { snapshot, reach, fields } = freeReachFixture;
   const names = displayNames(snapshot.graph);
   const [freeLfo, freeEnvelope] = [18, 19];
-  // (The fixture is the session of the reach tests with an LFO and an envelope that are in no lane and no group: the LFO drives the detune of the first lane's oscillator (4), the envelope the resonance of its filter (5).)
+  // (The fixture is the session of the reach tests with an LFO and an envelope that hear every note: the LFO drives the detune of the first lane's oscillator (4), the envelope the resonance of its filter (5).)
 
   const groupsOf = (): { label: string | null; items: string[] }[] =>
     within(screen.getByRole("menu"))
@@ -266,10 +268,13 @@ describe("a session whose own rack has modulators in it", () => {
     const picker = within(await nodeOf(freeLfo)).getByRole("button", { name: /^Add a cable from / });
     fireEvent.click(picker);
     const groups = groupsOf();
-    // The nine plugins that the controller let a cable be drawn to (`reach`), in the order of the graph, and then the envelope's settings: its four stages and the depth of its cable.
+    // The nine plugins that the controller let a cable be drawn to (`reach`), in the order of the graph, and then the settings and the cable depths of the other modulators (`fields`), each under the modulator that has them:
+    // the last is the envelope's: its four stages and the depth of its cable.
     const plugins = reach[String(freeLfo)] ?? [];
+    const others = [...new Set((fields[String(freeLfo)] ?? []).map((field) => field.node))];
     expect(plugins).toHaveLength(9);
-    expect(groups.map((group) => group.label)).toEqual([...snapshot.graph.nodes.filter((node) => plugins.includes(node.id)).map((node) => names.get(node.id)), names.get(freeEnvelope)]);
+    expect(others.at(-1)).toBe(freeEnvelope);
+    expect(groups.map((group) => group.label)).toEqual([...snapshot.graph.nodes.filter((node) => plugins.includes(node.id)).map((node) => names.get(node.id)), ...others.map((node) => names.get(node))]);
     expect(groups.at(-1)?.items.slice(0, 4)).toEqual(["attack", "decay", "sustain", "release"]);
     expect(groups.at(-1)?.items[4]).toMatch(/^depth → /);
   });
@@ -287,43 +292,48 @@ describe("a session whose own rack has modulators in it", () => {
     expect(groupsOf().find((group) => group.label === names.get(4))?.items).toContain("detune");
   });
 
-  test("has a modulator of a lane that reaches its own lane and no more: the free ones are not in its way, and it cannot be drawn to them", async () => {
+  test("has a modulator that hears a lane reach what one that hears every note reaches: every plugin, and the settings of the other modulators", async () => {
     await rig(<PatchView />, { snapshot });
-    // The LFO of the first lane (6): its oscillator and its filter, and no settings (the free modulators are not siblings of a lane's).
-    fireEvent.click(within(await nodeOf(6)).getByRole("button", { name: /^Add a cable from / }));
-    expect(groupsOf().map((group) => group.label)).toEqual([names.get(4), names.get(5)]);
+    // The LFO that hears the first lane (12): the lists are the same as for the session's own LFO (18).
+    fireEvent.click(within(await nodeOf(12)).getByRole("button", { name: /^Add a cable from / }));
+    const plugins = reach["12"] ?? [];
+    const others = [...new Set((fields["12"] ?? []).map((field) => field.node))];
+    expect(plugins).toHaveLength(9);
+    expect(groupsOf().map((group) => group.label)).toEqual([...snapshot.graph.nodes.filter((node) => plugins.includes(node.id)).map((node) => names.get(node.id)), ...others.map((node) => names.get(node))]);
   });
 
   test("is among the modulators that a knob's \"~\" menu offers to attach, for a plugin of any lane, beside the lane's own", async () => {
-    const { requests, server } = await rig(<ModulateMenu node={11} port={{ type: "param", index: 1 }} name="detune" />, { snapshot });
+    const { requests, server } = await rig(<ModulateMenu node={9} port={{ type: "param", index: 1 }} name="detune" />, { snapshot });
     fireEvent.click(screen.getByRole("button", { name: "Modulate detune" }));
-    // The oscillator of the lane in no group (11): its own MIDI control, and both of the session's own, which reach it as they reach every plugin.
+    // The oscillator of the lane in no group (9): every modulator of the session reaches it, whatever it hears, and none drives it yet.
     const attach = screen.getAllByRole("menuitem").map((item) => item.textContent).slice(7);
-    expect(attach).toEqual([names.get(13), names.get(freeLfo), names.get(freeEnvelope)]);
+    expect(attach).toEqual([12, 13, 14, 15, 16, 17, freeLfo, freeEnvelope].map((id) => names.get(id)));
     fireEvent.click(screen.getByRole("menuitem", { name: names.get(freeEnvelope) ?? "" }));
     await waitFor(() => {
-      expect(server.snapshot.graph.edges.some((e) => e.kind === "modulation" && e.from.node === freeEnvelope && e.to.node === 11)).toBe(true);
+      expect(server.snapshot.graph.edges.some((e) => e.kind === "modulation" && e.from.node === freeEnvelope && e.to.node === 9)).toBe(true);
     });
-    expect(asked(requests)).toEqual([{ type: "addModEdge", modulator: freeEnvelope, to: { node: 11, port: { type: "param", index: 1 } } }]);
+    expect(asked(requests)).toEqual([{ type: "addModEdge", modulator: freeEnvelope, to: { node: 9, port: { type: "param", index: 1 } } }]);
   });
 
   test("is not offered again where it drives the knob already, and the others still are", async () => {
     await rig(<ModulateMenu node={4} port={{ type: "param", index: 1 }} name="detune" />, { snapshot });
     fireEvent.click(screen.getByRole("button", { name: "Modulate detune" }));
-    // The first lane's oscillator: the group's LFO (15) and the lane's own (6), and the envelope of the session's own rack; the LFO of it drives detune already.
+    // The first lane's oscillator: every modulator but the LFO (18), which drives its detune already.
     const attach = screen.getAllByRole("menuitem").map((item) => item.textContent).slice(7);
-    expect(attach).toEqual([names.get(15), names.get(6), names.get(freeEnvelope)]);
+    expect(attach).toEqual([12, 13, 14, 15, 16, 17, freeEnvelope].map((id) => names.get(id)));
   });
 
-  test("makes the modulator for a setting of one of them another that is in no lane: a new LFO for the rate of the session's own envelope is one of the session's own", async () => {
+  test("makes the modulator for a setting of one of them another that hears what it hears: a new LFO for the rate of the LFO that hears every note hears every note", async () => {
     const { server, requests } = await rig(<ModulateMenu node={freeLfo} port={{ type: "rate" }} name="rate" />, { snapshot });
     fireEvent.click(screen.getByRole("button", { name: "Modulate rate" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "New LFO" }));
+    const hearing = (): number => server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.hears === undefined).length;
     await waitFor(() => {
-      expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.parent === null)).toHaveLength(3);
+      // (The LFO that hears nothing in particular, the one that drives it and the two that the fixture has besides.)
+      expect(hearing()).toBe(4);
     });
     expect(asked(requests)).toEqual([{ type: "modulate", to: { node: freeLfo, port: { type: "rate" } }, kind: "lfo", depth: null }]);
-    const made = server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.parent === null).at(-1);
+    const made = server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.hears === undefined).at(-1);
     expect(server.snapshot.graph.edges.some((e) => e.kind === "modulation" && e.from.node === made?.id && e.to.node === freeLfo)).toBe(true);
   });
 });

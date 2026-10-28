@@ -376,18 +376,12 @@ impl Controller {
                             return Err(IntentError::Invalid(format!("node {} is there already", node.0)));
                         }
                     }
-                    for modulator in &lane.modulators {
-                        self.refuse_a_modulator_that_is_there(modulator)?;
-                    }
                 }
                 Inverse::Group { group, members, .. } => {
                     for node in std::iter::once(group.node).chain(group.effects.iter().map(|effect| effect.node)) {
                         if self.model.locate(node).is_some() {
                             return Err(IntentError::Invalid(format!("node {} is there already", node.0)));
                         }
-                    }
-                    for modulator in &group.modulators {
-                        self.refuse_a_modulator_that_is_there(modulator)?;
                     }
                     // Its members are lanes that are in no group (what was done after it was undone first, so that they are where they were).
                     for member in members {

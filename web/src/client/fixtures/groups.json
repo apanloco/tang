@@ -12,18 +12,27 @@
           "2>4294967295 audio",
           "16>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -38,45 +47,45 @@
           "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "16 - Group 4",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
@@ -93,17 +102,27 @@
           "2>4294967295 audio",
           "16>4294967295 audio",
           "3>16 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
-          "#1 13>10 param7 @0.2",
+          "#0 13>3 param1 @0.1",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -118,44 +137,45 @@
           "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
-          "22 10 param7 effective",
+          "21 3 param1 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "16 - Group 4",
           "3 16 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
@@ -174,18 +194,27 @@
           "2>4294967295 audio",
           "16>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>16 member",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>16 member",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -200,51 +229,51 @@
           "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "16 - Group 4",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 16 Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 16 Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "members": [
-          5
+          4
         ],
         "type": "addGroup"
       }
@@ -257,15 +286,27 @@
           "2>4294967295 audio",
           "16>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>16 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>16 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#4 15>9 param2 @0.4"
+          "#1 13>7 param7 @0.2",
+          "#2 13>12 rate @0.3",
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -280,48 +321,51 @@
           "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "27 9 param2 effective"
+          "22 7 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "16 - Group 4",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 16 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 16 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "members": [
-          10
+          7
         ],
         "type": "addGroup"
       }
@@ -334,14 +378,27 @@
           "2>4294967295 audio",
           "16>4294967295 audio",
           "3>16 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>16 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>16 member"
         ],
         "cables": [
-          "#4 15>9 param2 @0.4"
+          "#0 13>3 param1 @0.1",
+          "#1 13>7 param7 @0.2",
+          "#2 13>12 rate @0.3",
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -356,48 +413,52 @@
           "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
-          "27 9 param2 effective"
+          "21 3 param1 effective",
+          "22 7 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "16 - Group 4",
           "3 16 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 16 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 16 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "members": [
           3,
-          10
+          7
         ],
         "type": "addGroup"
       }
@@ -410,17 +471,27 @@
           "2>4294967295 audio",
           "16>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
+          "4>5 audio",
+          "5>16 member",
           "6>16 member",
-          "9>16 member",
-          "10>11 audio",
-          "11>0 member"
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
-          "#3 14>13 depth#1 @0.5"
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -435,51 +506,52 @@
           "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
-          "25 13 depth#1 effective"
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "16 - Group 4",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 16 Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 16 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 16 Oscillator",
+          "5 4 Filter",
+          "6 16 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "members": [
-          5,
-          9
+          4,
+          6
         ],
         "type": "addGroup"
       }
@@ -492,17 +564,27 @@
           "2>4294967295 audio",
           "16>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>16 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>16 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
-          "#3 14>13 depth#1 @0.5"
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -517,51 +599,52 @@
           "29 16 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
-          "25 13 depth#1 effective"
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "16 - Group 4",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 16 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 16 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "members": [
-          9,
-          9
+          6,
+          6
         ],
         "type": "addGroup"
       }
@@ -579,7 +662,7 @@
       "error": "there is no node 9999",
       "intent": {
         "members": [
-          5,
+          4,
           9999
         ],
         "type": "addGroup"
@@ -598,7 +681,7 @@
       "error": "only a lane can be put in a group",
       "intent": {
         "members": [
-          11
+          8
         ],
         "type": "addGroup"
       }
@@ -629,17 +712,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>4294967295 audio",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
-          "#1 13>10 param7 @0.2",
+          "#0 13>3 param1 @0.1",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -652,43 +745,44 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
-          "22 10 param7 effective",
+          "21 3 param1 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 - Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
@@ -705,18 +799,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -729,44 +832,44 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
@@ -783,17 +886,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>1 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
-          "#1 13>10 param7 @0.2",
+          "#0 13>3 param1 @0.1",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -806,43 +919,44 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
-          "22 10 param7 effective",
+          "21 3 param1 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 1 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
@@ -859,174 +973,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
-        ],
-        "cables": [
-          "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
-          "#2 13>12 rate @0.3",
-          "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
-        ],
-        "meters": [
-          "0 4294967295 audioIn peak",
-          "1 4294967295 audioIn clips",
-          "2 0 audioOut peak",
-          "3 0 audioOut clips",
-          "4 1 audioOut peak",
-          "5 1 audioOut clips",
-          "6 2 audioOut peak",
-          "7 2 audioOut clips",
-          "8 3 audioOut peak",
-          "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
-        ],
-        "modulation": [
-          "20 13 modOut modOutput",
-          "24 14 modOut modOutput",
-          "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
-          "21 3 param1 effective",
-          "22 10 param7 effective",
-          "23 12 rate effective",
-          "25 13 depth#1 effective",
-          "27 9 param2 effective"
-        ],
-        "nodes": [
-          "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
-          "1 - Group 2",
-          "15 1 LFO",
-          "2 - Lead",
-          "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
-          "4294967295 - Master"
-        ]
-      },
-      "intent": {
-        "group": null,
-        "node": 5,
-        "type": "setLaneGroup"
-      }
-    },
-    {
-      "after": {
-        "audio": [
-          "0>4294967295 audio",
-          "1>4294967295 audio",
-          "2>4294967295 audio",
-          "3>0 member",
-          "5>6 audio",
-          "6>0 member",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
-        ],
-        "cables": [
-          "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
-          "#2 13>12 rate @0.3",
-          "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
-        ],
-        "meters": [
-          "0 4294967295 audioIn peak",
-          "1 4294967295 audioIn clips",
-          "2 0 audioOut peak",
-          "3 0 audioOut clips",
-          "4 1 audioOut peak",
-          "5 1 audioOut clips",
-          "6 2 audioOut peak",
-          "7 2 audioOut clips",
-          "8 3 audioOut peak",
-          "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
-        ],
-        "modulation": [
-          "20 13 modOut modOutput",
-          "24 14 modOut modOutput",
-          "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
-          "21 3 param1 effective",
-          "22 10 param7 effective",
-          "23 12 rate effective",
-          "25 13 depth#1 effective",
-          "27 9 param2 effective"
-        ],
-        "nodes": [
-          "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
-          "1 - Group 2",
-          "15 1 LFO",
-          "2 - Lead",
-          "3 0 Oscillator",
-          "4 3 LFO",
-          "5 0 Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
-          "4294967295 - Master"
-        ]
-      },
-      "intent": {
-        "group": 0,
-        "node": 5,
-        "type": "setLaneGroup"
-      }
-    },
-    {
-      "after": {
-        "audio": [
-          "0>4294967295 audio",
-          "1>4294967295 audio",
-          "2>4294967295 audio",
-          "3>0 member",
-          "5>6 audio",
+          "4>5 audio",
+          "5>4294967295 audio",
           "6>1 member",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -1039,126 +1006,50 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 1 Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
-          "4294967295 - Master"
-        ]
-      },
-      "intent": {
-        "group": 1,
-        "node": 5,
-        "type": "setLaneGroup"
-      }
-    },
-    {
-      "after": {
-        "audio": [
-          "0>4294967295 audio",
-          "1>4294967295 audio",
-          "2>4294967295 audio",
-          "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>4294967295 audio",
-          "10>11 audio",
-          "11>0 member"
-        ],
-        "cables": [
-          "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
-          "#2 13>12 rate @0.3",
-          "#3 14>13 depth#1 @0.5"
-        ],
-        "meters": [
-          "0 4294967295 audioIn peak",
-          "1 4294967295 audioIn clips",
-          "2 0 audioOut peak",
-          "3 0 audioOut clips",
-          "4 1 audioOut peak",
-          "5 1 audioOut clips",
-          "6 2 audioOut peak",
-          "7 2 audioOut clips",
-          "8 3 audioOut peak",
-          "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
-        ],
-        "modulation": [
-          "20 13 modOut modOutput",
-          "24 14 modOut modOutput",
-          "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
-          "21 3 param1 effective",
-          "22 10 param7 effective",
-          "23 12 rate effective",
-          "25 13 depth#1 effective"
-        ],
-        "nodes": [
-          "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
-          "1 - Group 2",
-          "15 1 LFO",
-          "2 - Lead",
-          "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 - Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "group": null,
-        "node": 9,
+        "node": 4,
         "type": "setLaneGroup"
       }
     },
@@ -1169,17 +1060,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>0 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>0 member",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
-          "#3 14>13 depth#1 @0.5"
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -1192,49 +1093,50 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
-          "25 13 depth#1 effective"
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 0 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 0 Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "group": 0,
-        "node": 9,
+        "node": 4,
         "type": "setLaneGroup"
       }
     },
@@ -1245,18 +1147,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>1 member",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -1269,50 +1180,50 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 1 Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "group": 1,
-        "node": 9,
+        "node": 4,
         "type": "setLaneGroup"
       }
     },
@@ -1323,15 +1234,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
+          "4>5 audio",
+          "5>4294967295 audio",
           "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>4294967295 audio"
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#4 15>9 param2 @0.4"
+          "#1 13>7 param7 @0.2",
+          "#2 13>12 rate @0.3",
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -1344,47 +1267,50 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "27 9 param2 effective"
+          "22 7 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 - Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 - Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "group": null,
-        "node": 10,
+        "node": 6,
         "type": "setLaneGroup"
       }
     },
@@ -1395,18 +1321,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>0 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -1419,50 +1354,50 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 0 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "group": 0,
-        "node": 10,
+        "node": 6,
         "type": "setLaneGroup"
       }
     },
@@ -1473,15 +1408,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>1 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#4 15>9 param2 @0.4"
+          "#1 13>7 param7 @0.2",
+          "#2 13>12 rate @0.3",
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -1494,47 +1441,50 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "27 9 param2 effective"
+          "22 7 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 1 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "group": 1,
-        "node": 10,
+        "node": 6,
         "type": "setLaneGroup"
       }
     },
@@ -1545,18 +1495,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>2 member",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>4294967295 audio"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -1569,50 +1528,311 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 2 Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 - Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": null,
+        "node": 7,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>4294967295 audio",
+          "3>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
+        ],
+        "cables": [
+          "#0 13>3 param1 @0.1",
+          "#1 13>7 param7 @0.2",
+          "#2 13>12 rate @0.3",
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "8 3 audioOut peak",
+          "9 3 audioOut clips",
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
+        ],
+        "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
+          "20 13 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
+          "21 3 param1 effective",
+          "22 7 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 - Group 2",
+          "2 - Lead",
+          "3 0 Oscillator",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": 0,
+        "node": 7,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>4294967295 audio",
+          "3>0 member",
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>1 member"
+        ],
+        "cables": [
+          "#0 13>3 param1 @0.1",
+          "#1 13>7 param7 @0.2",
+          "#2 13>12 rate @0.3",
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "8 3 audioOut peak",
+          "9 3 audioOut clips",
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
+        ],
+        "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
+          "20 13 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
+          "21 3 param1 effective",
+          "22 7 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 - Group 2",
+          "2 - Lead",
+          "3 0 Oscillator",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 1 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
+          "4294967295 - Master"
+        ]
+      },
+      "intent": {
+        "group": 1,
+        "node": 7,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "1>4294967295 audio",
+          "2>4294967295 audio",
+          "3>0 member",
+          "4>5 audio",
+          "5>2 member",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
+        ],
+        "cables": [
+          "#0 13>3 param1 @0.1",
+          "#1 13>7 param7 @0.2",
+          "#2 13>12 rate @0.3",
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
+        ],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 1 audioOut peak",
+          "5 1 audioOut clips",
+          "6 2 audioOut peak",
+          "7 2 audioOut clips",
+          "8 3 audioOut peak",
+          "9 3 audioOut clips",
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
+        ],
+        "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
+          "20 13 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
+          "21 3 param1 effective",
+          "22 7 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 - Group 2",
+          "2 - Lead",
+          "3 0 Oscillator",
+          "4 2 Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
         "group": 2,
-        "node": 5,
+        "node": 4,
         "type": "setLaneGroup"
       }
     },
@@ -1623,17 +1843,27 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>2 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
-          "#1 13>10 param7 @0.2",
+          "#0 13>3 param1 @0.1",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -1646,43 +1876,44 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
-          "22 10 param7 effective",
+          "21 3 param1 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 2 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
@@ -1704,7 +1935,7 @@
       "error": "only a lane can be put in a group",
       "intent": {
         "group": 1,
-        "node": 11,
+        "node": 8,
         "type": "setLaneGroup"
       }
     },
@@ -1712,7 +1943,7 @@
       "error": "only a lane can be put in a group",
       "intent": {
         "group": 1,
-        "node": 7,
+        "node": 10,
         "type": "setLaneGroup"
       }
     },
@@ -1736,15 +1967,15 @@
       "error": "that node is not a group",
       "intent": {
         "group": 3,
-        "node": 5,
+        "node": 4,
         "type": "setLaneGroup"
       }
     },
     {
       "error": "that node is not a group",
       "intent": {
-        "group": 11,
-        "node": 5,
+        "group": 8,
+        "node": 4,
         "type": "setLaneGroup"
       }
     },
@@ -1752,7 +1983,7 @@
       "error": "there is no node 4294967295",
       "intent": {
         "group": 4294967295,
-        "node": 5,
+        "node": 4,
         "type": "setLaneGroup"
       }
     },
@@ -1760,7 +1991,7 @@
       "error": "there is no node 9999",
       "intent": {
         "group": 9999,
-        "node": 5,
+        "node": 4,
         "type": "setLaneGroup"
       }
     },
@@ -2016,7 +2247,7 @@
       "error": "only a group has a name to change",
       "intent": {
         "name": "Strings",
-        "node": 11,
+        "node": 8,
         "type": "renameGroup"
       }
     },
@@ -2042,17 +2273,25 @@
           "0>4294967295 audio",
           "1>4294967295 audio",
           "2>4294967295 audio",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -2063,40 +2302,42 @@
           "5 1 audioOut clips",
           "6 2 audioOut peak",
           "7 2 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
@@ -2112,16 +2353,23 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -2134,41 +2382,45 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
-        "node": 5,
+        "node": 4,
         "type": "removeNode"
       }
     },
@@ -2179,16 +2431,25 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -2201,45 +2462,45 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
-        "node": 9,
+        "node": 6,
         "type": "removeNode"
       }
     },
@@ -2250,13 +2511,22 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#4 15>9 param2 @0.4"
+          "#2 13>12 rate @0.3",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -2269,40 +2539,43 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
           "21 3 param1 effective",
-          "27 9 param2 effective"
+          "23 12 rate effective",
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
       "intent": {
-        "node": 10,
+        "node": 7,
         "type": "removeNode"
       }
     },
@@ -2312,14 +2585,25 @@
           "1>4294967295 audio",
           "2>4294967295 audio",
           "3>4294967295 audio",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>4294967295 audio"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>4294967295 audio"
         ],
         "cables": [
-          "#4 15>9 param2 @0.4"
+          "#0 13>3 param1 @0.1",
+          "#1 13>7 param7 @0.2",
+          "#2 13>12 rate @0.3",
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -2330,35 +2614,43 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
-          "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
           "19 12 modOut modOutput",
-          "27 9 param2 effective"
+          "20 13 modOut modOutput",
+          "24 14 modOut modOutput",
+          "26 15 modOut modOutput",
+          "21 3 param1 effective",
+          "22 7 param7 effective",
+          "23 12 rate effective",
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
         ],
         "nodes": [
           "1 - Group 1",
-          "15 1 LFO",
           "2 - Lead",
           "3 - Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 - Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 - Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
@@ -2373,17 +2665,26 @@
           "0>4294967295 audio",
           "2>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
+          "4>5 audio",
+          "5>4294967295 audio",
           "6>4294967295 audio",
-          "9>4294967295 audio",
-          "10>11 audio",
-          "11>0 member"
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
-          "#3 14>13 depth#1 @0.5"
+          "#3 14>13 depth#1 @0.5",
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -2394,40 +2695,43 @@
           "7 2 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
+          "26 15 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
-          "25 13 depth#1 effective"
+          "25 13 depth#1 effective",
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "2 - Lead",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 - Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 - Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
@@ -2442,18 +2746,27 @@
           "0>4294967295 audio",
           "1>4294967295 audio",
           "3>0 member",
-          "5>6 audio",
-          "6>4294967295 audio",
-          "9>1 member",
-          "10>11 audio",
-          "11>0 member"
+          "4>5 audio",
+          "5>4294967295 audio",
+          "6>1 member",
+          "7>8 audio",
+          "8>0 member"
         ],
         "cables": [
           "#0 13>3 param1 @0.1",
-          "#1 13>10 param7 @0.2",
+          "#1 13>7 param7 @0.2",
           "#2 13>12 rate @0.3",
           "#3 14>13 depth#1 @0.5",
-          "#4 15>9 param2 @0.4"
+          "#4 15>6 param2 @0.4"
+        ],
+        "ears": [
+          "9 3",
+          "10 4",
+          "11 4",
+          "12 7",
+          "13 0",
+          "14 0",
+          "15 1"
         ],
         "meters": [
           "0 4294967295 audioIn peak",
@@ -2464,43 +2777,43 @@
           "5 1 audioOut clips",
           "8 3 audioOut peak",
           "9 3 audioOut clips",
-          "11 5 audioOut peak",
-          "12 5 audioOut clips",
-          "15 9 audioOut peak",
-          "16 9 audioOut clips",
-          "17 10 audioOut peak",
-          "18 10 audioOut clips"
+          "10 4 audioOut peak",
+          "11 4 audioOut clips",
+          "12 6 audioOut peak",
+          "13 6 audioOut clips",
+          "14 7 audioOut peak",
+          "15 7 audioOut clips"
         ],
         "modulation": [
+          "16 9 modOut modOutput",
+          "17 10 modOut modOutput",
+          "18 11 modOut modOutput",
+          "19 12 modOut modOutput",
           "20 13 modOut modOutput",
           "24 14 modOut modOutput",
           "26 15 modOut modOutput",
-          "10 4 modOut modOutput",
-          "13 7 modOut modOutput",
-          "14 8 modOut modOutput",
-          "19 12 modOut modOutput",
           "21 3 param1 effective",
-          "22 10 param7 effective",
+          "22 7 param7 effective",
           "23 12 rate effective",
           "25 13 depth#1 effective",
-          "27 9 param2 effective"
+          "27 6 param2 effective"
         ],
         "nodes": [
           "0 - Group 1",
-          "13 0 LFO",
-          "14 0 ADSR",
           "1 - Group 2",
-          "15 1 LFO",
           "3 0 Oscillator",
-          "4 3 LFO",
-          "5 - Oscillator",
-          "6 5 Filter",
-          "7 5 LFO",
-          "8 5 LFO",
-          "9 1 Oscillator",
-          "10 0 Oscillator",
-          "11 10 Reverb",
-          "12 10 LFO",
+          "4 - Oscillator",
+          "5 4 Filter",
+          "6 1 Oscillator",
+          "7 0 Oscillator",
+          "8 7 Reverb",
+          "9 - LFO",
+          "10 - LFO",
+          "11 - LFO",
+          "12 - LFO",
+          "13 - LFO",
+          "14 - ADSR",
+          "15 - LFO",
           "4294967295 - Master"
         ]
       },
@@ -2589,14 +2902,14 @@
         },
         {
           "from": {
-            "node": 5,
+            "node": 4,
             "port": {
               "type": "audioOut"
             }
           },
           "kind": "audio",
           "to": {
-            "node": 6,
+            "node": 5,
             "port": {
               "type": "audioIn"
             }
@@ -2604,7 +2917,7 @@
         },
         {
           "from": {
-            "node": 6,
+            "node": 5,
             "port": {
               "type": "audioOut"
             }
@@ -2619,7 +2932,7 @@
         },
         {
           "from": {
-            "node": 9,
+            "node": 6,
             "port": {
               "type": "audioOut"
             }
@@ -2634,14 +2947,14 @@
         },
         {
           "from": {
-            "node": 10,
+            "node": 7,
             "port": {
               "type": "audioOut"
             }
           },
           "kind": "audio",
           "to": {
-            "node": 11,
+            "node": 8,
             "port": {
               "type": "audioIn"
             }
@@ -2649,7 +2962,7 @@
         },
         {
           "from": {
-            "node": 11,
+            "node": 8,
             "port": {
               "type": "audioOut"
             }
@@ -2691,7 +3004,7 @@
           "id": 1,
           "kind": "modulation",
           "to": {
-            "node": 10,
+            "node": 7,
             "port": {
               "index": 7,
               "type": "param"
@@ -2744,7 +3057,7 @@
           "id": 4,
           "kind": "modulation",
           "to": {
-            "node": 9,
+            "node": 6,
             "port": {
               "index": 2,
               "type": "param"
@@ -2765,33 +3078,6 @@
           "volume": 1.0
         },
         {
-          "id": 13,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 0,
-          "source": {
-            "fade": 0.0,
-            "rate": 1.0,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
-          }
-        },
-        {
-          "id": 14,
-          "kind": "modulator",
-          "name": "ADSR",
-          "parent": 0,
-          "source": {
-            "attack": 0.01,
-            "decay": 0.3,
-            "release": 0.5,
-            "sustain": 0.7,
-            "type": "envelope"
-          }
-        },
-        {
           "id": 1,
           "kind": "group",
           "muted": false,
@@ -2801,20 +3087,6 @@
           "route": "out",
           "solo": false,
           "volume": 1.0
-        },
-        {
-          "id": 15,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 1,
-          "source": {
-            "fade": 0.0,
-            "rate": 2.0,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
-          }
         },
         {
           "id": 2,
@@ -3177,20 +3449,6 @@
         },
         {
           "id": 4,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 3,
-          "source": {
-            "fade": 0.0,
-            "rate": 3.0,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
-          }
-        },
-        {
-          "id": 5,
           "kind": "instrument",
           "muted": false,
           "name": "Oscillator",
@@ -3536,11 +3794,11 @@
         },
         {
           "feed": "chain",
-          "id": 6,
+          "id": 5,
           "kind": "effect",
           "mix": 1.0,
           "name": "Filter",
-          "parent": 5,
+          "parent": 4,
           "plugin": {
             "currentPreset": null,
             "format": "Built-in",
@@ -3609,35 +3867,7 @@
           }
         },
         {
-          "id": 7,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 5,
-          "source": {
-            "fade": 0.0,
-            "rate": 4.0,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
-          }
-        },
-        {
-          "id": 8,
-          "kind": "modulator",
-          "name": "LFO",
-          "parent": 5,
-          "source": {
-            "fade": 0.0,
-            "rate": 5.0,
-            "retrigger": false,
-            "sync": 0,
-            "type": "lfo",
-            "waveform": "sine"
-          }
-        },
-        {
-          "id": 9,
+          "id": 6,
           "kind": "instrument",
           "muted": false,
           "name": "Oscillator",
@@ -3982,7 +4212,7 @@
           "volume": 0.7
         },
         {
-          "id": 10,
+          "id": 7,
           "kind": "instrument",
           "muted": false,
           "name": "Oscillator",
@@ -4328,11 +4558,11 @@
         },
         {
           "feed": "chain",
-          "id": 11,
+          "id": 8,
           "kind": "effect",
           "mix": 1.0,
           "name": "Reverb",
-          "parent": 10,
+          "parent": 7,
           "plugin": {
             "currentPreset": null,
             "format": "Built-in",
@@ -4490,13 +4720,103 @@
           }
         },
         {
+          "hears": 3,
+          "id": 9,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 3.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 4,
+          "id": 10,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 4.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 4,
+          "id": 11,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 5.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 7,
           "id": 12,
           "kind": "modulator",
           "name": "LFO",
-          "parent": 10,
+          "parent": null,
           "source": {
             "fade": 0.0,
             "rate": 6.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 0,
+          "id": 13,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 1.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 0,
+          "id": 14,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": null,
+          "source": {
+            "attack": 0.01,
+            "decay": 0.3,
+            "release": 0.5,
+            "sustain": 0.7,
+            "type": "envelope"
+          }
+        },
+        {
+          "hears": 1,
+          "id": 15,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 2.0,
             "retrigger": false,
             "sync": 0,
             "type": "lfo",
@@ -4617,54 +4937,86 @@
         },
         {
           "kind": "peak",
-          "node": 5,
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 10
+        },
+        {
+          "kind": "clips",
+          "node": 4,
           "port": {
             "type": "audioOut"
           },
           "slot": 11
         },
         {
-          "kind": "clips",
-          "node": 5,
+          "kind": "peak",
+          "node": 6,
           "port": {
             "type": "audioOut"
           },
           "slot": 12
         },
         {
+          "kind": "clips",
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 13
+        },
+        {
           "kind": "peak",
-          "node": 9,
+          "node": 7,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 14
+        },
+        {
+          "kind": "clips",
+          "node": 7,
           "port": {
             "type": "audioOut"
           },
           "slot": 15
-        },
+        }
+      ],
+      "modulation": [
         {
-          "kind": "clips",
+          "kind": "modOutput",
           "node": 9,
           "port": {
-            "type": "audioOut"
+            "type": "modOut"
           },
           "slot": 16
         },
         {
-          "kind": "peak",
+          "kind": "modOutput",
           "node": 10,
           "port": {
-            "type": "audioOut"
+            "type": "modOut"
           },
           "slot": 17
         },
         {
-          "kind": "clips",
-          "node": 10,
+          "kind": "modOutput",
+          "node": 11,
           "port": {
-            "type": "audioOut"
+            "type": "modOut"
           },
           "slot": 18
-        }
-      ],
-      "modulation": [
+        },
+        {
+          "kind": "modOutput",
+          "node": 12,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 19
+        },
         {
           "kind": "modOutput",
           "node": 13,
@@ -4690,38 +5042,6 @@
           "slot": 26
         },
         {
-          "kind": "modOutput",
-          "node": 4,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 10
-        },
-        {
-          "kind": "modOutput",
-          "node": 7,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 13
-        },
-        {
-          "kind": "modOutput",
-          "node": 8,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 14
-        },
-        {
-          "kind": "modOutput",
-          "node": 12,
-          "port": {
-            "type": "modOut"
-          },
-          "slot": 19
-        },
-        {
           "kind": "effective",
           "node": 3,
           "port": {
@@ -4732,7 +5052,7 @@
         },
         {
           "kind": "effective",
-          "node": 10,
+          "node": 7,
           "port": {
             "index": 7,
             "type": "param"
@@ -4758,7 +5078,7 @@
         },
         {
           "kind": "effective",
-          "node": 9,
+          "node": 6,
           "port": {
             "index": 2,
             "type": "param"

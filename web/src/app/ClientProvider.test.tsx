@@ -208,10 +208,10 @@ describe("what the page gives its views", () => {
     await waitFor(() => {
       expect(client.state.status).toBe("open");
     });
-    expect(await editor?.addModulator(nodeNamed(tracerSnapshot, "Oscillator").id, "lfo")).toBe(3);
+    expect(await editor?.addFreeModulator("lfo", nodeNamed(tracerSnapshot, "Oscillator").id)).toBe(3);
     expect(server.snapshot.graph.nodes.map((node) => node.id)).toContain(3);
-    expect(await editor?.addModulator(filter.id, "lfo")).toBeNull();
-    expect(notices?.getItems().map((notice) => notice.text)).toEqual(["Could not add an LFO to Filter: a modulator goes in a lane or in a group"]);
+    expect(await editor?.addFreeModulator("lfo", filter.id)).toBeNull();
+    expect(notices?.getItems().map((notice) => notice.text)).toEqual(["Could not add an LFO that hears Filter: only a lane or a group can be heard"]);
   });
 
   test("is an editor that has what it adds shown through the reveals the views can listen to", async () => {
@@ -229,7 +229,7 @@ describe("what the page gives its views", () => {
     const shown: number[] = [];
     reveals?.subscribe((node) => shown.push(node));
     expect(await editor?.addInstrument("builtin:osc")).toBe(3);
-    expect(await editor?.addModulator(filter.id, "lfo")).toBeNull(); // refused: nothing to show
+    expect(await editor?.addFreeModulator("lfo", filter.id)).toBeNull(); // refused: nothing to show
     expect(shown).toEqual([3]);
   });
 

@@ -414,7 +414,6 @@ impl SessionModel {
                 kind: NodeKind::Group { volume: group.volume, pan: group.pan, muted: group.muted, solo: group.solo, route: group.route },
             });
             nodes.extend(group.effects.iter().map(|fx| effect_node(fx, group.node)));
-            nodes.extend(group.modulators.iter().map(|m| modulator_node(m, Some(group.node), None)));
             // Out of the group, through its bus effects, to the master (unless its way out is cut: then the chain ends at its last effect).
             audio_chain(&mut edges, group.node, group.effects.iter().map(|fx| (fx.node, fx.fed)), (group.route == Route::Out).then_some((NodeId::MASTER, EdgeKind::Audio)));
         }
@@ -440,7 +439,6 @@ impl SessionModel {
                 },
             });
             nodes.extend(lane.effects.iter().map(|fx| effect_node(fx, lane.node)));
-            nodes.extend(lane.modulators.iter().map(|m| modulator_node(m, Some(lane.node), None)));
             // Out of the instrument, through the lane's effects, to its group or the master (unless its way out is cut).
             let sink = match group {
                 Some(group) => (group.node, EdgeKind::Member),
@@ -449,7 +447,7 @@ impl SessionModel {
             audio_chain(&mut edges, lane.node, lane.effects.iter().map(|fx| (fx.node, fx.fed)), (lane.route == Route::Out).then_some(sink));
         }
 
-        // The modulators that belong to no lane and no group have no parent.
+        // The modulators belong to no lane and no group: they have no parent (what they hear is `hears`).
         nodes.extend(self.free_modulators.iter().map(|m| modulator_node(m, None, self.ear_of(m))));
 
         nodes.push(Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master });
@@ -490,13 +488,9 @@ impl SessionModel {
         }));
     }
 
-    /// One edge for each modulation target that still has something to drive: the
-    /// group modulators', the lanes' and then the free modulators'.
+    /// One edge for each modulation target that still has something to drive.
     fn modulation_edges(&self, edges: &mut Vec<Edge>) {
-        let groups = self.groups.iter().enumerate().map(|(g, group)| (ModulatorLocation::Group(g), &group.modulators));
-        let lanes = self.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
-        let free = std::iter::once((ModulatorLocation::Free, &self.free_modulators));
-        for (at, rack) in groups.chain(lanes).chain(free) {
+        for (at, rack) in self.racks() {
             for (index, modulator) in rack.iter().enumerate() {
                 for target in &modulator.targets {
                     // (What a rack does not reach is not drawn, as it is not told to the audio thread: the model has no such cable, and a test that makes one sees it.)
@@ -547,59 +541,20 @@ impl SessionModel {
     /// drive).
     pub(super) fn aim(&self, at: ModulatorLocation, rack: &[ModulatorSlot], kind: &ModTargetKind) -> Option<Endpoint> {
         use ModTargetKind as K;
-        let param = |node: NodeId, index: u32| Endpoint { node, port: Port::Param { index } };
+        let ModulatorLocation::Free = at;
         let sibling = |mod_index: usize, port: Port| rack.get(mod_index).map(|m| Endpoint { node: m.node, port });
-        match (at, kind) {
-            (ModulatorLocation::Free, K::FreeParam { plugin, param_index }) => self.plugin_slot(*plugin).map(|_| param(*plugin, *param_index)),
-            (ModulatorLocation::Lane(inst), K::PluginParam { slot, param_index }) => {
-                Some(param(self.chain_node(inst, *slot)?, *param_index))
-            }
-            (ModulatorLocation::Group(group), K::GroupMember { member, slot, param_index }) => {
-                Some(param(self.chain_node(self.member_lane(group, *member)?, *slot)?, *param_index))
-            }
-            (ModulatorLocation::Group(group), K::GroupBus { effect_index, param_index }) => {
-                Some(param(self.groups.get(group)?.effects.get(*effect_index)?.node, *param_index))
-            }
-            (ModulatorLocation::Group(group), K::GroupMemberMod { member, mod_index, field }) => {
-                let lane = self.instruments.get(self.member_lane(group, *member)?)?;
-                let modulator = lane.modulators.get(*mod_index)?;
-                let port = match field {
-                    CrossModField::Rate => Port::Rate,
-                    CrossModField::Attack => Port::Attack,
-                    CrossModField::Decay => Port::Decay,
-                    CrossModField::Sustain => Port::Sustain,
-                    CrossModField::Release => Port::Release,
-                    CrossModField::Depth(target) => Port::Depth { edge: modulator.targets.get(*target)?.edge },
-                };
-                Some(Endpoint { node: modulator.node, port })
-            }
-            (_, K::ModulatorRate { mod_index }) => sibling(*mod_index, Port::Rate),
-            (_, K::ModulatorAttack { mod_index }) => sibling(*mod_index, Port::Attack),
-            (_, K::ModulatorDecay { mod_index }) => sibling(*mod_index, Port::Decay),
-            (_, K::ModulatorSustain { mod_index }) => sibling(*mod_index, Port::Sustain),
-            (_, K::ModulatorRelease { mod_index }) => sibling(*mod_index, Port::Release),
-            (_, K::ModulatorDepth { mod_index, target_index }) => {
+        match kind {
+            K::FreeParam { plugin, param_index } => self.plugin_slot(*plugin).map(|_| Endpoint { node: *plugin, port: Port::Param { index: *param_index } }),
+            K::ModulatorRate { mod_index } => sibling(*mod_index, Port::Rate),
+            K::ModulatorAttack { mod_index } => sibling(*mod_index, Port::Attack),
+            K::ModulatorDecay { mod_index } => sibling(*mod_index, Port::Decay),
+            K::ModulatorSustain { mod_index } => sibling(*mod_index, Port::Sustain),
+            K::ModulatorRelease { mod_index } => sibling(*mod_index, Port::Release),
+            K::ModulatorDepth { mod_index, target_index } => {
                 let modulator = rack.get(*mod_index)?;
                 Some(Endpoint { node: modulator.node, port: Port::Depth { edge: modulator.targets.get(*target_index)?.edge } })
             }
-            _ => None,
         }
-    }
-
-    /// The node of the plugin in chain slot `slot` of lane `inst`: 0 is the
-    /// instrument (the lane's own node), 1.. are its effects.
-    fn chain_node(&self, inst: usize, slot: usize) -> Option<NodeId> {
-        let lane = self.instruments.get(inst)?;
-        match slot {
-            0 => Some(lane.node),
-            slot => lane.effects.get(slot - 1).map(|fx| fx.node),
-        }
-    }
-
-    /// The lane that is the `member`-th (counting from 0, in lane order) of group
-    /// `group`'s members: how a group modulator names a member.
-    fn member_lane(&self, group: usize, member: usize) -> Option<usize> {
-        self.instruments.iter().enumerate().filter(|(_, lane)| lane.group == Some(group)).nth(member).map(|(inst, _)| inst)
     }
 }
 
@@ -1002,10 +957,11 @@ mod tests {
         assert_eq!(node(&graph, NodeId::MASTER).ui, at(1200.0, 300.5));
         assert_eq!(node(&graph, group.node).ui, at(800.0, 40.0));
         assert_eq!(node(&graph, group.effects[0].node).ui, at(1100.0, 40.0));
-        assert_eq!(node(&graph, group.modulators[0].node).ui, at(800.0, -120.0));
+        // (The modulators of a lane and of a group are the session's own: the lane's first, and then the group's.)
+        assert_eq!(node(&graph, model.free_modulators[1].node).ui, at(800.0, -120.0));
         assert_eq!(node(&graph, lane.node).ui, at(0.0, 0.0), "a lane's instrument shares the lane's node");
         assert_eq!(node(&graph, lane.effects[0].node).ui, at(376.0, 0.25));
-        assert_eq!(node(&graph, lane.modulators[0].node).ui, at(376.0, -200.0));
+        assert_eq!(node(&graph, model.free_modulators[0].node).ui, at(376.0, -200.0));
         assert_eq!(node(&graph, model.instruments[1].node).ui, None);
         assert_eq!(graph.nodes.iter().filter(|n| n.ui.is_some()).count(), 7);
         // On the wire a node with a place has a `ui` and one without has none: a session with no places is the JSON it was.
@@ -1329,14 +1285,14 @@ depth = 0.1
         // A client that is told a rate has changed would otherwise be left with a name that
         // says the old one (and could not make the new one the way the controller does).
         let mut model = load(MODULATED).model;
-        let lfo = model.instruments[0].modulators[0].node;
+        let lfo = model.free_modulators[0].node;
         let name = |model: &SessionModel| node(&model.graph(), lfo).name.clone();
         assert_eq!(name(&model), "LFO");
-        model.instruments[0].modulators[0].source = ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate: 17.5, retrigger: false, fade: 0.0, sync: 0 };
+        model.free_modulators[0].source = ModSourceSlot::Lfo { waveform: LfoWaveform::Square, rate: 17.5, retrigger: false, fade: 0.0, sync: 0 };
         assert_eq!(name(&model), "LFO");
 
-        let envelope = model.instruments[0].modulators[1].node;
-        model.instruments[0].modulators[1].source = ModSourceSlot::Envelope { attack: 1.0, decay: 2.0, sustain: 0.1, release: 3.0 };
+        let envelope = model.free_modulators[1].node;
+        model.free_modulators[1].source = ModSourceSlot::Envelope { attack: 1.0, decay: 2.0, sustain: 0.1, release: 3.0 };
         assert_eq!(node(&model.graph(), envelope).name, "ADSR");
 
         // What a control is bound to is not a setting, and is in its name.
@@ -1348,7 +1304,7 @@ depth = 0.1
             (learn(Some(MidiBindSource::Key), false), "Key"),
             (learn(None, true), "MIDI (learning…)"),
         ] {
-            model.instruments[0].modulators[1].source = slot;
+            model.free_modulators[1].source = slot;
             assert_eq!(node(&model.graph(), envelope).name, expected);
         }
     }
@@ -1356,12 +1312,12 @@ depth = 0.1
     #[test]
     fn a_macro_is_a_node_called_a_macro_whatever_its_value_and_says_its_value() {
         let model = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = 0.25\n").model;
-        let knob = model.instruments[0].modulators[0].node;
+        let knob = model.free_modulators[0].node;
         let graph = model.graph();
         let found = node(&graph, knob);
         assert_eq!(found.name, "Macro");
-        assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.25 }, hears: None });
-        assert_eq!(found.parent, Some(model.instruments[0].node));
+        assert_eq!(found.kind, NodeKind::Modulator { source: ModulatorSource::Macro { value: 0.25 }, hears: Some(model.instruments[0].node) });
+        assert_eq!(found.parent, None, "in no lane: it hears the lane that it was in");
     }
 
     #[test]
@@ -1370,16 +1326,16 @@ depth = 0.1
             "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\ntype = \"steps\"\nsteps = [0.5, -0.25, 1.0]\nrate = 6.5\nglide = 0.25\nretrigger = false\n",
         )
         .model;
-        let sequencer = model.instruments[0].modulators[0].node;
+        let sequencer = model.free_modulators[0].node;
         let found = |model: &SessionModel| node(&model.graph(), sequencer).clone();
         let mut values = vec![0.0; 16];
         values[..3].copy_from_slice(&[0.5, -0.25, 1.0]);
         let found_first = found(&model);
         assert_eq!(found_first.name, "Steps");
-        assert_eq!(found_first.kind, NodeKind::Modulator { source: ModulatorSource::Steps { values, length: 3, rate: 6.5, glide: 0.25, retrigger: false, sync: 0 }, hears: None });
-        assert_eq!(found_first.parent, Some(model.instruments[0].node));
+        assert_eq!(found_first.kind, NodeKind::Modulator { source: ModulatorSource::Steps { values, length: 3, rate: 6.5, glide: 0.25, retrigger: false, sync: 0 }, hears: Some(model.instruments[0].node) });
+        assert_eq!(found_first.parent, None);
         // Its name does not say how fast it goes or how long it is, which change under a client.
-        if let ModSourceSlot::Steps { length, rate, .. } = &mut model.instruments[0].modulators[0].source {
+        if let ModSourceSlot::Steps { length, rate, .. } = &mut model.free_modulators[0].source {
             *length = 9;
             *rate = 0.5;
         }
@@ -1387,27 +1343,27 @@ depth = 0.1
     }
 
     #[test]
-    fn a_modulator_is_a_node_in_its_lane_with_an_edge_for_each_target() {
+    fn a_modulator_is_a_node_of_its_own_that_hears_its_lane_with_an_edge_for_each_target() {
         let model = load(MODULATED).model;
         let lane = &model.instruments[0];
         let (osc, filter) = (lane.node, lane.effects[0].node);
-        let (lfo, env) = (lane.modulators[0].node, lane.modulators[1].node);
-        let lfo_edges: Vec<EdgeId> = lane.modulators[0].targets.iter().map(|t| t.edge).collect();
-        let env_edges: Vec<EdgeId> = lane.modulators[1].targets.iter().map(|t| t.edge).collect();
+        let (lfo, env) = (model.free_modulators[0].node, model.free_modulators[1].node);
+        let lfo_edges: Vec<EdgeId> = model.free_modulators[0].targets.iter().map(|t| t.edge).collect();
+        let env_edges: Vec<EdgeId> = model.free_modulators[1].targets.iter().map(|t| t.edge).collect();
         let graph = model.graph();
 
         let ids: Vec<NodeId> = graph.nodes.iter().map(|n| n.id).collect();
         assert_eq!(ids, [osc, filter, lfo, env, NodeId::MASTER]);
-        assert_eq!((node(&graph, lfo).parent, node(&graph, env).parent), (Some(osc), Some(osc)));
+        assert_eq!((node(&graph, lfo).parent, node(&graph, env).parent), (None, None), "a modulator is in no lane");
         assert_eq!(node(&graph, lfo).name, "LFO");
         assert_eq!(node(&graph, env).name, "ADSR");
         assert_eq!(
             node(&graph, lfo).kind,
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0, retrigger: false, fade: 0.0, sync: 0 }, hears: None }
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Saw, rate: 2.0, retrigger: false, fade: 0.0, sync: 0 }, hears: Some(osc) }
         );
         assert_eq!(
             node(&graph, env).kind,
-            NodeKind::Modulator { source: ModulatorSource::Envelope { attack: 0.02, decay: 0.4, sustain: 0.5, release: 1.0 }, hears: None }
+            NodeKind::Modulator { source: ModulatorSource::Envelope { attack: 0.02, decay: 0.4, sustain: 0.5, release: 1.0 }, hears: Some(osc) }
         );
 
         let modulation_edges: Vec<&Edge> = graph.edges.iter().filter(|e| matches!(e.kind, EdgeKind::Modulation { .. })).collect();
@@ -1431,24 +1387,21 @@ depth = 0.1
         for text in [GROUPS, CROSS_MOD, CROSS_MOD_RACKS, LANES_IN_GROUPS, CABLES_THAT_DRIVE_CABLES] {
             let model = load(text).model;
             let graph = model.graph();
-            let groups = model.groups.iter().enumerate().map(|(g, group)| (ModulatorLocation::Group(g), &group.modulators));
-            let lanes = model.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
-            for (at, rack) in groups.chain(lanes) {
-                for (index, target) in rack.iter().enumerate().flat_map(|(index, modulator)| modulator.targets.iter().map(move |target| (index, target))) {
-                    let drawn = graph.edges.iter().find(|edge| matches!(edge.kind, EdgeKind::Modulation { id, .. } if id == target.edge)).map(|edge| edge.to);
-                    // The place that the rack names what the cable drives by, and the endpoint that the place is: the same as the node and the port that the cable has.
-                    let kind = model.kind_of(at, index, target.aim).expect("a cable drives something that is in reach");
-                    assert_eq!(model.endpoint_of(at, &kind), drawn, "{at:?} {kind:?}");
-                    assert_eq!(model.endpoint_of_aim(target.aim), drawn, "{at:?} {:?}", target.aim);
-                    checked += usize::from(drawn.is_some());
-                }
+            let at = ModulatorLocation::Free;
+            for (index, target) in model.free_modulators.iter().enumerate().flat_map(|(index, modulator)| modulator.targets.iter().map(move |target| (index, target))) {
+                let drawn = graph.edges.iter().find(|edge| matches!(edge.kind, EdgeKind::Modulation { id, .. } if id == target.edge)).map(|edge| edge.to);
+                // The place that the rack names what the cable drives by, and the endpoint that the place is: the same as the node and the port that the cable has.
+                let kind = model.kind_of(at, index, target.aim).expect("a cable drives something that is in reach");
+                assert_eq!(model.endpoint_of(at, &kind), drawn, "{at:?} {kind:?}");
+                assert_eq!(model.endpoint_of_aim(target.aim), drawn, "{at:?} {:?}", target.aim);
+                checked += usize::from(drawn.is_some());
             }
         }
         assert!(checked > 20, "the sessions have cables enough to say something: {checked}");
         let model = load(GROUPS).model;
-        let param = ModTargetKind::PluginParam { slot: 0, param_index: 0 };
-        assert_eq!(model.endpoint_of(ModulatorLocation::Lane(99), &param), None, "no such rack");
-        assert_eq!(model.endpoint_of(ModulatorLocation::Lane(0), &ModTargetKind::PluginParam { slot: 99, param_index: 0 }), None, "no such plugin");
+        let nowhere = ModTargetKind::FreeParam { plugin: NodeId(9_999), param_index: 0 };
+        assert_eq!(model.endpoint_of(ModulatorLocation::Free, &nowhere), None, "no such plugin");
+        assert_eq!(model.endpoint_of(ModulatorLocation::Free, &ModTargetKind::ModulatorRate { mod_index: 99 }), None, "no such modulator");
     }
 
     #[test]
@@ -1464,9 +1417,8 @@ depth = 0.1
     fn every_kind_of_modulator_source_is_described() {
         let model = load(MIDI).model;
         let graph = model.graph();
-        let lane = &model.instruments[0];
-        let sources: Vec<&ModulatorSource> = lane
-            .modulators
+        let sources: Vec<&ModulatorSource> = model
+            .free_modulators
             .iter()
             .map(|m| match &node(&graph, m.node).kind {
                 NodeKind::Modulator { source, .. } => source,
@@ -1484,7 +1436,7 @@ depth = 0.1
                 &ModulatorSource::MidiLearn { control: Some(MidiControl::Key), learning: false },
             ]
         );
-        let names: Vec<&str> = lane.modulators.iter().map(|m| node(&graph, m.node).name.as_str()).collect();
+        let names: Vec<&str> = model.free_modulators.iter().map(|m| node(&graph, m.node).name.as_str()).collect();
         assert_eq!(names, ["CC 74", "MIDI (learning…)", "Pitch Bend", "Aftertouch", "Velocity", "Key"]);
     }
 
@@ -1500,29 +1452,32 @@ depth = 0.1
         ] {
             let model = load(&format!("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\nwaveform = \"{name}\"\n")).model;
             let graph = model.graph();
-            let m = model.instruments[0].modulators[0].node;
+            let m = model.free_modulators[0].node;
             assert_eq!(
                 node(&graph, m).kind,
-                NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 }, hears: None },
+                NodeKind::Modulator { source: ModulatorSource::Lfo { waveform, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 }, hears: Some(model.instruments[0].node) },
                 "{name}"
             );
         }
     }
 
     #[test]
-    fn a_group_modulator_reaches_into_its_members_and_its_bus() {
+    fn a_modulator_that_hears_a_group_reaches_into_its_members_and_its_bus() {
         let model = load(GROUPS).model;
         let group = &model.groups[0];
         let (pad, bus) = (group.node, group.effects[0].node);
         let (lane0, lane1) = (model.instruments[0].node, model.instruments[1].node);
         let filter = model.instruments[1].effects[0].node;
-        let lane1_lfo = model.instruments[1].modulators[0].node;
-        let (lfo, env) = (group.modulators[0].node, group.modulators[1].node);
-        let lfo_edges: Vec<EdgeId> = group.modulators[0].targets.iter().map(|t| t.edge).collect();
-        let env_edges: Vec<EdgeId> = group.modulators[1].targets.iter().map(|t| t.edge).collect();
+        // The lanes' modulators come first in the session's own list, and then the group's two.
+        let own = &model.free_modulators;
+        let (lfo, env) = (own[own.len() - 2].node, own[own.len() - 1].node);
+        let lane1_lfo = own.iter().find(|m| m.ear == Some(lane1)).expect("the second lane's modulator").node;
+        let lfo_edges: Vec<EdgeId> = own[own.len() - 2].targets.iter().map(|t| t.edge).collect();
+        let env_edges: Vec<EdgeId> = own[own.len() - 1].targets.iter().map(|t| t.edge).collect();
         let graph = model.graph();
 
-        assert_eq!((node(&graph, lfo).parent, node(&graph, env).parent), (Some(pad), Some(pad)));
+        assert_eq!((node(&graph, lfo).parent, node(&graph, env).parent), (None, None));
+        assert_eq!((own[own.len() - 2].ear, own[own.len() - 1].ear), (Some(pad), Some(pad)), "they hear the group");
         let edges: Vec<&Edge> = graph.edges.iter().filter(|e| matches!(e.kind, EdgeKind::Modulation { .. })).collect();
         let expected = [
             // Member 0's detune (the oscillator's parameter 1).
@@ -1545,7 +1500,7 @@ depth = 0.1
     fn a_target_whose_aim_is_gone_has_no_edge() {
         use crate::app::model::Driven;
         let mut model = load(MODULATED).model;
-        let lfo = &mut model.instruments[0].modulators[0];
+        let lfo = &mut model.free_modulators[0];
         let real = lfo.targets.len();
         let own = lfo.node;
         let template = |aim: Driven| crate::app::model::ModTargetSlot {
@@ -1574,38 +1529,6 @@ depth = 0.1
         let graph = model.graph();
         let edges = graph.edges.iter().filter(|e| matches!(e.kind, EdgeKind::Modulation { .. })).count();
         assert_eq!(edges, 4, "only the {real} real targets of the LFO and the envelope's two");
-    }
-
-    #[test]
-    fn a_group_target_whose_aim_is_gone_has_no_edge() {
-        use crate::app::model::{Driven, ModSetting, NodeId};
-        let mut model = load(GROUPS).model;
-        let before = model.graph().edges.len();
-        let rack = &mut model.groups[0].modulators[0];
-        let own = rack.node;
-        for (n, aim) in [
-            // A plugin, a modulator and a cable that are not there, and a node that is not a plugin.
-            Driven::Param { plugin: NodeId(9_999), index: 0 },
-            Driven::Param { plugin: own, index: 0 },
-            Driven::Setting { modulator: NodeId(9_998), field: ModSetting::Rate },
-            Driven::Depth(EdgeId(9_997)),
-            // The modulator's own settings: a cable like that does nothing.
-            Driven::Setting { modulator: own, field: ModSetting::Rate },
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            rack.targets.push(ModTargetSlot {
-                edge: EdgeId(2_000 + n as u32),
-                param_name: "x".to_string(),
-                aim,
-                depth: 0.5,
-                param_min: 0.0,
-                param_max: 1.0,
-                effective: None,
-            });
-        }
-        assert_eq!(model.graph().edges.len(), before);
     }
 
     /// The modulation edges of `graph` as `(from, port, amount)`: the modulator
@@ -1658,9 +1581,9 @@ depth = 0.6
 "#,
         )
         .model;
-        let lane = &model.instruments[0];
-        let (lfo, env, driver) = (lane.modulators[0].node, lane.modulators[1].node, lane.modulators[2].node);
-        let second_edge = lane.modulators[0].targets[1].edge;
+        let own = &model.free_modulators;
+        let (lfo, env, driver) = (own[0].node, own[1].node, own[2].node);
+        let second_edge = own[0].targets[1].edge;
         let graph = model.graph();
         let got = modulation_of(&graph);
         let driven = |port: Port, node: NodeId| at(node, port);
@@ -1676,145 +1599,6 @@ depth = 0.6
             ]
         );
         assert_closed(&graph, "every field");
-    }
-
-    #[test]
-    fn a_group_modulator_can_drive_every_field_of_a_members_modulator() {
-        let model = load(
-            r#"
-[[group]]
-[[group.modulator]]
-type = "lfo"
-[[group.modulator.target]]
-member = 0
-mod_rate = 0
-depth = 0.1
-[[group.modulator.target]]
-member = 0
-mod_attack = 1
-depth = 0.2
-[[group.modulator.target]]
-member = 0
-mod_decay = 1
-depth = 0.3
-[[group.modulator.target]]
-member = 0
-mod_sustain = 1
-depth = 0.4
-[[group.modulator.target]]
-member = 0
-mod_release = 1
-depth = 0.5
-[[group.modulator.target]]
-member = 0
-mod_depth = [0, 1]
-depth = 0.6
-
-[[instrument]]
-plugin = "builtin:osc"
-group = 0
-[[instrument.modulator]]
-type = "lfo"
-[[instrument.modulator.target]]
-param = "detune"
-[[instrument.modulator.target]]
-param = "volume"
-[[instrument.modulator]]
-type = "envelope"
-"#,
-        )
-        .model;
-        let lane = &model.instruments[0];
-        let (lfo, env) = (lane.modulators[0].node, lane.modulators[1].node);
-        let second_edge = lane.modulators[0].targets[1].edge;
-        let driver = model.groups[0].modulators[0].node;
-        let graph = model.graph();
-        assert_eq!(
-            modulation_of(&graph)[..6],
-            [
-                (driver, at(lfo, Port::Rate), 0.1),
-                (driver, at(env, Port::Attack), 0.2),
-                (driver, at(env, Port::Decay), 0.3),
-                (driver, at(env, Port::Sustain), 0.4),
-                (driver, at(env, Port::Release), 0.5),
-                (driver, at(lfo, Port::Depth { edge: second_edge }), 0.6),
-            ]
-        );
-        assert_closed(&graph, "every member field");
-    }
-
-    #[test]
-    fn a_group_modulators_members_are_counted_within_its_own_group() {
-        let model = load(
-            r#"
-[[group]]
-[[group.modulator]]
-[[group.modulator.target]]
-member = 0
-param = "detune"
-depth = 0.1
-[[group]]
-[[group.modulator]]
-[[group.modulator.target]]
-member = 0
-param = "detune"
-depth = 0.2
-[[group.modulator.target]]
-member = 1
-param = "detune"
-depth = 0.3
-
-[[instrument]]
-plugin = "builtin:osc"
-group = 1
-[[instrument]]
-plugin = "builtin:osc"
-[[instrument]]
-plugin = "builtin:osc"
-group = 0
-[[instrument]]
-plugin = "builtin:osc"
-group = 1
-"#,
-        )
-        .model;
-        let lanes: Vec<NodeId> = model.instruments.iter().map(|l| l.node).collect();
-        let (first, second) = (model.groups[0].modulators[0].node, model.groups[1].modulators[0].node);
-        let graph = model.graph();
-        // Group 0's member 0 is lane 2; group 1's members are lanes 0 and 3, and lane 1 is nobody's.
-        assert_eq!(
-            modulation_of(&graph),
-            [(first, param(lanes[2], 1), 0.1), (second, param(lanes[0], 1), 0.2), (second, param(lanes[3], 1), 0.3)]
-        );
-    }
-
-    #[test]
-    fn a_group_modulator_can_drive_any_of_the_bus_effects() {
-        let model = load(
-            r#"
-[[group]]
-[[group.effect]]
-plugin = "builtin:reverb"
-[[group.effect]]
-plugin = "builtin:filter"
-[[group.modulator]]
-[[group.modulator.target]]
-bus = 1
-param = "cutoff"
-depth = 0.1
-[[group.modulator.target]]
-bus = 0
-param = "damping"
-depth = 0.2
-"#,
-        )
-        .model;
-        let (reverb, filter) = (model.groups[0].effects[0].node, model.groups[0].effects[1].node);
-        let driver = model.groups[0].modulators[0].node;
-        assert_eq!(
-            modulation_of(&model.graph()),
-            [(driver, param(filter, 0), 0.1), (driver, param(reverb, 2), 0.2)]
-        );
     }
 
     #[test]
@@ -1841,7 +1625,7 @@ plugin = "builtin:osc"
     }
 
     #[test]
-    fn the_group_modulators_edges_come_before_the_lane_modulators() {
+    fn the_edges_of_the_modulators_come_in_the_order_of_the_sessions_own_rack_the_lanes_first_and_then_the_groups() {
         let model = load(
             r#"
 [[group]]
@@ -1861,7 +1645,7 @@ depth = 0.2
         )
         .model;
         let amounts: Vec<f32> = modulation_of(&model.graph()).iter().map(|(_, _, amount)| *amount).collect();
-        assert_eq!(amounts, [0.1, 0.2]);
+        assert_eq!(amounts, [0.2, 0.1]);
     }
 
     #[test]
@@ -2134,14 +1918,14 @@ depth = 0.2
     fn an_lfos_key_is_in_the_graph_as_the_nodes_source() {
         let model = load("[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.modulator]]\nrate = 2.0\nretrigger = true\nfade = 0.75\n[[instrument.modulator]]\n").model;
         let graph = model.graph();
-        let (keyed, free) = (model.instruments[0].modulators[0].node, model.instruments[0].modulators[1].node);
+        let (keyed, free) = (model.free_modulators[0].node, model.free_modulators[1].node);
         assert_eq!(
             node(&graph, keyed).kind,
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 2.0, retrigger: true, fade: 0.75, sync: 0 }, hears: None }
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 2.0, retrigger: true, fade: 0.75, sync: 0 }, hears: Some(model.instruments[0].node) }
         );
         assert_eq!(
             node(&graph, free).kind,
-            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 }, hears: None },
+            NodeKind::Modulator { source: ModulatorSource::Lfo { waveform: Waveform::Sine, rate: 1.0, retrigger: false, fade: 0.0, sync: 0 }, hears: Some(model.instruments[0].node) },
             "one that says nothing of it runs free"
         );
     }
@@ -2153,7 +1937,7 @@ depth = 0.2
         )
         .model;
         let graph = model.graph();
-        let sync_of = |index: usize| match &node(&graph, model.instruments[0].modulators[index].node).kind {
+        let sync_of = |index: usize| match &node(&graph, model.free_modulators[index].node).kind {
             NodeKind::Modulator { source: ModulatorSource::Lfo { sync, rate, .. } | ModulatorSource::Steps { sync, rate, .. }, .. } => (*sync, *rate),
             other => panic!("{other:?}"),
         };

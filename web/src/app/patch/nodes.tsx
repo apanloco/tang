@@ -283,22 +283,21 @@ const counted = (n: number, word: string): string => `${String(n)} ${word}${n ==
 
 /** What taking out a lane or a group comes to, in words: what goes with it, and what stays: for a group its lanes, and for either the modulators that hear it, which hear every note then. */
 function removalWords(removal: Removal): string {
-  const goes = [removal.effects > 0 ? counted(removal.effects, "effect") : null, removal.modulators > 0 ? counted(removal.modulators, "modulator") : null].filter((part) => part !== null);
+  const goes = removal.effects > 0 ? `its ${counted(removal.effects, "effect")} go${removal.effects === 1 ? "es" : ""} with it` : null;
   const stays = removal.lanes > 0 ? `its ${counted(removal.lanes, "lane")} ${removal.lanes === 1 ? "stays" : "stay"}, in no group` : null;
   const heard = removal.hearing > 0 ? `${counted(removal.hearing, "modulator")} that ${removal.hearing === 1 ? "hears it stays" : "hear it stay"}, hearing every note` : null;
-  const parts = [goes.length > 0 ? `its ${goes.join(" and ")} go${goes.length === 1 && removal.effects + removal.modulators === 1 ? "es" : ""} with it` : null, stays, heard].filter((part) => part !== null);
+  const parts = [goes, stays, heard].filter((part) => part !== null);
   return parts.length > 0 ? `: ${parts.join(", and ")}` : "";
 }
 
-/** What stays in a lane when its instrument is taken out of it, in words: its effects and its modulators, or that it is left empty. */
+/** What stays in a lane when its instrument is taken out of it, in words: its effects, or that it is left empty. */
 function keptWords(removal: Removal): string {
-  const stays = [removal.effects > 0 ? counted(removal.effects, "effect") : null, removal.modulators > 0 ? counted(removal.modulators, "modulator") : null].filter((part) => part !== null);
-  return stays.length > 0 ? `: its ${stays.join(" and ")} stay${removal.effects + removal.modulators === 1 ? "s" : ""} in the lane` : ": the lane stays, empty";
+  return removal.effects > 0 ? `: its ${counted(removal.effects, "effect")} stay${removal.effects === 1 ? "s" : ""} in the lane` : ": the lane stays, empty";
 }
 
 /**
  * The button of a lane or a group that takes it out of the session: a menu that asks, first for keeping (where the focus starts), and then for removing it with the words of what goes with it
- * and what stays. A lane that has an instrument is asked for twice over: for taking the instrument out alone, which leaves the lane with its effects, its modulators and the rest (an empty lane,
+ * and what stays. A lane that has an instrument is asked for twice over: for taking the instrument out alone, which leaves the lane with its effects and the rest (an empty lane,
  * which the focus goes to the button that puts an instrument in), and for taking the lane out, for good, with all of it, which is what goes to the button of the bar that adds a lane. The only lane
  * of a session cannot be taken out (a session keeps a lane), but its instrument can; and nothing for any other node.
  */
@@ -552,7 +551,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
         name={data.name}
         badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind}
         // (A modulator that is in no lane and no group chooses whose notes it hears: one that is in a lane or a group hears its own.)
-        sub={node?.kind === "modulator" && node.parent === null ? <HearsMenu node={data.node} name={data.name} /> : null}
+        sub={node?.kind === "modulator" ? <HearsMenu node={data.node} name={data.name} /> : null}
       >
         {/* (The note length that an LFO or a step sequencer follows the tempo by: no other kind has one, and the control is nothing for it.) */}
         <SyncControl node={data.node} />

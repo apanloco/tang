@@ -50,9 +50,9 @@ describe("an effect that stands by itself", () => {
     expect(await nodeOf(4)).toBeTruthy();
     expect(screen.queryByTestId("rf__node-3")).toBeNull();
     expect(screen.queryByRole("button", { name: "Choose an instrument for (empty)" })).toBeNull();
-    // (The session's own lane has its card still, and the module is one of the nodes of the canvas, after the tracer's.)
+    // (The session's own lane has its card still, and the module is one of the nodes of the canvas, after the tracer's lane: the modulators come after the lanes.)
     expect(await nodeOf(oscillator.id)).toBeTruthy();
-    expect(Array.from(document.querySelectorAll(".tang-node__name")).map((name) => name.textContent)).toEqual(["Oscillator", "Filter", "LFO", "Reverb", "Master"]);
+    expect(Array.from(document.querySelectorAll(".tang-node__name")).map((name) => name.textContent)).toEqual(["Oscillator", "Filter", "Reverb", "LFO", "Master"]);
   });
 
   test("has the mute, the solo and the \"+\" of its lane, which the lane's card would have, and no cable at all to begin with: nothing feeds it from the lane, which has no sound, and it sends nowhere", async () => {
@@ -161,21 +161,23 @@ describe("an effect that stands by itself", () => {
     expect(await nodeOf(4)).toBeTruthy();
   });
 
-  test("is not the lane's to take out when the lane has a modulator, which would be left with nothing: the module's \"×\" takes out the effect, and the lane has its card again", async () => {
+  test("is the lane's to take out when a modulator hears the lane: the module's \"×\" takes the lane with the effect, and the modulator stays, hearing every note", async () => {
     const { server, requests } = await withReverb();
-    server.apply({ type: "addModulator", parent: 3, kind: "lfo" });
+    server.apply({ type: "addFreeModulator", kind: "lfo", hears: 3 });
     const reverb = await nodeOf(4);
-    // (The LFO is above the effect, as the modulators of a lane are.)
+    // (The LFO is a module of its own, above the lane's strip.)
     expect(await nodeOf(5)).toBeTruthy();
     fireEvent.click(within(reverb).getByRole("button", { name: "Remove Reverb" }));
     await waitFor(() => {
       expect(screen.queryByTestId("rf__node-4")).toBeNull();
     });
-    expect(asked(requests).slice(-1)).toEqual([{ type: "removeNode", node: 4 }]);
-    // The lane holds nothing but the LFO, and is a lane that has no instrument and no effect: it has its card, and the LFO is on it.
-    expect(await nodeOf(3)).toBeTruthy();
-    expect(within(await nodeOf(3)).getByRole("button", { name: "Choose an instrument for (empty)" })).toBeTruthy();
+    expect(asked(requests).slice(-1)).toEqual([{ type: "removeNode", node: 3 }]);
+    // The lane went with the effect, and the LFO is still there, with nothing to hear but every note.
+    expect(screen.queryByTestId("rf__node-3")).toBeNull();
     expect(await nodeOf(5)).toBeTruthy();
+    const left = server.snapshot.graph.nodes.find((n) => n.id === 5);
+    expect(left?.kind).toBe("modulator");
+    expect(left).not.toHaveProperty("hears");
   });
 
   test("has a \"+\" that adds a modulator that hears its lane, and the modulator is on the canvas, over the effect that it hears", async () => {

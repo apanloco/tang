@@ -45,11 +45,10 @@ import { cablesThatGo, isAudioCable, isLink, isModulation, isNotesCable } from "
 import { Counters } from "./counters";
 import { History, planOf, removedStep, stepOf, takesOut } from "./history";
 import type { HistoryState, Made, Plan } from "./history";
-import { cablesIntoLaneFromItsGroup } from "./membership";
 import { noise } from "./noise";
 import { deviceName, eventCableEnds, withHears } from "./noteWiring";
 import { noteName } from "./notes";
-import { NEARNESS, fieldsOf, modulatorsInReach, ownerOf, reachFrom, samePort } from "./reach";
+import { fieldsOf, samePort } from "./reach";
 import { applyEvent } from "./reducers";
 import { parseScale } from "./scales";
 import { stepsOutput, stepsPlace } from "./steps";
@@ -302,7 +301,7 @@ function withCable(nodes: readonly Node[], edges: readonly Edge[], modulator: No
 
 /**
  * `modulation` with `entry`, the value that the cable `added` is the first to drive, put where the controller lists it: its list of what cables drive goes
- * lane by lane and then group by group, and by the place of the modulator in it, the first cable to aim at a value naming it. So a cable drawn from a modulator
+ * by the place of the modulator in the session's own rack, the first cable to aim at a value naming it. So a cable drawn from a modulator
  * that is not the last has its value listed before those of the modulators after it (f114: it was put at the end). (The place of a cable among its modulator's
  * decides nothing here: a cable is drawn after the others of its modulator, and a modulator cannot drive a value twice.) `cables` are those of the session
  * with `added` among them.
@@ -310,18 +309,15 @@ function withCable(nodes: readonly Node[], edges: readonly Edge[], modulator: No
 function withEntry(nodes: readonly Node[], cables: readonly Edge[], modulation: readonly LayoutEntry[], entry: LayoutEntry, added: Edge & { kind: "modulation" }): LayoutEntry[] {
   const position = new Map(nodes.map((n, i) => [n.id, i]));
   const driving = cables.filter(isModulation);
-  const rank = (cable: (typeof driving)[number]): [number, number] => {
-    const source = nodes.find((n) => n.id === cable.from.node);
-    return [source ? NEARNESS[ownerOf(nodes, source)] : NEARNESS.free, position.get(cable.from.node) ?? 0];
-  };
-  const earlier = (a: readonly number[], b: readonly number[]): boolean => (a[0] !== b[0] ? (a[0] ?? 0) < (b[0] ?? 0) : (a[1] ?? 0) < (b[1] ?? 0));
+  const rank = (cable: (typeof driving)[number]): number => position.get(cable.from.node) ?? 0;
+  const earlier = (a: number, b: number): boolean => a < b;
   const mine = rank(added);
   /** Whose value this is: the first of the cables to aim at it, in the controller's order. */
-  const firstToAim = (e: LayoutEntry): [number, number] | undefined =>
+  const firstToAim = (e: LayoutEntry): number | undefined =>
     driving
       .filter((c) => aimKey(c.to.node, c.to.port) === aimKey(e.node, e.port))
       .map(rank)
-      .reduce<[number, number] | undefined>((first, r) => (first === undefined || earlier(r, first) ? r : first), undefined);
+      .reduce<number | undefined>((first, r) => (first === undefined || earlier(r, first) ? r : first), undefined);
   const at = modulation.findIndex((e) => {
     const owner = e.kind === "effective" ? firstToAim(e) : undefined;
     return owner !== undefined && earlier(mine, owner);
@@ -345,12 +341,6 @@ function offsetOf(source: Node | undefined, output: number, amount: number, base
   }
   return output * amount * (max - min);
 }
-
-/** What a modulator is told of what it cannot reach: whose it is (`owner_name`: a lane's, a group's, or the session's, for one that is in no lane and no group). */
-const ownerName = (nodes: readonly Node[], modulator: Node): "group" | "lane" | "session" => {
-  const owner = ownerOf(nodes, modulator);
-  return owner === "free" ? "session" : owner;
-};
 
 /**
  * The session with the cable `added`, drawn from the modulator `from`, among its cables. The value it drives gets a slot in the layout of the telemetry unless
@@ -383,7 +373,6 @@ function addParamCable(snapshot: Snapshot, from: Node, node: NodeId, index: numb
   if (!target) return noNode(node);
   if (target.kind !== "instrument" && target.kind !== "effect") return invalid("that node has no plugin");
   if (!target.plugin) return invalid("that instrument has no plugin");
-  if (!reachFrom(snapshot.graph, from.id).has(node)) return invalid(`a modulator of this ${ownerName(nodes, from)} cannot reach that plugin`);
   if (!target.plugin.params.some((p) => p.index === index)) return invalid(`the plugin has no parameter ${index}`);
   const port: Port = { type: "param", index };
   const drivesIt = (e: Edge): boolean => isModulation(e) && e.from.node === from.id && e.to.node === node && samePort(e.to.port, port);
@@ -404,7 +393,6 @@ function addFieldCable(snapshot: Snapshot, from: Node, to: Edge["to"], counters:
   if (!target) return noNode(to.node);
   if (target.id === from.id) return invalid("a modulator cannot drive its own settings");
   if (target.kind !== "modulator") return invalid("a cable ends at the settings of a modulator, and that is not one");
-  if (!modulatorsInReach(snapshot.graph, from.id).some((n) => n.id === target.id)) return invalid(`a modulator of this ${ownerName(nodes, from)} cannot reach that modulator`);
   if (!fieldsOf(snapshot.graph, from.id).some((field) => field.node === to.node && samePort(field.port, to.port))) {
     if (to.port.type === "depth") return { error: { code: "notFound", message: `there is no cable ${to.port.edge}` } };
     return invalid(`that modulator has no ${to.port.type}`);
@@ -584,19 +572,7 @@ const NEW_MODULATORS: Record<ModulatorKind, { name: string; source: ModulatorSou
 };
 
 /**
- * A modulator added to a lane or a group. The graph lists a lane's nodes together (the lane, its effects, its
- * modulators), so the new one goes after the last of them; and the layout of the telemetry lists the modulators'
- * outputs in the order of the graph, ahead of the parameters' values.
- */
-function addModulatorOutcome(snapshot: Snapshot, parent: NodeId, kind: ModulatorKind, counters: Counters): Outcome {
-  const owner = snapshot.graph.nodes.find((n) => n.id === parent && n.kind !== "master");
-  if (!owner) return noNode(parent);
-  if (owner.kind !== "instrument" && owner.kind !== "group") return invalid("a modulator goes in a lane or in a group");
-  return { restructured: withModulator(snapshot, parent, kind, counters).session };
-}
-
-/**
- * A modulator that is in no lane and no group, at the end of the session's own rack (`AddFreeModulator`): a node with no parent, which the graph lists after the lanes' nodes and before the master, and
+ * A modulator at the end of the session's own rack (`AddFreeModulator`; every modulator is the session's own since step 96): a node with no parent, which the graph lists after the lanes' nodes and before the master, and
  * whose output the layout of the telemetry lists after the lanes' and the groups'. It hears the lane or the group `hears` (the "+" of one), or every note. A `hears` that is not a node of the session, or is neither a lane nor a
  * group, is refused before the node is made (no id is used).
  */
@@ -606,21 +582,20 @@ function addFreeModulatorOutcome(snapshot: Snapshot, kind: ModulatorKind, hears:
     if (!heard) return noNode(hears);
     if (heard.kind !== "instrument" && heard.kind !== "group") return invalid("only a lane or a group can be heard");
   }
-  return { restructured: withModulator(snapshot, null, kind, counters, hears).session };
+  return { restructured: withModulator(snapshot, kind, counters, hears).session };
 }
 
 /**
- * The session with a modulator of `kind` at the end of the rack of the lane or group `parent` (which is one), or of the session's own rack for none (hearing the lane or the group `hears`, if there is one), and the node it
+ * The session with a modulator of `kind` at the end of the session's own rack (hearing the lane or the group `hears`, if there is one), and the node it
  * is. The session's own modulators are listed in the graph after the lanes' nodes (the sources come first and the master last), so the first of them goes before the master.
  */
-function withModulator(snapshot: Snapshot, parent: NodeId | null, kind: ModulatorKind, counters: Counters, hears: NodeId | null = null): { session: Snapshot; node: Node } {
+function withModulator(snapshot: Snapshot, kind: ModulatorKind, counters: Counters, hears: NodeId | null = null): { session: Snapshot; node: Node } {
   const { nodes } = snapshot.graph;
-  const strip = (n: Node): boolean => (parent === null ? n.kind === "modulator" && n.parent === null : n.id === parent || (n.parent === parent && (n.kind === "effect" || n.kind === "modulator")));
-  const last = nodes.findLastIndex(strip);
+  const last = nodes.findLastIndex((n) => n.kind === "modulator");
   const master = nodes.findIndex((n) => n.kind === "master");
   const at = last >= 0 ? last + 1 : master >= 0 ? master : nodes.length;
   const { name, source } = NEW_MODULATORS[kind];
-  const added: Node = { id: counters.node(), parent, name, kind: "modulator", source, ...(hears === null ? {} : { hears }) };
+  const added: Node = { id: counters.node(), parent: null, name, kind: "modulator", source, ...(hears === null ? {} : { hears }) };
   const before = new Set(nodes.slice(0, at).filter((n) => n.kind === "modulator").map((n) => n.id));
   const outputs = snapshot.telemetry.modulation;
   const place = outputs.findLastIndex((entry) => (entry.kind === "modOutput" || entry.kind === "modPosition") && before.has(entry.node)) + 1;
@@ -638,9 +613,8 @@ function withModulator(snapshot: Snapshot, parent: NodeId | null, kind: Modulato
 
 /**
  * A modulator of `kind` made for what the port `to` of a node is, with a cable from it to the port, as one change (`Controller::modulate_intent`; the TUI's `m` and
- * `l`). It is the session's own (step 94), and hears what `to` is of: the lane for the plugin of a lane (its instrument or an effect of its chain), the group for a bus effect, and for a setting
- * of a modulator of the session's own what that modulator hears, where the new one is a sibling that drives it (a setting of a modulator that is in a lane's or a group's rack is driven by a sibling in that rack:
- * only a session that was built from intents has one). The cable is drawn as `addModEdge` draws one (what it reaches is read
+ * `l`). It is the session's own, and hears what `to` is of: the lane for the plugin of a lane (its instrument or an effect of its chain), the group for a bus effect, and for a setting
+ * of a modulator what that modulator hears, where the new one is a sibling that drives it. The cable is drawn as `addModEdge` draws one (what it reaches is read
  * from the graph, so the modulator is made first), at half depth, or at `depth` clamped as a depth that is set is; if it cannot be drawn, nothing is made and no id is used.
  */
 function modulateOutcome(snapshot: Snapshot, to: Edge["to"], kind: ModulatorKind, depth: number | null, counters: Counters): Outcome {
@@ -649,14 +623,11 @@ function modulateOutcome(snapshot: Snapshot, to: Edge["to"], kind: ModulatorKind
   const target = snapshot.graph.nodes.find((n) => n.id === to.node && n.kind !== "master");
   if (!target) return noNode(to.node);
   if (target.kind === "group" || target.kind === "source") return invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither");
-  // The new one is the session's own and hears the lane of a lane's instrument or of an effect of its chain, the group of a bus effect, and what a modulator of the session's own hears; for a modulator that is in
-  // a lane's or a group's rack it is a sibling in that rack.
+  // The new one hears the lane of a lane's instrument or of an effect of its chain, the group of a bus effect, and what a modulator hears.
   if (target.kind === "effect" && target.parent === null) return invalid("that node is in no lane or group");
-  const inARack = target.kind === "modulator" && target.parent !== null;
-  const parent = inARack ? target.parent : null;
-  const hears = target.kind === "instrument" ? target.id : target.kind === "effect" ? target.parent : target.kind === "modulator" && target.parent === null ? (target.hears ?? null) : null;
+  const hears = target.kind === "instrument" ? target.id : target.kind === "effect" ? target.parent : target.kind === "modulator" ? (target.hears ?? null) : null;
   const mark = counters.mark();
-  const { session, node } = withModulator(snapshot, parent, kind, counters, hears);
+  const { session, node } = withModulator(snapshot, kind, counters, hears);
   const drawn = addModEdgeOutcome(session, node.id, to, counters);
   if (!("restructured" in drawn)) {
     counters.rewind(mark);
@@ -695,11 +666,11 @@ function addEffectOutcome(snapshot: Snapshot, parent: NodeId, plugin: string, co
 }
 
 /**
- * Where the node of a new lane goes among the nodes of a graph: after the lanes there are, with their effects and their modulators, and before the modulators that are in no lane and no group and the master,
- * as the controller lists them (`SessionModel::graph`: the groups, the lanes, the free modulators, the master).
+ * Where the node of a new lane goes among the nodes of a graph: after the lanes there are, with their effects, and before the modulators and the master,
+ * as the controller lists them (`SessionModel::graph`: the groups, the lanes, the modulators, the master).
  */
 function endOfLanes(nodes: readonly Node[]): number {
-  const at = nodes.findIndex((n) => n.kind === "master" || (n.kind === "modulator" && n.parent === null));
+  const at = nodes.findIndex((n) => n.kind === "master" || n.kind === "modulator");
   return at < 0 ? nodes.length : at;
 }
 
@@ -924,22 +895,20 @@ function lanePutIn(snapshot: Snapshot, lane: NodeId, group: NodeId | null): Snap
   const master = snapshot.graph.nodes.find((n) => n.kind === "master");
   if (!found || !master || found.parent === group) return snapshot;
   const { nodes } = snapshot.graph;
-  // The cables of the group it leaves that go into the lane: to its plugins, to its modulators' settings and to the depths of their cables.
-  const taken = without(snapshot, cablesThatGo(snapshot.graph.edges, cablesIntoLaneFromItsGroup(snapshot.graph, lane)), new Set());
+  // (The cables of the modulators that hear the group it leaves stay: a cable names the plugin it drives by its node, and the lane keeps its plugins.)
   // The lane's node is a member of the group, and the last link of its chain, the one that leaves the chain, goes into the group (or the master).
   const chain = new Set<NodeId>([lane, ...nodes.filter((n) => n.parent === lane && n.kind === "effect").map((n) => n.id)]);
-  const edges = taken.graph.edges.map((e): Edge => {
+  const edges = snapshot.graph.edges.map((e): Edge => {
     if (!isLink(e) || !chain.has(e.from.node) || chain.has(e.to.node)) return e;
     return { from: e.from, to: { node: group ?? master.id, port: { type: "audioIn" } }, kind: group === null ? "audio" : "member" };
   });
-  return { ...taken, graph: { nodes: taken.graph.nodes.map((n) => (n.id === lane ? { ...n, parent: group } : n)), edges } };
+  return { ...snapshot, graph: { nodes: nodes.map((n) => (n.id === lane ? { ...n, parent: group } : n)), edges } };
 }
 
 /**
  * A lane put in a group, or taken out of its group (`null`), as the controller does it (`Controller::set_lane_group`): the node has to be a
- * lane and the group a group (the master is no node of the model, as far as the controller goes). The cables of the group the lane leaves
- * go first (`lanePutIn`; what they were driving has the value that was set again, which is the audio thread's to do), and the audio path of
- * the lane ends in its new group, or in the master.
+ * lane and the group a group (the master is no node of the model, as far as the controller goes). No cable goes (`lanePutIn`: a cable names
+ * its plugin by node), and the audio path of the lane ends in its new group, or in the master.
  */
 function setLaneGroupOutcome(snapshot: Snapshot, node: NodeId, group: NodeId | null): Outcome {
   const lane = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
@@ -971,13 +940,13 @@ function setRouteOutcome(snapshot: Snapshot, node: NodeId, route: Route): Outcom
 }
 
 /**
- * Whose notes a modulator that is in no lane and no group hears, as the controller does it (`set_modulator_ear_intent`): the node has to be a modulator of the session's own (a lane's or a group's hears its
- * own; the master is no node of the model, as far as the controller goes), and the ear a lane or a group, or none for every note. The graph says it as `hears`, and says nothing for none.
+ * Whose notes a modulator hears, as the controller does it (`set_modulator_ear_intent`): the node has to be a modulator (the master is no node of the model, as far as the controller goes), and the
+ * ear a lane or a group, or none for every note. The graph says it as `hears`, and says nothing for none.
  */
 function setModulatorEarOutcome(snapshot: Snapshot, node: NodeId, ear: NodeId | null): Outcome {
   const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
   if (!found) return noNode(node);
-  if (found.kind !== "modulator" || found.parent !== null) return invalid("only a modulator that is in no lane and no group has an ear: a lane's or a group's hears its own");
+  if (found.kind !== "modulator") return invalid("only a modulator has an ear");
   if (ear !== null) {
     const heard = snapshot.graph.nodes.find((n) => n.id === ear && n.kind !== "master");
     if (!heard) return noNode(ear);
@@ -1167,7 +1136,6 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "clearInstrument") return clearInstrumentOutcome(snapshot, intent.node);
   if (intent.type === "setEdgeDepth") return depthOutcome(snapshot, intent.edge, intent.depth);
   if (intent.type === "removeEdge") return removeEdgeOutcome(snapshot, intent.edge);
-  if (intent.type === "addModulator") return addModulatorOutcome(snapshot, intent.parent, intent.kind, counters);
   if (intent.type === "addFreeModulator") return addFreeModulatorOutcome(snapshot, intent.kind, intent.hears, counters);
   if (intent.type === "modulate") return modulateOutcome(snapshot, intent.to, intent.kind, intent.depth, counters);
   if (intent.type === "removeNode") return removeNodeOutcome(snapshot, intent.node);
@@ -1659,8 +1627,8 @@ export class MockServer {
       // (An LFO hears every note too: its wave starts again at one if it retriggers, and its fade, if it has one, starts at one whether it does or not.)
       const restarts = (control.source.type === "steps" && control.source.retrigger) || control.source.type === "lfo";
       if (!follows && !restarts) continue;
-      // (A modulator that is in no lane and no group hears the lane or the group it has an ear for, as a lane's or a group's own does, and every note without one: the graph says none for an ear that is gone.)
-      const owner = nodes.find((n) => n.id === (control.parent ?? control.hears));
+      // (A modulator hears the lane or the group it has an ear for, and every note without one: the graph says none for an ear that is gone.)
+      const owner = nodes.find((n) => n.id === control.hears);
       const remember = (heard: number): void => {
         if (follows) this.#heard.set(control.id, { note: heard, velocity });
         else this.#restarted.set(control.id, this.now());
@@ -1670,7 +1638,7 @@ export class MockServer {
         if (takes(owner) && heard >= 0 && heard <= 127) remember(heard);
       } else if (owner?.kind === "group") {
         if (nodes.some((n) => n.kind === "instrument" && n.parent === owner.id && takes(n))) remember(note);
-      } else if (ownerOf(nodes, control) === "free") {
+      } else {
         remember(note);
       }
     }
@@ -1939,9 +1907,7 @@ export class MockServer {
 
   /**
    * The value a parameter is set to: what the user set, and the offsets that the cables aimed at it make of it, each from the value the user set (an LFO or a control swings it around
-   * that value, an envelope's peak is that value) and added, as the engine does (`apply_modulators_to_chain`), and clamped. Where the lane's own modulators drive it too theirs are all that count:
-   * the group's are written first and the lane's over them, from the same value (`apply_group_mod_writes`, then the lane's modulators), and the session's own (`apply_free_modulators`) before both, so that
-   * the nearest rack that has a cable on the parameter stands alone and the cables of one rack add up.
+   * that value, an envelope's peak is that value) and added, as the engine does (`apply_free_modulators`), and clamped.
    */
   #effective(entry: LayoutEntry, outputOf: (id: NodeId) => number): number {
     const { nodes, edges } = this.#snapshot.graph;
@@ -1954,10 +1920,8 @@ export class MockServer {
       .filter(isModulation)
       .filter((edge) => edge.to.node === entry.node && edge.to.port.type === "param" && edge.to.port.index === index)
       .map((edge) => ({ edge, source: nodes.find((n) => n.id === edge.from.node) }));
-    const nearness = (source: Node | undefined): number => (source === undefined ? NEARNESS.free : NEARNESS[ownerOf(nodes, source)]);
-    const nearest = Math.min(...drivers.map(({ source }) => nearness(source)));
     let offset = 0;
-    for (const { edge, source } of drivers.filter((driver) => nearness(driver.source) === nearest)) {
+    for (const { edge, source } of drivers) {
       offset += offsetOf(source, outputOf(edge.from.node), edge.amount, param.value, param.min, param.max);
     }
     return clamp(param.value + offset, param.min, param.max);

@@ -134,7 +134,7 @@ describe("the button that modulates a control", () => {
   test("looks for the modulators that could drive it when the menu is opened, and not before: one that is made in between is in the list", async () => {
     const { server } = await rig(<ModulateMenu node={filter.id} port={resonance} name="resonance" />);
     await act(async () => {
-      server.apply({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+      server.apply({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
       await settle();
     });
     open("Modulate resonance");
@@ -142,7 +142,7 @@ describe("the button that modulates a control", () => {
     // And opened again, after another is made, the list is as it is then.
     fireEvent.click(button("Modulate resonance"));
     await act(async () => {
-      server.apply({ type: "addModulator", parent: oscillator.id, kind: "midiLearn" });
+      server.apply({ type: "addFreeModulator", kind: "midiLearn", hears: oscillator.id });
       await settle();
     });
     open("Modulate resonance");
@@ -152,17 +152,17 @@ describe("the button that modulates a control", () => {
   test("names the modulators that are there as the canvas names them: two LFOs are numbered", async () => {
     const { server } = await rig(<ModulateMenu node={filter.id} port={resonance} name="resonance" />);
     await act(async () => {
-      server.apply({ type: "addModulator", parent: oscillator.id, kind: "lfo" });
+      server.apply({ type: "addFreeModulator", kind: "lfo", hears: oscillator.id });
       await settle();
     });
     open("Modulate resonance");
     expect(menuItems().slice(NEW_ITEMS)).toEqual(["LFO 1", "LFO 2"]);
   });
 
-  test("modulates a setting of a modulator with a sibling: the rate of the LFO has the others of its lane to attach, and the new ones", async () => {
+  test("modulates a setting of a modulator with a sibling: the rate of the LFO has the others to attach, and the new ones, which hear what it hears", async () => {
     const { server, requests } = await rig(<ModulateMenu node={lfo.id} port={{ type: "rate" }} name="rate" />);
     await act(async () => {
-      server.apply({ type: "addModulator", parent: oscillator.id, kind: "envelope" });
+      server.apply({ type: "addFreeModulator", kind: "envelope", hears: oscillator.id });
       await settle();
     });
     open("Modulate rate");
@@ -171,13 +171,13 @@ describe("the button that modulates a control", () => {
     await settle();
     expect(requests().at(-1)?.intent).toEqual({ type: "modulate", to: { node: lfo.id, port: { type: "rate" } }, kind: "lfo", depth: null });
     await waitFor(() => {
-      expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.parent === oscillator.id)).toHaveLength(3);
+      expect(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.hears === oscillator.id)).toHaveLength(3);
     });
   });
 
-  test("lists the group's modulators for the parameter of a lane that is in the group, besides the lane's own, and not the modulators of another lane", async () => {
+  test("lists every modulator of the session for the parameter of a lane, whichever lane or group it hears: the group's, the lane's own and those of the other lanes", async () => {
     const { snapshot } = fieldsFixture;
-    // (The fixture's first member: its modulators are 4, 5 and 6, its group's 13, 14 and 15, and the lone LFO of the other member is 8.)
+    // (The fixture's first member: three modulators hear it, 7, 8 and 9; the other lanes have one each, 10, 11 and 12, and its group has 13, 14 and 15. None of them drives the first parameter.)
     const lane = snapshot.graph.nodes.find((n) => n.id === 3);
     if (lane?.kind !== "instrument" || !lane.plugin) throw new Error("the fixture has a lane in a group");
     const first = lane.plugin.params[0];
@@ -187,9 +187,7 @@ describe("the button that modulates a control", () => {
     open(`Modulate ${first.name}`);
     const attach = menuItems().slice(NEW_ITEMS);
     const named = (...ids: number[]): (string | undefined)[] => ids.map((id) => names.get(id));
-    expect(attach).toEqual(expect.arrayContaining(named(4, 5, 6, 13, 14, 15)));
-    expect(attach).toHaveLength(6);
-    expect(attach).not.toContain(names.get(8));
+    expect(attach).toEqual(named(7, 8, 9, 10, 11, 12, 13, 14, 15));
   });
 });
 

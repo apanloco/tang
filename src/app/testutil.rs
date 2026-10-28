@@ -18,13 +18,10 @@ use crate::scale::ScaleSetting;
 use crate::telemetry::Telemetry;
 use crate::{plugin, session};
 
-/// How `describe` names a command that addresses a rack of modulators: the command's name for a lane's rack or for a group's, and the place of the lane or the group
-/// (`InsertModulator inst=0`, `InsertGroupModulator group=1`), which is what the tests that read it have always said.
-fn rack_word(location: ModulatorLocation, lane: &str, group: &str) -> String {
+/// How `describe` names a command that addresses a rack of modulators: `InsertFreeModulator`, `AddFreeModTarget` (the words of the group's commands, which the lanes' racks and the groups' had
+/// until step 96, with `Free` for `Group` and no place: the one rack has none).
+fn rack_word(location: ModulatorLocation, _lane: &str, group: &str) -> String {
     match location {
-        ModulatorLocation::Lane(inst) => format!("{lane} inst={inst}"),
-        ModulatorLocation::Group(of) => format!("{group} group={of}"),
-        // (The words of the free modulators' commands are the group's, with `Free` for `Group` and no place: they have none.)
         ModulatorLocation::Free => group.replacen("Group", "Free", 1),
     }
 }
@@ -222,22 +219,10 @@ pub struct Run {
     pub progress: Vec<String>,
 }
 
+/// Load `text` as the program does: a session that has modulators in its lanes and its groups (`[[instrument.modulator]]`, `[[group.modulator]]`, the old form of the file) has them
+/// moved to the session's own when it is parsed (`session::parse`), each hearing what its rack heard.
 pub fn try_load(text: &str) -> anyhow::Result<Run> {
-    try_load_as(text, false)
-}
-
-/// `try_load`, for a session whose modulators are moved to the session's own first, as the program loads one (`SessionConfig::move_modulators_to_the_session`, step 94). The rest of
-/// the tests load a file as it is written, with the modulators that it has in its lanes and its groups in them: those racks are still in the engine and the model, and what a test
-/// of them says is no less so.
-pub fn try_load_moved(text: &str) -> anyhow::Result<Run> {
-    try_load_as(text, true)
-}
-
-fn try_load_as(text: &str, moved: bool) -> anyhow::Result<Run> {
-    let mut config = session::parse(text)?;
-    if moved {
-        config.move_modulators_to_the_session();
-    }
+    let config = session::parse(text)?;
     let (tx, rx) = crossbeam_channel::unbounded();
     let mut progress = Vec::new();
     let model = load_session(
@@ -271,11 +256,6 @@ pub fn load_onto(text: &str, cmd_tx: &Sender<GraphCommand>) -> SessionModel {
 
 pub fn load(text: &str) -> Run {
     try_load(text).unwrap_or_else(|e| panic!("load failed: {e:#}"))
-}
-
-/// `load`, with the modulators moved to the session's own (`try_load_moved`).
-pub fn load_moved(text: &str) -> Run {
-    try_load_moved(text).unwrap_or_else(|e| panic!("load failed: {e:#}"))
 }
 
 /// The audio thread's side of the channels a controller is built around.
@@ -1661,7 +1641,6 @@ pub fn model_lanes(model: &SessionModel) -> Vec<LaneFacts> {
             solo: lane.solo,
             has_instrument: lane.instrument.is_some(),
             effects: lane.effects.len(),
-            modulators: lane.modulators.len(),
             pattern_index: i,
         })
         .collect()
@@ -1673,26 +1652,20 @@ pub fn model_audio_cables(model: &SessionModel) -> Vec<crate::plugin::chain::Cab
     model.cables.iter().map(|cable| crate::plugin::chain::CableFacts { id: cable.id, from: cable.from, to: cable.to, gain: cable.gain }).collect()
 }
 
-/// Every modulator's cables as the model has them, in the terms and the order of `AudioGraph::cables`: the lanes' racks, the groups' and then the free modulators', each modulator with
-/// its node and its cables' ids, what they drive and their depths.
+/// Every modulator's cables as the model has them, in the terms and the order of `AudioGraph::cables`: each modulator with its node and its cables' ids, what they drive and their depths.
 pub fn model_racks(model: &SessionModel) -> crate::plugin::chain::RackCables {
-    use crate::plugin::chain::ModulatorLocation;
-    let racks = |at: fn(usize) -> ModulatorLocation, i: usize, rack: &[crate::app::model::ModulatorSlot]| -> Vec<_> {
-        rack.iter()
-            .enumerate()
-            .map(|(m, modulator)| {
-                let cables = modulator.targets.iter().enumerate().map(|(t, cable)| {
-                    assert!(model.kind_of_target(at(i), m, t).is_some(), "the cable {:?} of modulator {m} of {:?} drives nothing that is in reach", cable.edge, at(i));
-                    (cable.edge, cable.aim, cable.depth)
-                });
-                (at(i), m, modulator.node, cables.collect())
-            })
-            .collect()
-    };
-    let lanes = model.instruments.iter().enumerate().flat_map(|(i, lane)| racks(ModulatorLocation::Lane, i, &lane.modulators));
-    let groups = model.groups.iter().enumerate().flat_map(|(i, group)| racks(ModulatorLocation::Group, i, &group.modulators));
-    let free = racks(|_| ModulatorLocation::Free, 0, &model.free_modulators);
-    lanes.chain(groups).chain(free).collect()
+    model
+        .free_modulators
+        .iter()
+        .enumerate()
+        .map(|(m, modulator)| {
+            let cables = modulator.targets.iter().enumerate().map(|(t, cable)| {
+                assert!(model.kind_of_target(ModulatorLocation::Free, m, t).is_some(), "the cable {:?} of modulator {m} drives nothing that is in reach", cable.edge);
+                (cable.edge, cable.aim, cable.depth)
+            });
+            (ModulatorLocation::Free, m, modulator.node, cables.collect())
+        })
+        .collect()
 }
 
 /// Whose notes each modulator of the session's own rack hears, as the model has it, in the terms and the order of `AudioGraph::ears`.
@@ -1706,35 +1679,17 @@ pub fn kinds_at(model: &SessionModel, at: crate::plugin::chain::ModulatorLocatio
     (0..modulator.targets.len()).map(|t| model.kind_of_target(at, mod_index, t).expect("a cable drives something that is in reach")).collect()
 }
 
-/// The slot of the chain that a kind of cable drives a plugin in (0 for the instrument and for anything else that is not in a chain): the slot that the file writes, and the tree
-/// labels a target with its plugin by.
-pub fn slot_of(kind: &crate::plugin::chain::ModTargetKind) -> usize {
-    use crate::plugin::chain::ModTargetKind as K;
-    match kind {
-        K::PluginParam { slot, .. } | K::GroupMember { slot, .. } => *slot,
-        _ => 0,
-    }
-}
-
-/// A command as `describe` prints it, written with the place that its cable was drawn at (`kind=PluginParam { slot: 1, param_index: 0 }`: how the tests said what a cable drives before the
-/// audio thread named it by a node, and how the file and the terminal's lists still say it, `ModTargetKind`), turned into what the audio thread is told (`aim=Param { plugin: NodeId(7),
-/// index: 0 }`) by the node that the model has at that place. A test says where a cable goes by the place it chose, and is held to the node that is there; a text that has no `kind=`
-/// is as it was.
+/// A command as `describe` prints it, written with the place that its cable was drawn at (`kind=LaneParam { lane: 0, slot: 1, param_index: 0 }`, `kind=BusParam { group: 0, effect_index: 0,
+/// param_index: 2 }` or a sibling's `kind=ModulatorRate { mod_index: 1 }`: how the tests said what a cable drives before the audio thread named it by a node), turned into what the audio
+/// thread is told (`aim=Param { plugin: NodeId(7), index: 0 }`) by the node that the model has at that place (a lane's slot 0 is its instrument, slot `k` its effect `k - 1`). A test says
+/// where a cable goes by the place it chose, and is held to the node that is there; a text that has no `kind=` is as it was.
 pub fn told(model: &SessionModel, text: &str) -> String {
     use crate::app::graph::Port;
     use crate::app::model::{Driven, ModSetting};
-    use crate::plugin::chain::{CrossModField, ModTargetKind as K, ModulatorLocation};
+    use crate::plugin::chain::{ModTargetKind as K, ModulatorLocation};
     let Some(start) = text.find("kind=") else { return text.to_string() };
     let (head, rest) = (&text[..start], &text[start + "kind=".len()..]);
-    let number_after = |text: &str, key: &str| -> Option<usize> {
-        let from = text.find(key)? + key.len();
-        let digits: String = text[from..].chars().take_while(char::is_ascii_digit).collect();
-        digits.parse().ok()
-    };
-    let at = match number_after(head, "group=") {
-        Some(group) => ModulatorLocation::Group(group),
-        None => ModulatorLocation::Lane(number_after(head, "inst=").expect("a command that names a lane or a group")),
-    };
+    let at = ModulatorLocation::Free;
     let name_end = rest.find(' ').expect("a kind has a name and fields");
     let open = name_end + 1;
     assert!(rest[open..].starts_with('{'), "a kind has fields: {text}");
@@ -1742,19 +1697,19 @@ pub fn told(model: &SessionModel, text: &str) -> String {
     let fields: Vec<(&str, &str)> = rest[open + 1..close].split(',').map(|f| f.split_once(':').map(|(k, v)| (k.trim(), v.trim())).expect("a field has a name and a value")).collect();
     let field = |key: &str| fields.iter().find(|(k, _)| *k == key).unwrap_or_else(|| panic!("the kind has no field {key}: {text}")).1;
     let n = |key: &str| -> usize { field(key).parse().unwrap_or_else(|_| panic!("{key} is a number: {text}")) };
-    let cross = |value: &str| match value {
-        "Rate" => CrossModField::Rate,
-        "Attack" => CrossModField::Attack,
-        "Decay" => CrossModField::Decay,
-        "Sustain" => CrossModField::Sustain,
-        "Release" => CrossModField::Release,
-        depth => CrossModField::Depth(depth.strip_prefix("Depth(").and_then(|d| d.strip_suffix(')')).and_then(|d| d.parse().ok()).unwrap_or_else(|| panic!("a field of a cross-mod cable: {depth}"))),
+    // A plugin's parameter: by the lane and the slot of the plugin in it, or by the group and the place of the bus effect.
+    let plugin = match &rest[..name_end] {
+        "LaneParam" => {
+            let lane = &model.instruments[n("lane")];
+            Some(if n("slot") == 0 { lane.node } else { lane.effects[n("slot") - 1].node })
+        }
+        "BusParam" => Some(model.groups[n("group")].effects[n("effect_index")].node),
+        _ => None,
     };
+    if let Some(plugin) = plugin {
+        return format!("{head}aim={:?}{}", Driven::Param { plugin, index: n("param_index") as u32 }, &rest[close + 1..]);
+    }
     let kind = match &rest[..name_end] {
-        "PluginParam" => K::PluginParam { slot: n("slot"), param_index: n("param_index") as u32 },
-        "GroupMember" => K::GroupMember { member: n("member"), slot: n("slot"), param_index: n("param_index") as u32 },
-        "GroupBus" => K::GroupBus { effect_index: n("effect_index"), param_index: n("param_index") as u32 },
-        "GroupMemberMod" => K::GroupMemberMod { member: n("member"), mod_index: n("mod_index"), field: cross(field("field")) },
         "ModulatorRate" => K::ModulatorRate { mod_index: n("mod_index") },
         "ModulatorDepth" => K::ModulatorDepth { mod_index: n("mod_index"), target_index: n("target_index") },
         "ModulatorAttack" => K::ModulatorAttack { mod_index: n("mod_index") },
@@ -1792,7 +1747,6 @@ pub fn model_groups(model: &SessionModel) -> Vec<GroupFacts> {
             effect_nodes: group.effects.iter().map(|effect| effect.node).collect(),
             cut_feeds: group.effects.iter().filter(|effect| !effect.fed).map(|effect| effect.node).collect(),
             effects: group.effects.iter().map(|effect| effect.name.clone()).collect(),
-            modulators: group.modulators.len(),
             volume: group.volume,
             pan: group.pan,
             muted: group.muted,

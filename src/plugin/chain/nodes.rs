@@ -24,7 +24,6 @@
 //! puts there.
 
 use anyhow::Result;
-use crossbeam_channel::Sender;
 use kernel::{DelayLine, Io, NodeSpec, Nodes, Patch, Plan, Pool, Port, PortSpec};
 
 use super::*;
@@ -37,12 +36,9 @@ pub(super) struct BlockCx<'a> {
     pub audio_out: &'a mut [Vec<f32>],
     pub num_channels: usize,
     pub scale: ScaleSetting,
-    pub bpm: f32,
     /// Where what is measured is published, and how far a meter's peak falls over this block, if anything is measured.
     pub telemetry: Option<&'a Telemetry>,
     pub fall: Option<f32>,
-    /// Where a control that a MIDI-learn modulator has captured is told.
-    pub learn_tx: Option<&'a Sender<MidiLearnedNotification>>,
 }
 
 /// What a node of the plan is: a part of a lane or of a group, named by the id of the lane or the group (or of the effect), or the output mix.
@@ -129,7 +125,7 @@ fn run_effect(effect: &mut dyn Plugin, mix: f32, dry: Option<&mut DelayLine>, si
 }
 
 impl InstrumentLane {
-    /// The head of the lane as a node: the notes are filtered by the range, remapped, played by the pattern and transposed, the modulators are ticked and applied to the chain, the
+    /// The head of the lane as a node: the notes are filtered by the range, remapped, played by the pattern and transposed, the
     /// instrument renders (into the buffer of the output, or into the lane's own, `inst_buf`, if it has more outputs than the chain has channels, and the first of them go on), and
     /// the volume and the tap after it are applied. A lane with no instrument makes silence (the buffer of the output is zero).
     fn run_head(&mut self, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
@@ -143,16 +139,6 @@ impl InstrumentLane {
         }
         self.prepared = false;
         let effective_events: &[(u64, [u8; 3])] = &self.heard;
-
-        // Modulators (block-rate: once per buffer, before the chain renders): tick all, cross-mod, route each target to its slot's plugin (the instrument or an effect). Applying
-        // them up front is the same as per slot, since each plugin reads its parameters when it processes, later in this buffer.
-        if frames > 0 {
-            for m in &mut self.modulators {
-                m.tick(frames, effective_events, cx.bpm);
-            }
-            apply_cross_mod(&mut self.modulators, &mut self.cross_mod_scratch, cx.telemetry);
-            apply_modulators_to_chain(&self.modulators, self.node, &self.effect_nodes, &mut self.instrument, &mut self.effects, &mut self.drive_scratch, cx.telemetry);
-        }
 
         let Some(instrument) = self.instrument.as_mut() else {
             self.head_at = self.head_goal;
@@ -217,23 +203,17 @@ impl InstrumentLane {
         Ok(())
     }
 
-    /// The tail of the lane as a node: the metronome's click goes on top of what the chain made, the lane is let in or out by its mute and solo (its group's mute is the bus's), it
-    /// is measured, and it is read for a control that was learned. `position` is where the lane is among the lanes, which is what a notification of a learned control says. What
-    /// the plan then does is add the lane's sound to the bus of its group or to the mix.
-    fn run_tail(&mut self, io: &mut Io, cx: &mut BlockCx<'_>, position: usize) -> Result<()> {
+    /// The tail of the lane as a node: the metronome's click goes on top of what the chain made, the lane is let in or out by its mute and solo (its group's mute is the bus's), and it
+    /// is measured. What the plan then does is add the lane's sound to the bus of its group or to the mix.
+    fn run_tail(&mut self, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         let frames = io.frames();
         let out = &mut io.inputs_mut()[0];
         self.pattern.render_metronome(out, frames);
         fade(out, cx.num_channels, self.heard_at, self.heard_goal);
         self.heard_at = self.heard_goal;
-        if let (Some(telemetry), Some(fall)) = (cx.telemetry, cx.fall) {
-            publish_outputs(&self.modulators, telemetry);
-            if let Some(meter) = self.meter.as_mut() {
-                meter.update(telemetry, out, fall);
-            }
+        if let (Some(telemetry), Some(fall), Some(meter)) = (cx.telemetry, cx.fall, self.meter.as_mut()) {
+            meter.update(telemetry, out, fall);
         }
-        // A lane MidiLearn modulator may have just captured a control.
-        AudioGraph::drain_learned(cx.learn_tx, &mut self.modulators, |_| ModulatorLocation::Lane(position));
         io.forward(0, 0);
         Ok(())
     }
@@ -409,7 +389,7 @@ impl<'a, 'cx> Nodes<Stage, BlockCx<'cx>> for Store<'a> {
                 _ => Ok(()),
             },
             (Stage::Tail(id), Place::Lane(at)) => match self.lanes.get_mut(at) {
-                Some(lane) if lane.node == id => lane.run_tail(io, cx, at),
+                Some(lane) if lane.node == id => lane.run_tail(io, cx),
                 _ => Ok(()),
             },
             (Stage::Fx(id), Place::LaneFx(at, index)) => match self.lanes.get_mut(at) {
@@ -1228,7 +1208,7 @@ mod tests {
     fn run_with(schedule: &mut Schedule, lanes: &mut [InstrumentLane], groups: &mut [Group], midi: &[(u64, [u8; 3])], frames: usize) -> Vec<Vec<f32>> {
         let mut master = Master::new();
         let mut out = vec![vec![1.0f32; frames]; 2];
-        let mut cx = BlockCx { midi: Events::keys(midi), audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
+        let mut cx = BlockCx { midi: Events::keys(midi), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None };
         schedule.run(lanes, groups, &mut master, frames, &mut cx).unwrap();
         out
     }
@@ -1781,7 +1761,7 @@ mod tests {
         schedule.refresh(&lanes, &groups, 2, 128);
         let mut master = Master::new();
         let mut out = vec![vec![0.0f32; 128]; 2];
-        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
+        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None };
         let (result, asked) = allocations_in(|| schedule.run(&mut lanes, &mut groups, &mut master, 128, &mut cx));
         result.unwrap();
         assert_eq!(asked, 0, "refresh made the room, as the pool of the kernel has it made before a block");
@@ -2300,7 +2280,7 @@ mod tests {
         assert!(schedule.delay_frames().len() == 2 && schedule.dry_frames(lanes[0].effect_nodes[0]).is_some());
         let mut master = Master::new();
         let mut out = vec![vec![0.0f32; 256]; 2];
-        let mut cx = BlockCx { midi: Events::keys(&NOTE_ON), audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
+        let mut cx = BlockCx { midi: Events::keys(&NOTE_ON), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None };
         let (_, asked) = allocations_in(|| {
             for _ in 0..8 {
                 schedule.refresh(&lanes, &groups, 2, 256);
@@ -2828,7 +2808,7 @@ mod tests {
         render(&mut schedule, &mut lanes, &mut [], &[], 64, 0, 128);
         let mut master = Master::new();
         let mut out = vec![vec![0.0f32; 64]; 2];
-        let mut cx = BlockCx { midi: Events::keys(&NOTE_ON), audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
+        let mut cx = BlockCx { midi: Events::keys(&NOTE_ON), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None };
         let (_, asked) = allocations_in(|| {
             for _ in 0..8 {
                 schedule.refresh(&lanes, &groups, 2, 64);

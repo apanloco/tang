@@ -11,7 +11,7 @@ source: src/tui/golden_tests.rs
 │  ╰ fx Filter  [Built-in]                       ││                                                                    │
 │  fx Reverb  [Built-in]  (bus)                  ││                                                                    │
 │  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)││                                                                    │
-│  ~ ADSR → Mod 0 rate (30%)  (bus)              ││                                                                    │
+│  ~ ADSR → Mod 1 rate (30%)  (bus)              ││                                                                    │
 │♪ Oscillator  [Built-in]  -B3                   ││                                                                    │
 │├ fx Filter  [Built-in]                         ││                                                                    │
 │╰ ~ LFO 0.2Hz triangle → Filter: cutoff (50%)   ││                                                                    │

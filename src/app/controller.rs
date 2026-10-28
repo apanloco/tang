@@ -427,7 +427,6 @@ impl Controller {
             route: Route::Out,
             instrument: None,
             effects: Vec::new(),
-            modulators: Vec::new(),
             pattern: None,
             pitch_bend_range: 2.0,
             remap: Default::default(),
@@ -456,22 +455,21 @@ impl Controller {
             solo: false,
             route: Route::Out,
             effects: Vec::new(),
-            modulators: Vec::new(),
             meter,
         });
         group
     }
 
-    /// Add a modulator with `source` at the end of the rack at `at` (a lane's or a
-    /// group's): the audio thread gets it, the model a node of its own for it.
+    /// Add a modulator with `source` at the end of the rack at `at`: the audio thread gets it, the model a node of its own for it.
     /// Returns its index in the rack, or `None`, sending nothing, if there is no
     /// such rack.
+    #[cfg(test)]
     pub fn add_modulator(&mut self, at: ModulatorLocation, source: ModSourceSlot) -> Option<usize> {
         self.add_modulator_hearing(at, source, None)
     }
 
-    /// `add_modulator`, for a modulator of the session's own rack that hears the lane or the group `ear` (the node of one: the caller has looked) and not every note (the audio thread is
-    /// told it with the modulator, as the loader tells it, so that Undo and Redo give it back). A lane's or a group's rack has no ear (`check_ids`): `ear` is for the free rack.
+    /// `add_modulator`, for a modulator that hears the lane or the group `ear` (the node of one: the caller has looked) and not every note (the audio thread is
+    /// told it with the modulator, as the loader tells it, so that Undo and Redo give it back).
     pub fn add_modulator_hearing(&mut self, at: ModulatorLocation, source: ModSourceSlot, ear: Option<NodeId>) -> Option<usize> {
         let index = self.model.modulators_mut(at)?.len();
         let graph_source = mod_source_slot_to_graph(&source);
@@ -730,23 +728,17 @@ impl Controller {
         true
     }
 
-    /// Take lane `inst` out, with everything it has: its instrument, effects, modulators and pattern. The audio
-    /// thread hands its plugins back. The cables of the lane's own modulators go with it, and nothing they drive is
-    /// left behind: a lane's modulator reaches only its own chain. The cables of its group (if it is a member) to
-    /// its plugins and its modulators go first, each by `take_out` with the cables that drive their depths, and
-    /// the group's cables to the members after it are told their new ordinals. False, sending nothing, if there
-    /// is no such lane, or it is the only one: a session keeps a lane.
+    /// Take lane `inst` out, with everything it has: its instrument, effects and pattern. The audio
+    /// thread hands its plugins back. The cables of the modulators to its plugins go first, each by `take_out` with
+    /// the cables that drive their depths (the modulators stay, hearing every note if they heard the lane). False,
+    /// sending nothing, if there is no such lane, or it is the only one: a session keeps a lane.
     pub fn remove_lane(&mut self, inst: usize) -> bool {
         if inst >= self.model.instruments.len() || self.model.instruments.len() < 2 {
             return false;
         }
         self.forget_the_history_unless_an_intent_asks();
-        for edge in self.model.group_cables_into_lane(inst) {
-            // (One that an earlier one took with it is not there any more.)
-            self.take_out(edge);
-        }
-        // The audio cables at its instrument and at each of its effects go with it, and so do the cables of notes that end at it. So do the cables of the free modulators to its
-        // plugins (a free modulator stays: they are not the lane's own, and are written down by themselves).
+        // The audio cables at its instrument and at each of its effects go with it, and so do the cables of notes that end at it. So do the cables of the modulators to its
+        // plugins (a modulator stays: it is not the lane's, and the cables are written down by themselves).
         let nodes = self.model.audio_nodes_of_lane(inst);
         for edge in self.model.free_cables_into(&nodes) {
             // (One that an earlier one took with it is not there any more.)
@@ -763,25 +755,19 @@ impl Controller {
         true
     }
 
-    /// Take group `group` out, with its bus effects and its modulators: the audio thread hands the effects back
+    /// Take group `group` out, with its bus effects: the audio thread hands the effects back
     /// and lets its members go (they are in no group, and the lanes of later groups have a group index one less).
-    /// Every cable of the group goes first, each by `take_out` with the cables that drive their depths, so that
-    /// nothing is left pointing at a cable that is gone. What they drove in the member lanes, which stay (their
-    /// plugins' parameters, their modulators' rates and stages, the depths of their cables), has the value the
-    /// user set again once the group has gone, unless a cable of the lane's own still drives it; what they drove
-    /// on the bus goes with the bus. False, sending nothing, if there is no such group.
+    /// The cables of the modulators to its bus effects go first, each by `take_out` with the cables that drive their
+    /// depths (the modulators stay, hearing every note if they heard the group: nothing is given back, since what the
+    /// cables drove goes with the bus). False, sending nothing, if there is no such group.
     pub fn remove_group(&mut self, group: usize) -> bool {
-        let Some(bus) = self.model.groups.get(group) else { return false };
-        let edges: Vec<EdgeId> = bus.modulators.iter().flat_map(|m| m.targets.iter().map(|t| t.edge)).collect();
+        if group >= self.model.groups.len() {
+            return false;
+        }
         self.forget_the_history_unless_an_intent_asks();
         // The lanes that are in it, by node: they are in none once it has gone, and are put in it again when it comes back.
         let members: Vec<NodeId> = self.model.instruments.iter().filter(|lane| lane.group == Some(group)).map(|lane| lane.node).collect();
-        let mut driven: Vec<Driven> = Vec::new();
-        for edge in edges {
-            // (One that an earlier one took with it is not there any more.)
-            driven.extend(self.take_out(edge).into_iter().flatten());
-        }
-        // The audio cables at its bus, its output and each of its bus effects go with it, and so do the cables of the free modulators to its bus effects (nothing is given back:
+        // The audio cables at its bus, its output and each of its bus effects go with it, and so do the cables of the modulators to its bus effects (nothing is given back:
         // what they drove goes with the bus).
         let nodes = self.model.audio_nodes_of_group(group);
         for edge in self.model.free_cables_into(&nodes) {
@@ -795,19 +781,16 @@ impl Controller {
         if let Some(node) = self.model.remove_group(group) {
             self.took_out(Inverse::Group { index: group, group: node, members, kept });
         }
-        self.give_back(driven);
         true
     }
 
     /// Put lane `inst` in group `group`, or in none: the audio thread moves it (`SetLaneGroup`), and the model does the
-    /// same (`SessionModel::set_lane_group`), the group modulators' targets on the members following their
-    /// plugins to the ordinals they have now. A lane that leaves the group it is in is no longer driven by it: the
-    /// group's cables to its plugins and its modulators go first, each by `take_out` with the cables that drive their
-    /// depths, and what they were driving has the value the user set again once the lane has left (the lane stays, so
-    /// nothing else would write it back), unless a cable of the lane's own still drives it. A lane put in the group it is
-    /// in has nothing taken out. False, sending nothing, if there is no such lane or no such group.
+    /// same (`SessionModel::set_lane_group`). A lane put in the group it is in has nothing changed. False, sending nothing, if there
+    /// is no such lane or no such group, or if the audio would go round by the cables there are with the lane in that group.
     pub fn set_lane_group(&mut self, inst: usize, group: Option<usize>) -> bool {
-        let Some(lane) = self.model.instruments.get(inst) else { return false };
+        if inst >= self.model.instruments.len() {
+            return false;
+        }
         if group.is_some_and(|g| g >= self.model.groups.len()) {
             return false;
         }
@@ -815,26 +798,17 @@ impl Controller {
         if self.model.loop_if_lane_goes_to(inst, group).is_some() {
             return false;
         }
-        let mut driven: Vec<Driven> = Vec::new();
-        if lane.group != group {
-            for edge in self.model.group_cables_into_lane(inst) {
-                // (One that an earlier one took with it is not there any more.)
-                driven.extend(self.take_out(edge).into_iter().flatten());
-            }
-        }
         if !self.model.set_lane_group(inst, group) {
             return false;
         }
         self.forget_the_history_unless_an_intent_asks();
         let _ = self.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group });
-        self.give_back(driven);
         true
     }
 
-    /// Take modulator `index` out of the rack at `at` (a lane's or a group's): the audio
+    /// Take modulator `index` out of the rack at `at`: the audio
     /// thread drops it and the model with it, and its own cables with it. The cables of the
-    /// other modulators that drove its rate, its stages or the depth of its cables (a sibling's,
-    /// and a group's when the lane is one of its members) go first, each by `take_out`, so
+    /// other modulators that drove its rate, its stages or the depth of its cables go first, each by `take_out`, so
     /// that what drove the depth of any of these goes as well and nothing is left pointing at a
     /// cable that is not there. The cables that drove later modulators of the rack move down an
     /// index with them. What its own cables drove has the value the user set again. When an
@@ -1281,6 +1255,21 @@ mod tests {
     use std::thread;
 
     use super::*;
+
+    /// The modulators of the session's own that hear the lane `lane`: what the lane's rack was before step 96.
+    #[allow(dead_code)]
+    fn hearing_lane(model: &SessionModel, lane: usize) -> Vec<&crate::app::model::ModulatorSlot> {
+        let node = model.instruments[lane].node;
+        model.free_modulators.iter().filter(|m| m.ear == Some(node)).collect()
+    }
+
+    /// The modulators of the session's own that hear the group `group`: what the group's rack was before step 96.
+    #[allow(dead_code)]
+    fn hearing_group(model: &SessionModel, group: usize) -> Vec<&crate::app::model::ModulatorSlot> {
+        let node = model.groups[group].node;
+        model.free_modulators.iter().filter(|m| m.ear == Some(node)).collect()
+    }
+
     use crate::app::testutil::{self, DropProbe, StubEngine, load, model_groups, model_lanes, recording};
     use crate::plugin::chain::{AudioGraph, CableFrom, CableTo, GraphCommand, MidiBindSource, ModTargetKind, ModulatorLocation};
 
@@ -1840,11 +1829,11 @@ plugin = "builtin:reverb"
     #[test]
     fn a_change_of_structure_is_told_to_the_subscribers_as_a_snapshot_right_after_the_intent() {
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, 0.5)));
+        assert!(ctl.add_target(ModulatorLocation::Free, 0, cutoff_target(&ctl, 0.5)));
         let cables = |ctl: &Controller| ctl.snapshot().graph.edges.iter().filter(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. })).count();
         assert_eq!(cables(&ctl), 1);
         let mirror = Mirror::join(&mut ctl);
-        let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        let edge = ctl.model.free_modulators[0].targets[0].edge;
 
         let applied = ctl.apply(Intent::RemoveEdge { edge }).unwrap();
         assert_eq!(applied, Applied::restructured(1));
@@ -1867,17 +1856,17 @@ plugin = "builtin:reverb"
         let before = modulators(&mirror.copy());
         let lane = ctl.model.instruments[0].node;
 
-        let applied = ctl.apply(Intent::AddModulator { parent: lane, kind: ModulatorKind::Envelope }).unwrap();
+        let applied = ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: Some(lane) }).unwrap();
         assert_eq!(applied, Applied::restructured(1));
         assert_eq!(mirror.heard(), [Heard::Applied(1), Heard::Resynced(2)]);
         assert_eq!(mirror.copy(), ctl.snapshot());
         let after = modulators(&mirror.copy());
         assert_eq!(after.len(), before.len() + 1);
-        let added = ctl.model.instruments[0].modulators.last().unwrap().node;
+        let added = ctl.model.free_modulators.last().unwrap().node;
         assert!(after.contains(&added) && !before.contains(&added), "the one that was added, and a node of its own");
         let node = mirror.copy().graph.nodes.into_iter().find(|n| n.id == added).unwrap();
-        assert_eq!(node.parent, Some(lane), "in the lane it was added to");
-        assert!(matches!(node.kind, crate::app::graph::NodeKind::Modulator { source: crate::app::graph::ModulatorSource::Envelope { .. }, .. }));
+        assert_eq!(node.parent, None, "in no lane");
+        assert!(matches!(node.kind, crate::app::graph::NodeKind::Modulator { source: crate::app::graph::ModulatorSource::Envelope { .. }, hears } if hears == Some(lane)), "and it hears the lane it was added for");
     }
 
     #[test]
@@ -1886,7 +1875,7 @@ plugin = "builtin:reverb"
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
         let cables = |snapshot: &Snapshot| snapshot.graph.edges.iter().filter(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. })).count();
         let mirror = Mirror::join(&mut ctl);
-        let modulator = ctl.model.instruments[0].modulators[0].node;
+        let modulator = ctl.model.free_modulators[0].node;
         let filter = ctl.model.instruments[0].effects[0].node;
         let param = ctl.model.instruments[0].effects[0].params[0].index;
         assert_eq!(cables(&mirror.copy()), 0);
@@ -1902,7 +1891,7 @@ plugin = "builtin:reverb"
         assert_eq!((edge.from, edge.to), (Endpoint { node: modulator, port: Port::ModOut }, to));
         assert!(matches!(edge.kind, crate::app::graph::EdgeKind::Modulation { amount, .. } if amount == 0.5));
         // The value the cable drives is published from now on, and the layout says where.
-        let slot = ctl.model.instruments[0].modulators[0].targets[0].effective.expect("a parameter's value has a slot").index();
+        let slot = ctl.model.free_modulators[0].targets[0].effective.expect("a parameter's value has a slot").index();
         let value = told.telemetry.modulation.iter().find(|e| e.kind == crate::app::layout::SlotKind::Effective && e.node == filter && e.port == Port::Param { index: param });
         assert_eq!(value.map(|e| e.slot), Some(slot));
         assert!(mirror.copy().meta.dirty);
@@ -1959,7 +1948,7 @@ plugin = "builtin:reverb"
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
         let mirror = Mirror::join(&mut ctl);
         // The group's LFO drives the rate of the LFO of the member that has one.
-        let (group_lfo, lane_lfo) = (ctl.model.groups[0].modulators[0].node, ctl.model.instruments[0].modulators[0].node);
+        let (group_lfo, lane_lfo) = (hearing_group(&ctl.model, 0)[0].node, ctl.model.free_modulators[0].node);
 
         let to = Endpoint { node: lane_lfo, port: Port::Rate };
         let applied = ctl.apply(Intent::AddModEdge { modulator: group_lfo, to }).unwrap();
@@ -1980,10 +1969,10 @@ plugin = "builtin:reverb"
     #[test]
     fn a_modulator_taken_out_by_an_intent_is_gone_from_the_snapshot_the_subscribers_are_given() {
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, 0.5)));
+        assert!(ctl.add_target(ModulatorLocation::Free, 0, cutoff_target(&ctl, 0.5)));
         let edge_count = |snapshot: &Snapshot| snapshot.graph.edges.iter().filter(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. })).count();
         let mirror = Mirror::join(&mut ctl);
-        let node = ctl.model.instruments[0].modulators[0].node;
+        let node = ctl.model.free_modulators[0].node;
         assert!(mirror.copy().graph.nodes.iter().any(|n| n.id == node));
         assert_eq!(edge_count(&mirror.copy()), 1);
 
@@ -2044,8 +2033,8 @@ plugin = "builtin:reverb"
     #[test]
     fn nobody_is_told_of_a_change_of_structure_while_nobody_listens() {
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
-        ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, 0.5));
-        let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        ctl.add_target(ModulatorLocation::Free, 0, cutoff_target(&ctl, 0.5));
+        let edge = ctl.model.free_modulators[0].targets[0].edge;
         ctl.apply(Intent::RemoveEdge { edge }).unwrap();
         assert_eq!(ctl.rev, 1, "no snapshot is made for nobody");
     }
@@ -2192,49 +2181,33 @@ type = "lfo"
     fn a_captured_control_binds_the_armed_lane_modulator() {
         for source in [MidiBindSource::Cc(74), MidiBindSource::PitchBend, MidiBindSource::Aftertouch] {
             let (engine, mut ctl) = controller_for(ARMED);
-            assert!(matches!(ctl.model.instruments[0].modulators[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }));
-            engine.learn_tx.send(capture(ModulatorLocation::Lane(0), 0, source)).unwrap();
+            assert!(matches!(ctl.model.free_modulators[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }));
+            engine.learn_tx.send(capture(ModulatorLocation::Free, 0, source)).unwrap();
             assert_eq!(ctl.poll(), CHANGED_MODEL, "{source:?}");
 
-            let bound = &ctl.model.instruments[0].modulators[0].source;
+            let bound = &ctl.model.free_modulators[0].source;
             assert!(
                 matches!(bound, ModSourceSlot::MidiLearn { source: Some(s), learning: false } if *s == source),
                 "{source:?}: {bound:?}"
             );
             assert!(ctl.dirty, "{source:?}: the binding is part of the saved session");
-            assert!(matches!(ctl.model.groups[0].modulators[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "the group's is untouched");
+            assert!(matches!(hearing_group(&ctl.model, 0)[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "the group's is untouched");
         }
-    }
-
-    #[test]
-    fn a_captured_control_binds_the_armed_group_modulator() {
-        let (engine, mut ctl) = controller_for(ARMED);
-        engine.learn_tx.send(capture(ModulatorLocation::Group(0), 0, MidiBindSource::Cc(1))).unwrap();
-        assert_eq!(ctl.poll(), CHANGED_MODEL);
-        assert!(matches!(
-            ctl.model.groups[0].modulators[0].source,
-            ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(1)), learning: false }
-        ));
-        assert!(matches!(ctl.model.instruments[0].modulators[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }), "the lane's is untouched");
-        assert!(ctl.dirty);
     }
 
     #[test]
     fn a_capture_with_no_modulator_to_take_it_changes_nothing() {
         let (engine, mut ctl) = controller_for(ARMED);
         for (location, mod_index) in [
-            (ModulatorLocation::Lane(0), 1), // the LFO is not listening
-            (ModulatorLocation::Lane(0), 9), // no such modulator
-            (ModulatorLocation::Lane(7), 0), // no such lane
-            (ModulatorLocation::Group(0), 9),
-            (ModulatorLocation::Group(7), 0),
+            (ModulatorLocation::Free, 1), // the LFO is not listening
+            (ModulatorLocation::Free, 9), // no such modulator
         ] {
             engine.learn_tx.send(capture(location, mod_index, MidiBindSource::PitchBend)).unwrap();
         }
         assert_eq!(ctl.poll(), Polled::default());
         assert!(!ctl.dirty, "nothing changed");
-        assert!(matches!(ctl.model.instruments[0].modulators[1].source, ModSourceSlot::Lfo { .. }));
-        assert!(matches!(ctl.model.instruments[0].modulators[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }));
+        assert!(matches!(ctl.model.free_modulators[1].source, ModSourceSlot::Lfo { .. }));
+        assert!(matches!(ctl.model.free_modulators[0].source, ModSourceSlot::MidiLearn { source: None, learning: true }));
     }
 
     #[test]
@@ -2242,17 +2215,17 @@ type = "lfo"
         let (engine, mut ctl) = controller_for(ARMED);
         // The model mirrors the audio thread, which may learn a modulator again:
         // the last word on lane 0's modulator is Cc(2). The group's comes after.
-        engine.learn_tx.send(capture(ModulatorLocation::Lane(0), 0, MidiBindSource::Cc(1))).unwrap();
-        engine.learn_tx.send(capture(ModulatorLocation::Lane(0), 0, MidiBindSource::Cc(2))).unwrap();
-        engine.learn_tx.send(capture(ModulatorLocation::Group(0), 0, MidiBindSource::Cc(3))).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Free, 0, MidiBindSource::Cc(1))).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Free, 0, MidiBindSource::Cc(2))).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Free, 2, MidiBindSource::Cc(3))).unwrap();
         assert_eq!(ctl.poll(), CHANGED_MODEL);
         assert!(matches!(
-            ctl.model.instruments[0].modulators[0].source,
+            ctl.model.free_modulators[0].source,
             ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(2)), learning: false }
         ));
         assert!(
             matches!(
-                ctl.model.groups[0].modulators[0].source,
+                ctl.model.free_modulators[2].source,
                 ModSourceSlot::MidiLearn { source: Some(MidiBindSource::Cc(3)), learning: false }
             ),
             "all of them are drained in one poll"
@@ -2263,17 +2236,17 @@ type = "lfo"
     fn a_recording_and_a_capture_in_one_poll_are_both_reported() {
         let (engine, mut ctl) = controller_for(ARMED);
         engine.pattern_tx.send(recording(0)).unwrap();
-        engine.learn_tx.send(capture(ModulatorLocation::Lane(0), 0, MidiBindSource::Cc(7))).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Free, 0, MidiBindSource::Cc(7))).unwrap();
         assert_eq!(ctl.poll(), CHANGED_MODEL);
         assert!(ctl.model.instruments[0].pattern.is_some());
-        assert!(matches!(ctl.model.instruments[0].modulators[0].source, ModSourceSlot::MidiLearn { source: Some(_), .. }));
+        assert!(matches!(ctl.model.free_modulators[0].source, ModSourceSlot::MidiLearn { source: Some(_), .. }));
 
         // Either one alone is enough, whichever order they are drained in.
         engine.pattern_tx.send(recording(0)).unwrap();
-        engine.learn_tx.send(capture(ModulatorLocation::Lane(7), 0, MidiBindSource::Cc(7))).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Free, 0, MidiBindSource::Cc(7))).unwrap();
         assert_eq!(ctl.poll(), CHANGED_MODEL, "the capture that finds nothing does not undo the recording");
         engine.pattern_tx.send(recording(7)).unwrap();
-        engine.learn_tx.send(capture(ModulatorLocation::Group(0), 0, MidiBindSource::Cc(8))).unwrap();
+        engine.learn_tx.send(capture(ModulatorLocation::Free, 0, MidiBindSource::Cc(8))).unwrap();
         assert_eq!(ctl.poll(), CHANGED_MODEL, "the recording that finds nothing does not undo the capture");
     }
 
@@ -2484,84 +2457,59 @@ plugin = "builtin:osc"
     }
 
     #[test]
-    fn add_modulator_puts_one_at_the_end_of_a_lanes_rack_and_tells_the_audio_thread() {
+    fn add_modulator_puts_one_at_the_end_of_the_rack_and_tells_the_audio_thread() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         sent(&engine);
-        assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source()), Some(1));
-        let (told, nodes) = sent_with_modulator_nodes(&engine);
-        assert_eq!(
-            told,
-            ["InsertModulator inst=0 index=1 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }"]
-        );
-        let rack = &ctl.model.instruments[0].modulators;
-        assert_eq!(nodes, [rack[1].node], "the audio thread names the modulator by the node that the model gave it");
-        assert_eq!(rack.len(), 2);
-        assert!(matches!(rack[1].source, ModSourceSlot::Lfo { rate, .. } if rate == 1.0));
-        assert!(rack[1].targets.is_empty());
-        assert_ne!(rack[1].node, rack[0].node, "a node of its own");
-        ctl.model.check_ids().unwrap();
-        assert!(ctl.model.instruments[1].modulators.is_empty(), "the other lane's rack is untouched");
-    }
-
-    #[test]
-    fn add_modulator_in_a_groups_rack_and_of_each_source() {
-        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
-        sent(&engine);
+        let before = ctl.model.free_modulators.len();
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Free, lfo_source()), Some(before));
         let envelope = ModSourceSlot::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 };
-        assert_eq!(ctl.add_modulator(ModulatorLocation::Group(0), envelope), Some(1));
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Free, envelope), Some(before + 1));
         let learn = ModSourceSlot::MidiLearn { source: None, learning: true };
-        assert_eq!(ctl.add_modulator(ModulatorLocation::Group(0), learn), Some(2));
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Free, learn), Some(before + 2));
         let (told, nodes) = sent_with_modulator_nodes(&engine);
         assert_eq!(
             told,
             [
-                "InsertGroupModulator group=0 index=1 source=Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }",
-                "InsertGroupModulator group=0 index=2 source=MidiLearn { source: None, value: 0.0, learning: true }",
+                format!("InsertFreeModulator index={before} source=Lfo {{ waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }}"),
+                format!("InsertFreeModulator index={} source=Envelope {{ attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5, state: Idle, level: 0.0, notes_held: 0 }}", before + 1),
+                format!("InsertFreeModulator index={} source=MidiLearn {{ source: None, value: 0.0, learning: true }}", before + 2),
             ]
         );
-        let rack = &ctl.model.groups[0].modulators;
-        assert_eq!(nodes, [rack[1].node, rack[2].node], "the audio thread names each modulator by the node that the model gave it");
-        assert_ne!(rack[1].node, rack[2].node);
-        assert_eq!(ctl.model.groups[0].modulators.len(), 3);
-        assert_eq!(ctl.model.instruments[0].modulators.len(), 1, "the lane's rack is untouched");
+        let rack = &ctl.model.free_modulators;
+        assert_eq!(nodes, [rack[before].node, rack[before + 1].node, rack[before + 2].node], "the audio thread names each modulator by the node that the model gave it");
+        assert_eq!(rack.len(), before + 3);
+        assert!(matches!(rack[before].source, ModSourceSlot::Lfo { rate, .. } if rate == 1.0));
+        assert!(rack[before].targets.is_empty());
+        assert_ne!(rack[before].node, rack[before + 1].node, "a node of its own each");
+        assert!(rack[..before].iter().all(|m| m.node != rack[before].node));
         ctl.model.check_ids().unwrap();
-    }
-
-    #[test]
-    fn add_modulator_for_a_rack_that_is_not_there_does_nothing() {
-        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
-        sent(&engine);
-        let slots_before = ctl.model.slots.high_water();
-        assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(9), lfo_source()), None);
-        assert_eq!(ctl.add_modulator(ModulatorLocation::Group(9), lfo_source()), None);
-        assert!(sent(&engine).is_empty());
-        assert_eq!(ctl.model.slots.high_water(), slots_before, "no slot is used up for nothing");
     }
 
     #[test]
     fn add_target_binds_a_parameter_to_a_lane_modulator() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         sent(&engine);
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, 0.5)));
+        assert!(ctl.add_target(ModulatorLocation::Free, 0, cutoff_target(&ctl, 0.5)));
         assert_eq!(
             sent(&engine),
-            [testutil::told(&ctl.model, "AddModTarget inst=0 mod=0 kind=PluginParam { slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]")]
+            [testutil::told(&ctl.model, "AddFreeModTarget mod=0 kind=LaneParam { lane: 0, slot: 1, param_index: 0 } depth=0.500 base=0.350 range=[0.000, 1.000]")]
         );
-        let target = &ctl.model.instruments[0].modulators[0].targets[0];
+        let target = &ctl.model.free_modulators[0].targets[0];
         assert_eq!((target.param_name.as_str(), target.depth), ("cutoff", 0.5));
         assert_eq!((target.param_min, target.param_max), (0.0, 1.0));
-        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Lane(0), 0, 0), Some(ModTargetKind::PluginParam { slot: 1, param_index: 0 }));
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, -0.25)));
-        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 2, "after the first");
+        let filter = ctl.model.instruments[0].effects[0].node;
+        assert_eq!(ctl.model.kind_of_target(ModulatorLocation::Free, 0, 0), Some(ModTargetKind::FreeParam { plugin: filter, param_index: 0 }));
+        assert!(ctl.add_target(ModulatorLocation::Free, 0, cutoff_target(&ctl, -0.25)));
+        assert_eq!(ctl.model.free_modulators[0].targets.len(), 2, "after the first");
     }
 
     #[test]
     fn each_target_the_controller_binds_gets_an_edge_id_of_its_own() {
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
-        let before: Vec<_> = ctl.model.instruments[0].modulators.iter().flat_map(|m| &m.targets).map(|t| t.edge).collect();
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, 0.5)));
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, 0.25)));
-        let targets = &ctl.model.instruments[0].modulators[0].targets;
+        let before: Vec<_> = ctl.model.free_modulators.iter().flat_map(|m| &m.targets).map(|t| t.edge).collect();
+        assert!(ctl.add_target(ModulatorLocation::Free, 0, cutoff_target(&ctl, 0.5)));
+        assert!(ctl.add_target(ModulatorLocation::Free, 0, cutoff_target(&ctl, 0.25)));
+        let targets = &ctl.model.free_modulators[0].targets;
         let (a, b) = (targets[targets.len() - 2].edge, targets[targets.len() - 1].edge);
         assert_ne!(a, b);
         assert!(!before.contains(&a) && !before.contains(&b), "and not one a target already has");
@@ -2569,39 +2517,23 @@ plugin = "builtin:osc"
     }
 
     #[test]
-    fn add_target_binds_a_parameter_to_a_group_modulator() {
-        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
-        sent(&engine);
-        // (The same parameter: lane 0 is the first member of the group.)
-        let target = cutoff_target(&ctl, 0.4);
-        assert!(ctl.add_target(ModulatorLocation::Group(0), 0, target));
-        assert_eq!(
-            sent(&engine),
-            [testutil::told(&ctl.model, "AddGroupModTarget group=0 mod=0 kind=GroupMember { member: 0, slot: 1, param_index: 0 } depth=0.400 base=0.350 range=[0.000, 1.000]")]
-        );
-        assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 1);
-        assert!(ctl.model.instruments[0].modulators[0].targets.is_empty());
-    }
-
-    #[test]
     fn add_target_to_a_modulator_that_is_not_there_does_nothing() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         sent(&engine);
         let slots_before = ctl.model.slots.high_water();
-        assert!(!ctl.add_target(ModulatorLocation::Lane(0), 5, cutoff_target(&ctl, 0.5)));
-        assert!(!ctl.add_target(ModulatorLocation::Lane(9), 0, cutoff_target(&ctl, 0.5)));
-        assert!(!ctl.add_target(ModulatorLocation::Group(0), 3, cutoff_target(&ctl, 0.5)));
+        assert!(!ctl.add_target(ModulatorLocation::Free, 5, cutoff_target(&ctl, 0.5)));
+        assert!(!ctl.add_target(ModulatorLocation::Free, 99, cutoff_target(&ctl, 0.5)));
         assert!(sent(&engine).is_empty());
         assert_eq!(ctl.model.slots.high_water(), slots_before, "no slot is used up for nothing");
-        assert!(ctl.model.instruments[0].modulators[0].targets.is_empty());
+        assert!(ctl.model.free_modulators.iter().all(|m| m.targets.is_empty()));
     }
 
     #[test]
     fn modulators_and_targets_do_not_mark_the_session_changed() {
         // The front-end says when an edit is a change: these only do the work.
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
-        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
-        ctl.add_target(ModulatorLocation::Lane(0), 1, cutoff_target(&ctl, 0.5));
+        ctl.add_modulator(ModulatorLocation::Free, lfo_source());
+        ctl.add_target(ModulatorLocation::Free, 1, cutoff_target(&ctl, 0.5));
         assert!(!ctl.dirty);
     }
 
@@ -2615,113 +2547,26 @@ plugin = "builtin:osc"
     }
 
     #[test]
-    fn remove_modulator_takes_one_out_of_a_lanes_rack_and_tells_the_audio_thread() {
+    fn remove_modulator_takes_one_out_of_the_rack_and_tells_the_audio_thread() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
-        assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source()), Some(1));
-        let (first, second) = (ctl.model.instruments[0].modulators[0].node, ctl.model.instruments[0].modulators[1].node);
+        let before = ctl.model.free_modulators.len();
+        assert_eq!(ctl.add_modulator(ModulatorLocation::Free, lfo_source()), Some(before));
+        let rack_nodes = |ctl: &Controller| ctl.model.free_modulators.iter().map(|m| m.node).collect::<Vec<_>>();
+        let nodes = rack_nodes(&ctl);
         sent(&engine);
 
-        // The first goes, and then the one that was second is the first and goes in its turn: the
-        // audio thread is told the place each had at the time.
-        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
-        assert_eq!(sent(&engine), ["RemoveModulator inst=0 index=0"]);
-        let rack = &ctl.model.instruments[0].modulators;
-        assert_eq!(rack.iter().map(|m| m.node).collect::<Vec<_>>(), [second], "the other one stays, as it was");
-        assert_ne!(first, second);
-        assert_eq!(ctl.model.groups[0].modulators.len(), 1, "the group's rack is untouched");
+        // The first goes, and then the one that was second is the first and goes in its turn: the audio thread is told the place each had at the time.
+        assert!(ctl.remove_modulator(ModulatorLocation::Free, 0));
+        assert_eq!(sent(&engine), ["RemoveFreeModulator index=0"]);
+        assert_eq!(rack_nodes(&ctl), nodes[1..], "the others stay, as they were");
         ctl.model.check_ids().unwrap();
-        assert!(ctl.model.locate(first).is_none(), "its node is gone");
+        assert!(ctl.model.locate(nodes[0]).is_none(), "its node is gone");
 
-        assert_eq!(ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source()), Some(1));
-        let third = ctl.model.instruments[0].modulators[1].node;
-        sent(&engine);
-        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 1));
-        assert_eq!(sent(&engine), ["RemoveModulator inst=0 index=1"]);
-        assert_eq!(ctl.model.instruments[0].modulators.iter().map(|m| m.node).collect::<Vec<_>>(), [second]);
-        assert!(ctl.model.locate(third).is_none());
-    }
-
-    #[test]
-    fn remove_modulator_takes_one_out_of_a_groups_rack() {
-        let (engine, mut ctl) = controller_for(WITH_MODULATORS);
-        sent(&engine);
-        assert!(ctl.remove_modulator(ModulatorLocation::Group(0), 0));
-        assert_eq!(sent(&engine), ["RemoveGroupModulator group=0 index=0"]);
-        assert!(ctl.model.groups[0].modulators.is_empty());
-        assert_eq!(ctl.model.instruments[0].modulators.len(), 1, "the lane's rack is untouched");
-        ctl.model.check_ids().unwrap();
-
-        // (And the audio thread is told the place it has, not the first.)
-        assert_eq!(ctl.add_modulator(ModulatorLocation::Group(0), lfo_source()), Some(0));
-        assert_eq!(ctl.add_modulator(ModulatorLocation::Group(0), lfo_source()), Some(1));
-        let kept = ctl.model.groups[0].modulators[0].node;
-        sent(&engine);
-        assert!(ctl.remove_modulator(ModulatorLocation::Group(0), 1));
-        assert_eq!(sent(&engine), ["RemoveGroupModulator group=0 index=1"]);
-        assert_eq!(ctl.model.groups[0].modulators.iter().map(|m| m.node).collect::<Vec<_>>(), [kept]);
-    }
-
-    #[test]
-    fn remove_modulator_leaves_no_cable_pointing_at_it_and_moves_the_others_down() {
-        use crate::plugin::chain::CrossModField as F;
-        use crate::plugin::chain::ModTargetKind as K;
-        let (engine, mut ctl) = controller_for(testutil::CROSS_MOD);
-        sent(&engine);
-        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
-        // (The cables that went with it first: `remove_modulator_takes_out_the_cables_that_drive_its_own...`.)
-        // The modulator goes, and then what its own cable drove, the detune, is given the value the user set.
-        let commands = sent(&engine);
-        let removed = commands.iter().position(|c| c == "RemoveModulator inst=0 index=0").expect("the modulator is removed");
-        assert_eq!(commands[removed + 1..], ["SetParameter inst=0 slot=0 param=1 value=0.000"]);
-        // The lane's third modulator drove the first's rate and depth (gone with it) and the second's stages
-        // (which are now the first's).
-        assert_eq!(
-            driven(&ctl.model, ModulatorLocation::Lane(0)),
-            [
-                vec![],
-                vec![K::ModulatorAttack { mod_index: 0 }, K::ModulatorDecay { mod_index: 0 }, K::ModulatorSustain { mod_index: 0 }, K::ModulatorRelease { mod_index: 0 }],
-            ]
-        );
-        // The group's modulator drove the member's first modulator's rate (gone) and its second's attack. (Its cable to the depth of a cable that the group's envelope
-        // has not is not in the session: a cable that drives nothing is not made.)
-        let group = driven(&ctl.model, ModulatorLocation::Group(0));
-        assert_eq!(group[0], []);
-        assert_eq!(
-            group[1],
-            [
-                K::ModulatorAttack { mod_index: 0 },
-                K::ModulatorDecay { mod_index: 0 },
-                K::ModulatorSustain { mod_index: 0 },
-                K::ModulatorRelease { mod_index: 0 },
-                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Attack },
-            ]
-        );
-        ctl.model.check_ids().unwrap();
-    }
-
-    #[test]
-    fn remove_modulator_in_a_group_drops_what_its_siblings_drove_in_it() {
-        use crate::plugin::chain::CrossModField as F;
-        use crate::plugin::chain::ModTargetKind as K;
-        let (engine, mut ctl) = controller_for(testutil::CROSS_MOD);
-        sent(&engine);
-        assert!(ctl.remove_modulator(ModulatorLocation::Group(0), 0));
-        // The group's LFO's four cables to the envelope's stages go first, one after the other (each is the
-        // first one left), and then the envelope.
-        let mut expected = vec!["RemoveGroupModTarget group=0 mod=1 target=0"; 4];
-        expected.push("RemoveGroupModulator group=0 index=0");
-        assert_eq!(sent(&engine), expected);
-        // The group's LFO drove its envelope's four stages and depth (gone) and the member's modulators (not).
-        assert_eq!(
-            driven(&ctl.model, ModulatorLocation::Group(0)),
-            [vec![
-                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
-                K::GroupMemberMod { member: 0, mod_index: 1, field: F::Attack },
-                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Depth(0) },
-            ]]
-        );
-        assert_eq!(ctl.model.instruments[0].modulators.len(), 3, "the lane's rack is untouched");
-        ctl.model.check_ids().unwrap();
+        let last = ctl.model.free_modulators.len() - 1;
+        assert!(ctl.remove_modulator(ModulatorLocation::Free, last));
+        assert_eq!(sent(&engine), [format!("RemoveFreeModulator index={last}")]);
+        assert_eq!(rack_nodes(&ctl), nodes[1..nodes.len() - 1]);
+        assert!(ctl.model.locate(*nodes.last().unwrap()).is_none());
     }
 
     #[test]
@@ -2729,15 +2574,15 @@ plugin = "builtin:osc"
         let (engine, mut ctl) = controller_for(testutil::CROSS_MOD);
         sent(&engine);
         // The member's first modulator's one cable: the member's third modulator's cable and the group's drive its depth.
-        let detune = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        let detune = ctl.model.free_modulators[0].targets[0].edge;
         assert!(ctl.remove_edge(detune));
         // (And the detune that the cable drove is given the value the user set.)
         assert_eq!(
             sent(&engine),
             [
-                "RemoveGroupModTarget group=0 mod=1 target=6",
-                "RemoveModTarget inst=0 mod=2 target=1",
-                "RemoveModTarget inst=0 mod=0 target=0",
+                "RemoveFreeModTarget mod=4 target=6",
+                "RemoveFreeModTarget mod=2 target=1",
+                "RemoveFreeModTarget mod=0 target=0",
                 "SetParameter inst=0 slot=0 param=1 value=0.000"
             ]
         );
@@ -2882,14 +2727,7 @@ plugin = "builtin:reverb"
                 assert_eq!(graph.cables(), model_cables(&ctl.model), "as loaded");
                 let mut removed = 0;
                 loop {
-                    let edges: Vec<EdgeId> = ctl
-                        .model
-                        .groups
-                        .iter()
-                        .flat_map(|g| &g.modulators)
-                        .chain(ctl.model.instruments.iter().flat_map(|lane| &lane.modulators))
-                        .flat_map(|m| m.targets.iter().map(|t| t.edge))
-                        .collect();
+                    let edges: Vec<EdgeId> = ctl.model.free_modulators.iter().flat_map(|m| m.targets.iter().map(|t| t.edge)).collect();
                     let Some(&edge) = (if from_the_back { edges.last() } else { edges.first() }) else { break };
                     assert!(ctl.remove_edge(edge));
                     graph.drain_commands();
@@ -2923,19 +2761,14 @@ plugin = "builtin:reverb"
                 let (mut graph, mut ctl) = controller_on_a_real_graph(session);
                 let mut removed = 0;
                 loop {
-                    let racks: Vec<(ModulatorLocation, usize)> = (ctl.model.groups.iter().enumerate())
-                        .flat_map(|(g, group)| (0..group.modulators.len()).map(move |m| (ModulatorLocation::Group(g), m)))
-                        .chain(ctl.model.instruments.iter().enumerate().flat_map(|(i, lane)| (0..lane.modulators.len()).map(move |m| (ModulatorLocation::Lane(i), m))))
-                        .collect();
+                    let racks: Vec<(ModulatorLocation, usize)> = (0..ctl.model.free_modulators.len()).map(|m| (ModulatorLocation::Free, m)).collect();
                     let Some(&(at, index)) = (if from_the_back { racks.last() } else { racks.first() }) else { break };
                     assert!(ctl.remove_modulator(at, index));
                     graph.drain_commands();
                     removed += 1;
                     assert_eq!(graph.cables(), model_cables(&ctl.model), "after the {removed}th removal ({at:?} {index}, from the back: {from_the_back}, scene {scene})");
                     ctl.model.check_ids().unwrap();
-                    for lane in 0..ctl.model.instruments.len() {
-                        assert_eq!(cables_driving_nothing(&ctl.model, ModulatorLocation::Lane(lane)), [], "scene {scene}, after the {removed}th removal");
-                    }
+                    assert_eq!(cables_driving_nothing(&ctl.model, ModulatorLocation::Free), [], "scene {scene}, after the {removed}th removal");
                 }
                 assert!(removed > 0);
             }
@@ -2949,19 +2782,19 @@ plugin = "builtin:reverb"
         // The first modulator drives three parameters; the second drives the depth of its first and third cable, and
         // the third the depth of the second's first. Take the first out: its cables go with it, and what drove them
         // goes first (and what drove the depth of that).
-        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
-        let rack = &ctl.model.instruments[0].modulators;
-        assert_eq!(driven(&ctl.model, ModulatorLocation::Lane(0)), [vec![], vec![]], "the two that are left drive nothing: what they drove is gone");
+        assert!(ctl.remove_modulator(ModulatorLocation::Free, 0));
+        let rack = &ctl.model.free_modulators;
+        assert_eq!(driven(&ctl.model, ModulatorLocation::Free), [vec![], vec![]], "the two that are left drive nothing: what they drove is gone");
         assert!(rack.iter().flat_map(|m| &m.targets).all(|t| !matches!(t.aim, Driven::Depth(_))));
         ctl.model.check_ids().unwrap();
         assert_eq!(
             sent(&engine),
             [
                 // The second modulator's first cable, after the third's that drove its depth; then its other.
-                "RemoveModTarget inst=0 mod=2 target=0",
-                "RemoveModTarget inst=0 mod=1 target=0",
-                "RemoveModTarget inst=0 mod=1 target=0",
-                "RemoveModulator inst=0 index=0",
+                "RemoveFreeModTarget mod=2 target=0",
+                "RemoveFreeModTarget mod=1 target=0",
+                "RemoveFreeModTarget mod=1 target=0",
+                "RemoveFreeModulator index=0",
                 // Then what its own three cables drove has the value the user set: the detune, the volume and the pan.
                 "SetParameter inst=0 slot=0 param=1 value=0.000",
                 "SetParameter inst=0 slot=0 param=2 value=1.000",
@@ -2974,81 +2807,23 @@ plugin = "builtin:reverb"
     fn remove_modulator_takes_out_the_cables_of_others_that_drive_it_before_it_goes() {
         let (engine, mut ctl) = controller_for(testutil::CROSS_MOD);
         sent(&engine);
-        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
+        assert!(ctl.remove_modulator(ModulatorLocation::Free, 0));
         // The lane's third modulator's cables to its rate and to the depth of its cable, and then the group's, one at a
         // time (each the one at the place it has when its turn comes).
         assert_eq!(
             sent(&engine),
             [
-                "RemoveModTarget inst=0 mod=2 target=0",
-                "RemoveModTarget inst=0 mod=2 target=0",
-                "RemoveGroupModTarget group=0 mod=1 target=4",
-                "RemoveGroupModTarget group=0 mod=1 target=5",
-                "RemoveModulator inst=0 index=0",
+                "RemoveFreeModTarget mod=2 target=0",
+                "RemoveFreeModTarget mod=2 target=0",
+                "RemoveFreeModTarget mod=4 target=4",
+                "RemoveFreeModTarget mod=4 target=5",
+                "RemoveFreeModulator index=0",
                 // And what its own cable drove, the detune, has the value the user set (the rate and the depth that the
                 // cables drove were its own and its cable's: gone with it).
                 "SetParameter inst=0 slot=0 param=1 value=0.000",
             ]
         );
         ctl.model.check_ids().unwrap();
-    }
-
-    #[test]
-    fn remove_modulator_of_one_member_leaves_the_groups_cables_to_the_modulators_of_another() {
-        use crate::plugin::chain::CrossModField as F;
-        use crate::plugin::chain::ModTargetKind as K;
-        let cables = |count: usize| {
-            (0..count).map(|i| format!("[[instrument.modulator.target]]\nparam = \"detune\"\ndepth = 0.{}\n", i + 1)).collect::<String>()
-        };
-        // Two members with a modulator each; the group drives the depth of a cable of each, and the rate of the first's.
-        let session = format!(
-            r#"
-[[group]]
-[[group.modulator]]
-rate = 1.0
-[[group.modulator.target]]
-member = 0
-mod_depth = [0, 1]
-depth = 0.1
-[[group.modulator.target]]
-member = 1
-mod_depth = [0, 1]
-depth = 0.2
-[[group.modulator.target]]
-member = 0
-mod_rate = 0
-depth = 0.3
-
-[[instrument]]
-plugin = "builtin:osc"
-group = 0
-[[instrument.modulator]]
-rate = 1.0
-{}
-[[instrument]]
-plugin = "builtin:osc"
-group = 0
-[[instrument.modulator]]
-rate = 2.0
-{}"#,
-            cables(2),
-            cables(2)
-        );
-        let (engine, mut ctl) = controller_for(&session);
-        sent(&engine);
-        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
-        // The cables to the first member's modulator go, one after the other; the second member's stays.
-        assert_eq!(
-            sent(&engine),
-            [
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=1",
-                "RemoveModulator inst=0 index=0",
-                // (What the removed modulator's own cable drove.)
-                "SetParameter inst=0 slot=0 param=1 value=0.000"
-            ]
-        );
-        assert_eq!(driven(&ctl.model, ModulatorLocation::Group(0)), [vec![K::GroupMemberMod { member: 1, mod_index: 0, field: F::Depth(1) }]]);
     }
 
     /// The names of the effects of each lane as the model has them, in the terms `AudioGraph::effect_names` uses.
@@ -3059,12 +2834,8 @@ rate = 2.0
     /// The cables of the model that point at nothing: the plugin, the member, the modulator or the cable they
     /// name is not there.
     fn dangling(model: &SessionModel) -> Vec<EdgeId> {
-        let lanes = model.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), &lane.modulators));
-        let groups = model.groups.iter().enumerate().map(|(i, group)| (ModulatorLocation::Group(i), &group.modulators));
-        lanes
-            .chain(groups)
-            .flat_map(|(at, rack)| rack.iter().enumerate().flat_map(move |(source, m)| m.targets.iter().filter(move |t| model.kind_of(at, source, t.aim).is_none()).map(|t| t.edge)))
-            .collect()
+        let at = ModulatorLocation::Free;
+        model.free_modulators.iter().enumerate().flat_map(|(source, m)| m.targets.iter().filter(move |t| model.kind_of(at, source, t.aim).is_none()).map(|t| t.edge)).collect()
     }
 
     #[test]
@@ -3088,7 +2859,7 @@ rate = 2.0
         assert_eq!(sent(&engine), ["ClearInstrument inst=1"]);
         let lane = &ctl.model.instruments[1];
         assert!(lane.instrument.is_none());
-        assert_eq!((lane.effects.len(), lane.modulators.len(), lane.volume, lane.transpose), (1, 2, 0.6, 7));
+        assert_eq!((lane.effects.len(), hearing_lane(&ctl.model, 1).len(), lane.volume, lane.transpose), (1, 2, 0.6, 7));
         // One that has none, and one that is not there: nothing is sent.
         assert!(!ctl.clear_instrument(1) && !ctl.clear_instrument(9));
         assert!(sent(&engine).is_empty());
@@ -3130,83 +2901,8 @@ rate = 2.0
     /// The cables of `CHAINS` in the order `model_cables` lists them (lane racks, then group racks), as
     /// `(rack, modulator, [the place that `kind_of` says for each cable])`.
     fn chains_cables(model: &SessionModel) -> Vec<(ModulatorLocation, usize, Vec<ModTargetKind>)> {
-        let lanes = model.instruments.iter().enumerate().map(|(i, lane)| (ModulatorLocation::Lane(i), lane.modulators.len()));
-        let groups = model.groups.iter().enumerate().map(|(i, group)| (ModulatorLocation::Group(i), group.modulators.len()));
-        lanes.chain(groups).flat_map(|(at, count)| (0..count).map(move |m| (at, m, testutil::kinds_at(model, at, m)))).collect()
-    }
-
-    #[test]
-    fn the_chains_scene_has_the_cables_the_tests_of_removals_count_on() {
-        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
-        let (graph, ctl) = controller_on_a_real_graph(testutil::CHAINS);
-        assert_eq!(graph.cables(), model_cables(&ctl.model));
-        assert_eq!(model_effect_names(&ctl.model), [vec!["Filter", "Reverb"], vec![], vec!["Filter"]]);
-        assert_eq!(graph.effect_names(), model_effect_names(&ctl.model));
-        assert_eq!(graph.groups(), model_groups(&ctl.model));
-        assert!(dangling(&ctl.model).is_empty());
-        let lane = |inst, m| (ModulatorLocation::Lane(inst), m);
-        let group = (ModulatorLocation::Group(0), 0);
-        let expected: Vec<((ModulatorLocation, usize), Vec<K>)> = vec![
-            // Lane 0: the first modulator drives the filter's cutoff (slot 1), the reverb's damping (slot 2) and the
-            // instrument's detune; the second the depth of its first two cables.
-            (lane(0, 0), vec![K::PluginParam { slot: 1, param_index: 0 }, K::PluginParam { slot: 2, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]),
-            (lane(0, 1), vec![K::ModulatorDepth { mod_index: 0, target_index: 0 }, K::ModulatorDepth { mod_index: 0, target_index: 1 }]),
-            (lane(2, 0), vec![K::PluginParam { slot: 1, param_index: 0 }]),
-        ];
-        let kinds: Vec<_> = chains_cables(&ctl.model).into_iter().filter(|(at, ..)| matches!(at, ModulatorLocation::Lane(_))).map(|(at, m, cables)| ((at, m), cables)).collect();
-        assert_eq!(kinds, expected);
-        let group_kinds = chains_cables(&ctl.model).into_iter().find(|(at, m, _)| (*at, *m) == group).map(|(.., cables)| cables).unwrap();
-        assert_eq!(
-            group_kinds,
-            [
-                K::GroupMember { member: 0, slot: 1, param_index: 0 },
-                K::GroupMember { member: 0, slot: 2, param_index: 2 },
-                K::GroupMember { member: 1, slot: 0, param_index: 1 },
-                K::GroupBus { effect_index: 0, param_index: 0 },
-                K::GroupBus { effect_index: 1, param_index: 2 },
-                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
-            ]
-        );
-    }
-
-    #[test]
-    fn an_effect_that_is_taken_out_takes_the_cables_to_it_out_first_and_gives_nothing_back() {
-        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
-        let (engine, mut ctl) = controller_for(testutil::CHAINS);
-        sent(&engine);
-        // Lane 0's filter. Its modulator's cable to the cutoff goes, with the cable that drives the depth of that
-        // one (a cable goes after the cables that drive its depth), and so does the group's cable to the same cutoff.
-        assert!(ctl.remove_effect(0, 0));
-        assert_eq!(
-            sent(&engine),
-            [
-                "RemoveModTarget inst=0 mod=1 target=0",
-                "RemoveModTarget inst=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveEffect inst=0 index=0",
-            ],
-            "what the cables were driving is gone with the filter: nothing is given back"
-        );
-        assert_eq!(model_effect_names(&ctl.model), [vec!["Reverb"], vec![], vec!["Filter"]]);
-        let cables = chains_cables(&ctl.model);
-        let rack = |at, m| cables.iter().find(|(a, i, _)| (*a, *i) == (at, m)).map(|(.., kinds)| kinds.clone()).unwrap();
-        // What drove the reverb (now in slot 1) still does, and what drove the depth of its cable does too, at its new place.
-        assert_eq!(rack(ModulatorLocation::Lane(0), 0), [K::PluginParam { slot: 1, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]);
-        assert_eq!(rack(ModulatorLocation::Lane(0), 1), [K::ModulatorDepth { mod_index: 0, target_index: 0 }]);
-        assert_eq!(rack(ModulatorLocation::Lane(2), 0), [K::PluginParam { slot: 1, param_index: 0 }], "another lane's filter is not this one");
-        assert_eq!(
-            rack(ModulatorLocation::Group(0), 0),
-            [
-                K::GroupMember { member: 0, slot: 1, param_index: 2 },
-                K::GroupMember { member: 1, slot: 0, param_index: 1 },
-                K::GroupBus { effect_index: 0, param_index: 0 },
-                K::GroupBus { effect_index: 1, param_index: 2 },
-                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
-            ]
-        );
-        assert_eq!(rack(ModulatorLocation::Group(0), 1), [K::ModulatorDepth { mod_index: 0, target_index: 0 }, K::ModulatorDepth { mod_index: 0, target_index: 3 }]);
-        assert!(dangling(&ctl.model).is_empty());
-        ctl.model.check_ids().unwrap();
+        let at = ModulatorLocation::Free;
+        (0..model.free_modulators.len()).map(|m| (at, m, testutil::kinds_at(model, at, m))).collect()
     }
 
     #[test]
@@ -3239,48 +2935,6 @@ rate = 2.0
                 ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
             }
         }
-    }
-
-    #[test]
-    fn an_effect_that_is_moved_is_told_to_the_audio_thread_and_the_cables_follow_the_plugins() {
-        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
-        let (engine, mut ctl) = controller_for(testutil::CHAINS);
-        sent(&engine);
-        // Lane 0's filter (slot 1) goes after its reverb (slot 2).
-        assert!(ctl.move_effect(0, 0, 1));
-        assert_eq!(sent(&engine), ["ReorderEffect inst=0 from=0 to=1"]);
-        assert_eq!(model_effect_names(&ctl.model), [vec!["Reverb", "Filter"], vec![], vec!["Filter"]]);
-        // The lane's modulator drove the filter's cutoff in slot 1 and the reverb's damping in slot 2: it drives them in 2 and 1 now,
-        // in the order its cables were in; the instrument's detune (slot 0) is where it was, and so is the other lane's filter.
-        assert_eq!(
-            rack_kinds(&ctl.model, ModulatorLocation::Lane(0), 0),
-            [K::PluginParam { slot: 2, param_index: 0 }, K::PluginParam { slot: 1, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]
-        );
-        assert_eq!(rack_kinds(&ctl.model, ModulatorLocation::Lane(2), 0), [K::PluginParam { slot: 1, param_index: 0 }]);
-        // The cables that drive the depths of those cables are as they were: a cable is told by its place in its rack, which did not move.
-        assert_eq!(rack_kinds(&ctl.model, ModulatorLocation::Lane(0), 1), [K::ModulatorDepth { mod_index: 0, target_index: 0 }, K::ModulatorDepth { mod_index: 0, target_index: 1 }]);
-        // The group's cables to its first member's plugins follow them too; the bus is not a lane's chain.
-        assert_eq!(
-            rack_kinds(&ctl.model, ModulatorLocation::Group(0), 0),
-            [
-                K::GroupMember { member: 0, slot: 2, param_index: 0 },
-                K::GroupMember { member: 0, slot: 1, param_index: 2 },
-                K::GroupMember { member: 1, slot: 0, param_index: 1 },
-                K::GroupBus { effect_index: 0, param_index: 0 },
-                K::GroupBus { effect_index: 1, param_index: 2 },
-                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
-            ]
-        );
-        assert!(dangling(&ctl.model).is_empty());
-        ctl.model.check_ids().unwrap();
-        // And back: the reverb goes before the filter again.
-        assert!(ctl.move_effect(0, 1, 0));
-        assert_eq!(sent(&engine), ["ReorderEffect inst=0 from=1 to=0"]);
-        assert_eq!(model_effect_names(&ctl.model), [vec!["Filter", "Reverb"], vec![], vec!["Filter"]]);
-        assert_eq!(
-            rack_kinds(&ctl.model, ModulatorLocation::Lane(0), 0),
-            [K::PluginParam { slot: 1, param_index: 0 }, K::PluginParam { slot: 2, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]
-        );
     }
 
     #[test]
@@ -3318,47 +2972,6 @@ rate = 2.0
         }
     }
 
-    /// The kinds of the cables of the rack `(at, modulator)` of `CHAINS`, as `chains_cables` lists them.
-    fn rack_kinds(model: &SessionModel, at: ModulatorLocation, modulator: usize) -> Vec<ModTargetKind> {
-        chains_cables(model).into_iter().find(|(a, m, _)| (*a, *m) == (at, modulator)).map(|(.., kinds)| kinds).unwrap()
-    }
-
-    #[test]
-    fn a_bus_effect_that_is_taken_out_takes_the_cables_to_it_out_first_and_gives_nothing_back() {
-        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
-        let (engine, mut ctl) = controller_for(testutil::CHAINS);
-        sent(&engine);
-        // The bus's filter: the group's cable to its cutoff goes, and nothing drives the depth of that.
-        assert!(ctl.remove_bus_effect(0, 0));
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=3", "RemoveGroupEffect group=0 index=0"]);
-        assert_eq!(ctl.model.groups[0].effects.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Reverb"]);
-        let group = ModulatorLocation::Group(0);
-        // The cable to the reverb is the filter's now, and the cable that drives its depth knows the cable's new place.
-        assert_eq!(
-            rack_kinds(&ctl.model, group, 0),
-            [
-                K::GroupMember { member: 0, slot: 1, param_index: 0 },
-                K::GroupMember { member: 0, slot: 2, param_index: 2 },
-                K::GroupMember { member: 1, slot: 0, param_index: 1 },
-                K::GroupBus { effect_index: 0, param_index: 2 },
-                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
-            ]
-        );
-        assert_eq!(rack_kinds(&ctl.model, group, 1), [K::ModulatorDepth { mod_index: 0, target_index: 1 }, K::ModulatorDepth { mod_index: 0, target_index: 3 }]);
-        assert!(dangling(&ctl.model).is_empty());
-
-        // Then the reverb, which has a cable that drives the depth of its cable: that goes first.
-        assert!(ctl.remove_bus_effect(0, 0));
-        assert_eq!(
-            sent(&engine),
-            ["RemoveGroupModTarget group=0 mod=1 target=1", "RemoveGroupModTarget group=0 mod=0 target=3", "RemoveGroupEffect group=0 index=0"]
-        );
-        assert!(ctl.model.groups[0].effects.is_empty());
-        assert_eq!(rack_kinds(&ctl.model, group, 1), [K::ModulatorDepth { mod_index: 0, target_index: 1 }]);
-        assert!(dangling(&ctl.model).is_empty());
-        ctl.model.check_ids().unwrap();
-    }
-
     #[test]
     fn a_bus_effect_that_is_not_there_is_not_taken_out() {
         let (engine, mut ctl) = controller_for(testutil::CHAINS);
@@ -3383,49 +2996,6 @@ rate = 2.0
                 ctl.model.check_ids().unwrap_or_else(|e| panic!("{what}: {e}"));
             }
         }
-    }
-
-    #[test]
-    fn a_bus_effect_that_is_moved_is_told_to_the_audio_thread_and_the_groups_cables_follow_the_plugins() {
-        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
-        let (engine, mut ctl) = controller_for(testutil::CHAINS);
-        sent(&engine);
-        // The two bus effects have mixes of their own, which go with them.
-        ctl.model.groups[0].effects[0].mix = 0.25;
-        ctl.model.groups[0].effects[1].mix = 0.75;
-        // The bus's filter (0) goes after its reverb (1).
-        assert!(ctl.move_bus_effect(0, 0, 1));
-        assert_eq!(sent(&engine), ["ReorderGroupEffect group=0 from=0 to=1"]);
-        let bus: Vec<_> = ctl.model.groups[0].effects.iter().map(|e| (e.name.as_str(), e.mix)).collect();
-        assert_eq!(bus, [("Reverb", 0.75), ("Filter", 0.25)]);
-        let group = ModulatorLocation::Group(0);
-        // The group's cables to the filter's cutoff and the reverb's damping drive them in 1 and 0 now, in the order the cables were in; the
-        // cables to the members' plugins are where they were (the bus is not a lane's chain), and so are the lanes' own.
-        assert_eq!(
-            rack_kinds(&ctl.model, group, 0),
-            [
-                K::GroupMember { member: 0, slot: 1, param_index: 0 },
-                K::GroupMember { member: 0, slot: 2, param_index: 2 },
-                K::GroupMember { member: 1, slot: 0, param_index: 1 },
-                K::GroupBus { effect_index: 1, param_index: 0 },
-                K::GroupBus { effect_index: 0, param_index: 2 },
-                K::GroupMemberMod { member: 0, mod_index: 0, field: F::Rate },
-            ]
-        );
-        assert_eq!(rack_kinds(&ctl.model, ModulatorLocation::Lane(0), 0), [K::PluginParam { slot: 1, param_index: 0 }, K::PluginParam { slot: 2, param_index: 2 }, K::PluginParam { slot: 0, param_index: 1 }]);
-        // The cables that drive the depths of cables are told by the places of those in their rack, which did not move.
-        assert_eq!(rack_kinds(&ctl.model, group, 1), [K::ModulatorDepth { mod_index: 0, target_index: 1 }, K::ModulatorDepth { mod_index: 0, target_index: 4 }]);
-        assert!(dangling(&ctl.model).is_empty());
-        ctl.model.check_ids().unwrap();
-        // And back: the reverb goes before the filter again.
-        assert!(ctl.move_bus_effect(0, 1, 0));
-        assert_eq!(sent(&engine), ["ReorderGroupEffect group=0 from=1 to=0"]);
-        let bus: Vec<_> = ctl.model.groups[0].effects.iter().map(|e| (e.name.as_str(), e.mix)).collect();
-        assert_eq!(bus, [("Filter", 0.25), ("Reverb", 0.75)]);
-        assert_eq!(
-            &rack_kinds(&ctl.model, group, 0)[3..5],
-            [K::GroupBus { effect_index: 0, param_index: 0 }, K::GroupBus { effect_index: 1, param_index: 2 }]
-        );
     }
 
     #[test]
@@ -3773,16 +3343,16 @@ group = 1
         sent(&engine);
         // Lane 0's oscillator has a cable of its own lane's modulator to its detune (the third of that modulator's three)...
         ctl.put_instrument(0, "builtin:osc").expect("an oscillator is put in");
-        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=2", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]);
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=0 target=2", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false"]);
         // ... and lane 1's has the group's (the third of its modulator's six).
         ctl.put_instrument(1, "builtin:osc").unwrap();
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=2", "SwapInstrument inst=1 plugin=Oscillator bufs=2 remap=false"]);
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=3 target=2", "SwapInstrument inst=1 plugin=Oscillator bufs=2 remap=false"]);
         let lane = &ctl.model.instruments[0];
         let slot = lane.instrument.as_ref().expect("an instrument");
         assert_eq!((slot.node, slot.name.as_str(), slot.id.as_str()), (lane.node, "Oscillator", "builtin:osc"), "the plugin sits in the lane's node");
         assert!(slot.params.iter().all(|p| p.value == p.default), "the parameters are the new plugin's own");
         // The lane is what it was, but for the plugin; so are the others.
-        assert_eq!((lane.volume, lane.group, lane.effects.len(), lane.modulators.len()), (1.0, Some(0), 2, 2));
+        assert_eq!((lane.volume, lane.group, lane.effects.len(), hearing_lane(&ctl.model, 0).len()), (1.0, Some(0), 2, 2));
         assert!(dangling(&ctl.model).is_empty(), "no cable points at the plugin that went");
         ctl.model.check_ids().unwrap();
     }
@@ -3861,7 +3431,7 @@ group = 1
         assert_eq!(lane.node, node);
         assert_eq!((lane.range, lane.volume, lane.transpose, lane.group), (None, 1.0, 0, None));
         assert_eq!(lane.instrument.as_ref().map(|p| (p.node, p.name.as_str())), Some((node, "Oscillator")));
-        assert!(lane.effects.is_empty() && lane.modulators.is_empty() && lane.pattern.is_none());
+        assert!(lane.effects.is_empty() && lane.pattern.is_none());
         let meter = lane.meter.expect("a meter");
         let (commands, telemetry) = engine.drain();
         assert_eq!(commands, ["AddInstrument range=None", format!("SwapInstrument inst={lanes} plugin=Oscillator bufs=2 remap=false").as_str()]);
@@ -3932,7 +3502,7 @@ group = 1
         let (engine, mut ctl) = controller_with_builtins(testutil::CHAINS);
         sent(&engine);
         ctl.place_instrument(0, Box::new(testutil::FakeInstrument(1)), "test:mono").expect("a mono instrument is put in");
-        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=2", "SwapInstrument inst=0 plugin=FakeInstrument bufs=1 remap=false"]);
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=0 target=2", "SwapInstrument inst=0 plugin=FakeInstrument bufs=1 remap=false"]);
         let lanes = ctl.model.instruments.len();
         ctl.place_instrument_in_new_lane(Box::new(testutil::FakeInstrument(1)), "test:mono").expect("and in a lane of its own");
         assert_eq!(ctl.model.instruments.len(), lanes + 1);
@@ -3965,9 +3535,9 @@ group = 1
         let (engine, mut ctl) = controller_for(testutil::CHAINS);
         sent(&engine);
         assert!(ctl.clear_instrument(0));
-        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=2", "ClearInstrument inst=0"]);
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=0 target=2", "ClearInstrument inst=0"]);
         assert!(ctl.clear_instrument(1));
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=2", "ClearInstrument inst=1"]);
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=3 target=2", "ClearInstrument inst=1"]);
         assert!(dangling(&ctl.model).is_empty(), "no cable points at a plugin that is not there");
         ctl.model.check_ids().unwrap();
         // (A lane that has none has no cable to take out, and nothing to clear.)
@@ -3976,49 +3546,13 @@ group = 1
     }
 
     #[test]
-    fn a_lane_that_is_taken_out_takes_the_cables_of_its_group_to_it_out_first_and_gives_nothing_back() {
-        use crate::plugin::chain::{CrossModField as F, ModTargetKind as K};
-        let (engine, mut ctl) = controller_for(testutil::CHAINS);
-        sent(&engine);
-        let second = ctl.model.instruments[1].node;
-        // The first member of the group: the group's cables to its filter, to its reverb (with the cable that drives the
-        // depth of that one) and to its modulator's rate go, in the order of the group's rack, and then the lane,
-        // with its own modulators and their cables, which need no taking out.
-        assert!(ctl.remove_lane(0));
-        assert_eq!(
-            sent(&engine),
-            [
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=1 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=3",
-                "RemoveInstrument inst=0",
-            ],
-            "what the cables were driving is gone with the lane: nothing is given back"
-        );
-        assert_eq!(ctl.model.instruments.len(), 2);
-        assert_eq!(ctl.model.instruments[0].node, second, "the second lane is the first now");
-        let group = ModulatorLocation::Group(0);
-        // The second member is the first of the group's lanes now, and its detune cable says so; the bus cables are as
-        // they were, and what drives the depth of the reverb's cable knows its new place.
-        assert_eq!(
-            rack_kinds(&ctl.model, group, 0),
-            [K::GroupMember { member: 0, slot: 0, param_index: 1 }, K::GroupBus { effect_index: 0, param_index: 0 }, K::GroupBus { effect_index: 1, param_index: 2 }]
-        );
-        assert_eq!(rack_kinds(&ctl.model, group, 1), [K::ModulatorDepth { mod_index: 0, target_index: 2 }]);
-        let _ = F::Rate; // (the cable to the member's modulator's rate is among those that went)
-        assert!(dangling(&ctl.model).is_empty());
-        ctl.model.check_ids().unwrap();
-    }
-
-    #[test]
-    fn a_lane_in_no_group_is_taken_out_with_nothing_but_itself() {
+    fn a_lane_in_no_group_is_taken_out_with_nothing_but_itself_and_the_cables_to_its_plugins() {
         let (engine, mut ctl) = controller_for(testutil::CHAINS);
         sent(&engine);
         assert!(ctl.remove_lane(2));
-        assert_eq!(sent(&engine), ["RemoveInstrument inst=2"]);
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=2 target=0", "RemoveInstrument inst=2"]);
         assert_eq!(ctl.model.instruments.len(), 2);
-        assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 6, "the group's cables are as they were");
+        assert_eq!(hearing_group(&ctl.model, 0)[0].targets.len(), 6, "the group's cables are as they were");
     }
 
     #[test]
@@ -4057,117 +3591,6 @@ group = 1
                 }
             }
         }
-    }
-
-    #[test]
-    fn a_group_that_is_taken_out_takes_its_cables_out_one_by_one_and_gives_its_members_what_they_drove_back() {
-        let (engine, mut ctl) = controller_for(testutil::LANES_IN_GROUPS);
-        sent(&engine);
-        let (first, third) = (ctl.model.groups[0].node, ctl.model.groups[1].node);
-        // Group 0: a cable to the first member's detune, one to the second's pan and one to its modulator's rate.
-        // They go in the order of the group's rack, and then the group, which has the audio thread let its members go.
-        // Then what the cables drove, in the members, which stay, has the value the user set (the detune of the
-        // first, the pan of the fourth, the rate of the fourth's modulator).
-        assert!(ctl.remove_group(0));
-        assert_eq!(
-            sent(&engine),
-            [
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroup group=0",
-                "SetParameter inst=0 slot=0 param=1 value=0.000",
-                "SetParameter inst=3 slot=0 param=7 value=0.000",
-                "SetModulatorRate inst=3 mod=0 rate=6.000",
-            ]
-        );
-        assert_eq!(ctl.model.groups.len(), 1);
-        assert_eq!(ctl.model.groups[0].node, third, "the second group is the first now");
-        let groups: Vec<_> = ctl.model.instruments.iter().map(|lane| lane.group).collect();
-        assert_eq!(groups, [None, None, Some(0), None]);
-        assert!(dangling(&ctl.model).is_empty());
-        ctl.model.check_ids().unwrap();
-        let _ = first;
-    }
-
-    #[test]
-    fn a_group_that_is_taken_out_leaves_what_its_members_own_cables_still_drive_to_them() {
-        let (engine, mut ctl) = controller_for(testutil::CHAINS);
-        sent(&engine);
-        assert!(ctl.remove_group(0));
-        let commands = sent(&engine);
-        // The group's cables go (and the ones that drive the depth of its own), the group goes, and of what the
-        // cables drove only what nothing else drives is given back: the second member's detune and the rate of the
-        // first member's modulator. The first member's cutoff and damping are driven by its own modulator still, and
-        // the bus is gone with the group.
-        assert_eq!(
-            commands,
-            [
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=1 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=1 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroup group=0",
-                "SetParameter inst=1 slot=0 param=1 value=0.000",
-                "SetModulatorRate inst=0 mod=0 rate=2.000",
-            ]
-        );
-        assert!(ctl.model.groups.is_empty());
-        assert!(ctl.model.instruments.iter().all(|lane| lane.group.is_none()));
-        assert!(dangling(&ctl.model).is_empty());
-    }
-
-    /// A real audio graph's values.
-    const GROUP_AND_ITS_MEMBER: &str = r#"
-[[group]]
-[[group.effect]]
-plugin = "builtin:filter"
-[group.effect.params]
-cutoff = 0.5
-[[group.modulator]]
-waveform = "square"
-rate = 0.0
-[[group.modulator.target]]
-member = 0
-param = "detune"
-depth = 0.1
-[[group.modulator.target]]
-bus = 0
-param = "cutoff"
-depth = 0.2
-[[group.modulator.target]]
-member = 0
-mod_rate = 0
-depth = 0.5
-
-[[instrument]]
-plugin = "builtin:osc"
-group = 0
-[[instrument.modulator]]
-waveform = "sine"
-rate = 2.0
-
-[[instrument]]
-plugin = "builtin:osc"
-"#;
-
-    #[test]
-    fn a_group_that_is_taken_out_leaves_its_member_with_what_the_user_set_in_the_audio_thread_too() {
-        let (mut graph, mut ctl) = controller_on_a_real_graph(GROUP_AND_ITS_MEMBER);
-        let detune = index_of(ctl.model.instruments[0].instrument.as_ref().unwrap(), "detune");
-        run(&mut graph);
-        assert!(graph.plugin_parameter(0, 0, detune).unwrap() > 1.0, "detune is driven by the group");
-        assert!(graph.lane_lfo(0, 0).unwrap().0 > 20.0, "and so is the rate of the member's LFO");
-        assert!(ctl.remove_group(0));
-        run(&mut graph);
-        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0), "the detune the user set, and not the last one the group wrote");
-        assert_eq!(graph.lane_lfo(0, 0).map(|(rate, _)| rate), Some(2.0), "the rate the user set");
-        assert_eq!(graph.lanes()[0].group, None);
-        assert!(graph.groups().is_empty());
     }
 
     #[test]
@@ -4383,32 +3806,25 @@ plugin = "builtin:drive"
     fn remove_modulator_that_is_not_there_does_nothing() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         sent(&engine);
-        assert!(!ctl.remove_modulator(ModulatorLocation::Lane(0), 1));
-        assert!(!ctl.remove_modulator(ModulatorLocation::Lane(9), 0));
-        assert!(!ctl.remove_modulator(ModulatorLocation::Group(0), 4));
-        assert!(!ctl.remove_modulator(ModulatorLocation::Group(3), 0));
+        let before = ctl.model.free_modulators.len();
+        assert!(!ctl.remove_modulator(ModulatorLocation::Free, before));
+        assert!(!ctl.remove_modulator(ModulatorLocation::Free, 99));
         assert!(sent(&engine).is_empty());
-        assert_eq!((ctl.model.instruments[0].modulators.len(), ctl.model.groups[0].modulators.len()), (1, 1));
+        assert_eq!(ctl.model.free_modulators.len(), before);
     }
 
     #[test]
     fn add_modulator_gives_the_modulator_an_output_slot_and_tells_the_audio_thread_right_after() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         engine.drain();
-        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
-        ctl.add_modulator(ModulatorLocation::Group(0), lfo_source());
-        let lane = ctl.model.instruments[0].modulators[1].output.unwrap().index();
-        let group = ctl.model.groups[0].modulators[1].output.unwrap().index();
-        assert_ne!(lane, group);
+        let before = ctl.model.free_modulators.len();
+        ctl.add_modulator(ModulatorLocation::Free, lfo_source());
+        ctl.add_modulator(ModulatorLocation::Free, lfo_source());
+        let (first, second) = (ctl.model.free_modulators[before].output.unwrap().index(), ctl.model.free_modulators[before + 1].output.unwrap().index());
+        assert_ne!(first, second);
         let (commands, telemetry) = engine.drain();
         assert_eq!(commands.len(), 2, "the slot commands are not among the rest: {commands:?}");
-        assert_eq!(
-            telemetry,
-            [
-                format!("SetModulatorOutput Lane(0) index=1 slot={lane}"),
-                format!("SetModulatorOutput Group(0) index=1 slot={group}"),
-            ]
-        );
+        assert_eq!(telemetry, [format!("SetModulatorOutput Free index={before} slot={first}"), format!("SetModulatorOutput Free index={} slot={second}", before + 1)]);
         ctl.model.check_ids().unwrap();
     }
 
@@ -4416,21 +3832,22 @@ plugin = "builtin:drive"
     fn a_step_sequencer_gets_a_position_slot_after_its_output_slot_and_another_modulator_gets_none() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         engine.drain();
-        ctl.add_modulator(ModulatorLocation::Lane(0), ModSourceSlot::new_steps());
-        ctl.add_modulator(ModulatorLocation::Group(0), ModSourceSlot::new_steps());
-        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
+        let before = ctl.model.free_modulators.len();
+        ctl.add_modulator(ModulatorLocation::Free, ModSourceSlot::new_steps());
+        ctl.add_modulator(ModulatorLocation::Free, ModSourceSlot::new_steps());
+        ctl.add_modulator(ModulatorLocation::Free, lfo_source());
         let slots = |m: &ModulatorSlot| (m.output.unwrap().index(), m.position.map(|slot| slot.index()));
-        let (lane, group, lfo) = (slots(&ctl.model.instruments[0].modulators[1]), slots(&ctl.model.groups[0].modulators[1]), slots(&ctl.model.instruments[0].modulators[2]));
-        assert_eq!((lane.1, group.1, lfo.1), (Some(lane.0 + 1), Some(group.0 + 1), None), "the position's slot is the one after the output's");
+        let (first, second, lfo) = (slots(&ctl.model.free_modulators[before]), slots(&ctl.model.free_modulators[before + 1]), slots(&ctl.model.free_modulators[before + 2]));
+        assert_eq!((first.1, second.1, lfo.1), (Some(first.0 + 1), Some(second.0 + 1), None), "the position's slot is the one after the output's");
         let (_commands, telemetry) = engine.drain();
         assert_eq!(
             telemetry,
             [
-                format!("SetModulatorOutput Lane(0) index=1 slot={}", lane.0),
-                format!("SetModulatorPosition Lane(0) index=1 slot={}", lane.0 + 1),
-                format!("SetModulatorOutput Group(0) index=1 slot={}", group.0),
-                format!("SetModulatorPosition Group(0) index=1 slot={}", group.0 + 1),
-                format!("SetModulatorOutput Lane(0) index=2 slot={}", lfo.0),
+                format!("SetModulatorOutput Free index={before} slot={}", first.0),
+                format!("SetModulatorPosition Free index={before} slot={}", first.0 + 1),
+                format!("SetModulatorOutput Free index={} slot={}", before + 1, second.0),
+                format!("SetModulatorPosition Free index={} slot={}", before + 1, second.0 + 1),
+                format!("SetModulatorOutput Free index={} slot={}", before + 2, lfo.0),
             ]
         );
         ctl.model.check_ids().unwrap();
@@ -4443,37 +3860,37 @@ plugin = "builtin:drive"
             ctl.model.slots.alloc();
         }
         engine.drain();
-        ctl.add_modulator(ModulatorLocation::Lane(0), ModSourceSlot::new_steps());
-        let added = &ctl.model.instruments[0].modulators[1];
+        let before = ctl.model.free_modulators.len();
+        ctl.add_modulator(ModulatorLocation::Free, ModSourceSlot::new_steps());
+        let added = &ctl.model.free_modulators[before];
         assert_eq!((added.output.map(|slot| slot.index()), added.position), (Some(crate::telemetry::CAPACITY - 1), None));
         let (commands, telemetry) = engine.drain();
         assert_eq!(commands.len(), 1, "the modulator is made all the same: {commands:?}");
-        assert_eq!(telemetry, [format!("SetModulatorOutput Lane(0) index=1 slot={}", crate::telemetry::CAPACITY - 1)]);
+        assert_eq!(telemetry, [format!("SetModulatorOutput Free index={before} slot={}", crate::telemetry::CAPACITY - 1)]);
     }
 
     #[test]
     fn a_target_gets_an_effective_value_slot_whether_it_drives_a_parameter_or_a_setting_of_a_modulator() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         engine.drain();
-        // (A second modulator in the lane, for the first to drive the rate of.)
-        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
-        engine.drain();
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, 0.5)));
-        // (The group's cable drives the same filter, which lane 0, the group's first member, has.)
-        assert!(ctl.add_target(ModulatorLocation::Group(0), 0, cutoff_target(&ctl, 0.5)));
+        // (Two modulators, for the first to drive the rate of the second.)
+        assert!(ctl.model.free_modulators.len() >= 2);
+        assert!(ctl.add_target(ModulatorLocation::Free, 0, cutoff_target(&ctl, 0.5)));
+        // (The second modulator's cable drives the same filter.)
+        assert!(ctl.add_target(ModulatorLocation::Free, 1, cutoff_target(&ctl, 0.5)));
         let cross = NewTarget {
-            aim: Driven::Setting { modulator: ctl.model.instruments[0].modulators[1].node, field: ModSetting::Rate },
+            aim: Driven::Setting { modulator: ctl.model.free_modulators[1].node, field: ModSetting::Rate },
             param_name: "Mod 1 rate".to_string(),
             ..cutoff_target(&ctl, 0.5)
         };
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cross));
-        let lane = &ctl.model.instruments[0].modulators[0].targets;
-        let group = &ctl.model.groups[0].modulators[0].targets;
-        assert!(lane[0].effective.is_some() && group[0].effective.is_some());
-        assert_ne!(lane[0].effective, group[0].effective);
+        assert!(ctl.add_target(ModulatorLocation::Free, 0, cross));
+        let first = &ctl.model.free_modulators[0].targets;
+        let second = &ctl.model.free_modulators[1].targets;
+        assert!(first[0].effective.is_some() && second[0].effective.is_some());
+        assert_ne!(first[0].effective, second[0].effective);
         // (A modulator's own setting has an effective value too: the engine publishes what it was set to, f132.)
-        assert!(lane[1].effective.is_some(), "a cable to a setting has a slot");
-        assert!(lane[1].effective != lane[0].effective && lane[1].effective != group[0].effective);
+        assert!(first[1].effective.is_some(), "a cable to a setting has a slot");
+        assert!(first[1].effective != first[0].effective && first[1].effective != second[0].effective);
         ctl.model.check_ids().unwrap();
         let (_, telemetry) = engine.drain();
         assert!(telemetry.is_empty(), "targets carry their slot, they are not assigned one");
@@ -4482,15 +3899,15 @@ plugin = "builtin:drive"
     #[test]
     fn every_cable_to_a_parameter_takes_a_slot_even_when_another_cable_drives_it_already_and_the_next_slot_comes_right_after() {
         let (_engine, mut ctl) = controller_for(WITH_MODULATORS);
-        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, 0.5)));
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 1, cutoff_target(&ctl, 0.25)));
-        let slot = |modulator: usize| ctl.model.instruments[0].modulators[modulator].targets.last().unwrap().effective.map(|slot| slot.index());
+        assert!(ctl.add_target(ModulatorLocation::Free, 0, cutoff_target(&ctl, 0.5)));
+        assert!(ctl.add_target(ModulatorLocation::Free, 1, cutoff_target(&ctl, 0.25)));
+        let slot = |modulator: usize| ctl.model.free_modulators[modulator].targets.last().unwrap().effective.map(|slot| slot.index());
         let (first, second) = (slot(0).expect("the first cable has one"), slot(1).expect("so has the second, though the first drives the parameter"));
         assert_eq!(second, first + 1, "one slot each, one after the other");
         // (The layout names the parameter once, by the first cable's slot: what the second took is one that nothing reads.)
-        ctl.add_modulator(ModulatorLocation::Lane(0), lfo_source());
-        let output = ctl.model.instruments[0].modulators[2].output.unwrap().index();
+        let before = ctl.model.free_modulators.len();
+        ctl.add_modulator(ModulatorLocation::Free, lfo_source());
+        let output = ctl.model.free_modulators[before].output.unwrap().index();
         assert_eq!(output, second + 1, "no slot is skipped, and none is taken twice");
         ctl.model.check_ids().unwrap();
     }
@@ -4500,16 +3917,16 @@ plugin = "builtin:drive"
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
         sent(&engine);
         let slots_before = ctl.model.slots.high_water();
-        // Lane 0's rack and the second lane's instrument; lane 0's rack and its own modulator's rate; the group's rack and the lane that is in no group.
-        let elsewhere = NewTarget { aim: Driven::Param { plugin: ctl.model.instruments[1].node, index: 0 }, ..cutoff_target(&ctl, 0.5) };
-        assert!(!ctl.add_target(ModulatorLocation::Lane(0), 0, elsewhere));
-        let own = NewTarget { aim: Driven::Setting { modulator: ctl.model.instruments[0].modulators[0].node, field: ModSetting::Rate }, ..cutoff_target(&ctl, 0.5) };
-        assert!(!ctl.add_target(ModulatorLocation::Lane(0), 0, own));
-        let not_a_member = NewTarget { aim: Driven::Param { plugin: ctl.model.instruments[1].node, index: 0 }, ..cutoff_target(&ctl, 0.5) };
-        assert!(!ctl.add_target(ModulatorLocation::Group(0), 0, not_a_member));
+        // A modulator's own rate, a plugin that is not there and a node that is not a plugin.
+        let own = NewTarget { aim: Driven::Setting { modulator: ctl.model.free_modulators[0].node, field: ModSetting::Rate }, ..cutoff_target(&ctl, 0.5) };
+        assert!(!ctl.add_target(ModulatorLocation::Free, 0, own));
+        let ghost = NewTarget { aim: Driven::Param { plugin: NodeId(9_999), index: 0 }, ..cutoff_target(&ctl, 0.5) };
+        assert!(!ctl.add_target(ModulatorLocation::Free, 0, ghost));
+        let not_a_plugin = NewTarget { aim: Driven::Param { plugin: ctl.model.groups[0].node, index: 0 }, ..cutoff_target(&ctl, 0.5) };
+        assert!(!ctl.add_target(ModulatorLocation::Free, 0, not_a_plugin));
         assert!(sent(&engine).is_empty());
         assert_eq!(ctl.model.slots.high_water(), slots_before, "no slot is used up for nothing");
-        assert!(ctl.model.instruments[0].modulators[0].targets.is_empty() && ctl.model.groups[0].modulators[0].targets.is_empty());
+        assert!(ctl.model.free_modulators.iter().all(|m| m.targets.is_empty()));
     }
 
     const A_FILTER_AND_A_DETUNE: &str = r#"
@@ -4531,14 +3948,14 @@ depth = 0.2
     #[test]
     fn a_cable_that_what_it_drove_is_gone_from_when_it_is_undone_is_left_out_of_the_undo() {
         let (engine, mut ctl) = controller_for(A_FILTER_AND_A_DETUNE);
-        let cutoff = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        let cutoff = ctl.model.free_modulators[0].targets[0].edge;
         ctl.apply(Intent::RemoveEdge { edge: cutoff }).unwrap();
         // Something takes the filter out without the history (as a front-end that edits the model by itself could).
         ctl.model.remove_effect(0, 0).unwrap();
         sent(&engine);
         ctl.undo().unwrap();
         // The cable is not put back, in the model or on the audio thread: it would drive nothing.
-        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1);
+        assert_eq!(ctl.model.free_modulators[0].targets.len(), 1);
         assert!(sent(&engine).iter().all(|command| !command.contains("ModTarget")));
         ctl.model.check_ids().unwrap();
     }
@@ -4546,15 +3963,15 @@ depth = 0.2
     #[test]
     fn a_modulator_that_comes_back_without_the_cable_whose_plugin_went_in_the_meantime_tells_the_audio_thread_the_cables_it_has() {
         let (engine, mut ctl) = controller_for(A_FILTER_AND_A_DETUNE);
-        let modulator = ctl.model.instruments[0].modulators[0].node;
+        let modulator = ctl.model.free_modulators[0].node;
         ctl.apply(Intent::RemoveNode { node: modulator }).unwrap();
         ctl.model.remove_effect(0, 0).unwrap();
         sent(&engine);
         ctl.undo().unwrap();
-        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 1, "the cable to the detune");
+        assert_eq!(ctl.model.free_modulators[0].targets.len(), 1, "the cable to the detune");
         let told = sent(&engine);
-        assert_eq!(told.iter().filter(|command| command.starts_with("InsertModulator")).count(), 1, "{told:?}");
-        let cables: Vec<&String> = told.iter().filter(|command| command.starts_with("AddModTarget")).collect();
+        assert_eq!(told.iter().filter(|command| command.starts_with("InsertFreeModulator")).count(), 1, "{told:?}");
+        let cables: Vec<&String> = told.iter().filter(|command| command.starts_with("AddFreeModTarget")).collect();
         assert_eq!(cables.len(), 1, "{cables:?}");
         assert!(cables[0].contains(&format!("aim=Param {{ plugin: {:?},", ctl.model.instruments[0].node)), "the cable to the detune, on the instrument: {cables:?}");
         ctl.model.check_ids().unwrap();
@@ -4580,16 +3997,16 @@ slot = 1
 param = "resonance"
 "#,
         );
-        let (modulator, detune) = (ctl.model.instruments[0].modulators[0].node, ctl.model.instruments[0].modulators[0].targets[1].edge);
+        let (modulator, detune) = (ctl.model.free_modulators[0].node, ctl.model.free_modulators[0].targets[1].edge);
         ctl.apply(Intent::RemoveNode { node: modulator }).unwrap();
         // The filter goes without the history, and with it what drove its cutoff and its resonance.
         ctl.model.remove_effect(0, 0).unwrap();
         sent(&engine);
         ctl.undo().unwrap();
-        let edges: Vec<EdgeId> = ctl.model.instruments[0].modulators[0].targets.iter().map(|target| target.edge).collect();
+        let edges: Vec<EdgeId> = ctl.model.free_modulators[0].targets.iter().map(|target| target.edge).collect();
         assert_eq!(edges, [detune], "the cable to the detune is the one that is left");
         let told = sent(&engine);
-        let cables: Vec<&String> = told.iter().filter(|command| command.starts_with("AddModTarget")).collect();
+        let cables: Vec<&String> = told.iter().filter(|command| command.starts_with("AddFreeModTarget")).collect();
         assert_eq!(cables.len(), 1, "{told:?}");
         assert!(cables[0].contains(&format!("aim=Param {{ plugin: {:?},", ctl.model.instruments[0].node)), "the cable to the detune, on the instrument: {told:?}");
         ctl.model.check_ids().unwrap();
@@ -4605,11 +4022,11 @@ param = "resonance"
         let mut ctl = Controller::new(model, handles, None);
         // The lane's LFO (a 2 Hz sine) gets a target on the filter's cutoff,
         // centred on 0.35 and 0.5 deep.
-        assert!(ctl.add_target(ModulatorLocation::Lane(0), 0, cutoff_target(&ctl, 0.5)));
+        assert!(ctl.add_target(ModulatorLocation::Free, 0, cutoff_target(&ctl, 0.5)));
         let mut out = vec![vec![0.0f32; 64]; 2];
         graph.process(&[], &mut out).unwrap();
 
-        let lfo = &ctl.model.instruments[0].modulators[0];
+        let lfo = &ctl.model.free_modulators[0];
         let published = ctl.telemetry.load(lfo.targets[0].effective.unwrap());
         let output = LfoWaveform::Sine.eval(2.0 * 64.0 / 48_000.0);
         assert!((published - (0.35 + 0.5 * output)).abs() < 1e-5, "{published} for an LFO output of {output}");
@@ -4665,8 +4082,8 @@ depth = 0.1
         };
 
         let t = &ctl.telemetry;
-        let group_lfo = &ctl.model.groups[0].modulators[0];
-        let lane_lfo = &ctl.model.instruments[0].modulators[0];
+        let group_lfo = &hearing_group(&ctl.model, 0)[0];
+        let lane_lfo = &ctl.model.free_modulators[0];
         assert_eq!(t.load(group_lfo.output.unwrap()), LfoWaveform::Square.eval(0.0), "the group LFO's output");
         assert_eq!(t.load(lane_lfo.output.unwrap()), 1.0, "the lane LFO's output");
         let cutoff = t.load(group_lfo.targets[0].effective.unwrap());
@@ -4692,7 +4109,7 @@ depth = 0.1
         engine.drain();
         assert_eq!(ctl.add_lane(), 2);
         let lane = &ctl.model.instruments[2];
-        assert!(lane.instrument.is_none() && lane.effects.is_empty() && lane.modulators.is_empty());
+        assert!(lane.instrument.is_none() && lane.effects.is_empty());
         assert_eq!((lane.range, lane.volume, lane.transpose, lane.group), (None, 1.0, 0, None));
         assert_eq!(lane.pitch_bend_range, 2.0);
         assert!(lane.pattern.is_none());
@@ -4713,7 +4130,7 @@ depth = 0.1
         engine.drain();
         assert_eq!(ctl.add_group(), 1);
         let group = &ctl.model.groups[1];
-        assert!(group.effects.is_empty() && group.modulators.is_empty());
+        assert!(group.effects.is_empty());
         assert_eq!((group.name.as_deref(), group.volume, group.pan), (None, 1.0, 0.0));
         let meter = group.meter.expect("a meter");
         let (commands, telemetry) = engine.drain();
@@ -4812,85 +4229,13 @@ group = 0
 "#;
 
     #[test]
-    fn a_lane_that_joins_a_group_before_its_members_leaves_the_cables_on_the_plugins_they_drove() {
-        use crate::plugin::chain::ModTargetKind as K;
-        let (mut graph, mut ctl) = controller_on_a_real_graph(A_GROUP_DRIVING_ITS_FIRST_MEMBER);
-        let detune = index_of(ctl.model.instruments[1].instrument.as_ref().unwrap(), "detune");
-        run(&mut graph);
-        assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "lane 1's detune is driven");
-        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0));
-
-        // Lane 0 is the group's member 0 now, and lane 1 its member 1.
-        assert!(ctl.set_lane_group(0, Some(0)));
-        run(&mut graph);
-        assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "still lane 1's detune that is driven");
-        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0), "and not the new member's");
-        let kind = ctl.model.kind_of_target(ModulatorLocation::Group(0), 0, 0);
-        assert!(matches!(kind, Some(K::GroupMember { member: 1, .. })), "the model says member 1 too: {kind:?}");
-        ctl.model.check_ids().unwrap();
-    }
-
-    #[test]
     fn a_lane_put_in_the_group_it_is_in_keeps_the_cables_to_it() {
         let (mut graph, mut ctl) = controller_on_a_real_graph(A_GROUP_DRIVING_ITS_FIRST_MEMBER);
         let detune = index_of(ctl.model.instruments[1].instrument.as_ref().unwrap(), "detune");
         assert!(ctl.set_lane_group(1, Some(0)));
         run(&mut graph);
-        assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 1, "the group's cable to it is still there");
+        assert_eq!(hearing_group(&ctl.model, 0)[0].targets.len(), 1, "the group's cable to it is still there");
         assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "and still drives its detune");
-        ctl.model.check_ids().unwrap();
-    }
-
-    #[test]
-    fn a_lane_that_leaves_its_group_has_what_the_groups_cables_drove_given_back() {
-        let (mut graph, mut ctl) = controller_on_a_real_graph(GROUP_CABLES);
-        let detune = index_of(ctl.model.instruments[0].instrument.as_ref().unwrap(), "detune");
-        let cutoff = index_of(&ctl.model.groups[0].effects[0], "cutoff");
-        run(&mut graph);
-        assert!(graph.plugin_parameter(0, 0, detune).unwrap() > 1.0, "the member's detune is driven");
-        assert!(graph.lane_lfo(0, 0).unwrap().0 > 20.0, "so is the rate of the member's own LFO");
-        assert_eq!(graph.bus_parameter(0, 0, cutoff), Some(0.7));
-
-        assert!(ctl.set_lane_group(0, None));
-        run(&mut graph);
-        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0), "the detune the user set");
-        assert_eq!(graph.lane_lfo(0, 0).map(|(rate, _)| rate), Some(2.0), "and the rate");
-        assert_eq!(graph.bus_parameter(0, 0, cutoff), Some(0.7), "the cable to the bus is the group's still");
-        let group_lfo = &ctl.model.groups[0].modulators[0];
-        assert_eq!(group_lfo.targets.len(), 1, "only the cable to the bus is left");
-        assert_eq!(group_lfo.targets[0].param_name, "cutoff");
-        ctl.model.check_ids().unwrap();
-    }
-
-    #[test]
-    fn the_groups_cables_go_first_and_what_they_drove_is_given_back_after_the_lane_has_left() {
-        let (engine, mut ctl) = controller_for(GROUP_CABLES);
-        sent(&engine);
-        assert!(ctl.set_lane_group(0, None));
-        assert_eq!(
-            sent(&engine),
-            [
-                "RemoveGroupModTarget group=0 mod=0 target=0",
-                "RemoveGroupModTarget group=0 mod=0 target=1",
-                "SetLaneGroup inst=0 group=None",
-                "SetParameter inst=0 slot=0 param=1 value=0.000",
-                "SetModulatorRate inst=0 mod=0 rate=2.000",
-            ]
-        );
-    }
-
-    #[test]
-    fn a_lane_moved_to_another_group_has_what_the_first_groups_cables_drove_given_back_too() {
-        let two_groups = format!("{GROUP_CABLES}\n[[group]]\n");
-        let (mut graph, mut ctl) = controller_on_a_real_graph(&two_groups);
-        let detune = index_of(ctl.model.instruments[0].instrument.as_ref().unwrap(), "detune");
-        run(&mut graph);
-        assert!(graph.plugin_parameter(0, 0, detune).unwrap() > 1.0);
-        assert!(ctl.set_lane_group(0, Some(1)));
-        run(&mut graph);
-        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0), "not driven by the group it left, and the other has no cables");
-        assert_eq!(graph.lane_lfo(0, 0).map(|(rate, _)| rate), Some(2.0));
-        assert_eq!(ctl.model.instruments[0].group, Some(1));
         ctl.model.check_ids().unwrap();
     }
 
@@ -4900,43 +4245,7 @@ group = 0
         sent(&engine);
         assert!(ctl.set_lane_group(0, Some(0)));
         assert_eq!(sent(&engine), ["SetLaneGroup inst=0 group=Some(0)"]);
-        assert_eq!(ctl.model.groups[0].modulators[0].targets.len(), 3);
-    }
-
-    /// As above, with two members: the LFO drives the detune of the second, lane 1.
-    const A_GROUP_DRIVING_ITS_SECOND_MEMBER: &str = r#"
-[[group]]
-[[group.modulator]]
-waveform = "square"
-rate = 0.0
-[[group.modulator.target]]
-member = 1
-param = "detune"
-depth = 0.1
-
-[[instrument]]
-plugin = "builtin:osc"
-group = 0
-[[instrument]]
-plugin = "builtin:osc"
-group = 0
-"#;
-
-    #[test]
-    fn a_member_that_leaves_a_group_before_the_others_leaves_their_cables_on_the_plugins_they_drove() {
-        use crate::plugin::chain::ModTargetKind as K;
-        let (mut graph, mut ctl) = controller_on_a_real_graph(A_GROUP_DRIVING_ITS_SECOND_MEMBER);
-        let detune = index_of(ctl.model.instruments[1].instrument.as_ref().unwrap(), "detune");
-        run(&mut graph);
-        assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "lane 1's detune is driven");
-
-        // Lane 1 is the group's member 0 now.
-        assert!(ctl.set_lane_group(0, None));
-        run(&mut graph);
-        assert!(graph.plugin_parameter(1, 0, detune).unwrap() > 1.0, "still lane 1's detune that is driven");
-        let kind = ctl.model.kind_of_target(ModulatorLocation::Group(0), 0, 0);
-        assert!(matches!(kind, Some(K::GroupMember { member: 0, .. })), "the model says member 0 too: {kind:?}");
-        ctl.model.check_ids().unwrap();
+        assert_eq!(hearing_group(&ctl.model, 0)[0].targets.len(), 3);
     }
 
     // -- What a cable gives back when it is taken out --
@@ -4990,11 +4299,11 @@ depth = 0.5
         let cutoff = index_of(&ctl.model.instruments[0].effects[0], "cutoff");
         run(&mut graph);
         assert_eq!(graph.plugin_parameter(0, 1, cutoff), Some(0.8), "0.5, and 0.2 and 0.1 from the two cables");
-        let first = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        let first = ctl.model.free_modulators[0].targets[0].edge;
         assert!(ctl.remove_edge(first));
         run(&mut graph);
         assert_eq!(graph.plugin_parameter(0, 1, cutoff), Some(0.6), "the other cable drives it still");
-        let second = ctl.model.instruments[0].modulators[1].targets[0].edge;
+        let second = ctl.model.free_modulators[1].targets[0].edge;
         assert!(ctl.remove_edge(second));
         run(&mut graph);
         assert_eq!(graph.plugin_parameter(0, 1, cutoff), Some(0.5), "and now it is what the user set");
@@ -5013,11 +4322,11 @@ depth = 0.5
         let set = ctl.model.instruments[0].effects[0].params[resonance as usize].value;
         assert!(driven < set, "the envelope at rest holds the resonance below what is set: {driven} against {set}");
 
-        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 2));
+        assert!(ctl.remove_modulator(ModulatorLocation::Free, 2));
         run(&mut graph);
         assert_eq!(graph.plugin_parameter(0, 1, resonance), Some(set), "the envelope is gone, and the resonance is what is set");
         assert_eq!(graph.plugin_parameter(0, 1, cutoff), Some(0.8), "what the others drive is left to them");
-        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
+        assert!(ctl.remove_modulator(ModulatorLocation::Free, 0));
         run(&mut graph);
         assert_eq!(graph.plugin_parameter(0, 1, cutoff), Some(0.6));
     }
@@ -5047,23 +4356,23 @@ depth = 0.1
     fn taking_out_the_cables_that_drive_a_modulators_rate_and_depth_gives_them_back() {
         let (mut graph, mut ctl) = controller_on_a_real_graph(CABLES_ON_CABLES);
         run(&mut graph);
-        let (rate, depths) = graph.lane_lfo(0, 1).unwrap();
+        let (rate, depths) = graph.free_lfo(1).unwrap();
         assert!(rate > 20.0 && depths[0] > 0.5, "driven: {rate} Hz, depth {}", depths[0]);
-        let (set_rate, set_depth) = match ctl.model.instruments[0].modulators[1].source {
-            crate::app::model::ModSourceSlot::Lfo { rate, .. } => (rate, ctl.model.instruments[0].modulators[1].targets[0].depth),
+        let (set_rate, set_depth) = match ctl.model.free_modulators[1].source {
+            crate::app::model::ModSourceSlot::Lfo { rate, .. } => (rate, ctl.model.free_modulators[1].targets[0].depth),
             _ => panic!("an LFO"),
         };
         assert_eq!((set_rate, set_depth), (2.0, 0.1));
 
-        let rate_cable = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        let rate_cable = ctl.model.free_modulators[0].targets[0].edge;
         assert!(ctl.remove_edge(rate_cable));
         run(&mut graph);
-        assert_eq!(graph.lane_lfo(0, 1).map(|(r, _)| r), Some(2.0), "the rate is its own again");
-        assert!(graph.lane_lfo(0, 1).unwrap().1[0] > 0.5, "and the depth is still driven");
-        let depth_cable = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        assert_eq!(graph.free_lfo(1).map(|(r, _)| r), Some(2.0), "the rate is its own again");
+        assert!(graph.free_lfo(1).unwrap().1[0] > 0.5, "and the depth is still driven");
+        let depth_cable = ctl.model.free_modulators[0].targets[0].edge;
         assert!(ctl.remove_edge(depth_cable));
         run(&mut graph);
-        assert_eq!(graph.lane_lfo(0, 1), Some((2.0, vec![0.1])), "and so is the depth");
+        assert_eq!(graph.free_lfo(1), Some((2.0, vec![0.1])), "and so is the depth");
     }
 
     /// Group 0 has a filter on its bus; its square LFO drives the first member's detune, the bus filter's cutoff and
@@ -5099,47 +4408,17 @@ rate = 2.0
 "#;
 
     #[test]
-    fn taking_out_a_groups_cables_and_modulators_gives_back_what_they_drove_in_the_members_and_on_the_bus() {
-        let driven = || controller_on_a_real_graph(GROUP_CABLES);
-        // Cable by cable.
-        let (mut graph, mut ctl) = driven();
-        let detune = index_of(ctl.model.instruments[0].instrument.as_ref().unwrap(), "detune");
-        let cutoff = index_of(&ctl.model.groups[0].effects[0], "cutoff");
-        run(&mut graph);
-        assert!(graph.plugin_parameter(0, 0, detune).unwrap() > 1.0, "detune is driven");
-        assert_eq!(graph.bus_parameter(0, 0, cutoff), Some(0.7));
-        assert!(graph.lane_lfo(0, 0).unwrap().0 > 20.0, "the member's LFO is driven");
-        for (cable, what) in [(0, "the member's detune"), (0, "the bus filter's cutoff"), (0, "the member LFO's rate")] {
-            let edge = ctl.model.groups[0].modulators[0].targets[cable].edge;
-            assert!(ctl.remove_edge(edge), "{what}");
-            run(&mut graph);
-        }
-        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0), "the detune the user set");
-        assert_eq!(graph.bus_parameter(0, 0, cutoff), Some(0.5));
-        assert_eq!(graph.lane_lfo(0, 0).map(|(r, _)| r), Some(2.0));
-
-        // And the group's modulator at once.
-        let (mut graph, mut ctl) = driven();
-        run(&mut graph);
-        assert!(ctl.remove_modulator(ModulatorLocation::Group(0), 0));
-        run(&mut graph);
-        assert_eq!(graph.plugin_parameter(0, 0, detune), Some(0.0));
-        assert_eq!(graph.bus_parameter(0, 0, cutoff), Some(0.5));
-        assert_eq!(graph.lane_lfo(0, 0).map(|(r, _)| r), Some(2.0));
-    }
-
-    #[test]
     fn a_cable_that_is_not_the_last_on_a_parameter_gives_nothing_back_and_the_last_one_does() {
         // The commands, not what the engine ends up with (a cable that is left writes every buffer): giving
         // the user's value back to a parameter that is still driven would be a click for nothing.
         let (engine, mut ctl) = controller_for(ONE_CUTOFF_TWO_CABLES);
         sent(&engine);
-        let first = ctl.model.instruments[0].modulators[0].targets[0].edge;
+        let first = ctl.model.free_modulators[0].targets[0].edge;
         assert!(ctl.remove_edge(first));
-        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=0 target=0"], "the other cable drives the cutoff still");
-        let second = ctl.model.instruments[0].modulators[1].targets[0].edge;
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=0 target=0"], "the other cable drives the cutoff still");
+        let second = ctl.model.free_modulators[1].targets[0].edge;
         assert!(ctl.remove_edge(second));
-        assert_eq!(sent(&engine), ["RemoveModTarget inst=0 mod=1 target=0", "SetParameter inst=0 slot=1 param=0 value=0.500"]);
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=1 target=0", "SetParameter inst=0 slot=1 param=0 value=0.500"]);
     }
 
     /// m0, a square LFO at rate 0, drives the stages of the envelope m1: its attack, decay, sustain and release.
@@ -5173,17 +4452,17 @@ release = 0.8
     fn taking_out_the_cables_that_drive_an_envelopes_stages_gives_them_back() {
         let (mut graph, mut ctl) = controller_on_a_real_graph(CABLES_TO_AN_ENVELOPE);
         run(&mut graph);
-        let (attack, decay, sustain, release) = graph.lane_envelope(0, 1).unwrap();
+        let (attack, decay, sustain, release) = graph.free_envelope(1).unwrap();
         assert!(attack > 0.2 && decay > 0.4 && sustain != 0.6 && release > 0.8, "driven: {:?}", (attack, decay, sustain, release));
         // One at a time, from the first: what is let go of is its own again, and what is still driven is not.
         for own_now in [(true, false, false, false), (true, true, false, false), (true, true, true, false), (true, true, true, true)] {
-            let edge = ctl.model.instruments[0].modulators[0].targets[0].edge;
+            let edge = ctl.model.free_modulators[0].targets[0].edge;
             assert!(ctl.remove_edge(edge));
             run(&mut graph);
-            let now = graph.lane_envelope(0, 1).unwrap();
+            let now = graph.free_envelope(1).unwrap();
             assert_eq!((now.0 == 0.2, now.1 == 0.4, now.2 == 0.6, now.3 == 0.8), own_now, "after {now:?}");
         }
-        assert_eq!(graph.lane_envelope(0, 1), Some((0.2, 0.4, 0.6, 0.8)));
+        assert_eq!(graph.free_envelope(1), Some((0.2, 0.4, 0.6, 0.8)));
     }
 
     #[test]
@@ -5191,26 +4470,12 @@ release = 0.8
         let (engine, mut ctl) = controller_for(testutil::GROUPS);
         sent(&engine);
         // The group's second modulator, an envelope, has a cable to the first one's rate (0.5 Hz) and one to the depth of its third cable.
-        let rate_cable = ctl.model.groups[0].modulators[1].targets[0].edge;
+        let rate_cable = hearing_group(&ctl.model, 0)[1].targets[0].edge;
         assert!(ctl.remove_edge(rate_cable));
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=1 target=0", "SetGroupModulatorRate group=0 mod=0 rate=0.500"]);
-        let depth_cable = ctl.model.groups[0].modulators[1].targets[0].edge;
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=2 target=0", "SetFreeModulatorRate mod=1 rate=0.500"]);
+        let depth_cable = hearing_group(&ctl.model, 0)[1].targets[0].edge;
         assert!(ctl.remove_edge(depth_cable));
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=1 target=0", "SetGroupModTargetDepth group=0 mod=0 target=2 depth=0.250"]);
-    }
-
-    #[test]
-    fn a_groups_cables_to_a_second_member_and_to_a_members_modulator_give_back_their_values() {
-        let (engine, mut ctl) = controller_for(testutil::GROUPS);
-        sent(&engine);
-        // The group's first modulator: cables to member 0's detune, member 1's cutoff, the bus reverb's damping and the
-        // rate of member 1's own LFO (3 Hz).
-        let to_member_one = ctl.model.groups[0].modulators[0].targets[1].edge;
-        assert!(ctl.remove_edge(to_member_one));
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=1", "SetParameter inst=1 slot=1 param=0 value=1.000"]);
-        let to_members_lfo = ctl.model.groups[0].modulators[0].targets[2].edge;
-        assert!(ctl.remove_edge(to_members_lfo));
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=2", "SetModulatorRate inst=1 mod=0 rate=3.000"]);
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=2 target=0", "SetFreeModTargetDepth mod=1 target=2 depth=0.250"]);
     }
 
     #[test]
@@ -5238,9 +4503,9 @@ depth = 0.3
         );
         sent(&engine);
         // (A cable to its own rate does nothing: the file has one, and it is not made.)
-        assert_eq!(ctl.model.instruments[0].modulators[0].targets.len(), 2);
-        assert!(ctl.remove_modulator(ModulatorLocation::Lane(0), 0));
-        assert_eq!(sent(&engine), ["RemoveModulator inst=0 index=0", "SetParameter inst=0 slot=1 param=0 value=1.000"], "the cutoff once");
+        assert_eq!(ctl.model.free_modulators[0].targets.len(), 2);
+        assert!(ctl.remove_modulator(ModulatorLocation::Free, 0));
+        assert_eq!(sent(&engine), ["RemoveFreeModulator index=0", "SetParameter inst=0 slot=1 param=0 value=1.000"], "the cutoff once");
     }
 
     #[test]
@@ -5266,9 +4531,9 @@ group = 0
 "#,
         );
         sent(&engine);
-        let to_reverb = ctl.model.groups[0].modulators[0].targets[1].edge;
+        let to_reverb = hearing_group(&ctl.model, 0)[0].targets[1].edge;
         assert!(ctl.remove_edge(to_reverb));
-        assert_eq!(sent(&engine), ["RemoveGroupModTarget group=0 mod=0 target=1", "SetGroupParameter group=0 fx=1 param=2 value=0.350"]);
+        assert_eq!(sent(&engine), ["RemoveFreeModTarget mod=0 target=1", "SetGroupParameter group=0 fx=1 param=2 value=0.350"]);
     }
 }
 
