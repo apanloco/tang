@@ -25,7 +25,7 @@ out, of three kinds: audio, MIDI and the modulation that exists. What that makes
   keyboards into one synth is two cables into it. A keyboard is the computer's keys, the on-screen piano, or one of the MIDI devices that are plugged in.
 - **Things between**: a pattern, an arpeggiator or a transposer as a node between the keys and the synth (the pattern recorder is inside every lane
   today).
-- **Later**: an audio input as a source (`CLAUDE.md`, "Future ideas"), and more than one output.
+- **Later**: an audio input as a source (`CLAUDE.md`, "Future ideas"; the user asked for it on 2026-10-28 for after step 96: "for future (after this) I want to be able to add my computer microphone as an input that I can connect to other devices via audio cable.", which is a source node with an output of audio and a cable from it, as P4's sources of notes are, and a first sketch is in `docs/web-ui.md` §13), and more than one output.
 
 What it does not change: the modulation cables, the plugins, the lanes and groups that you see (a lane is a path in the graph, and a session that draws
 no new cable is saved and shown as it is today), the terminal's tree, Undo.

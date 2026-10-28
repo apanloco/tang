@@ -4661,6 +4661,19 @@ the modulator that goes with it (what the input puts out, as an LFO's output is)
 comes from the DAW: `audio::Renderer` is already the one piece of code that the sound card's callback and the null backend run, so a plugin's
 `process` would be a third thing that drives it, with the input as the source node's buffer.
 
+*Your ask of 2026-10-28, for after step 96 ("for future (after this) I want to be able to add my computer microphone as an input that I can connect to other devices via audio cable.")* turns it into the first thing to build of this idea, in the shape that the cables give it: the microphone is a **source node
+with an output of audio**, as the keys and a MIDI device are sources of notes (P4), and what it puts out is drawn to what it is wanted at by an audio cable (an effect, a group's bus, the
+mix), with the mute, the solo, the level and the latency that every cable has. A first sketch, nothing decided and nothing built: *the file* has a table for it (`[[input]]` with the device's
+`name`, written as `[[device]]` is, and a `ui`), *the model* a node kind beside the sources of notes with a port `audioOut`, *the intents* `AddInput` (and its removal, with its cables, as a step of
+the history) and `AddCable` from its output, *the controller* tells the audio thread the device it is to listen to, *the engine* opens an input stream on the device (cpal's, on its own callback)
+and puts what it hears in a lock-free ring that the output callback reads a block at a time, so that the node in the plan is a source whose block is what the ring has (silence while it is empty,
+and the null backend gives it silence or a test tone for CI), *the page* the bar's "+ Input" (the inputs that the program can open, as the open MIDI inputs are told: a message of its own) and
+a node with an output port, *the terminal* a row for it on the Patch tab, and `tang enumerate audio` lists the inputs as well as the outputs. **Questions that are yours when it is started:**
+which device the first one is (the system's default, or one that you choose, and whether a flag beside `--audio-device` names it); the permission that macOS asks of a program that opens a
+microphone (the terminal that runs Tang is the one that is asked, once); the feedback of a microphone that is heard through the speakers that it listens to (it could begin muted, or at a low
+level, or say so); a microphone is one channel and the chains are stereo (both sides get it); devices that do not run at the sample rate of the output (a resampler, or the same device only);
+and the latency that the input adds, which the delay compensation of P3f already knows how to put in step with the paths that it is added to.
+
 **Audio and MIDI as cables** (2026-10-20, yours). Every node has inputs and outputs, and the connections of audio and of MIDI are cables that a person
 draws and takes out, as the modulation cables are: two oscillators into one reverb, a send, a bus into a bus, a keyboard (the computer's keys, a MIDI
 device) with a cable to each lane it plays. It contains the two ideas above (a keyboard node is a MIDI source, an audio input is an audio source). What

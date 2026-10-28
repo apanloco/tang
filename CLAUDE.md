@@ -3570,6 +3570,14 @@ has no plugin format, sound card or interface in it (see "The kernel").
   instrument, through the same effects, groups and modulators (an envelope follower is a modulator to come with it); and
   from there Tang as a plugin (VST3 / CLAP) whose buffer comes from the DAW: `audio::Renderer` is already the one code the
   sound card's callback and the null backend run, so a plugin's `process` would be a third thing to drive it
+  The user's direction of 2026-10-28, mid-turn while step 96 was being finished, and the next thing they want after it: "for future (after this) I want to be able to
+  add my computer microphone as an input that I can connect to other devices via audio cable." In the model of the cables that is a **source node with an output of
+  audio** (as the keys and a MIDI device are sources of notes: see "Sources of notes and cables of notes"), added from the bar like "+ Source" and drawn as a node whose output
+  is an audio cable that can end at any effect, any group's bus or the mix (`AddCable` with a start that is the input, and the same law of mute and solo, latency and loops); the
+  engine would need an input stream (cpal) that fills a lock-free ring for the output callback to read, and the null backend a silence or a test signal for CI. Open questions for
+  when it is started (a first sketch in `docs/web-ui.md` §13): which device (the system's default input, or a name in the file as `[[device]]` has, and a flag beside `--audio-device`),
+  the permission that macOS asks of a program that opens a microphone, the feedback of a microphone that is heard through the speakers it listens to (start muted or at a low gain?),
+  mono into both channels, devices of two sample rates, and the latency of the input, which the delay compensation would add to what the cables carry. Not started.
 
 ## Notes for Claude
 
