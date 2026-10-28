@@ -38,6 +38,13 @@ function laidOut(id: number): { x: number; y: number } {
   return found;
 }
 
+/** Where the arrangement that makes the cables short puts a node of the tracer (what the button that arranges the nodes gives). */
+function arrangedAt(id: number): { x: number; y: number } {
+  const found = toFlow(tracerSnapshot.graph, undefined, undefined, { arrange: true }).nodes.find((node) => node.id === String(id))?.position;
+  if (!found) throw new Error(`the arrangement has no node ${String(id)}`);
+  return found;
+}
+
 /**
  * A pointer event as the browser makes it, with the window as its `view` (which d3, under React Flow, listens on for the moves):
  * jsdom accepts no window of a test's as the `view` of a `MouseEvent`, so it is put on the event after.
@@ -299,24 +306,22 @@ describe("moving a node", () => {
 describe("arranging the nodes again", () => {
   const arrange = () => screen.findByRole("button", { name: "Arrange the nodes again" });
 
-  test("is a button of the canvas, which has nothing to do until a node has been moved", async () => {
+  test("is a button of the canvas, which has something to do when a session is opened (its nodes are in rows), nothing once they are arranged, and something again when a node is moved", async () => {
     const { server } = await rig(<PatchView />);
-    expect((await arrange()).hasAttribute("disabled")).toBe(true);
+    expect((await arrange()).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(await arrange());
+    await waitFor(async () => {
+      expect((await arrange()).hasAttribute("disabled")).toBe(true);
+    });
     act(() => {
       server.apply({ type: "setNodeUi", node: oscillator.id, ui: { x: 10, y: 20 } });
     });
     await waitFor(async () => {
       expect((await arrange()).hasAttribute("disabled")).toBe(false);
     });
-    act(() => {
-      server.apply({ type: "setNodeUi", node: oscillator.id, ui: null });
-    });
-    await waitFor(async () => {
-      expect((await arrange()).hasAttribute("disabled")).toBe(true);
-    });
   });
 
-  test("puts every node that was moved back where the layout has it, and asks for each", async () => {
+  test("gives back the places of the nodes that were moved, asks for each, and puts every node where the arrangement that makes the cables short has it", async () => {
     const { server, requests } = await rig(<PatchView />);
     act(() => {
       server.apply({ type: "setNodeUi", node: oscillator.id, ui: { x: 10, y: 20 } });
@@ -328,9 +333,9 @@ describe("arranging the nodes again", () => {
     });
     fireEvent.click(await arrange());
     await waitFor(() => {
-      expect(placeOf(node)).toEqual(laidOut(filter.id));
+      expect(placeOf(node)).toEqual(arrangedAt(filter.id));
     });
-    expect(placeOf(await screen.findByTestId(`rf__node-${String(oscillator.id)}`))).toEqual(laidOut(oscillator.id));
+    expect(placeOf(await screen.findByTestId(`rf__node-${String(oscillator.id)}`))).toEqual(arrangedAt(oscillator.id));
     expect(intents(requests).map((sent) => [sent.type, sent.node, sent.ui])).toEqual([
       ["setNodeUi", oscillator.id, null],
       ["setNodeUi", filter.id, null],

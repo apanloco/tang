@@ -28,10 +28,16 @@ function placesOnCanvas(): Places {
   return places;
 }
 
-/** Where the layout puts the nodes of `graph` when it remembers nothing. */
+/** Where the layout of the rows puts the nodes of `graph` when it remembers nothing. */
 function laidOut(graph: Graph | undefined): Places {
   if (!graph) throw new Error("the client has no session");
   return new Map(toFlow(graph).nodes.map((node) => [node.id, node.position]));
+}
+
+/** Where the arrangement that makes the cables short puts the nodes of `graph`: what the button that arranges the nodes gives. */
+function arrangedOut(graph: Graph | undefined): Places {
+  if (!graph) throw new Error("the client has no session");
+  return new Map(toFlow(graph, undefined, undefined, { arrange: true }).nodes.map((node) => [node.id, node.position]));
 }
 
 const arrange = () => screen.findByRole("button", { name: "Arrange the nodes again" });
@@ -103,9 +109,14 @@ describe("a canvas that is arranged when it is asked to be", () => {
     expect(placesOnCanvas()).toEqual(before);
   });
 
-  test("has the button that arranges the nodes again dim while they are where the layout has them, and bright when they are not", async () => {
+  test("has the button that arranges the nodes bright when the session is opened (the nodes are in rows), dim once they are arranged, and bright again when the session changes", async () => {
     const { server } = await rig(<PatchView />);
-    expect((await arrange()).hasAttribute("disabled")).toBe(true);
+    expect((await arrange()).hasAttribute("disabled")).toBe(false);
+
+    fireEvent.click(await arrange());
+    await waitFor(async () => {
+      expect((await arrange()).hasAttribute("disabled")).toBe(true);
+    });
 
     act(() => {
       server.apply(envelopeOnTheRate);
@@ -116,7 +127,7 @@ describe("a canvas that is arranged when it is asked to be", () => {
     });
   });
 
-  test("puts every node where the layout has it when the button is pressed, and the button is dim again", async () => {
+  test("puts every node where the arrangement that makes the cables short has it when the button is pressed, and the button is dim again", async () => {
     const { server, client, requests } = await rig(<PatchView />);
     await screen.findByTestId(`rf__node-${String(lfo.id)}`);
     act(() => {
@@ -125,12 +136,14 @@ describe("a canvas that is arranged when it is asked to be", () => {
     await waitFor(async () => {
       expect((await arrange()).hasAttribute("disabled")).toBe(false);
     });
-    expect(placesOnCanvas()).not.toEqual(laidOut(client.state.snapshot?.graph));
+    expect(placesOnCanvas()).not.toEqual(arrangedOut(client.state.snapshot?.graph));
+    // (The rows' layout is where the nodes were put at first, and the arrangement is another.)
+    expect(arrangedOut(client.state.snapshot?.graph)).not.toEqual(laidOut(client.state.snapshot?.graph));
 
     fireEvent.click(await arrange());
 
     await waitFor(() => {
-      expect(placesOnCanvas()).toEqual(laidOut(client.state.snapshot?.graph));
+      expect(placesOnCanvas()).toEqual(arrangedOut(client.state.snapshot?.graph));
     });
     await waitFor(async () => {
       expect((await arrange()).hasAttribute("disabled")).toBe(true);
@@ -150,7 +163,7 @@ describe("a canvas that is arranged when it is asked to be", () => {
     });
     fireEvent.click(await arrange());
     await waitFor(() => {
-      expect(placesOnCanvas()).toEqual(laidOut(client.state.snapshot?.graph));
+      expect(placesOnCanvas()).toEqual(arrangedOut(client.state.snapshot?.graph));
     });
     const arranged = placesOnCanvas();
     const envelope = client.state.snapshot?.graph.nodes.find((node) => node.kind === "modulator" && node.id !== lfo.id);
@@ -179,9 +192,9 @@ describe("a canvas that is arranged when it is asked to be", () => {
       expect((await arrange()).hasAttribute("disabled")).toBe(false);
     });
     fireEvent.click(await arrange());
-    // (Only when the last of them is given back is every node where the layout has it.)
+    // (Only when the last of them is given back is every node where the arrangement has it.)
     await waitFor(() => {
-      expect(placesOnCanvas()).toEqual(laidOut(client.state.snapshot?.graph));
+      expect(placesOnCanvas()).toEqual(arrangedOut(client.state.snapshot?.graph));
     });
     const arranged = placesOnCanvas();
 

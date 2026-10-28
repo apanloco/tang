@@ -1,9 +1,11 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Graph, Node, NodeId, Param, Plugin } from "../../protocol";
-import { MASTER, audioCablesFixture, sideCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, audioCablesFixture, freeReachFixture, groupsFixture, sideCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
 import { DEFAULT_KNOBS } from "../../client/pinning";
+import { MARGIN, OVER_RATE, measure } from "./arrange";
 import {
+  blocksOf,
   CABLE_GAP,
   CABLE_ROW_HEIGHT,
   CABLES_GAP,
@@ -2731,5 +2733,130 @@ describe("an effect that has a second input of audio", () => {
   test("names the handle of its second input by the port, as the other handles are", () => {
     expect(handleOf({ type: "audioInSide" })).toBe("audioInSide");
     expect(handleOf({ type: "audioIn" })).toBe("audioIn");
+  });
+});
+
+describe("the nodes arranged for short cables", () => {
+  // `toFlow(graph, undefined, undefined, { arrange: true })` is what the button that arranges the nodes shows (`arrange.ts`, step 98): the rows' layout is where it starts from and what a session opens as.
+  const arranged = (graph: Graph) => toFlow(graph, undefined, undefined, { arrange: true });
+  /** What a layout is worth for the cables of `graph`, as `arrange.ts` says it. */
+  const worth = (graph: Graph, flow: ReturnType<typeof toFlow>) => {
+    const { blocks, wires } = blocksOf(graph, flow);
+    return measure(blocks, wires);
+  };
+  const sessions: [string, Graph][] = [
+    ["the tracer", tracerSnapshot.graph],
+    ["two lanes", twoLanes],
+    ["a group", grouped],
+    ["the groups' fixture", groupsFixture.snapshot.graph],
+    ["the free modulators' fixture", freeReachFixture.snapshot.graph],
+    ["the audio cables' fixture", audioCablesFixture.snapshot.graph],
+    ["the second input's fixture", sideCablesFixture.snapshot.graph],
+  ];
+
+  test("is the layout of the rows when it is not asked for, and when it is asked not to be", () => {
+    for (const [name, graph] of sessions) {
+      expect(placesOf(toFlow(graph, undefined, undefined, { arrange: false })), name).toEqual(placesOf(toFlow(graph)));
+      expect(placesOf(toFlow(graph, undefined, undefined, {})), name).toEqual(placesOf(toFlow(graph)));
+    }
+  });
+
+  test("puts every node of the session on the canvas and none on another, with the margin between, and is made of the same places whenever it is asked", () => {
+    for (const [name, graph] of sessions) {
+      const rows = toFlow(graph);
+      const flow = arranged(graph);
+      expect(flow.nodes.map((node) => node.id).sort(), name).toEqual(rows.nodes.map((node) => node.id).sort());
+      expect(overlapsIn(graph, flow), name).toBeNull();
+      expect(worth(graph, flow).crowded, name).toBe(0);
+      expect(placesOf(arranged(graph)), name).toEqual(placesOf(flow));
+    }
+  });
+
+  test("makes the cables shorter, and puts none of them over a node that it does not join, where the rows had them", () => {
+    for (const [name, graph] of sessions) {
+      const before = worth(graph, toFlow(graph));
+      const after = worth(graph, arranged(graph));
+      expect(after.length + OVER_RATE * after.inside, name).toBeLessThan(before.length + OVER_RATE * before.inside);
+      expect(after.over, name).toBeLessThanOrEqual(before.over);
+    }
+    // (The tracer: the lane, the filter and the master are in a line with the room of a cable, and the LFO is over the filter.)
+    const tracer = worth(tracerSnapshot.graph, arranged(tracerSnapshot.graph));
+    expect(tracer).toMatchObject({ over: 0, backwards: 0, crowded: 0 });
+    expect(tracer.length).toBeLessThan(0.75 * worth(tracerSnapshot.graph, toFlow(tracerSnapshot.graph)).length);
+  });
+
+  test("says that the nodes are arranged, and a layout that goes on from them does not say so, as one that goes on from the rows does not", () => {
+    const flow = arranged(twoLanes);
+    expect(flow.arranged).toBe(true);
+    // (A layout that goes on from the places of the arrangement is not one from nothing, which the rows' layout is: the page has asked for none, and its button is bright again.)
+    expect(toFlow(twoLanes, flow.places).arranged).toBe(false);
+    const longer: Graph = { nodes: [...twoLanes.nodes.filter((node) => node.id !== MASTER), effect(9, 5), master], edges: [...twoLanes.edges, audio(9, MASTER)] };
+    expect(toFlow(longer, flow.places).arranged).toBe(false);
+  });
+
+  test("is left where it is by a layout that remembers it: nothing moves when a cable is drawn", () => {
+    const flow = arranged(twoLanes);
+    const toRate: Edge = cable(7, 4, 3, 1, 0.25);
+    expect(placesOf(toFlow({ nodes: twoLanes.nodes, edges: [...twoLanes.edges, toRate] }, flow.places))).toEqual(placesOf(flow));
+  });
+
+  test("puts an effect that is added at the end of a chain level with the effect it follows and a column after it, where that effect is, and not by where the head of the strip is", () => {
+    // (After an arrangement the nodes of a strip are not all at one height: the effect is put by the one before it.)
+    const lane: Graph = { nodes: [instrument(1), effect(2, 1), master], edges: [audio(1, 2), audio(2, MASTER)] };
+    const before = toFlow(lane);
+    const places = new Map(before.places);
+    const second = places.get(2);
+    if (!second) throw new Error("the layout has not placed the effect");
+    places.set(2, { ...second, x: second.x + 100, y: second.y + 50 });
+    const longer: Graph = { nodes: [instrument(1), effect(2, 1), effect(3, 1), master], edges: [audio(1, 2), audio(2, 3), audio(3, MASTER)] };
+    const after = toFlow(longer, places);
+    expect(at(after, 3).position).toEqual({ x: at(before, 2).position.x + 100 + COLUMN, y: at(before, 2).position.y + 50 });
+    expect(at(after, 2).position).toEqual({ x: at(before, 2).position.x + 100, y: at(before, 2).position.y + 50 });
+  });
+
+  test("is not asked of a session in which a person has placed a node: that node is a pin that the arrangement would have to keep, and the layout is the rows'", () => {
+    const placed: Graph = { nodes: twoLanes.nodes.map((node) => (node.id === 1 ? { ...node, ui: { x: 500, y: 40 } } : node)), edges: twoLanes.edges };
+    expect(placesOf(arranged(placed))).toEqual(placesOf(toFlow(placed)));
+  });
+
+  test("ties a modulator that hears a lane and has no cable to the lane, and not one that has a cable, and says which of the two inputs of an effect a cable ends at", () => {
+    const loose: Graph = { nodes: [instrument(1), effect(2, 1), hearing(3, 1), hearing(4, 1), master], edges: [audio(1, 2), audio(2, MASTER), cable(0, 4, 2, 1)] };
+    const { wires } = blocksOf(loose, arranged(loose));
+    // (3 hears the lane and drives nothing: it is tied to it, above it. 4 has a cable to the effect and needs no tie.)
+    expect(wires.filter((wire) => wire.fromHandle === "modOut").map((wire) => [wire.from, wire.to, wire.toHandle, wire.weight < 1])).toEqual([
+      [4, 2, "param-1", false],
+      [3, 1, "param", true],
+    ]);
+    // The Math effect of the second input's fixture has two inputs: its first is at a third of its height.
+    const math = blocksOf(sideCablesFixture.snapshot.graph, toFlow(sideCablesFixture.snapshot.graph)).wires;
+    expect(math.filter((wire) => wire.to === 4).map((wire) => wire.toHandle).sort()).toEqual(["audioIn:pair", "audioInSide", "audioInSide", "audioInSide"]);
+    expect(math.filter((wire) => wire.to === 1).map((wire) => wire.toHandle)).not.toContain("audioIn");
+  });
+
+  test("counts the links by which a lane hears every source for less than the cables that are drawn: a lane is not drawn to its sources as it is to what it is cabled to", () => {
+    const found = sourcesFixture.cases.find((entry) => entry.name === "wired");
+    if (!found) throw new Error("the fixture has the session of the sources");
+    const wired = found.snapshot.graph;
+    expect(wired.edges.some((edge) => edge.kind === "hears")).toBe(true);
+    const { wires } = blocksOf(wired, toFlow(wired));
+    // (The cables of the graph come first, in its order, and the ties of the modulators that have none after them.)
+    wired.edges.forEach((edge, i) => {
+      if (edge.kind === "hears") expect(wires[i]?.weight, `edge ${String(i)}`).toBeLessThan(1);
+      else expect(wires[i]?.weight, `edge ${String(i)}`).toBe(1);
+    });
+  });
+
+  test("keeps the nodes of graphs made up from a seed apart and the cables no longer, whatever their shape", () => {
+    for (const { round, graph } of madeUpGraphs(60)) {
+      const rows = toFlow(graph);
+      const flow = arranged(graph);
+      expect(flow.nodes, `round ${String(round)}`).toHaveLength(rows.nodes.length);
+      expect(overlapsIn(graph, flow), `round ${String(round)}`).toBeNull();
+      const before = worth(graph, rows);
+      const after = worth(graph, flow);
+      expect(after.crowded, `round ${String(round)}`).toBe(0);
+      expect(after.length + OVER_RATE * after.inside, `round ${String(round)}`).toBeLessThanOrEqual(before.length + OVER_RATE * before.inside + 1e-6);
+      expect(MARGIN).toBeGreaterThan(0);
+    }
   });
 });

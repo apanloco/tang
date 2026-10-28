@@ -85,7 +85,7 @@ test("a chain of modulators is a cascade of rows when the nodes are arranged, ea
   await expect(page.locator(".tang-notice")).toHaveCount(0);
 });
 
-test("a cable taken out leaves the modulator where it is, and arranged again it is back in the row it was in", async ({ page }) => {
+test("a cable taken out leaves the modulator where it is, and arranged again nothing holds it above the LFO any more", async ({ page }) => {
   await open(page);
   const envelope = await addEnvelope(page);
   const lfo = node(page, "LFO");
@@ -98,7 +98,8 @@ test("a cable taken out leaves the modulator where it is, and arranged again it 
   // The canvas is not rearranged for the cable that goes: the envelope stays above the LFO.
   await still(envelope);
   expect((await boxOf(envelope)).bottom).toBeLessThan((await boxOf(lfo)).top);
-  // Arranged again, the two are in a row.
+  // Arranged again, the envelope has no cable and hears every note, so that nothing holds it above the LFO: it is put by the others, with the nodes apart.
   await arrange(page);
-  expect((await boxOf(envelope)).top).toBeCloseTo((await boxOf(lfo)).top, 0);
+  await expectNodesApart(page);
+  await expect(page.locator(".tang-notice")).toHaveCount(0);
 });

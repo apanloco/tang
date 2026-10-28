@@ -158,7 +158,7 @@ export function PatchView() {
     }),
     [shown],
   );
-  const { flow, arranging, arrangeAgain } = useLayout(graph, shown);
+  const { flow, arranging, optimized, arrangeAgain } = useLayout(graph, shown);
   const reveals = useReveals();
   // (After the commit that has the node as tall as it is with its scope: the canvas's own effects, which keep the layout it moves by, run before this one, which is the parent's.)
   useEffect(() => {
@@ -170,8 +170,7 @@ export function PatchView() {
   // How many times the nodes have been asked to be arranged again, for the canvas to be moved to show them.
   const [arrangements, setArrangements] = useState(0);
   const editor = useEditor();
-  // Whether there is anything to arrange again: a node that has been moved, or one that is not where the layout would have it.
-  const anyMoved = graph?.nodes.some((node) => node.ui !== undefined) ?? false;
+  // (The button has nothing to do when the nodes are where the arrangement that makes the cables short put them and the session has not changed since: `optimized`, which a session as it was opened, one that has changed and one in which a person has placed a node are not.)
   const arrange = useCallback(() => {
     arrangeAgain();
     setArrangements((count) => count + 1);
@@ -257,9 +256,9 @@ export function PatchView() {
                     <button
                       type="button"
                       className="tang-patch__arrange"
-                      title="Put every node where the layout has it, and give back the places that were moved"
+                      title="Put every node where the cables between them are short, and give back the places that were moved"
                       aria-label="Arrange the nodes again"
-                      disabled={!anyMoved && flow.arranged}
+                      disabled={flow.arranged && optimized}
                       onClick={arrange}
                     >
                       Arrange

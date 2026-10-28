@@ -29,7 +29,8 @@ test("a node dragged on the canvas stays where it is put down, a page that is op
   const filter = nodeNamed(page, "Filter");
   await expect(filter).toBeVisible();
   const laidOut = await placeOf(filter);
-  await expect(page.getByRole("button", { name: "Arrange the nodes again" })).toBeDisabled();
+  // (A session is opened with its nodes in rows, which is not the arrangement that the button makes: it is there to be pressed.)
+  await expect(page.getByRole("button", { name: "Arrange the nodes again" })).toBeEnabled();
 
   // The filter is taken by its header (by the name: the buttons at the other end are controls) and put 220 pixels to the right and 90 down.
   const header = await filter.locator(".tang-node__name").boundingBox();
@@ -88,10 +89,12 @@ test("a node dragged on the canvas stays where it is put down, a page that is op
   expect(saved.match(/^ui = \{ x = -?[\d.]+, y = -?[\d.]+ \}$/gm), saved).toHaveLength(2);
   expect(saved).not.toContain("[ui]");
 
-  // Arranged again, every node is where the layout has it, and the file has none.
+  // Arranged again, the places that were given are given back (the file has none) and every node is where the arrangement that makes the cables short has it: not where the filter was put, and not where the
+  // rows had it. (The arrangement is the page's own: a second page has the nodes that were given back where the rows have them.)
   await page.getByRole("button", { name: "Arrange the nodes again" }).click();
-  await expect.poll(async () => placeOf(nodeNamed(page, "Filter"))).toEqual(laidOut);
+  await expect.poll(async () => (await placeOf(nodeNamed(page, "Filter"))).x, { message: "the filter is no longer where it was put" }).not.toBe(moved.x);
   await expect(page.getByRole("button", { name: "Arrange the nodes again" })).toBeDisabled();
+  await expectNodesApart(page);
   await expect.poll(async () => placeOf(nodeNamed(other, "Filter"))).toEqual(laidOut);
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
@@ -112,17 +115,17 @@ async function placesByName(page: Page): Promise<Record<string, { x: number; y: 
   });
 }
 
-test("a cable drawn to the setting of another modulator leaves every node where it is, and the button that says Arrange puts them where the layout has them", async ({ page, own }) => {
+test("a cable drawn to the setting of another modulator leaves every node where it is, and the button that says Arrange puts them where the arrangement has them", async ({ page, own }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(own.url);
   await expect(page.getByRole("status")).toHaveText("Connected");
   const lfo = nodeNamed(page, "LFO");
   await expect(lfo).toBeVisible();
 
-  // The button is there, says what it does, has nothing to do yet, and is over none of the nodes.
+  // The button is there, says what it does, is bright (the nodes are in rows, which is not the arrangement), and is over none of the nodes.
   const arrange = page.getByRole("button", { name: "Arrange the nodes again" });
   await expect(arrange).toHaveText("Arrange");
-  await expect(arrange).toBeDisabled();
+  await expect(arrange).toBeEnabled();
   const button = await arrange.boundingBox();
   if (!button) throw new Error("the button is not on the page");
   for (const other of await nodeBoxes(page)) {
@@ -145,15 +148,14 @@ test("a cable drawn to the setting of another modulator leaves every node where 
   expect(drawn).toEqual(added);
   for (const [name, place] of Object.entries(first)) expect(drawn[name], name).toEqual(place);
 
-  // What is not where the layout has it can be put there: the button is bright, and the nodes go, each to its place in the layout, the oscillator's strip down a row.
+  // The nodes can be put where the arrangement has them: the button is bright, and the nodes go, each to its place in the arrangement, which has the LFO above the envelope that it drives and the nodes apart.
   await expect(arrange).toBeEnabled();
   await arrange.click();
-  await expect.poll(async () => (await placesByName(page)).Oscillator?.y ?? 0, { message: "the strip goes down a row, below the envelope that the LFO drives" }).toBeGreaterThan((first.Oscillator?.y ?? 0) + 100);
   await expect(arrange).toBeDisabled();
+  await expect.poll(async () => JSON.stringify(await placesByName(page)), { message: "the nodes have gone to the places of the arrangement" }).not.toBe(JSON.stringify(drawn));
   await expectNodesApart(page);
   const arranged = await placesByName(page);
   expect(arranged.LFO?.y).toBeLessThan(arranged.ADSR?.y ?? 0);
-  expect(arranged.ADSR?.y).toBeLessThan(arranged.Oscillator?.y ?? 0);
 
   // The canvas is moved to show them: the layout is a row taller than what was in the view, and every node is in it.
   const view = await page.locator(".react-flow").boundingBox();

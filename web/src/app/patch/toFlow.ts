@@ -14,7 +14,8 @@
 // moved along its chain) goes where the layout puts it, level with its strip and clear of the nodes that stayed. Room is made where
 // it is needed: what has grown, or a modulator that is added to a strip that has no room above its row, pushes the rows below it
 // down, strips and all (`makeRoom`). Every node goes where the layout puts it when nothing is remembered, which is what arranging
-// the nodes again does.
+// the nodes again does: from nothing, with no node placed by a person, and when `FlowOptions.arrange` says so, the places of the layout are the start of an arrangement that makes the cables
+// short (`arrange.ts`, step 98), and those are the places that every node goes to, and that the next layout leaves them at.
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
 import { holdersOf } from "../../client/holders";
@@ -23,6 +24,8 @@ import { knobsOf } from "../../client/pinning";
 import { drivablesOf } from "../../client/reach";
 import type { Drivable } from "../../client/reach";
 import type { Edge, EdgeId, Graph, Node, NodeId, NodeUi, Plugin, Port, SideInfo, SourceInfo } from "../../protocol";
+import { arrange } from "./arrange";
+import type { Block, Wire } from "./arrange";
 
 /** The width of every node, so that the columns of the canvas are known without measuring anything. */
 export const NODE_WIDTH = 304;
@@ -525,7 +528,8 @@ function slotsOf(graph: Graph, fresh: ReadonlyMap<NodeId, Position>, ownerOf: Ow
  * (a lane has grown past them) go along to it and stay at the height they were at. The others are where the layout puts them now, moved down or up as far as the strip they are
  * of has moved from where the layout would put it (an effect added to a lane that is not where the layout would have it any more is added level with the lane, and not level
  * with where the lane would be; what is in a group's strip, when the group has gone along to another column, goes along to it, at the group's height). A strip is moved
- * in height only: its row is in the column that the layout gives it. `kept` is the nodes that stay exactly where they were. A lane that only holds effects has no card, and its strip goes by
+ * in height only by the rows' layout (its row is in the column that the layout gives it) and in width as well when an arrangement has put it somewhere else: what is added to it goes where
+ * the strip's head has gone from where the layout would have it. `kept` is the nodes that stay exactly where they were. A lane that only holds effects has no card, and its strip goes by
  * its first effect (`anchors`: the lane by the first of its effects), as the others go by their cards.
  */
 function carryOver(
@@ -546,6 +550,15 @@ function carryOver(
     }
   }
   const isChild = (node: Node): boolean => node.kind === "effect" || node.kind === "modulator";
+  // (The effect before an effect in its chain: a new effect goes by the one that it follows, which is level with it, and not by the strip's head, which an arrangement may have put at another height.)
+  const previous = new Map<NodeId, NodeId>();
+  const lastOf = new Map<NodeId | null, NodeId>();
+  for (const node of graph.nodes) {
+    if (node.kind !== "effect") continue;
+    const before = lastOf.get(node.parent);
+    if (before !== undefined) previous.set(node.id, before);
+    lastOf.set(node.parent, node.id);
+  }
   // (What has no strip, the session's own modulators that hear every note, goes by the first lane, above which its rows are: one that is new is above the first lane where it stayed, and not where the layout would have the lane.
   // One that hears a lane or a group goes by that strip, as a lane's modulator does.)
   const firstLane = graph.nodes.find((node) => node.kind === "instrument")?.id ?? null;
@@ -561,10 +574,11 @@ function carryOver(
     const at = fresh.get(node.id) ?? ORIGIN;
     // (What the strip goes by: its card, or for a lane that has none its first effect, which is where the strip's row is.)
     const parent = ownerOf(node) ?? firstLane;
-    const anchor = parent !== null ? (anchors.get(parent) ?? parent) : null;
+    const before = previous.get(node.id);
+    const anchor = before !== undefined && positions.has(before) ? before : parent !== null ? (anchors.get(parent) ?? parent) : null;
     const where = anchor !== null ? positions.get(anchor) : undefined;
     const would = anchor !== null ? fresh.get(anchor) : undefined;
-    positions.set(node.id, where && would ? { x: at.x, y: at.y + where.y - would.y } : at);
+    positions.set(node.id, where && would ? { x: at.x + where.x - would.x, y: at.y + where.y - would.y } : at);
   }
   return { positions, kept };
 }
@@ -692,6 +706,61 @@ function cableRows(graph: Graph, names: ReadonlyMap<NodeId, string>): Map<NodeId
 /** Nothing remembered: every node goes where the layout puts it. */
 const NOTHING_REMEMBERED: Places = new Map();
 
+/** What else `toFlow` is asked for. */
+export interface FlowOptions {
+  /**
+   * Put the nodes where `arrange` puts them (the cables short, with room for each), and not where the layout of the rows puts them. It is for a layout from nothing (the nodes asked to be arranged): a node that a person has placed
+   * (`Node.ui`) is a pin that the arrangement would have to keep, and it is left out of the question: with one, the layout is the rows'.
+   */
+  arrange?: boolean;
+}
+
+/** How much a pixel of a cable matters to the arrangement: the faint links by which a lane hears every source are the least of the cables. */
+const HEARS_WEIGHT = 0.25;
+
+/** How much a pixel of the tie that keeps a modulator that has no cable by the lane or the group that it hears matters to the arrangement. */
+const TIE_WEIGHT = 0.3;
+
+/**
+ * The cables of `graph` as the arrangement sees them (`Wire`): the two nodes and the handles of each, and how much it matters that it is short. A modulator that hears a lane or a group and has no cable
+ * of its own is tied to what it hears, as the layout of the rows has it (above it), so that it is not left where the rest has moved away from.
+ */
+function wiresOf(graph: Graph): Wire[] {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const wires: Wire[] = graph.edges.map((edge) => {
+    const target = nodes.get(edge.to.node);
+    // (An effect that has two inputs has the first at a third of its height and not in the middle.)
+    const pair = edge.to.port.type === "audioIn" && target?.kind === "effect" && target.side !== undefined;
+    return { from: edge.from.node, fromHandle: handleOf(edge.from.port), to: edge.to.node, toHandle: pair ? "audioIn:pair" : handleOf(edge.to.port), weight: edge.kind === "hears" ? HEARS_WEIGHT : 1 };
+  });
+  const driving = new Set(graph.edges.filter((edge) => edge.kind === "modulation").map((edge) => edge.from.node));
+  for (const node of graph.nodes) {
+    if (node.kind === "modulator" && node.hears !== undefined && !driving.has(node.id) && nodes.has(node.hears)) wires.push({ from: node.id, fromHandle: "modOut", to: node.hears, toHandle: "param", weight: TIE_WEIGHT });
+  }
+  return wires;
+}
+
+/** The places that `arrange` gives the nodes of `graph`, from where the layout of the rows has them (`fresh`): its boxes and its cables, as the arrangement sees them. */
+function arrangedFrom(graph: Graph, fresh: ReadonlyMap<NodeId, Position>, heightOf: (node: Node) => number): Map<NodeId, Position> {
+  const blocks: Block[] = graph.nodes.map((node) => ({ id: node.id, ...(fresh.get(node.id) ?? ORIGIN), width: NODE_WIDTH, height: heightOf(node) }));
+  return new Map([...fresh, ...arrange(blocks, wiresOf(graph))]);
+}
+
+/**
+ * The nodes of a layout and the cables of the session as the arrangement sees them, for `measure` to say what the layout is worth: the boxes are where `flow` has the nodes, as tall as the layout
+ * assumes (`nodeHeight`, from what the node says it shows). The nodes that the canvas draws no card for (a lane that only holds effects) are not among them, and the cables at them are dropped.
+ */
+export function blocksOf(graph: Graph, flow: Flow): { blocks: Block[]; wires: Wire[] } {
+  const known = new Map(graph.nodes.map((node) => [node.id, node]));
+  const blocks = flow.nodes.flatMap((placed): Block[] => {
+    const node = known.get(placed.data.node);
+    if (!node) return [];
+    const height = nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope, placed.data.heldIn?.first ?? false);
+    return [{ id: node.id, x: placed.position.x, y: placed.position.y, width: NODE_WIDTH, height }];
+  });
+  return { blocks, wires: wiresOf(graph) };
+}
+
 /** No node shows a scope. */
 const NO_SCOPES: ReadonlySet<NodeId> = new Set();
 
@@ -702,7 +771,7 @@ const NO_SCOPES: ReadonlySet<NodeId> = new Set();
  * pinned. A lane that only holds effects (`holdersOf`) has no card on the canvas: it is laid out, remembered and drawn without it and without the links at it, and its first effect has
  * what the card said of the lane (`heldIn`).
  */
-export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, scopes: ReadonlySet<NodeId> = NO_SCOPES): Flow {
+export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, scopes: ReadonlySet<NodeId> = NO_SCOPES, options: FlowOptions = {}): Flow {
   const holders = holdersOf(graph);
   // (What is said of a node, its name and the words of a cable, is read from the whole graph: the effects of a held lane are called what they are called with the lane in it.)
   const shown: Graph = holders.size === 0 ? graph : { nodes: graph.nodes.filter((node) => !holders.has(node.id)), edges: graph.edges.filter((edge) => !holders.has(edge.from.node) && !holders.has(edge.to.node)) };
@@ -722,8 +791,10 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
   const withScope = new Set(graph.nodes.filter((node) => scopes.has(node.id) && canScope(node)).map((node) => node.id));
   const heightOf = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0, withScope.has(node.id), carriers.has(node.id));
   const ownerOf = ownersOf(graph);
-  const fresh = layout(graph, heightOf, holders, ownerOf);
-  const slots = slotsOf(shown, fresh, ownerOf);
+  const baseline = layout(graph, heightOf, holders, ownerOf);
+  // (The slots are those of the rows' layout, whatever the places are: a layout that goes on from an arrangement finds the nodes in the slots that were remembered.)
+  const slots = slotsOf(shown, baseline, ownerOf);
+  const fresh = options.arrange === true && shown.nodes.every((node) => node.ui === undefined) ? arrangedFrom(shown, baseline, heightOf) : baseline;
   // Where a layout that remembers nothing puts the nodes, to say whether these are arranged.
   const arrangedAt = new Map(fresh);
   clearOfPlaced(shown, arrangedAt, heightOf);
