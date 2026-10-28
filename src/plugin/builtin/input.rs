@@ -238,7 +238,7 @@ impl Capture {
         let seen = beats.clone();
         let spawned = std::thread::Builder::new().name("tang-audio-input".to_string()).spawn(move || {
             let failed = Arc::new(AtomicBool::new(false));
-            listen(&receive, &seen, &failed, TIMING, |name| open(name, engine_rate, &ring, &failed));
+            listen(&receive, &seen, &failed, TIMING, |name| open(name, engine_rate, &ring, &failed).map(|opened| opened.stream));
         });
         if let Err(why) = spawned {
             log::warn!("Audio input: the thread that listens could not be made ({why})");
@@ -338,9 +338,67 @@ fn device_names() -> Vec<String> {
     crate::audio::input_host().input_devices().map(|devices| devices.filter_map(|device| device.name().ok()).collect()).unwrap_or_default()
 }
 
+/// What to say when an input gives only exact zeros, which a microphone does not (a room has a noise floor). On macOS it is nearly always the permission, which belongs to the terminal that runs
+/// Tang, and a permission that was refused is answered with silence and no error, for ever, until it is changed: `__CFBundleIdentifier` names that terminal for the programs it starts, and
+/// `TERM_PROGRAM` says what it calls itself. A device that is muted, or is not plugged in, does the same.
+fn silence_advice(bundle: Option<&str>, terminal: Option<&str>) -> String {
+    let app = match (terminal, bundle) {
+        (Some(name), Some(id)) => format!("the terminal that runs Tang ({name}, {id})"),
+        (Some(name), None) => format!("the terminal that runs Tang ({name})"),
+        (None, Some(id)) => format!("the terminal that runs Tang ({id})"),
+        (None, None) => "the terminal that runs Tang".to_string(),
+    };
+    let again = bundle.map_or(String::new(), |id| format!(" If it is on already, or is not in the list, ask again with `tccutil reset Microphone {id}` and run this again: macOS asks, and keeps the answer."));
+    format!("on macOS, {app} may not be allowed to use the microphone, which the system answers with silence and no error: open System Settings > Privacy & Security > Microphone and turn it on.{again} Otherwise the input is muted, or is a device that is not plugged in or has nothing to hear.")
+}
+
+/// `silence_advice` for the terminal that this program runs in.
+fn silence_advice_here() -> String {
+    silence_advice(std::env::var("__CFBundleIdentifier").ok().as_deref(), std::env::var("TERM_PROGRAM").ok().as_deref())
+}
+
+/// Notices an input that gives nothing but exact zeros for a while, as one that the system will not let a program hear does (a refused permission is no error): `push` is true the one time that
+/// `limit` frames of 0 have come in a row, and the watch is set again by the first sound.
+struct SilenceWatch {
+    zeros: u64,
+    limit: u64,
+    said: bool,
+}
+
+impl SilenceWatch {
+    fn new(limit: u64) -> Self {
+        SilenceWatch { zeros: 0, limit, said: false }
+    }
+
+    fn push(&mut self, left: f32, right: f32) -> bool {
+        if left != 0.0 || right != 0.0 {
+            self.zeros = 0;
+            self.said = false;
+            return false;
+        }
+        self.zeros += 1;
+        if self.zeros >= self.limit && !self.said {
+            self.said = true;
+            return true;
+        }
+        false
+    }
+}
+
+/// How many seconds of exact zeros in a row an open input may give before the log says so.
+const SILENCE_SAID_AFTER_SEC: u64 = 3;
+
+/// An input stream that is open, and what it listens to.
+struct Opened {
+    stream: cpal::Stream,
+    device: String,
+    channels: usize,
+    rate: u32,
+}
+
 /// Open an input stream on the device `name` (the system's default for none: a name is looked for as it is, and then as a part of a name, in any case), whose frames go into `ring` at the
 /// rate of the engine. `failed` is set when the stream says it has failed.
-fn open(name: Option<&str>, engine_rate: u32, ring: &Arc<InputRing>, failed: &Arc<AtomicBool>) -> Result<cpal::Stream, String> {
+fn open(name: Option<&str>, engine_rate: u32, ring: &Arc<InputRing>, failed: &Arc<AtomicBool>) -> Result<Opened, String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     let host = crate::audio::input_host();
     let device = match name {
@@ -361,11 +419,20 @@ fn open(name: Option<&str>, engine_rate: u32, ring: &Arc<InputRing>, failed: &Ar
     let (channels, rate, format) = (usize::from(supported.channels()), supported.sample_rate().0, supported.sample_format());
     let config = supported.config();
     let mut resampler = (rate != engine_rate).then(|| Resampler::new(f64::from(rate), f64::from(engine_rate)));
+    let device_name = device.name().unwrap_or_default();
     let sink = {
         let ring = ring.clone();
-        move |left: f32, right: f32| match &mut resampler {
-            None => ring.push(left, right),
-            Some(resampler) => resampler.push([left, right], &mut |frame| ring.push(frame[0], frame[1])),
+        let mut watch = SilenceWatch::new(SILENCE_SAID_AFTER_SEC * u64::from(rate));
+        // (The words are made now: the callback is the system's, and makes only what it has to.)
+        let silent = format!("Audio input: \"{device_name}\" has given nothing but silence (exact zeros) for {SILENCE_SAID_AFTER_SEC} s: {}", silence_advice_here());
+        move |left: f32, right: f32| {
+            if watch.push(left, right) {
+                log::warn!("{silent}");
+            }
+            match &mut resampler {
+                None => ring.push(left, right),
+                Some(resampler) => resampler.push([left, right], &mut |frame| ring.push(frame[0], frame[1])),
+            }
         }
     };
     let on_error = {
@@ -384,8 +451,68 @@ fn open(name: Option<&str>, engine_rate: u32, ring: &Arc<InputRing>, failed: &Ar
     }
     .map_err(|why| why.to_string())?;
     stream.play().map_err(|why| why.to_string())?;
-    log::info!("Audio input: {} ({channels} channel(s), {rate} Hz{})", device.name().unwrap_or_default(), if rate == engine_rate { "" } else { ", resampled" });
-    Ok(stream)
+    log::info!("Audio input: {device_name} ({channels} channel(s), {rate} Hz{})", if rate == engine_rate { "" } else { ", resampled" });
+    Ok(Opened { stream, device: device_name, channels, rate })
+}
+
+/// `tang listen`: open the input `device` (the system's default for none) for `seconds`, play nothing, and say what it hears, so that a microphone that is not heard by Tang can be told
+/// from one that the system does not give it (a permission that was refused, a device that is muted or not plugged in). It is the stream that the plugin opens, read at a place of its own.
+pub fn probe(device: Option<&str>, seconds: f32, engine_rate: u32) -> anyhow::Result<()> {
+    let ring = Arc::new(InputRing::new());
+    let failed = Arc::new(AtomicBool::new(false));
+    println!("Listening to {} for {seconds} s (nothing is played) ...", device.map_or("the default input".to_string(), |name| format!("\"{name}\"")));
+    let opened = open(device, engine_rate, &ring, &failed).map_err(|why| anyhow::anyhow!("could not open the input: {why}"))?;
+    println!("  Opened \"{}\": {} channel(s), {} Hz{}", opened.device, opened.channels, opened.rate, if opened.rate == engine_rate { String::new() } else { format!(", resampled to {engine_rate} Hz") });
+    let started = Instant::now();
+    let mut seen = ring.written();
+    let (mut peak, mut frames, mut moved) = (0.0f32, 0u64, false);
+    let (mut window_peak, mut window_frames, mut next_report) = (0.0f32, 0u64, 0.5f32);
+    while started.elapsed().as_secs_f32() < seconds {
+        std::thread::sleep(Duration::from_millis(25));
+        let written = ring.written();
+        let waiting = written.saturating_sub(seen).min(RING_FRAMES as u64);
+        for number in written - waiting..written {
+            let (left, right) = ring.frame(number);
+            let loudest = left.abs().max(right.abs());
+            moved |= loudest > 0.0;
+            window_peak = window_peak.max(loudest);
+        }
+        frames += waiting;
+        window_frames += waiting;
+        seen = written;
+        if started.elapsed().as_secs_f32() >= next_report {
+            println!("  {:>4.1} s  {:>6} frames  {}", next_report, window_frames, level_in_words(window_peak));
+            peak = peak.max(window_peak);
+            (window_peak, window_frames, next_report) = (0.0, 0, next_report + 0.5);
+        }
+    }
+    peak = peak.max(window_peak);
+    drop(opened);
+    println!();
+    if failed.load(Ordering::Relaxed) {
+        println!("The stream failed while it was listening (the line above, `Audio input stream: …`, says why).");
+    }
+    if frames == 0 {
+        println!("Nothing arrived from the input in {seconds} s: the system did not start it. Is the device plugged in and not in use by something that has it for itself?");
+        anyhow::bail!("no sound arrived from the input");
+    }
+    println!("{frames} frames arrived ({:.0} per second); the loudest sample was {}.", frames as f32 / seconds, level_in_words(peak));
+    if !moved {
+        println!();
+        println!("Every sample was exactly 0: the input gave silence, which is not what a microphone gives (a room has a noise floor). Most likely: {}", silence_advice_here());
+        anyhow::bail!("the input gave silence");
+    }
+    println!("The input works: Tang hears it. (Speak, or tap the microphone, while this runs to see the level move.)");
+    Ok(())
+}
+
+/// A level as a person reads it: decibels below full scale, or "silence" for none.
+fn level_in_words(peak: f32) -> String {
+    if peak <= 0.0 {
+        "silence (exactly 0)".to_string()
+    } else {
+        format!("peak {:.1} dB", 20.0 * peak.log10())
+    }
 }
 
 /// The input stream of `device`, whose samples of type `T` go to `sink` as frames of two.
@@ -949,6 +1076,49 @@ mod tests {
         assert!(!oscillator.starts_bare());
         let loaded = super::super::load(ID, 48000.0, 256).unwrap();
         assert!(loaded.starts_bare());
+    }
+
+    #[test]
+    fn the_advice_for_a_silent_input_names_the_terminal_and_the_command_that_asks_again() {
+        let advice = silence_advice(Some("dev.warp.Warp-Stable"), Some("WarpTerminal"));
+        assert!(advice.contains("the terminal that runs Tang (WarpTerminal, dev.warp.Warp-Stable)"), "{advice}");
+        assert!(advice.contains("System Settings > Privacy & Security > Microphone"), "{advice}");
+        assert!(advice.contains("`tccutil reset Microphone dev.warp.Warp-Stable`"), "{advice}");
+        assert!(advice.contains("muted"), "{advice}");
+        // Without a name for the terminal, it is said as it is, and there is no command to ask again with.
+        let plain = silence_advice(None, None);
+        assert!(plain.contains("the terminal that runs Tang may not be allowed") && !plain.contains("tccutil"), "{plain}");
+        assert!(silence_advice(None, Some("iTerm.app")).contains("(iTerm.app)"));
+        assert!(silence_advice(Some("com.apple.Terminal"), None).contains("(com.apple.Terminal)"));
+    }
+
+    #[test]
+    fn an_input_that_gives_only_zeros_for_the_limit_is_said_so_once_and_the_first_sound_sets_the_watch_again() {
+        let mut watch = SilenceWatch::new(4);
+        let said: Vec<bool> = (0..6).map(|_| watch.push(0.0, 0.0)).collect();
+        assert_eq!(said, [false, false, false, true, false, false], "once, at the fourth frame of nothing");
+        // A frame with anything in it (one side is enough) breaks the run, however small it is.
+        assert!(!watch.push(0.0, 1e-9));
+        assert_eq!((0..4).map(|_| watch.push(0.0, 0.0)).collect::<Vec<_>>(), [false, false, false, true], "and it says so again after another run");
+        // A run that is one frame short does not say it.
+        let mut short = SilenceWatch::new(4);
+        assert_eq!((0..3).map(|_| short.push(0.0, 0.0)).collect::<Vec<_>>(), [false, false, false]);
+        assert!(!short.push(0.5, 0.0) && !short.push(0.0, 0.0));
+    }
+
+    #[test]
+    fn a_level_is_said_in_decibels_below_full_scale_and_none_is_silence() {
+        assert_eq!(level_in_words(0.0), "silence (exactly 0)");
+        assert_eq!(level_in_words(1.0), "peak 0.0 dB");
+        assert_eq!(level_in_words(0.1), "peak -20.0 dB");
+        assert_eq!(level_in_words(0.5), "peak -6.0 dB");
+    }
+
+    /// The real input, for a person who has one: `cargo test --bin tang the_real_input -- --ignored --nocapture` says what the system gives (the same as `tang listen`, from the test's own program).
+    #[test]
+    #[ignore = "needs a microphone, and the permission to use it: cargo test --bin tang the_real_input -- --ignored --nocapture"]
+    fn the_real_input_is_heard() {
+        probe(None, 2.0, 48000).unwrap();
     }
 
     // The thread that listens, run with a fake in place of the sound card and a clock in milliseconds.

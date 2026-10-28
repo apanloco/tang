@@ -65,7 +65,7 @@ pub fn load(
     }
 }
 
-pub use input::use_test_tone;
+pub use input::{probe as listen_to_the_input, use_test_tone};
 
 /// Return enumeration info for all built-in plugins.
 pub fn enumerate_plugins() -> Vec<PluginInfo> {

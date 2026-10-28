@@ -103,6 +103,15 @@ pub enum Command {
         /// Plugin source (lv2:<URI>, clap:<ID>, or path)
         plugin: String,
     },
+    /// Listen to an audio input for a few seconds and say what it hears, playing nothing: a check that the microphone is heard
+    Listen {
+        /// The input's name, or a part of it (`tang enumerate audio` lists them); the system's default input if omitted
+        device: Option<String>,
+
+        /// How many seconds to listen
+        #[arg(long, default_value_t = 3.0)]
+        seconds: f32,
+    },
     /// Load a session and play via MIDI input with virtual piano (no TUI)
     Play {
         /// Path to session file (.toml). If omitted, creates a new session.

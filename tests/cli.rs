@@ -73,6 +73,17 @@ fn enumerate_builtins_lists_the_audio_input_after_the_oscillator_as_an_instrumen
 }
 
 #[test]
+fn listen_to_an_input_that_is_not_there_says_so_and_ends_with_status_1_having_opened_nothing() {
+    // (`tang listen` plays nothing and opens the microphone to say what it hears; a name that no input has opens nothing, so that nothing is heard and no permission is asked.)
+    let output = tang(&["listen", "no such input, not a device", "--seconds", "0.1"]);
+    assert_eq!(output.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(said.starts_with("Error: could not open the input: "), "{said}");
+    let told = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(told, "Listening to \"no such input, not a device\" for 0.1 s (nothing is played) ...\n");
+}
+
+#[test]
 fn a_command_that_fails_says_why_on_stderr_and_ends_with_status_1() {
     let output = tang(&["describe", "builtin:nope"]);
     assert_eq!(output.status.code(), Some(1));

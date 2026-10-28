@@ -205,6 +205,10 @@ fn run() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Some(Command::Listen { device, seconds }) => {
+            env_logger::init();
+            plugin::builtin::listen_to_the_input(device.as_deref(), seconds, sample_rate)
+        }
         Some(Command::Play { session: play_session }) => {
             run_session(play_session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Play)
         }
