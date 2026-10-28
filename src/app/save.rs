@@ -213,6 +213,8 @@ fn modulators_to_save(model: &SessionModel, at: ModulatorLocation) -> Vec<SaveMo
                         // (A cable to a plugin names it by its place in the session.)
                         let to = match kind {
                             ModTargetKind::FreeParam { plugin, .. } => Some(plugin_place_of(model, plugin)?),
+                            // (A cable to a volume, a mix or a pan names whose it is: a lane, an effect or a group.)
+                            ModTargetKind::Gain { node, .. } => Some(plugin_place_of(model, node).or_else(|| model.groups.iter().position(|group| group.node == node).map(CablePlace::Group))?),
                             _ => None,
                         };
                         Some(SaveModTarget { kind, label: t.param_name.clone(), depth: t.depth, to })

@@ -7,7 +7,7 @@ use crossbeam_channel::{Receiver, Sender};
 use super::Plugin;
 use nodes::{BlockCx, Cable, Master, Schedule};
 pub(crate) use nodes::{cable_problem, wiring_loop, CableProblem, GroupWiring, LaneWiring};
-use crate::ids::{Driven, EdgeId, ModSetting, NodeId};
+use crate::ids::{Driven, EdgeId, ModGain, ModSetting, NodeId};
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
 use crate::session::{self, RemapTarget, Route};
@@ -440,6 +440,8 @@ pub struct GroupFacts {
 pub enum ModTargetKind {
     /// Target a parameter of any plugin of the session, by the node of the plugin.
     FreeParam { plugin: NodeId, param_index: u32 },
+    /// Target a value that the host keeps for a node, outside the plugin's parameters (step 97): the volume of a lane or a group, the mix of an effect, the pan of a group.
+    Gain { node: NodeId, gain: ModGain },
     /// Target a sibling modulator's LFO rate.
     ModulatorRate { mod_index: usize },
     /// Target a sibling modulator's target depth.
@@ -1043,7 +1045,7 @@ fn sibling_field(modulators: &[Modulator], aim: &Driven) -> Option<(usize, RackF
     match *aim {
         Driven::Setting { modulator, field } => modulators.iter().position(|m| m.node == modulator).map(|index| (index, RackField::Setting(field))),
         Driven::Depth(edge) => modulators.iter().enumerate().find_map(|(index, m)| m.targets.iter().position(|t| t.edge == edge).map(|target| (index, RackField::Depth(target)))),
-        Driven::Param { .. } => None,
+        Driven::Param { .. } | Driven::Gain { .. } => None,
     }
 }
 
@@ -1186,17 +1188,32 @@ fn apply_free_modulators(
     instruments: &mut [InstrumentLane],
     groups: &mut [Group],
     drives: &mut Vec<ParamDrive>,
+    gain_drives: &mut Vec<GainDrive>,
     telemetry: Option<&Telemetry>,
 ) {
     drives.clear();
+    gain_drives.clear();
     for m in modulators {
         for target in &m.targets {
-            let Driven::Param { plugin, index: param_index } = target.aim else { continue };
-            let offset = m.target_offset(target);
-            if let Some(entry) = drives.iter_mut().find(|e| e.0 == plugin && e.1 == param_index) {
-                entry.5 += offset;
-            } else {
-                drives.push((plugin, param_index, target.base_value, target.param_min, target.param_max, offset));
+            match target.aim {
+                Driven::Param { plugin, index: param_index } => {
+                    let offset = m.target_offset(target);
+                    if let Some(entry) = drives.iter_mut().find(|e| e.0 == plugin && e.1 == param_index) {
+                        entry.5 += offset;
+                    } else {
+                        drives.push((plugin, param_index, target.base_value, target.param_min, target.param_max, offset));
+                    }
+                }
+                // (A host-side value is set after the plugins' parameters: `apply_gain_drives`, which the caller runs with what is summed here.)
+                Driven::Gain { .. } => {
+                    let offset = m.target_offset(target);
+                    if let Some(entry) = gain_drives.iter_mut().find(|e| e.0 == target.aim) {
+                        entry.4 += offset;
+                    } else {
+                        gain_drives.push((target.aim, target.base_value, target.param_min, target.param_max, offset));
+                    }
+                }
+                Driven::Setting { .. } | Driven::Depth(_) => {}
             }
         }
     }
@@ -1216,6 +1233,132 @@ fn apply_free_modulators(
             let _ = p.set_parameter(param_index, modulated);
         }
     }
+}
+
+/// A host-side value that some cables drive, as the offsets of this buffer sum: what it is (`Driven::Gain`), the value the user set, its range and the offsets summed so far.
+type GainDrive = (Driven, f32, f32, f32, f32);
+
+/// Where the last buffer left a host-side value that cables drive, or drove a buffer ago: it goes from there to where it is now over the buffer (a mix, a volume or a pan that a modulator moves a
+/// buffer at a time would zipper, and one that a cable that is taken out gives back to the user's value would step), and for one buffer after the last cable is gone.
+struct GainRamp {
+    aim: Driven,
+    /// Where it was when the last buffer ended.
+    at: f32,
+    /// How many more buffers it is ramped for when nothing drives it: 1 while a cable does, 0 once the buffer after the last cable has gone.
+    left: u8,
+}
+
+/// Where the host-side value of node `node` is: a lane's volume or the mix of an effect of its chain, or a group's volume or pan or the mix of an effect of its bus.
+#[derive(Clone, Copy)]
+enum GainOwner {
+    LaneVolume(usize),
+    LaneMix { lane: usize, effect: usize },
+    GroupVolume(usize),
+    GroupPan(usize),
+    GroupMix { group: usize, effect: usize },
+}
+
+impl GainOwner {
+    /// Find the value `gain` of node `node` anywhere in the graph: `None` if there is none (the node went).
+    fn locate(instruments: &[InstrumentLane], groups: &[Group], node: NodeId, gain: ModGain) -> Option<GainOwner> {
+        match gain {
+            ModGain::Volume => instruments
+                .iter()
+                .position(|lane| lane.node == node)
+                .map(GainOwner::LaneVolume)
+                .or_else(|| groups.iter().position(|group| group.node == node).map(GainOwner::GroupVolume)),
+            ModGain::Pan => groups.iter().position(|group| group.node == node).map(GainOwner::GroupPan),
+            ModGain::Mix => instruments
+                .iter()
+                .enumerate()
+                .find_map(|(lane, l)| l.effect_nodes.iter().position(|effect| *effect == node).map(|effect| GainOwner::LaneMix { lane, effect }))
+                .or_else(|| groups.iter().enumerate().find_map(|(group, g)| g.effect_nodes.iter().position(|effect| *effect == node).map(|effect| GainOwner::GroupMix { group, effect }))),
+        }
+    }
+
+    /// What the value is now.
+    fn value(self, instruments: &[InstrumentLane], groups: &[Group]) -> Option<f32> {
+        match self {
+            GainOwner::LaneVolume(lane) => instruments.get(lane).map(|l| l.volume),
+            GainOwner::LaneMix { lane, effect } => instruments.get(lane)?.mix_values.get(effect).map(|mix| *mix as f32),
+            GainOwner::GroupVolume(group) => groups.get(group).map(|g| g.volume),
+            GainOwner::GroupPan(group) => groups.get(group).map(|g| g.pan),
+            GainOwner::GroupMix { group, effect } => groups.get(group)?.mix_values.get(effect).map(|mix| *mix as f32),
+        }
+    }
+
+    /// Say that the value that is heard goes from `from` to `to` over this buffer (the value that the user set is not touched).
+    fn ramp(self, instruments: &mut [InstrumentLane], groups: &mut [Group], from: f32, to: f32) {
+        match self {
+            GainOwner::LaneVolume(lane) => instruments[lane].volume_ramp = Some((from, to)),
+            GainOwner::LaneMix { lane, effect } => instruments[lane].mix_ramps.push((effect, from, to)),
+            GainOwner::GroupVolume(group) => groups[group].volume_ramp = Some((from, to)),
+            GainOwner::GroupPan(group) => groups[group].pan_ramp = Some((from, to)),
+            GainOwner::GroupMix { group, effect } => groups[group].mix_ramps.push((effect, from, to)),
+        }
+    }
+}
+
+/// Work out what the host-side values that cables drive (a lane's volume, an effect's mix, a group's volume or pan) are for this buffer: the value the user set (which is not touched: it is what the
+/// model has, and what the cables are centred on) and the sum of the offsets, held to the value's range, and where the value was when the last buffer ended, so that the lane or the group ramps from
+/// the one to the other over the buffer. `ramps` remembers where each ended, and goes on for a buffer after the last cable that drove a value is taken out, when the value goes back to the user's by a
+/// ramp too. A value whose node is nowhere (it went) is driven by nothing and publishes nothing. A session that no cable drives a value of has an empty `ramps` and no `drives`, and this is not called.
+fn apply_gain_drives(
+    modulators: &[Modulator],
+    instruments: &mut [InstrumentLane],
+    groups: &mut [Group],
+    drives: &[GainDrive],
+    ramps: &mut Vec<GainRamp>,
+    telemetry: Option<&Telemetry>,
+) {
+    // (Nothing is ramped that was not asked to be this buffer.)
+    for lane in instruments.iter_mut() {
+        lane.volume_ramp = None;
+        lane.mix_ramps.clear();
+    }
+    for group in groups.iter_mut() {
+        group.volume_ramp = None;
+        group.pan_ramp = None;
+        group.mix_ramps.clear();
+    }
+    for &(aim, base, min, max, offset) in drives {
+        let Driven::Gain { node, gain } = aim else { continue };
+        let Some(owner) = GainOwner::locate(instruments, groups, node, gain) else {
+            ramps.retain(|ramp| ramp.aim != aim);
+            continue;
+        };
+        let goal = (base + offset).clamp(min, max);
+        let from = match ramps.iter_mut().find(|ramp| ramp.aim == aim) {
+            Some(ramp) => {
+                ramp.left = 1;
+                std::mem::replace(&mut ramp.at, goal)
+            }
+            None => {
+                // (It was not driven the buffer before: it was where the user had it.)
+                ramps.push(GainRamp { aim, at: goal, left: 1 });
+                owner.value(instruments, groups).unwrap_or(goal)
+            }
+        };
+        owner.ramp(instruments, groups, from, goal);
+        if let Some(telemetry) = telemetry {
+            publish_effective(modulators, telemetry, goal, |driven| *driven == aim);
+        }
+    }
+    // What cables drove a buffer ago and no longer do goes from where it was to what the user set, over this buffer, and then is left alone.
+    ramps.retain_mut(|ramp| {
+        if drives.iter().any(|drive| drive.0 == ramp.aim) {
+            return true;
+        }
+        let Driven::Gain { node, gain } = ramp.aim else { return false };
+        let Some(owner) = GainOwner::locate(instruments, groups, node, gain) else { return false };
+        if ramp.left == 0 {
+            return false;
+        }
+        ramp.left = 0;
+        let Some(goal) = owner.value(instruments, groups) else { return false };
+        owner.ramp(instruments, groups, std::mem::replace(&mut ramp.at, goal), goal);
+        true
+    });
 }
 
 /// Hand `plugin`, which was taken out of the graph, back to the main thread without dropping it here: to `keep`, the channel that the main thread made
@@ -1350,6 +1493,21 @@ fn fade(bufs: &mut [Vec<f32>], num_channels: usize, from: f32, to: f32) {
             for s in buf.iter_mut() {
                 gain += step;
                 *s *= gain;
+            }
+        }
+    }
+}
+
+/// Scale `bufs` by `volume`, which is what the user set; where cables drive it (`ramp`: where it goes from and to over this buffer) by a gain that goes from the one to the other over the buffer
+/// (`fade`), or by where they put it if it stays there. A volume of 1 costs nothing.
+fn apply_volume(bufs: &mut [Vec<f32>], num_channels: usize, volume: f32, ramp: Option<(f32, f32)>) {
+    let (from, volume) = ramp.unwrap_or((volume, volume));
+    if from != volume {
+        fade(bufs, num_channels, from, volume);
+    } else if (volume - 1.0).abs() >= f32::EPSILON {
+        for channel in bufs.iter_mut().take(num_channels) {
+            for sample in channel.iter_mut() {
+                *sample *= volume;
             }
         }
     }
@@ -2516,9 +2674,14 @@ struct InstrumentLane {
     range: Option<(u8, u8)>,
     instrument: Option<Box<dyn Plugin>>,
     volume: f32,
+    /// Where the volume goes from and to over the buffer that is being processed, when cables drive it (`apply_gain_drives`): `volume` is what the user set, and is not touched; what is heard is
+    /// the ramp, so that a volume that a modulator moves a buffer at a time does not zipper. None is `volume` all through, which is what it is for every lane that no cable drives.
+    volume_ramp: Option<(f32, f32)>,
     inst_buf: Vec<Vec<f32>>,
     effects: Vec<Box<dyn Plugin>>,
     mix_values: Vec<f64>,
+    /// The same for the mixes of the effects that cables drive: the place of the effect in the chain, and where its mix goes from and to over the buffer.
+    mix_ramps: Vec<(usize, f32, f32)>,
     /// The ids that the model gave the effects, one for each mix (not for each plugin: a lane that gave up its plugins, `KeptLane::take_plugins`, keeps the mixes and the ids).
     effect_nodes: Vec<NodeId>,
     /// The effects whose feed is cut (`GraphCommand::SetEffectFeed`), by id and not by place, so that the cut goes where the effect goes: the plan has no link into them from the stage before.
@@ -2593,9 +2756,11 @@ impl InstrumentLane {
             range: None,
             instrument: None,
             volume: 1.0,
+            volume_ramp: None,
             inst_buf: Vec::new(),
             effects: Vec::new(),
             mix_values: Vec::new(),
+            mix_ramps: Vec::new(),
             effect_nodes: Vec::new(),
             cut_feeds: Vec::new(),
             #[cfg(test)]
@@ -3005,15 +3170,21 @@ struct Group {
     node: NodeId,
     effects: Vec<Box<dyn Plugin>>,
     mix_values: Vec<f64>,
+    /// Where cables move the mixes of the bus effects from and to over the buffer that is being processed (see `InstrumentLane::mix_ramps`).
+    mix_ramps: Vec<(usize, f32, f32)>,
     /// The ids that the model gave the bus effects, one for each mix (see `InstrumentLane::effect_nodes`).
     effect_nodes: Vec<NodeId>,
     /// The bus effects whose feed is cut (see `InstrumentLane::cut_feeds`).
     cut_feeds: Vec<NodeId>,
     /// Output gain applied to the member sum, before the group effects.
     volume: f32,
+    /// Where cables move the volume from and to over the buffer that is being processed (see `InstrumentLane::volume_ramp`).
+    volume_ramp: Option<(f32, f32)>,
     /// Stereo balance pan for the group bus output: -1 = left, 0 = center,
     /// +1 = right. Applied after the effect chain.
     pan: f32,
+    /// Where cables move the pan from and to over the buffer that is being processed (see `InstrumentLane::volume_ramp`).
+    pan_ramp: Option<(f32, f32)>,
     /// Member-sum accumulator (num_channels vecs): what the loop that the kernel replaced summed the members into (the plan has the sum in a buffer of the pool now).
     #[cfg(test)]
     accum: Vec<Vec<f32>>,
@@ -3053,10 +3224,13 @@ impl Group {
             node,
             effects: Vec::new(),
             mix_values: Vec::new(),
+            mix_ramps: Vec::new(),
             effect_nodes: Vec::new(),
             cut_feeds: Vec::new(),
             volume: 1.0,
+            volume_ramp: None,
             pan: 0.0,
+            pan_ramp: None,
             #[cfg(test)]
             accum: Vec::new(),
             #[cfg(test)]
@@ -3102,7 +3276,7 @@ impl Group {
             }
         }
         if self.effects.is_empty() {
-            self.apply_pan(bus, num_channels);
+            self.apply_pan(bus, num_channels, None);
             store_taps(&self.taps, telemetry, TapStage::Output, bus);
             return Ok(());
         }
@@ -3163,28 +3337,35 @@ impl Group {
         for (acc, fin) in bus.iter_mut().zip(final_buf.iter()).take(num_channels) {
             acc.copy_from_slice(fin);
         }
-        self.apply_pan(bus, num_channels);
+        self.apply_pan(bus, num_channels, None);
         store_taps(&self.taps, telemetry, TapStage::Output, bus);
         Ok(())
     }
 
     /// Balance-style stereo pan on the bus output (2-channel only): center
-    /// leaves both channels untouched, panning attenuates the far channel.
-    fn apply_pan(&self, bus: &mut [Vec<f32>], num_channels: usize) {
-        if num_channels != 2 || self.pan.abs() < f32::EPSILON {
+    /// leaves both channels untouched, panning attenuates the far channel. A pan that cables drive (`ramp`: where it goes from and to over this buffer, and `pan` is what the user set) goes from where
+    /// the last buffer left it to where the cables put it, as the gain of each side does.
+    fn apply_pan(&self, bus: &mut [Vec<f32>], num_channels: usize, ramp: Option<(f32, f32)>) {
+        if num_channels != 2 {
             return;
         }
-        let p = self.pan;
-        let (left_gain, right_gain) = if p >= 0.0 {
-            (1.0 - p, 1.0)
-        } else {
-            (1.0, 1.0 + p)
-        };
-        for s in bus[0].iter_mut() {
-            *s *= left_gain;
+        let (from, pan) = ramp.unwrap_or((self.pan, self.pan));
+        if from == pan && pan.abs() < f32::EPSILON {
+            return;
         }
-        for s in bus[1].iter_mut() {
-            *s *= right_gain;
+        let gains = |p: f32| if p >= 0.0 { (1.0 - p, 1.0) } else { (1.0, 1.0 + p) };
+        let (left_gain, right_gain) = gains(pan);
+        if from == pan {
+            for s in bus[0].iter_mut() {
+                *s *= left_gain;
+            }
+            for s in bus[1].iter_mut() {
+                *s *= right_gain;
+            }
+        } else {
+            let (left_from, right_from) = gains(from);
+            fade(&mut bus[..1], 1, left_from, left_gain);
+            fade(&mut bus[1..2], 1, right_from, right_gain);
         }
     }
 }
@@ -3229,6 +3410,10 @@ pub struct AudioGraph {
     /// Reusable scratch for the cross-mod writes within the rack, and for the sums of what the modulators drive on each parameter.
     free_cross_mod_scratch: Vec<CrossModWrite>,
     free_drives: Vec<ParamDrive>,
+    /// What the cables that drive a lane's volume, an effect's mix or a group's volume or pan sum to each buffer (scratch space, as `free_drives` is), and where those values were when the last
+    /// buffer ended (`GainRamp`).
+    free_gain_drives: Vec<GainDrive>,
+    gain_ramps: Vec<GainRamp>,
     /// Where what the graph measures is published; `None` publishes nothing.
     telemetry: Option<Arc<Telemetry>>,
     /// The output mix: its meter, and what it writes to the output.
@@ -3264,6 +3449,8 @@ impl AudioGraph {
             free_modulators: Vec::new(),
             free_cross_mod_scratch: Vec::with_capacity(SCRATCH_CAPACITY),
             free_drives: Vec::with_capacity(SCRATCH_CAPACITY),
+            free_gain_drives: Vec::with_capacity(SCRATCH_CAPACITY),
+            gain_ramps: Vec::with_capacity(SCRATCH_CAPACITY),
             telemetry: None,
             master: Master::new(),
             modulator_seeds: 0,
@@ -3665,17 +3852,28 @@ impl AudioGraph {
                     slot,
                     value,
                 } => {
+                    let mut centre = None;
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         if slot > 0 {
                             if let Some(mix) = lane.mix_values.get_mut(slot - 1) {
                                 *mix = value as f64;
+                                centre = lane.effect_nodes.get(slot - 1).copied();
                             }
                         }
                     }
+                    // (A cable that drives the mix is centred on what the user set.)
+                    if let Some(node) = centre {
+                        self.centre(Driven::Gain { node, gain: ModGain::Mix }, value);
+                    }
                 }
                 GraphCommand::SetVolume { inst, value } => {
+                    let mut centre = None;
                     if let Some(lane) = self.get_instrument_mut(inst) {
                         lane.volume = value;
+                        centre = Some(lane.node);
+                    }
+                    if let Some(node) = centre {
+                        self.centre(Driven::Gain { node, gain: ModGain::Volume }, value);
                     }
                 }
                 GraphCommand::SetMute { inst, muted } => {
@@ -3883,13 +4081,23 @@ impl AudioGraph {
                 }
                 GraphCommand::SetEffectFeed { node, fed } => self.set_effect_feed(node, fed),
                 GraphCommand::SetGroupVolume { group, value } => {
+                    let mut centre = None;
                     if let Some(g) = self.groups.get_mut(group) {
                         g.volume = value;
+                        centre = Some(g.node);
+                    }
+                    if let Some(node) = centre {
+                        self.centre(Driven::Gain { node, gain: ModGain::Volume }, value);
                     }
                 }
                 GraphCommand::SetGroupPan { group, value } => {
+                    let mut centre = None;
                     if let Some(g) = self.groups.get_mut(group) {
                         g.pan = value.clamp(-1.0, 1.0);
+                        centre = Some((g.node, g.pan));
+                    }
+                    if let Some((node, pan)) = centre {
+                        self.centre(Driven::Gain { node, gain: ModGain::Pan }, pan);
                     }
                 }
                 GraphCommand::SetGroupMute { group, muted } => {
@@ -3950,10 +4158,15 @@ impl AudioGraph {
                     }
                 }
                 GraphCommand::SetGroupMix { group, index, value } => {
+                    let mut centre = None;
                     if let Some(g) = self.groups.get_mut(group) {
                         if let Some(mix) = g.mix_values.get_mut(index) {
                             *mix = value as f64;
+                            centre = g.effect_nodes.get(index).copied();
                         }
+                    }
+                    if let Some(node) = centre {
+                        self.centre(Driven::Gain { node, gain: ModGain::Mix }, value);
                     }
                 }
                 GraphCommand::SetGroupParameter { group, index, param_index, value } => {
@@ -4374,7 +4587,13 @@ impl AudioGraph {
                     publish_outputs(&self.free_modulators, telemetry);
                 }
                 Self::drain_learned(self.learn_tx.as_ref(), &mut self.free_modulators, |_| ModulatorLocation::Free);
-                apply_free_modulators(&self.free_modulators, &mut self.instruments, &mut self.groups, &mut self.free_drives, self.telemetry.as_deref());
+                apply_free_modulators(&self.free_modulators, &mut self.instruments, &mut self.groups, &mut self.free_drives, &mut self.free_gain_drives, self.telemetry.as_deref());
+            } else {
+                self.free_gain_drives.clear();
+            }
+            // The volumes, mixes and pans that cables drive, and those that cables drove a buffer ago (the user's value comes back by a ramp too). A session that has none does none of it.
+            if !self.free_gain_drives.is_empty() || !self.gain_ramps.is_empty() {
+                apply_gain_drives(&self.free_modulators, &mut self.instruments, &mut self.groups, &self.free_gain_drives, &mut self.gain_ramps, self.telemetry.as_deref());
             }
         }
 
@@ -13440,5 +13659,291 @@ mod tests {
             send(&rig, command);
         }
         assert!(all_at(&heard_after(&mut rig, 2), 0.3));
+    }
+
+    // -- Cables to a lane's volume, an effect's mix and a group's volume and pan (step 97) --
+
+    /// A rig of one lane whose instrument puts out `level` on both sides for as long as a note is held, with `effect` in its chain at a mix of 1 if there is one, and a free modulator of
+    /// `source` (index 0) that publishes nothing and has no cable yet.
+    fn lane_with_a_modulator(level: f32, effect: Option<Box<dyn Plugin>>, source: ModSource) -> Rig {
+        let (graph, cmd_tx, return_rx) = make_graph(2);
+        let telemetry = Arc::new(Telemetry::new());
+        let mut rig = Rig { graph, cmd_tx, telemetry: telemetry.clone(), slots: SlotAllocator::default(), _return_rx: return_rx };
+        rig.graph.set_telemetry(telemetry);
+        swap_instrument(&rig.cmd_tx, ConstInstrument::new(level));
+        if let Some(effect) = effect {
+            insert_effect(&rig.cmd_tx, 0, effect, 1.0);
+        }
+        rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 0, source, node: modulator_node(ModulatorLocation::Free, 0) }).unwrap();
+        rig
+    }
+
+    /// A square LFO that is always +1.
+    fn always_up() -> ModSource {
+        lfo(LfoWaveform::Square, 0.0)
+    }
+
+    /// A cable of modulator `mod_index` to the host-side value `gain` of `node`, centred on `base`, held to the value's own range, that publishes what the value is set to; its slot.
+    fn gain_cable(rig: &mut Rig, mod_index: usize, node: NodeId, gain: ModGain, depth: f32, base: f32) -> Slot {
+        let slot = rig.slot();
+        let (param_min, param_max) = gain.range();
+        let target = ModTarget { edge: test_edge(), aim: Driven::Gain { node, gain }, depth, base_value: base, param_min, param_max, effective: Some(slot) };
+        rig.cmd_tx.send(GraphCommand::AddModTarget { location: ModulatorLocation::Free, mod_index, target }).unwrap();
+        slot
+    }
+
+    /// One buffer of the rig's graph, with `midi`.
+    fn block_of(rig: &mut Rig, midi: &[(u64, [u8; 3])]) -> Vec<Vec<f32>> {
+        let mut out = make_output();
+        rig.graph.process(midi, &mut out).unwrap();
+        out
+    }
+
+    /// Where a gain that goes from `from` to `to` over a buffer is at frame `i`, as `fade` has it: equal steps, the last frame at `to`.
+    fn ramp_at(from: f32, to: f32, i: usize) -> f32 {
+        from + (to - from) * (i + 1) as f32 / FRAMES as f32
+    }
+
+    #[test]
+    fn a_cable_to_a_lanes_volume_ramps_it_over_the_buffer_to_what_the_cable_makes_of_it_and_holds_it_there() {
+        let mut rig = lane_with_a_modulator(1.0, None, always_up());
+        let slot = gain_cable(&mut rig, 0, lane_node(0), ModGain::Volume, 0.25, 1.0);
+        // The first buffer: the volume the user set, 1, goes to 2 (the cable moves it a quarter of the range of 0 to 4, up) over it, in equal steps, as a mute is let go of.
+        let first = block_of(&mut rig, &[note_on(60)]);
+        for (i, sample) in first[0].iter().enumerate() {
+            assert!((sample - ramp_at(1.0, 2.0, i)).abs() < 1e-5, "frame {i}: {sample} for {}", ramp_at(1.0, 2.0, i));
+        }
+        assert_eq!(first[1], first[0], "both sides");
+        assert!(close(rig.read(slot), 2.0), "the cable publishes what the volume is set to: {}", rig.read(slot));
+        // The next buffer: 2 all through, and the lane's own volume is where the cable put it.
+        let second = block_of(&mut rig, &[]);
+        assert!(second[0].iter().all(|s| close(*s, 2.0)), "{:?}", &second[0][..4]);
+        assert_eq!(rig.graph.instruments[0].volume, 1.0, "what the user set is not touched: it is what the model has, and what the cable is centred on");
+    }
+
+    #[test]
+    fn a_cable_to_an_effects_mix_ramps_the_blend_and_what_the_user_sets_the_mix_to_is_what_it_is_centred_on() {
+        // The instrument puts out 1 and the effect 0 whatever it is given, so that what is heard is the dry part: 1 - mix.
+        let mut rig = lane_with_a_modulator(1.0, Some(Box::new(FixedEffect(0.0))), always_up());
+        let slot = gain_cable(&mut rig, 0, effect_node(0, 0), ModGain::Mix, -0.5, 1.0);
+        let first = block_of(&mut rig, &[note_on(60)]);
+        for (i, sample) in first[0].iter().enumerate() {
+            let expected = 1.0 - ramp_at(1.0, 0.5, i);
+            assert!((sample - expected).abs() < 1e-5, "frame {i}: {sample} for {expected}");
+        }
+        assert!(close(rig.read(slot), 0.5));
+        let second = block_of(&mut rig, &[]);
+        assert!(second[0].iter().all(|s| close(*s, 0.5)), "{:?}", &second[0][..4]);
+        assert_eq!(rig.graph.instruments[0].mix_values[0], 1.0, "what the user set is not touched");
+        // The user turns the mix to 0.8: the cable is centred on that, and its offset of -0.5 puts the blend at 0.3.
+        rig.cmd_tx.send(GraphCommand::SetMix { inst: 0, slot: 1, value: 0.8 }).unwrap();
+        block_of(&mut rig, &[]);
+        let settled = block_of(&mut rig, &[]);
+        assert!(settled[0].iter().all(|s| close(*s, 0.7)), "{:?}", &settled[0][..4]);
+        assert!(close(rig.read(slot), 0.3));
+        assert_eq!(rig.graph.instruments[0].mix_values[0], 0.8f32 as f64);
+        assert_eq!(rig.graph.cable_bases().iter().map(|(.., aim, base)| (*aim, *base)).collect::<Vec<_>>(), [(Driven::Gain { node: effect_node(0, 0), gain: ModGain::Mix }, 0.8)]);
+    }
+
+    /// One lane in group 0, whose instrument puts out 1 on both sides while a note is held, a modulator that is always up, and no cable yet.
+    fn group_of_one_lane() -> Rig {
+        let rig = lane_with_a_modulator(1.0, None, always_up());
+        rig.cmd_tx.send(GraphCommand::AddGroup { node: group_node(0) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        rig
+    }
+
+    #[test]
+    fn cables_to_a_groups_volume_and_pan_ramp_them_and_the_pan_leaves_the_two_sides_apart() {
+        let mut rig = group_of_one_lane();
+        // The volume 1 and the pan 0 that the user set, each moved up by a quarter of its range (0 to 4 and -1 to 1): the volume goes to 2 and the pan to 0.5.
+        let volume = gain_cable(&mut rig, 0, group_node(0), ModGain::Volume, 0.25, 1.0);
+        let pan = gain_cable(&mut rig, 0, group_node(0), ModGain::Pan, 0.25, 0.0);
+        let first = block_of(&mut rig, &[note_on(60)]);
+        // (The pan is a balance: the left side is brought down by 1 - pan and the right is left alone.)
+        assert_eq!((first[0].len(), first[1].len()), (FRAMES, FRAMES));
+        for (i, (left, right)) in first[0].iter().zip(&first[1]).enumerate() {
+            let (volume_at, pan_at) = (ramp_at(1.0, 2.0, i), ramp_at(0.0, 0.5, i));
+            assert!((left - volume_at * (1.0 - pan_at)).abs() < 1e-5, "left, frame {i}: {left}");
+            assert!((right - volume_at).abs() < 1e-5, "right, frame {i}: {right}");
+        }
+        assert!(close(rig.read(volume), 2.0) && close(rig.read(pan), 0.5), "{} and {}", rig.read(volume), rig.read(pan));
+        let second = block_of(&mut rig, &[]);
+        assert!(second[0].iter().all(|s| close(*s, 1.0)) && second[1].iter().all(|s| close(*s, 2.0)), "{:?} {:?}", &second[0][..2], &second[1][..2]);
+        // What the user sets is what the cables are centred on, whichever of the commands says it (the pan is held to -1 … 1 as the engine holds it).
+        for command in [GraphCommand::SetGroupVolume { group: 0, value: 0.5 }, GraphCommand::SetGroupPan { group: 0, value: -3.0 }] {
+            rig.cmd_tx.send(command).unwrap();
+        }
+        rig.graph.drain_commands();
+        let bases: Vec<f32> = rig.graph.cable_bases().iter().map(|(.., base)| *base).collect();
+        assert_eq!(bases, [0.5, -1.0]);
+    }
+
+    #[test]
+    fn a_volume_that_a_fast_lfo_moves_is_ramped_so_that_the_step_across_a_border_is_one_step_of_the_ramp_and_not_a_jump() {
+        // 400 Hz is more than half a cycle in a buffer of 64 frames: the volume is somewhere else every time.
+        let mut rig = lane_with_a_modulator(1.0, None, lfo(LfoWaveform::Sine, 400.0));
+        gain_cable(&mut rig, 0, lane_node(0), ModGain::Volume, 0.2, 1.0);
+        let mut blocks = vec![block_of(&mut rig, &[note_on(60)])];
+        for _ in 0..40 {
+            blocks.push(block_of(&mut rig, &[]));
+        }
+        let firsts: Vec<f32> = blocks.iter().map(|block| block[0][0]).collect();
+        let lasts: Vec<f32> = blocks.iter().map(|block| block[0][FRAMES - 1]).collect();
+        let moved = lasts.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0, f32::max);
+        let jumped = (1..blocks.len()).map(|n| (firsts[n] - lasts[n - 1]).abs()).fold(0.0, f32::max);
+        assert!(moved > 0.3, "the volume moves a good deal from buffer to buffer: {moved}");
+        assert!(jumped <= moved / FRAMES as f32 + 1e-5, "the border is one step of the ramp ({}), not a jump of the buffer's ({moved}): {jumped}", moved / FRAMES as f32);
+    }
+
+    #[test]
+    fn taking_the_cable_out_ramps_the_volume_back_to_what_the_user_set_and_then_leaves_it_alone() {
+        let mut rig = lane_with_a_modulator(1.0, None, always_up());
+        gain_cable(&mut rig, 0, lane_node(0), ModGain::Volume, 0.25, 1.0);
+        block_of(&mut rig, &[note_on(60)]);
+        let held = block_of(&mut rig, &[]);
+        assert!(held[0].iter().all(|s| close(*s, 2.0)));
+        // The controller takes the cable out and gives the user's value back (`Controller::remove_edge`): the volume goes from where it was to 1 over the next buffer, and not at once.
+        rig.cmd_tx.send(GraphCommand::RemoveModTarget { location: ModulatorLocation::Free, mod_index: 0, target_index: 0 }).unwrap();
+        rig.cmd_tx.send(GraphCommand::SetVolume { inst: 0, value: 1.0 }).unwrap();
+        let back = block_of(&mut rig, &[]);
+        for (i, sample) in back[0].iter().enumerate() {
+            assert!((sample - ramp_at(2.0, 1.0, i)).abs() < 1e-5, "frame {i}: {sample}");
+        }
+        let after = block_of(&mut rig, &[]);
+        assert!(after[0].iter().all(|s| *s == 1.0), "a volume of 1 is no multiplication at all");
+        assert!(rig.graph.gain_ramps.is_empty(), "and nothing is remembered of it");
+    }
+
+    #[test]
+    fn two_cables_on_one_mix_add_up_and_are_held_to_the_range_of_a_mix_and_a_cable_to_a_node_that_is_nowhere_drives_nothing() {
+        let mut rig = lane_with_a_modulator(1.0, Some(Box::new(FixedEffect(0.0))), always_up());
+        rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 1, source: always_up(), node: modulator_node(ModulatorLocation::Free, 1) }).unwrap();
+        let mix = effect_node(0, 0);
+        let (a, b) = (gain_cable(&mut rig, 0, mix, ModGain::Mix, 0.3, 0.5), gain_cable(&mut rig, 1, mix, ModGain::Mix, 0.4, 0.5));
+        let nowhere = gain_cable(&mut rig, 1, NodeId(9_999), ModGain::Mix, 0.2, 0.5);
+        block_of(&mut rig, &[note_on(60)]);
+        // 0.5 and 0.3 and 0.4 are more than a mix there can be: both cables say what the one value is set to, which is held to 1.
+        assert_eq!((rig.read(a), rig.read(b)), (1.0, 1.0));
+        assert_eq!(rig.read(nowhere), 0.0, "nothing is published for a cable whose node is not there");
+        let settled = block_of(&mut rig, &[]);
+        assert!(settled[0].iter().all(|s| s.abs() < 1e-6), "a mix of 1 is all of the effect's (nothing): {:?}", &settled[0][..4]);
+        assert_eq!(rig.graph.gain_ramps.len(), 1, "and no value is remembered for it");
+    }
+
+    #[test]
+    fn a_lane_whose_effect_is_taken_out_while_a_cable_drives_its_mix_is_left_with_nothing_remembered() {
+        let mut rig = lane_with_a_modulator(1.0, Some(Box::new(FixedEffect(0.0))), always_up());
+        gain_cable(&mut rig, 0, effect_node(0, 0), ModGain::Mix, -0.5, 1.0);
+        block_of(&mut rig, &[note_on(60)]);
+        assert_eq!(rig.graph.gain_ramps.len(), 1);
+        // (The controller takes the cable out first; a graph that is not told does not drive a mix that is not there, and does not remember it.)
+        rig.cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 0, keep: None }).unwrap();
+        block_of(&mut rig, &[]);
+        block_of(&mut rig, &[]);
+        assert!(rig.graph.gain_ramps.is_empty());
+    }
+
+    #[test]
+    fn cables_to_volumes_mixes_and_pans_ask_the_allocator_for_nothing() {
+        let mut rig = group_of_one_lane();
+        rig.cmd_tx.send(GraphCommand::InsertEffect { inst: 0, index: 0, effect: Box::new(FixedEffect(0.1)), mix: 1.0, node: effect_node(0, 0) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: Box::new(FixedEffect(0.1)), mix: 0.5, node: bus_effect_node(0, 0) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::InsertModulator { location: ModulatorLocation::Free, index: 1, source: lfo(LfoWaveform::Sine, 7.0), node: modulator_node(ModulatorLocation::Free, 1) }).unwrap();
+        for (mod_index, node, gain, depth, base) in [
+            (0, lane_node(0), ModGain::Volume, 0.2, 1.0),
+            (0, effect_node(0, 0), ModGain::Mix, 0.3, 0.5),
+            (1, group_node(0), ModGain::Volume, 0.1, 1.0),
+            (1, group_node(0), ModGain::Pan, 0.4, 0.0),
+            (1, bus_effect_node(0, 0), ModGain::Mix, 0.3, 0.5),
+        ] {
+            gain_cable(&mut rig, mod_index, node, gain, depth, base);
+        }
+        rig.graph.drain_commands();
+        let allocations = allocations_while_processing(&mut rig.graph, &[note_on(60)], 16);
+        assert_eq!(allocations, 0, "cables to a volume, a mix and a pan: the audio thread asked the allocator for memory");
+    }
+
+    #[test]
+    fn the_volume_that_the_user_sets_is_what_the_cable_to_it_is_centred_on() {
+        let mut rig = lane_with_a_modulator(1.0, None, always_up());
+        let slot = gain_cable(&mut rig, 0, lane_node(0), ModGain::Volume, 0.25, 1.0);
+        // The user turns the volume to 0.5: the cable's offset of a quarter of the range of 0 to 4 is 1, so that it goes to 1.5.
+        rig.cmd_tx.send(GraphCommand::SetVolume { inst: 0, value: 0.5 }).unwrap();
+        block_of(&mut rig, &[note_on(60)]);
+        let settled = block_of(&mut rig, &[]);
+        assert!(settled[0].iter().all(|s| close(*s, 1.5)), "{:?}", &settled[0][..4]);
+        assert!(close(rig.read(slot), 1.5));
+        assert_eq!(rig.graph.cable_bases().iter().map(|(.., aim, base)| (*aim, *base)).collect::<Vec<_>>(), [(Driven::Gain { node: lane_node(0), gain: ModGain::Volume }, 0.5)]);
+        assert_eq!(rig.graph.instruments[0].volume, 0.5, "what the user set is not touched");
+    }
+
+    /// One lane in group 0, whose bus has `effects` (each puts out what it is told to whatever it is given, at a mix of 1), a modulator that is always up and no cable yet.
+    fn group_with_effects(effects: &[f32]) -> Rig {
+        let rig = group_of_one_lane();
+        for (index, value) in effects.iter().enumerate() {
+            rig.cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index, effect: Box::new(FixedEffect(*value)), mix: 1.0, node: bus_effect_node(0, index) }).unwrap();
+        }
+        rig
+    }
+
+    #[test]
+    fn the_mix_of_a_bus_effect_that_the_user_sets_is_what_the_cable_to_it_is_centred_on() {
+        let mut rig = group_with_effects(&[0.0]);
+        gain_cable(&mut rig, 0, bus_effect_node(0, 0), ModGain::Mix, -0.5, 1.0);
+        rig.cmd_tx.send(GraphCommand::SetGroupMix { group: 0, index: 0, value: 0.8 }).unwrap();
+        block_of(&mut rig, &[note_on(60)]);
+        let settled = block_of(&mut rig, &[]);
+        // The effect puts out nothing, so that what is heard is the dry part, 1 - mix: the mix is 0.8 less the cable's half, 0.3.
+        assert!(settled[0].iter().all(|s| close(*s, 0.7)), "{:?}", &settled[0][..4]);
+        assert_eq!(rig.graph.cable_bases().iter().map(|(.., aim, base)| (*aim, *base)).collect::<Vec<_>>(), [(Driven::Gain { node: bus_effect_node(0, 0), gain: ModGain::Mix }, 0.8)]);
+    }
+
+    #[test]
+    fn the_cable_to_the_mix_of_the_second_effect_of_a_lane_ramps_that_effect_and_not_the_first() {
+        // The first effect puts out 0.5 and the second 0, so that what is heard is the dry part of the second: half of what the first made, times 1 - mix.
+        let mut rig = lane_with_a_modulator(1.0, Some(Box::new(FixedEffect(0.5))), always_up());
+        insert_effect(&rig.cmd_tx, 1, Box::new(FixedEffect(0.0)), 1.0);
+        let slot = gain_cable(&mut rig, 0, effect_node(0, 1), ModGain::Mix, -0.5, 1.0);
+        let first = block_of(&mut rig, &[note_on(60)]);
+        for (i, sample) in first[0].iter().enumerate() {
+            let expected = 0.5 * (1.0 - ramp_at(1.0, 0.5, i));
+            assert!((sample - expected).abs() < 1e-5, "frame {i}: {sample} for {expected}");
+        }
+        assert!(close(rig.read(slot), 0.5));
+        let second = block_of(&mut rig, &[]);
+        assert!(second[0].iter().all(|s| close(*s, 0.25)), "{:?}", &second[0][..4]);
+    }
+
+    #[test]
+    fn the_cable_to_the_mix_of_the_second_bus_effect_ramps_that_effect_and_not_the_first() {
+        let mut rig = group_with_effects(&[0.5, 0.0]);
+        let slot = gain_cable(&mut rig, 0, bus_effect_node(0, 1), ModGain::Mix, -0.5, 1.0);
+        let first = block_of(&mut rig, &[note_on(60)]);
+        for (i, sample) in first[0].iter().enumerate() {
+            let expected = 0.5 * (1.0 - ramp_at(1.0, 0.5, i));
+            assert!((sample - expected).abs() < 1e-5, "frame {i}: {sample} for {expected}");
+        }
+        assert!(close(rig.read(slot), 0.5));
+        let second = block_of(&mut rig, &[]);
+        assert!(second[0].iter().all(|s| close(*s, 0.25)), "{:?}", &second[0][..4]);
+    }
+
+    #[test]
+    fn a_modulator_that_goes_while_its_cable_drives_a_value_lets_the_value_go_back_to_what_the_user_set_and_nothing_is_remembered() {
+        let mut rig = lane_with_a_modulator(1.0, None, always_up());
+        gain_cable(&mut rig, 0, lane_node(0), ModGain::Volume, 0.25, 1.0);
+        block_of(&mut rig, &[note_on(60)]);
+        let driven = block_of(&mut rig, &[]);
+        assert!(driven[0].iter().all(|s| close(*s, 2.0)), "{:?}", &driven[0][..4]);
+        // The only modulator goes, with its cable: the volume comes back to what the user set over the next buffer, in equal steps, and the buffer after it is left alone.
+        rig.cmd_tx.send(GraphCommand::RemoveModulator { location: ModulatorLocation::Free, index: 0 }).unwrap();
+        let back = block_of(&mut rig, &[]);
+        for (i, sample) in back[0].iter().enumerate() {
+            assert!((sample - ramp_at(2.0, 1.0, i)).abs() < 1e-5, "frame {i}: {sample} for {}", ramp_at(2.0, 1.0, i));
+        }
+        let after = block_of(&mut rig, &[]);
+        assert!(after[0].iter().all(|s| close(*s, 1.0)), "{:?}", &after[0][..4]);
+        assert!(rig.graph.gain_ramps.is_empty() && rig.graph.free_gain_drives.is_empty(), "nothing is remembered of it");
     }
 }

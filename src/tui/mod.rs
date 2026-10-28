@@ -984,6 +984,17 @@ impl State {
             return;
         }
         let addr = self.tree_entries[sel].address;
+        // A group's rows are its volume and its pan, which no plugin has: the cable goes to the group (a new modulator hears it).
+        if let TreeAddress::Group(group) = addr {
+            let Some((node, gain)) = self.group_row_gain(group) else { return };
+            let param_name = gain.name().to_string();
+            let (mut choices, mut items) = new_modulator_choices(&param_name);
+            self.push_the_sessions_own_modulators(&mut choices, &mut items);
+            let mut filter = FilterListState::new();
+            filter.apply_filter(&items);
+            self.modulate = Some(ModulateState { target_kind: crate::plugin::chain::ModTargetKind::Gain { node, gain }, param_name, choices, filter, items });
+            return;
+        }
         let pa = match self.real_param_index() {
             Some(i) => i,
             None => return,
@@ -1005,6 +1016,17 @@ impl State {
             filter,
             items,
         });
+    }
+
+    /// The group's node and the value of the group's own that the row under the cursor of its pane is (0 is its volume, 1 its pan).
+    fn group_row_gain(&self, group: usize) -> Option<(NodeId, crate::app::model::ModGain)> {
+        use crate::app::model::ModGain;
+        let node = self.ctl.model.groups.get(group)?.node;
+        match self.param_state.selected {
+            0 => Some((node, ModGain::Volume)),
+            1 => Some((node, ModGain::Pan)),
+            _ => None,
+        }
     }
 
     /// Open the "modulate" popup for a parameter of a *modulator* (its rate /
@@ -1115,6 +1137,13 @@ impl State {
             items.push(FilterListItem { cells: vec![format!("{owner} {}", t.plugin_name), t.param_name], index: idx });
             entries.push(TargetEntry { kind: t.kind });
         }
+        // The host-side values: a lane's volume, an effect's mix, a group's volume and pan.
+        for t in self.ctl.model.gain_targets(ModulatorLocation::Free) {
+            let idx = entries.len();
+            let owner = plugin_tag(&self.ctl.model, t.node);
+            items.push(FilterListItem { cells: vec![format!("{owner} {}", t.owner_name), t.gain.label().to_string()], index: idx });
+            entries.push(TargetEntry { kind: t.kind });
+        }
         for t in self.ctl.model.field_targets(ModulatorLocation::Free, mod_index) {
             let idx = entries.len();
             items.push(FilterListItem { cells: vec!["Mod".into(), t.label], index: idx });
@@ -1167,6 +1196,10 @@ impl State {
                     return;
                 };
                 kind
+            }
+            TreeAddress::Group(group) => {
+                let Some((node, gain)) = self.group_row_gain(group) else { return };
+                ModTargetKind::Gain { node, gain }
             }
             _ => return,
         };
@@ -2521,8 +2554,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // bind it to a new or existing modulator.
         KeyCode::Char('m') if s.active_tab == TAB_SESSION && s.focus_params => {
             match s.selected_address().copied() {
-                // A plugin's parameter (an instrument's, an effect's or a bus effect's) → create/attach a modulator.
-                Some(TreeAddress::Instrument(_) | TreeAddress::Effect { .. } | TreeAddress::GroupEffect { .. }) => {
+                // A plugin's parameter (an instrument's, an effect's or a bus effect's), or a group's volume or pan → create/attach a modulator.
+                Some(TreeAddress::Instrument(_) | TreeAddress::Effect { .. } | TreeAddress::GroupEffect { .. } | TreeAddress::Group(_)) => {
                     s.open_modulate();
                 }
                 // A modulator's own param (rate / ADSR / a target depth) →
@@ -4504,18 +4537,32 @@ fn heard_target_label(model: &SessionModel, target: &ModTargetSlot, inst: usize)
 }
 
 /// Where the plugin in `node` is, as the Patch tab tags a lane and a group: `L1` for a plugin of the first lane (its instrument or an effect of its chain) and `G1` for an effect of the
-/// first group's bus; nothing for a node that is neither.
+/// first group's bus or for the group itself; nothing for a node that is none of them.
 fn plugin_tag(model: &SessionModel, node: NodeId) -> String {
     match model.locate(node) {
         Some(NodePath::Instrument(inst) | NodePath::Effect { inst, .. }) => format!("L{}", inst + 1),
-        Some(NodePath::GroupEffect { group, .. }) => format!("G{}", group + 1),
+        Some(NodePath::GroupEffect { group, .. } | NodePath::Group(group)) => format!("G{}", group + 1),
         _ => String::new(),
+    }
+}
+
+/// What a cable that drives a host-side value is called, by whose it is (a lane's volume, an effect's mix, a group's volume or pan), as the Patch tab tags them: `L1 Oscillator volume`,
+/// `L1 Filter mix`, `G1 Reverb (bus) mix`, `G1 volume`. (A plugin's own parameter of the same name is `L1 Oscillator: volume`, with a colon.)
+fn gain_target_label(model: &SessionModel, node: NodeId, gain: crate::app::model::ModGain) -> String {
+    let tag = plugin_tag(model, node);
+    match (model.locate(node), model.plugin_slot(node)) {
+        (Some(NodePath::GroupEffect { .. }), Some(slot)) => format!("{tag} {} (bus) {}", slot.name, gain.name()),
+        (_, Some(slot)) => format!("{tag} {} {}", slot.name, gain.name()),
+        (_, None) => format!("{tag} {}", gain.name()),
     }
 }
 
 /// What a cable of a free modulator drives, as the tree says it: a parameter by the lane or the group its plugin is in (`L1 Oscillator: detune`, `G1 Filter (bus): cutoff`, as the Patch tab
 /// tags them), and the setting of another free modulator by its label (`Mod 1 attack`).
 fn free_target_label(model: &SessionModel, target: &ModTargetSlot) -> String {
+    if let Driven::Gain { node, gain } = target.aim {
+        return gain_target_label(model, node, gain);
+    }
     let Driven::Param { plugin, .. } = target.aim else { return target.param_name.clone() };
     let Some(slot) = model.plugin_slot(plugin) else { return target.param_name.clone() };
     let bus = if matches!(model.locate(plugin), Some(NodePath::GroupEffect { .. })) { " (bus)" } else { "" };

@@ -48,6 +48,9 @@ pub enum Edit {
     /// A cable from a free modulator (a place among them) to a parameter (a place among those that are not separators) of a plugin of the session (a place among every plugin there is:
     /// each lane's instrument, if it has one, and its effects, and then each group's bus effects), all wrapped round the ones there are.
     FreeCable { modulator: usize, plugin: usize, param: usize },
+    /// A cable from a free modulator (a place among them) to a value that the host keeps (a place among those that a cable can drive, `SessionModel::gain_targets`: each lane's volume, if it has an
+    /// instrument, and the mix of each of its effects, then each group's volume and pan and the mix of each of its bus effects), both wrapped round the ones there are (step 97).
+    GainCable { modulator: usize, value: usize },
     /// A free modulator, by its place among them, taken out with its cables.
     RemoveFreeModulator { index: usize },
     /// A free modulator (a place among them) made to hear a lane or a group (a place among them), or every event (step 93).
@@ -229,6 +232,15 @@ impl Edit {
                 let target = plugins[plugin % plugins.len()];
                 let p = param_at(target, *param)?;
                 Intent::AddModEdge { modulator: modulators[modulator % modulators.len()].node, to: Endpoint { node: target.node, port: Port::Param { index: p.index } } }
+            }
+            Edit::GainCable { modulator, value } => {
+                let modulators = &model.free_modulators;
+                let values = model.gain_targets(crate::plugin::chain::ModulatorLocation::Free);
+                if modulators.is_empty() || values.is_empty() {
+                    return None;
+                }
+                let target = &values[value % values.len()];
+                Intent::AddModEdge { modulator: modulators[modulator % modulators.len()].node, to: Endpoint { node: target.node, port: Port::of_gain(target.gain) } }
             }
             Edit::RemoveFreeModulator { index } => {
                 let modulators = &model.free_modulators;
@@ -474,6 +486,23 @@ plugin = "builtin:osc"
     }
 
     #[test]
+    fn a_cable_to_a_value_the_host_keeps_goes_to_a_place_among_the_lanes_volumes_and_effects_mixes_and_the_groups_wrapped_round() {
+        let mut ctl = controller(TWO_LANES);
+        assert_eq!(Edit::AddFreeModulator { kind: ModulatorKind::Lfo }.make(&mut ctl), Outcome::Applied);
+        let lfo = ctl.model.free_modulators[0].node;
+        let values = ctl.model.gain_targets(crate::plugin::chain::ModulatorLocation::Free);
+        assert!(values.len() >= 4, "{values:?}");
+        for (place, target) in values.iter().enumerate() {
+            let edit = Edit::GainCable { modulator: 0, value: place };
+            assert_eq!(edit.resolve(&ctl), Some(Intent::AddModEdge { modulator: lfo, to: Endpoint { node: target.node, port: Port::of_gain(target.gain) } }), "{place}");
+            assert_eq!(Edit::GainCable { modulator: 3, value: place + values.len() }.resolve(&ctl), edit.resolve(&ctl), "places wrap round");
+        }
+        assert_eq!(Edit::GainCable { modulator: 0, value: 0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.free_modulators[0].targets.len(), 1);
+        assert_eq!(Edit::GainCable { modulator: 0, value: 0 }.make(&mut ctl), Outcome::Refused, "a modulator drives a value once");
+    }
+
+    #[test]
     fn a_free_modulator_is_made_to_hear_a_lane_or_a_group_or_every_event_by_places_that_wrap_round() {
         let mut ctl = controller(TWO_LANES);
         let (lane1, bus) = (ctl.model.instruments[1].node, ctl.model.groups[0].node);
@@ -520,6 +549,7 @@ plugin = "builtin:osc"
             Edit::RemoveModulator { lane: 1, index: 0 },
             // (No free modulator to draw a cable from or take out.)
             Edit::FreeCable { modulator: 0, plugin: 0, param: 0 },
+            Edit::GainCable { modulator: 0, value: 0 },
             Edit::RemoveFreeModulator { index: 0 },
         ] {
             assert_eq!(edit.make(&mut ctl), Outcome::Skipped, "{edit:?}");

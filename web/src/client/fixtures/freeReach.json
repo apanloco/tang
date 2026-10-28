@@ -787,6 +787,648 @@
       }
     ]
   },
+  "gains": {
+    "12": [
+      {
+        "node": 0,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 0,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 1,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 3,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 4,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 5,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 6,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "mix"
+        }
+      }
+    ],
+    "13": [
+      {
+        "node": 0,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 0,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 1,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 3,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 4,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 5,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 6,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "mix"
+        }
+      }
+    ],
+    "14": [
+      {
+        "node": 0,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 0,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 1,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 3,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 4,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 5,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 6,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "mix"
+        }
+      }
+    ],
+    "15": [
+      {
+        "node": 0,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 0,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 1,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 3,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 4,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 5,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 6,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "mix"
+        }
+      }
+    ],
+    "16": [
+      {
+        "node": 0,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 0,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 1,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 3,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 4,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 5,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 6,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "mix"
+        }
+      }
+    ],
+    "17": [
+      {
+        "node": 0,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 0,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 1,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 3,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 4,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 5,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 6,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "mix"
+        }
+      }
+    ],
+    "18": [
+      {
+        "node": 0,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 0,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 1,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 3,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 4,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 5,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 6,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "mix"
+        }
+      }
+    ],
+    "19": [
+      {
+        "node": 0,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 0,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 1,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 2,
+        "port": {
+          "type": "pan"
+        }
+      },
+      {
+        "node": 3,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 4,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 5,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 6,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "mix"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "type": "volume"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "mix"
+        }
+      }
+    ]
+  },
   "reach": {
     "12": [
       1,

@@ -292,6 +292,128 @@ describe("the modulation of a parameter", () => {
   });
 });
 
+describe("the modulation of a host-side gain", () => {
+  const lfo = nodeNamed(tracerSnapshot, "LFO");
+  const mix = filter.kind === "effect" ? filter.mix : Number.NaN;
+  /** A cable from the tracer's LFO to the host-side value `port` of `node`, drawn the way a page asks the engine for one. */
+  const draw = (server: { apply: (intent: never) => unknown }, node: number, port: Port): void => {
+    act(() => {
+      server.apply({ type: "addModEdge", modulator: lfo.id, to: { node, port } } as never);
+    });
+  };
+
+  test("is a ring around the knob from where the cables that end at it can take it, as a parameter's is, and none before there is a cable", async () => {
+    const { server, view } = await rig(<GainControl node={filter.id} gain="mix" />);
+    expect(view.container.querySelector(".tang-knob__ring")).toBeNull();
+    draw(server, filter.id, { type: "mix" });
+    // The cable is at half depth, the LFO swings the mix half the range of 0 to 1 each way from where the user set it, and the ring is held to the knob.
+    await waitFor(() => {
+      expect(view.container.querySelector(".tang-knob__ring")?.getAttribute("d")).toBe(arcPath(24, 21.5, Math.max(mix - 0.5, 0), Math.min(mix + 0.5, 1)));
+    });
+  });
+
+  test("is drawn over the range of the value: a volume goes from 0 to 4, a group's pan from -1 to 1", async () => {
+    const grouped: Snapshot = structuredClone(tracerSnapshot);
+    const { server, view } = await rig(
+      <>
+        <GainControl node={oscillator.id} gain="volume" />
+      </>,
+      { snapshot: grouped },
+    );
+    const volume = oscillator.kind === "instrument" ? oscillator.volume : Number.NaN;
+    draw(server, oscillator.id, { type: "volume" });
+    // Half of the range of 4, each way from the volume that the user set, held to 0 … 4.
+    await waitFor(() => {
+      expect(view.container.querySelector(".tang-knob__ring")?.getAttribute("d")).toBe(arcPath(24, 21.5, Math.max(volume - 2, 0) / 4, Math.min(volume + 2, 4) / 4));
+    });
+  });
+
+  test("moves with the value the user sets", async () => {
+    const { server, view } = await rig(<GainControl node={filter.id} gain="mix" />);
+    draw(server, filter.id, { type: "mix" });
+    await waitFor(() => {
+      expect(view.container.querySelector(".tang-knob__ring")).not.toBeNull();
+    });
+    drag(slider("Mix"), -100); // down by half of the range
+    await waitFor(() => {
+      expect(view.container.querySelector(".tang-knob__ring")?.getAttribute("d")).toBe(arcPath(24, 21.5, 0, Math.min(Math.max(mix - 0.5, 0) + 0.5, 1)));
+    });
+  });
+
+  test("is the dot where the engine says the value is, taken from the telemetry on the frame", async () => {
+    const { server, view, client, clock, time } = await rig(<GainControl node={filter.id} gain="mix" />);
+    draw(server, filter.id, { type: "mix" });
+    await waitFor(() => {
+      expect(view.container.querySelector(".tang-knob__ring")).not.toBeNull();
+    });
+    time.seconds = 0.5; // the LFO is at its peak: the mix is what the user set and half the range more, held to 1
+    await waitFor(() => {
+      act(() => {
+        clock.tick(performance.now());
+      });
+      expect(client.telemetry.has("modulation")).toBe(true);
+      expect(dotOf(view.container).visible).toBe(true);
+    });
+    await waitFor(() => {
+      act(() => {
+        clock.tick(performance.now());
+      });
+      expect(dotOf(view.container).x).toBeCloseTo(pointAt(24, 18, angleOf(Math.min(mix + 0.5, 1))).x, 3);
+    });
+    // And where it goes next: the other end.
+    time.seconds = 1.5;
+    await waitFor(() => {
+      act(() => {
+        clock.tick(performance.now());
+      });
+      expect(dotOf(view.container).x).toBeCloseTo(pointAt(24, 18, angleOf(Math.max(mix - 0.5, 0))).x, 3);
+    });
+  });
+
+  /** Turn frames by hand, with real time between them for the mock's telemetry to come (not inside `waitFor`: a failing assertion there is run again by every frame's change of the DOM). */
+  const until = async (clock: { tick: (time: number) => void }, condition: () => boolean, what: string): Promise<void> => {
+    const deadline = Date.now() + 2000;
+    while (!condition()) {
+      if (Date.now() > deadline) throw new Error(`gave up waiting for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      act(() => {
+        clock.tick(performance.now());
+      });
+    }
+  };
+
+  test("is the dot of a lane's volume where the engine says that volume is: the telemetry of the value that the knob is for, and not that of another value of the node", async () => {
+    const { server, view, clock, time } = await rig(<GainControl node={oscillator.id} gain="volume" />);
+    const volume = oscillator.kind === "instrument" ? oscillator.volume : Number.NaN;
+    draw(server, oscillator.id, { type: "volume" });
+    const at = () => dotOf(view.container).x;
+    const near = (fraction: number): boolean => Math.abs(at() - pointAt(24, 18, angleOf(fraction)).x) < 1e-3;
+    time.seconds = 0.5; // the LFO is at its peak: the volume is what the user set and half of the range of 4 more, held to 4
+    await until(clock, () => dotOf(view.container).visible && near(Math.min(volume + 2, 4) / 4), "the dot at the top of the volume");
+    time.seconds = 1.5; // and the other end: half of the range of 4 less, held to 0
+    await until(clock, () => near(Math.max(volume - 2, 0) / 4), "the dot at the bottom of the volume");
+  });
+
+  test("has no ring and no dot for a value that nothing drives: the other gains of the session, and a modulator's cable to a parameter of the same node", async () => {
+    const { view, client, clock } = await rig(
+      <>
+        <GainControl node={oscillator.id} gain="volume" />
+        <ParamControl node={filter.id} index={0} />
+      </>,
+    );
+    await waitFor(() => {
+      expect(client.telemetry.has("modulation")).toBe(true);
+    });
+    act(() => {
+      clock.tick(100);
+    });
+    // (The one ring is the cutoff's.)
+    expect(view.container.querySelectorAll(".tang-knob__ring")).toHaveLength(1);
+    const knobs = Array.from(view.container.querySelectorAll(".tang-knob"));
+    expect(knobs.map((knob) => knob.querySelector(".tang-knob__dot")?.getAttribute("visibility") === "visible")).toEqual([false, true]);
+  });
+});
+
 describe("a parameter that a modulator drives", () => {
   const lfo = nodeNamed(tracerSnapshot, "LFO");
 

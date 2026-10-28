@@ -41,8 +41,8 @@ use crate::app::journal::{Inverse, Journal, Kept, Replaced};
 use crate::app::intent::{Applied, IntentError};
 use crate::app::load::fresh_slot;
 use crate::app::model::{
-    AudioCable, CABLE_GAIN_MAX, Driven, EdgeId, GroupNode, InstrumentNode, Made, ModSetting, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget, PatternState,
-    PluginSlot, SessionModel, default_effect_mix, mod_source_slot_to_graph, modulator_slot_commands,
+    AudioCable, CABLE_GAIN_MAX, Driven, EdgeId, GainTarget, GroupNode, InstrumentNode, Made, ModGain, ModSetting, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget,
+    PatternState, PluginSlot, SessionModel, default_effect_mix, mod_source_slot_to_graph, modulator_slot_commands,
 };
 use crate::app::save::to_save;
 use crate::app::subscribers::{EventSink, SubscriberId, Subscribers};
@@ -187,6 +187,12 @@ pub struct NewTarget {
 }
 
 impl NewTarget {
+    /// A cable to the host-side value `target` (`SessionModel::gain_targets`), pulling `depth`.
+    pub fn to_gain(target: &GainTarget, depth: f32) -> NewTarget {
+        let (param_min, param_max) = target.gain.range();
+        NewTarget { aim: target.aim(), param_name: target.gain.name().to_string(), depth, base_value: target.value, param_min, param_max }
+    }
+
     /// A cable to the plugin parameter `target` (`SessionModel::param_targets`), pulling `depth`.
     pub fn to_param(target: &ParamTarget, depth: f32) -> NewTarget {
         NewTarget {
@@ -511,8 +517,8 @@ impl Controller {
         }
         let lane_node = lane.node;
         self.forget_the_history_unless_an_intent_asks();
-        // The cables that drive the plugin's parameters go first: there is nothing for them to drive.
-        for edge in self.model.cables_into_plugin(lane_node) {
+        // The cables that drive the plugin's parameters go first: there is nothing for them to drive. So do those that drive the lane's volume, which a lane that has no instrument has not.
+        for edge in self.model.cables_into_plugin(lane_node).into_iter().chain(self.model.cables_into_gains_of(lane_node)) {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
@@ -665,7 +671,7 @@ impl Controller {
         let Some(effect) = self.model.instruments.get(inst).and_then(|lane| lane.effects.get(index)) else { return false };
         let effect = effect.node;
         self.forget_the_history_unless_an_intent_asks();
-        for edge in self.model.cables_into_plugin(effect) {
+        for edge in self.model.cables_into_plugin(effect).into_iter().chain(self.model.cables_into_gains_of(effect)) {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
@@ -715,7 +721,7 @@ impl Controller {
         let Some(effect) = self.model.groups.get(group).and_then(|g| g.effects.get(index)) else { return false };
         let effect = effect.node;
         self.forget_the_history_unless_an_intent_asks();
-        for edge in self.model.cables_into_plugin(effect) {
+        for edge in self.model.cables_into_plugin(effect).into_iter().chain(self.model.cables_into_gains_of(effect)) {
             // (One that an earlier one took with it is not there any more.)
             self.take_out(edge);
         }
@@ -994,6 +1000,17 @@ impl Controller {
                 let (at, mod_index, target_index) = self.model.locate_edge(edge)?;
                 let depth = self.model.modulators(at)?.get(mod_index)?.targets.get(target_index)?.depth;
                 Some(depth_command(at, mod_index, target_index, depth))
+            }
+            Driven::Gain { node, gain } => {
+                let value = self.model.gain_of(node, gain)?;
+                match (self.model.locate(node)?, gain) {
+                    (NodePath::Instrument(inst), ModGain::Volume) => Some(GraphCommand::SetVolume { inst, value }),
+                    (NodePath::Effect { inst, index }, ModGain::Mix) => Some(GraphCommand::SetMix { inst, slot: index + 1, value }),
+                    (NodePath::GroupEffect { group, index }, ModGain::Mix) => Some(GraphCommand::SetGroupMix { group, index, value }),
+                    (NodePath::Group(group), ModGain::Volume) => Some(GraphCommand::SetGroupVolume { group, value }),
+                    (NodePath::Group(group), ModGain::Pan) => Some(GraphCommand::SetGroupPan { group, value }),
+                    _ => None,
+                }
             }
         }
     }

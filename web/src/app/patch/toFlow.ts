@@ -190,6 +190,10 @@ export function handleOf(port: Port): string {
     case "decay":
     case "sustain":
     case "release":
+    case "volume":
+    case "mix":
+    case "pan":
+      // (A cable ends at the volume of a lane or a group, the mix of an effect and the pan of a group by the name of the port: the host-side values.)
       return port.type;
     case "param":
       return paramHandle(port.index);

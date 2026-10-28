@@ -37,8 +37,9 @@ const WHOLE = /^\d+$/;
 const PARAM_HANDLE = /^param-(\d+)$/;
 const DEPTH_HANDLE = /^depth-(\d+)$/;
 
-/** The port that the handle `handle` of a node is, if it is one that a cable ends at: a parameter's, or a modulator's rate or stage, or the depth of a cable of it. */
+/** The port that the handle `handle` of a node is, if it is one that a cable ends at: a parameter's, a lane's or a group's volume, an effect's mix, a group's pan, or a modulator's rate or stage, or the depth of a cable of it. */
 function portAt(handle: string): Port | null {
+  if (handle === "volume" || handle === "mix" || handle === "pan") return { type: handle };
   const param = PARAM_HANDLE.exec(handle)?.[1];
   if (param !== undefined) return { type: "param", index: Number(param) };
   const depth = DEPTH_HANDLE.exec(handle)?.[1];

@@ -7,8 +7,10 @@ import { memo, useContext, useId, useMemo, useRef, useState, useSyncExternalStor
 
 import { modulationExtent, modulationsAt, modulationsOn, settingExtent } from "../../client/modulation";
 import type { Modulation } from "../../client/modulation";
+import { gainName } from "../../client/names";
 import { NOTE_NAMES } from "../../client/notes";
-import type { Drivable } from "../../client/reach";
+import { gainPorts } from "../../client/reach";
+import type { Drivable, GainPort } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { rateAt } from "../../client/tempo";
 import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, paramUnusedBecause, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
@@ -257,16 +259,32 @@ const GAINS: Record<Gain, { label: string; reset: number }> = {
   groupPan: { label: "Pan", reset: 0 },
 };
 
-/** A host-side gain of a node: an instrument's volume, an effect's mix, a group's volume or pan. */
+/** The port that a cable from a modulator ends at to drive a host-side gain: the volume of a lane or a group, the mix of an effect, the pan of a group. */
+const GAIN_PORTS: Record<Gain, GainPort> = {
+  volume: { type: "volume" },
+  mix: { type: "mix" },
+  groupVolume: { type: "volume" },
+  groupPan: { type: "pan" },
+};
+
+/**
+ * A host-side gain of a node: an instrument's volume, an effect's mix, a group's volume or pan. A modulator drives it as it drives a plugin's parameter (the controller's `gain_targets`): the knob
+ * has the ring of how far the cables on it can swing it and the dot of what the engine makes of it, and its value is what the user set.
+ */
 export const GainControl = memo(function GainControl({ node, gain }: { node: NodeId; gain: Gain }) {
+  const client = useClient();
   const frames = useFrames();
   const control = useDrive().gain(node, gain);
   const stored = useClientState((state) => gainOf(state, node, gain));
   const pending = useSyncExternalStore(control.subscribe, control.getPending);
+  const port = GAIN_PORTS[gain];
+  const modulations = useClientSelection((state) => (state.snapshot ? modulationsAt(state.snapshot.graph, node, port) : []), sameModulations);
+  const readEffective = useMemo(() => slotReader(client.telemetry, "modulation", node, port, "effective"), [client, node, port]);
   const shown = pending ?? stored;
-  if (shown === undefined) return null;
   const { label, reset } = GAINS[gain];
   const [min, max] = GAIN_RANGES[gain];
+  const ring = useMemo(() => (shown === undefined ? undefined : modulationExtent(shown, min, max, modulations)), [shown, min, max, modulations]);
+  if (shown === undefined) return null;
   return (
     <Knob
       label={label}
@@ -274,12 +292,14 @@ export const GainControl = memo(function GainControl({ node, gain }: { node: Nod
       min={min}
       max={max}
       defaultValue={reset}
+      modulation={ring}
       onChange={(value) => {
         control.set(value);
       }}
       onCommit={() => {
         control.commit();
       }}
+      readEffective={readEffective}
       frames={frames}
     />
   );
@@ -775,10 +795,20 @@ function ParamModulateButton({ node, index }: { node: NodeId; index: number }) {
   return <ModulateMenu node={node} port={{ type: "param", index }} name={facts.name} className="tang-modulate--cell" />;
 }
 
+/**
+ * A host-side gain in a cell of the node's grid, with a place on its top edge where a cable from a modulator ends, and the `~` button that modulates it, as a parameter has: a lane's volume (a lane that has an
+ * instrument), an effect's mix, a group's volume and its pan. (A lane that has no instrument has a volume that no cable can drive: nothing is drawn for one.)
+ */
 export const GainCell = memo(function GainCell({ node, gain }: { node: NodeId; gain: Gain }) {
+  const port = GAIN_PORTS[gain];
+  const drivable = useClientState((state) => state.snapshot?.graph.nodes.some((n) => n.id === node && gainPorts(n).some((own) => own.type === port.type)) ?? false);
+  const driven = useClientState((state) => (state.snapshot ? modulationsAt(state.snapshot.graph, node, port).length > 0 : false));
+  const name = useClientState((state) => gainName(state.snapshot?.graph.nodes.find((n) => n.id === node), port));
   return (
     <div className="tang-cell">
+      {drivable ? <CablePort node={node} handle={handleOf(port)} driven={driven} /> : null}
       <GainControl node={node} gain={gain} />
+      {drivable ? <ModulateMenu node={node} port={port} name={name} className="tang-modulate--cell" /> : null}
     </div>
   );
 });

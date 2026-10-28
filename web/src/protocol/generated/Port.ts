@@ -4,4 +4,4 @@ import type { EdgeId } from "./EdgeId";
 /**
  * Where on a node an edge attaches.
  */
-export type Port = { "type": "audioIn" } | { "type": "audioInSide" } | { "type": "audioOut" } | { "type": "eventsOut" } | { "type": "eventsIn" } | { "type": "modOut" } | { "type": "param", index: number, } | { "type": "rate" } | { "type": "attack" } | { "type": "decay" } | { "type": "sustain" } | { "type": "release" } | { "type": "depth", edge: EdgeId, };
+export type Port = { "type": "audioIn" } | { "type": "audioInSide" } | { "type": "audioOut" } | { "type": "eventsOut" } | { "type": "eventsIn" } | { "type": "modOut" } | { "type": "param", index: number, } | { "type": "volume" } | { "type": "mix" } | { "type": "pan" } | { "type": "rate" } | { "type": "attack" } | { "type": "decay" } | { "type": "sustain" } | { "type": "release" } | { "type": "depth", edge: EdgeId, };

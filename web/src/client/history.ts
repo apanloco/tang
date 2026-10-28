@@ -201,6 +201,9 @@ function drivenName(snapshot: Snapshot, to: Endpoint): string | undefined {
     case "sustain":
     case "release":
     case "depth":
+    case "volume":
+    case "mix":
+    case "pan":
       return port.type;
     case "modOut":
     case "eventsIn":

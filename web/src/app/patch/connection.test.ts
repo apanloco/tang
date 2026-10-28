@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { MASTER, audioCablesFixture, fieldsFixture, reachFixture, sideCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, audioCablesFixture, fieldsFixture, freeReachFixture, reachFixture, sideCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
 import type { Port } from "../../protocol";
 import { audioCableOf, audioTakersOf, cableOf, canConnect, canDraw, canDrawAudio, canDrawNotes, drawableFrom, drawCable, keyOf, kindOfDrag, notesCableOf, notesTakersOf, takersOf } from "./connection";
 import { handleOf, toFlow } from "./toFlow";
@@ -101,7 +101,11 @@ describe("a connection that is dragged on the canvas", () => {
     expect(keys.has("0:param-1")).toBe(true);
     expect(keys.has("1:param-1")).toBe(true);
     expect(keys.has("1:param-0")).toBe(false);
-    expect(keys.size).toBe(20 + 3);
+    // (The oscillator's output volume and the filter's mix, which the host keeps, are ports too.)
+    expect(keys.has("0:volume")).toBe(true);
+    expect(keys.has("1:mix")).toBe(true);
+    expect(keys.has("1:volume")).toBe(false);
+    expect(keys.size).toBe(20 + 3 + 2);
     expect(drawableFrom(nodes, 0).size).toBe(0);
     expect(drawableFrom(nodes, 99).size).toBe(0);
   });
@@ -117,7 +121,7 @@ describe("a connection that is dragged on the canvas", () => {
 describe("a cable dragged to a setting of another modulator", () => {
   // An LFO (13), an envelope (14) and a MIDI control (15) hear Group 1; its first member (3) is heard by an LFO (7), an envelope (8) and a MIDI control (9), and the second (4) by an LFO (10).
   const { nodes } = toFlow(fieldsFixture.snapshot.graph);
-  const settings = (modulator: number): string[] => [...drawableFrom(nodes, modulator)].filter((key) => !key.includes("param-")).sort();
+  const settings = (modulator: number): string[] => [...drawableFrom(nodes, modulator)].filter((key) => !key.includes("param-") && !/:(volume|mix|pan)$/.test(key)).sort();
 
   test("can be drawn to the rate of an LFO and the stages of an envelope, whatever either of them hears, and to nothing else of a modulator", () => {
     expect(canDraw(nodes, { modulator: 8, node: 7, port: { type: "rate" } })).toBe(true); // the envelope that hears the lane to the LFO's rate
@@ -570,3 +574,47 @@ describe("a cable that is dropped on the canvas", () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe("a cable dragged to a volume, a mix or a pan that the host keeps", () => {
+  const { snapshot, gains } = freeReachFixture;
+  const { nodes } = toFlow(snapshot.graph);
+  const modulators = snapshot.graph.nodes.filter((node) => node.kind === "modulator").map((node) => node.id);
+  const volumes = (modulator: number): string[] => [...drawableFrom(nodes, modulator)].filter((key) => /:(volume|mix|pan)$/.test(key)).sort();
+
+  test("is a port by the name of the value: the handle of a lane's or a group's volume, of an effect's mix, of a group's pan", () => {
+    expect(handleOf({ type: "volume" })).toBe("volume");
+    expect(handleOf({ type: "mix" })).toBe("mix");
+    expect(handleOf({ type: "pan" })).toBe("pan");
+    expect(cableOf({ source: "5", target: "7", sourceHandle: "modOut", targetHandle: "mix" })).toEqual({ modulator: 5, node: 7, port: { type: "mix" } });
+    expect(cableOf({ source: "5", target: "7", sourceHandle: "modOut", targetHandle: "volume" })?.port).toEqual({ type: "volume" });
+    expect(cableOf({ source: "5", target: "7", sourceHandle: "modOut", targetHandle: "pan" })?.port).toEqual({ type: "pan" });
+    // (A port that is none of them is none: a drag that ends at what a node has not is no cable.)
+    expect(cableOf({ source: "5", target: "7", sourceHandle: "modOut", targetHandle: "loudness" })).toBeNull();
+  });
+
+  test("can be drawn where the controller lets it be drawn, for every modulator", () => {
+    for (const modulator of modulators) {
+      const allowed = (gains[String(modulator)] ?? []).map((found) => keyOf(found.node, handleOf(found.port))).sort();
+      expect(volumes(modulator), `modulator ${String(modulator)}`).toEqual(allowed);
+    }
+    expect(volumes(modulators[0] ?? -1).length).toBeGreaterThanOrEqual(10);
+  });
+
+  test("is a cable of a modulator that is dropped on the port, and is not on a node that has not the value, or on one that is driven already", () => {
+    const [first, second] = modulators;
+    const group = snapshot.graph.nodes.find((node) => node.kind === "group");
+    const effect = snapshot.graph.nodes.find((node) => node.kind === "effect");
+    const empty = snapshot.graph.nodes.find((node) => node.kind === "instrument" && node.plugin === null);
+    if (first === undefined || second === undefined || !group || !effect || !empty) throw new Error("the session lacks what the test draws to");
+    expect(canDraw(nodes, { modulator: first, node: group.id, port: { type: "pan" } })).toBe(true);
+    expect(canDraw(nodes, { modulator: first, node: effect.id, port: { type: "mix" } })).toBe(true);
+    expect(canDraw(nodes, { modulator: first, node: group.id, port: { type: "mix" } })).toBe(false);
+    expect(canDraw(nodes, { modulator: first, node: effect.id, port: { type: "volume" } })).toBe(false);
+    expect(canDraw(nodes, { modulator: first, node: empty.id, port: { type: "volume" } })).toBe(false);
+    const driven = toFlow({ ...snapshot.graph, edges: [...snapshot.graph.edges, { kind: "modulation", id: 700, amount: 0.5, from: { node: first, port: { type: "modOut" } }, to: { node: group.id, port: { type: "pan" } } }] }).nodes;
+    expect(canDraw(driven, { modulator: first, node: group.id, port: { type: "pan" } })).toBe(false);
+    // (Another modulator may drive it too: the two add up.)
+    expect(canDraw(driven, { modulator: second, node: group.id, port: { type: "pan" } })).toBe(true);
+  });
+});
+

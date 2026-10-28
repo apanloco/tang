@@ -207,7 +207,7 @@ describe("the patch", () => {
     await rig(<PatchView />);
     const fil = await nodeOf(filter.id);
     const ports = Array.from(fil.querySelectorAll(".tang-port--param"));
-    expect(ports).toHaveLength(4); // one for each of the filter's parameters
+    expect(ports).toHaveLength(4 + 1); // one for each of the filter's parameters and one for its mix, which the host keeps
     expect(fil.querySelectorAll(".tang-port--driven")).toHaveLength(1);
     expect(fil.querySelector(".tang-port--driven")?.getAttribute("data-handleid")).toBe("param-0");
     expect((await nodeOf(oscillator.id)).querySelectorAll(".tang-port--driven")).toHaveLength(0);
@@ -474,7 +474,9 @@ describe("the patch", () => {
     expect(ports.filter((port) => port === "audioOut")).toHaveLength(2); // the oscillator's and the filter's: audio that is sent starts there
     expect(ports.filter((port) => port === "audioIn")).toHaveLength(2); // the filter's and the master's: audio that is sent ends there
     expect(ports.filter((port) => port === "eventsIn")).toHaveLength(1); // the oscillator's: notes from a source end there
-    expect(ports).toHaveLength(20);
+    expect(ports.filter((port) => port === "volume")).toHaveLength(1); // the oscillator's output volume, which the host keeps: a cable from a modulator ends there
+    expect(ports.filter((port) => port === "mix")).toHaveLength(1); // and the filter's mix
+    expect(ports).toHaveLength(22);
     // A cable is started at an output (a modulator's, or one of audio) and ends at a parameter, a setting, a depth or an input of audio, never the other way.
     for (const output of Array.from(view.container.querySelectorAll(".react-flow__handle[data-handleid='modOut'], .react-flow__handle[data-handleid='audioOut']"))) {
       expect(output.classList.contains("connectablestart"), output.getAttribute("data-handleid") ?? "?").toBe(true);
@@ -969,9 +971,10 @@ describe("the patch", () => {
       expect(picker.getAttribute("aria-haspopup")).toBe("menu");
       fireEvent.click(picker);
       expect(screen.getByRole("menu", { name: "Add a cable from LFO" })).toBeTruthy();
+      // (After the parameters of each plugin, the value that the host keeps: the oscillator's output volume, which is not its `volume`, and the filter's mix.)
       expect(listed()).toEqual([
-        ["Oscillator", ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift", "velocity", "bend", "quantize"]],
-        ["Filter", ["resonance", "type", "drive"]],
+        ["Oscillator", ["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift", "velocity", "bend", "quantize", "output volume"]],
+        ["Filter", ["resonance", "type", "drive", "mix"]],
       ]);
     });
 
@@ -1002,7 +1005,7 @@ describe("the patch", () => {
       expect(screen.queryByRole("menu")).toBeNull();
       expect(document.activeElement).toBe(picker);
       fireEvent.click(picker);
-      expect(listed()[0]).toEqual(["Oscillator", ["waveform", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift", "velocity", "bend", "quantize"]]);
+      expect(listed()[0]).toEqual(["Oscillator", ["waveform", "volume", "attack", "decay", "sustain", "release", "pan", "unison", "spread", "width", "pulse", "fm", "fm_ratio", "sub", "sync", "drift", "velocity", "bend", "quantize", "output volume"]]);
       // And the oscillator's detune knob has its port driven now.
       const knob = within(await nodeOf(oscillator.id)).getByRole("slider", { name: "detune" });
       expect(knob.closest(".tang-cell")?.querySelector(".tang-port--driven")).toBeTruthy();
@@ -1034,8 +1037,8 @@ describe("the patch", () => {
     test("is for a modulator that hears a group the parameters of every plugin of the session, then the settings of the other modulators", async () => {
       await rig(<PatchView />, { snapshot: reachFixture.snapshot });
       fireEvent.click(await pickerOf(15));
-      // (In the order of the graph: the plugins, the buses' and the lanes', then the modulators that have settings, but not the one that is drawn from.)
-      expect(listed().map(([plugin]) => plugin)).toEqual(["Filter 1", "Reverb 1", "Oscillator 1", "Filter 2", "Oscillator 2", "Oscillator 3", "Reverb 2", "Oscillator 4", "Filter 3", "LFO 1", "ADSR 1", "ADSR 2", "LFO 3"]);
+      // (In the order of the graph: the groups, which have a volume and a pan, and the plugins, the buses' and the lanes', then the modulators that have settings, but not the one that is drawn from.)
+      expect(listed().map(([plugin]) => plugin)).toEqual(["Group 1", "Filter 1", "Group 2", "Reverb 1", "Oscillator 1", "Filter 2", "Oscillator 2", "Oscillator 3", "Reverb 2", "Oscillator 4", "Filter 3", "LFO 1", "ADSR 1", "ADSR 2", "LFO 3"]);
     });
 
     test("is disabled for a modulator with nothing to be drawn to, and says so", async () => {
@@ -1130,7 +1133,7 @@ describe("the patch", () => {
       const groups = listed();
       // (Every plugin's parameters, then every other modulator that has a setting or a cable: the LFO's rate and the depth of its cable, the envelope's three stages, for the control drives its decay,
       // and the depths of the cables that start at it, each by where the cable goes.)
-      expect(groups.map(([name]) => name)).toEqual(["Reverb", "Oscillator 1", "Oscillator 2", "Oscillator 3", "Oscillator 4", "LFO 1", "ADSR 1", "LFO 2", "LFO 3", "LFO 4", "LFO 5", "ADSR 2", "CC 74"]);
+      expect(groups.map(([name]) => name)).toEqual(["Group 1", "Reverb", "Group 2", "Oscillator 1", "Oscillator 2", "Oscillator 3", "Oscillator 4", "LFO 1", "ADSR 1", "LFO 2", "LFO 3", "LFO 4", "LFO 5", "ADSR 2", "CC 74"]);
       expect(groups.filter(([name]) => name === "LFO 1" || name === "ADSR 1")).toEqual([
         ["LFO 1", ["rate", `depth → Oscillator 1: ${oscillatorParam(1)}`]],
         ["ADSR 1", ["attack", "sustain", "release", `depth → Oscillator 1: ${oscillatorParam(2)}`, `depth → Oscillator 1: ${oscillatorParam(1)}`]],
@@ -1140,7 +1143,7 @@ describe("the patch", () => {
     test("is on the list of an LFO as the envelope's four stages and the depths of the cables of the envelope and of the MIDI control, which has no setting, among those of all the others", async () => {
       await rig(<PatchView />, { snapshot });
       fireEvent.click(await pickerOf(laneLfo));
-      expect(listed().map(([name]) => name)).toEqual(["Reverb", "Oscillator 1", "Oscillator 2", "Oscillator 3", "Oscillator 4", "ADSR 1", "CC 1", "LFO 2", "LFO 3", "LFO 4", "LFO 5", "ADSR 2", "CC 74"]);
+      expect(listed().map(([name]) => name)).toEqual(["Group 1", "Reverb", "Group 2", "Oscillator 1", "Oscillator 2", "Oscillator 3", "Oscillator 4", "ADSR 1", "CC 1", "LFO 2", "LFO 3", "LFO 4", "LFO 5", "ADSR 2", "CC 74"]);
       expect(listed().find(([name]) => name === "ADSR 1")).toEqual(["ADSR 1", ["attack", "decay", "sustain", "release", `depth → Oscillator 1: ${oscillatorParam(2)}`, `depth → Oscillator 1: ${oscillatorParam(1)}`]]);
       expect(listed().find(([name]) => name === "CC 1")).toEqual(["CC 1", [`depth → Oscillator 1: ${oscillatorParam(7)}`]]);
     });
@@ -1149,7 +1152,7 @@ describe("the patch", () => {
       await rig(<PatchView />, { snapshot });
       fireEvent.click(await pickerOf(groupLfo));
       // (The plugins in the order of the graph; then the other modulators, in the order of the session's own rack.)
-      expect(listed().map(([name]) => name)).toEqual(["Reverb", "Oscillator 1", "Oscillator 2", "Oscillator 3", "Oscillator 4", "LFO 1", "ADSR 1", "CC 1", "LFO 2", "LFO 3", "LFO 4", "ADSR 2", "CC 74"]);
+      expect(listed().map(([name]) => name)).toEqual(["Group 1", "Reverb", "Group 2", "Oscillator 1", "Oscillator 2", "Oscillator 3", "Oscillator 4", "LFO 1", "ADSR 1", "CC 1", "LFO 2", "LFO 3", "LFO 4", "ADSR 2", "CC 74"]);
     });
 
     test("asks the server for the cable that was picked, and it is drawn, and the setting is off the list", async () => {
@@ -1639,7 +1642,8 @@ describe("a patch with a group", () => {
     expect(within(group).getByText("Group", { selector: ".tang-node__badge" })).toBeTruthy();
     expect(within(group).getByRole("slider", { name: "Volume" }).getAttribute("aria-valuenow")).toBe("0.8");
     expect(within(group).getByRole("slider", { name: "Pan" }).getAttribute("aria-valuenow")).toBe("-0.25");
-    expect(Array.from(group.querySelectorAll(".react-flow__handle")).map((handle) => handle.getAttribute("data-handleid"))).toEqual(["audioIn", "audioOut"]);
+    // (The audio ports, and the places where a cable from a modulator ends at the volume and the pan.)
+    expect(Array.from(group.querySelectorAll(".react-flow__handle")).map((handle) => handle.getAttribute("data-handleid"))).toEqual(["audioIn", "audioOut", "volume", "pan"]);
     // oscillator → filter, filter → group, group → master, and the modulation.
     await waitFor(() => {
       expect(view.container.querySelectorAll(".react-flow__edge")).toHaveLength(4);

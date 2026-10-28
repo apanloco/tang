@@ -274,7 +274,9 @@ describe("a session whose own rack has modulators in it", () => {
     const others = [...new Set((fields[String(freeLfo)] ?? []).map((field) => field.node))];
     expect(plugins).toHaveLength(9);
     expect(others.at(-1)).toBe(freeEnvelope);
-    expect(groups.map((group) => group.label)).toEqual([...snapshot.graph.nodes.filter((node) => plugins.includes(node.id)).map((node) => names.get(node.id)), ...others.map((node) => names.get(node))]);
+    // (And the groups, which have a volume and a pan and no parameter, and the lanes and the effects, which have a volume and a mix besides: `gains` says which.)
+    const hosts = new Set((freeReachFixture.gains[String(freeLfo)] ?? []).map((found) => found.node));
+    expect(groups.map((group) => group.label)).toEqual([...snapshot.graph.nodes.filter((node) => plugins.includes(node.id) || hosts.has(node.id)).map((node) => names.get(node.id)), ...others.map((node) => names.get(node))]);
     expect(groups.at(-1)?.items.slice(0, 4)).toEqual(["attack", "decay", "sustain", "release"]);
     expect(groups.at(-1)?.items[4]).toMatch(/^depth → /);
   });
@@ -299,7 +301,8 @@ describe("a session whose own rack has modulators in it", () => {
     const plugins = reach["12"] ?? [];
     const others = [...new Set((fields["12"] ?? []).map((field) => field.node))];
     expect(plugins).toHaveLength(9);
-    expect(groupsOf().map((group) => group.label)).toEqual([...snapshot.graph.nodes.filter((node) => plugins.includes(node.id)).map((node) => names.get(node.id)), ...others.map((node) => names.get(node))]);
+    const hosts = new Set((freeReachFixture.gains["12"] ?? []).map((found) => found.node));
+    expect(groupsOf().map((group) => group.label)).toEqual([...snapshot.graph.nodes.filter((node) => plugins.includes(node.id) || hosts.has(node.id)).map((node) => names.get(node.id)), ...others.map((node) => names.get(node))]);
   });
 
   test("is among the modulators that a knob's \"~\" menu offers to attach, for a plugin of any lane, beside the lane's own", async () => {

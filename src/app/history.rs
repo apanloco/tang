@@ -524,6 +524,9 @@ impl Controller {
                     Port::Sustain => Some("sustain".to_string()),
                     Port::Release => Some("release".to_string()),
                     Port::Depth { .. } => Some("depth".to_string()),
+                    Port::Volume => Some("volume".to_string()),
+                    Port::Mix => Some("mix".to_string()),
+                    Port::Pan => Some("pan".to_string()),
                     Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => None,
                 };
                 let verb = if matches!(kind, ModulatorKind::MidiLearn) { "learn" } else { "modulate" };
@@ -6823,6 +6826,81 @@ size = 0.5
             "an instrument that is put in a lane that its own was taken out of is taken out again by undo, and the first is put back by the one after it",
             vec![clear(lane1), replace(lane1, "builtin:osc"), undo(), undo(), redo(), redo()],
         ));
+        // The volume of a lane, the mix of an effect and the volume and the pan of a group are what the host keeps for them, and a modulator can drive each as it drives a plugin's parameter (step 97): the cable is a step in the
+        // words of a cable, a modulator made for the value ("modulate volume") is one step with its cable, and a node that has not the value refuses it.
+        let to_port = |modulator: NodeId, node: NodeId, port: Port| Op::Do(Intent::AddModEdge { modulator, to: Endpoint { node, port } });
+        let modulate_port = |node: NodeId, port: Port| Op::Do(Intent::Modulate { to: Endpoint { node, port }, kind: ModulatorKind::Lfo, depth: None });
+        scripts.push((
+            "a cable to the volume of a lane, the mix of an effect and of a bus effect and the volume and the pan of a group is put back and made again, and a node that has not the value refuses it",
+            vec![
+                to_port(lfo, lane0, Port::Volume),
+                to_port(lfo, reverb, Port::Mix),
+                to_port(lfo, bus, Port::Mix),
+                to_port(lfo, g0, Port::Volume),
+                to_port(lfo, g0, Port::Pan),
+                to_port(lfo, lane0, Port::Pan),
+                to_port(lfo, reverb, Port::Volume),
+                to_port(lfo, g0, Port::Mix),
+                to_port(lfo, lane0, Port::Volume),
+                to_port(lfo, ghost, Port::Mix),
+                gain(reverb, Gain::Mix, 0.7),
+                undo(),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                redo(),
+            ],
+        ));
+        scripts.push((
+            "a modulator that is made for the volume of a lane, the mix of an effect or the pan of a group hears the lane or the group, and is one step with its cable",
+            vec![
+                modulate_port(lane0, Port::Volume),
+                modulate_port(reverb, Port::Mix),
+                modulate_port(bus, Port::Mix),
+                modulate_port(g0, Port::Pan),
+                modulate_port(g0, Port::Volume),
+                modulate_port(lane0, Port::Pan),
+                modulate_port(g1, Port::Mix),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+            ],
+        ));
+        scripts.push((
+            "what has a cable to its volume, its mix or its pan is taken out with the cable and put back with it by undo, and replacing an instrument leaves the cable to the lane's volume",
+            vec![
+                to_port(lfo, lane0, Port::Volume),
+                to_port(lfo, reverb, Port::Mix),
+                to_port(lfo, bus, Port::Mix),
+                to_port(lfo, g0, Port::Pan),
+                Op::Do(Intent::RemoveNode { node: reverb }),
+                undo(),
+                Op::Do(Intent::RemoveNode { node: bus }),
+                undo(),
+                Op::Do(Intent::RemoveNode { node: g0 }),
+                undo(),
+                Op::Do(Intent::RemoveNode { node: lane0 }),
+                undo(),
+                replace(lane0, "builtin:osc"),
+                undo(),
+                redo(),
+                clear(lane0),
+                undo(),
+                redo(),
+                undo(),
+            ],
+        ));
         // A preset that is loaded overwrites the values of the plugin and the preset it had: undo gives them back.
         let (damping, _) = param(&base, NodePath::Effect { inst: 0, index: 0 }, "damping");
         let load_preset = |node: NodeId, preset: &str| Op::Do(Intent::LoadPreset { node, preset: preset.to_string() });
@@ -7315,5 +7393,77 @@ size = 0.5
             "{} is not what a history comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
             path.display()
         );
+    }
+
+    // -- The host-side values that cables drive (step 97) --
+
+    /// `GAINS` over an audio thread, with an LFO that has a cable to each value that a cable can drive in it: the volume of the lane that has an instrument, the mix of its filter, the mix of the
+    /// delay of the lane that has none, the mix of the group's reverb and its volume and pan. Each node, in the order of the cables.
+    fn gains_over_an_audio_thread() -> (Controller, crate::plugin::chain::AudioGraph, [NodeId; 6]) {
+        let (mut ctl, mut graph) = controller_over_an_audio_thread(testutil::GAINS);
+        ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: None }).unwrap();
+        let lfo = ctl.model.free_modulators[0].node;
+        let nodes = [
+            ctl.model.instruments[0].node,
+            ctl.model.instruments[0].effects[0].node,
+            ctl.model.instruments[1].effects[0].node,
+            ctl.model.groups[0].effects[0].node,
+            ctl.model.groups[0].node,
+            ctl.model.groups[0].node,
+        ];
+        for (node, port) in nodes.into_iter().zip([Port::Volume, Port::Mix, Port::Mix, Port::Mix, Port::Volume, Port::Pan]) {
+            ctl.apply(Intent::AddModEdge { modulator: lfo, to: Endpoint { node, port } }).unwrap();
+        }
+        graph.drain_commands();
+        (ctl, graph, nodes)
+    }
+
+    #[test]
+    fn the_cables_to_a_host_side_value_go_with_what_has_it_and_undo_puts_them_back_in_the_model_the_file_and_the_audio_thread() {
+        let (mut ctl, mut graph, nodes) = gains_over_an_audio_thread();
+        let before = modulators_as_they_are(&ctl, &graph);
+        assert_eq!(ctl.model.free_modulators[0].targets.len(), 6);
+        assert!(before.1.contains("gain = \"mix\"") && before.1.contains("gain = \"volume\"") && before.1.contains("gain = \"pan\""), "the file says which value each cable drives:\n{}", before.1);
+        // What each node takes out with it: a filter its mix, a lane its volume and the mix of its effect (and the empty lane the mix of its delay), a bus effect its mix, and a group its
+        // volume, its pan and the mix of its bus effects.
+        for (node, goes) in [(nodes[1], 1), (nodes[3], 1), (ctl.model.instruments[1].node, 1), (nodes[0], 2), (nodes[4], 3)] {
+            ctl.apply(Intent::RemoveNode { node }).unwrap();
+            graph.drain_commands();
+            assert_eq!(ctl.model.free_modulators[0].targets.len(), 6 - goes, "{node:?}");
+            ctl.model.check_ids().unwrap();
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_modulators(&modulators_as_they_are(&ctl, &graph), &before, &format!("{node:?} taken out and put back"));
+            ctl.redo().unwrap();
+            graph.drain_commands();
+            assert_eq!(ctl.model.free_modulators[0].targets.len(), 6 - goes, "{node:?} again");
+            ctl.undo().unwrap();
+            graph.drain_commands();
+            assert_same_modulators(&modulators_as_they_are(&ctl, &graph), &before, &format!("{node:?} put back again"));
+        }
+    }
+
+    #[test]
+    fn replacing_the_instrument_of_a_lane_leaves_the_cable_to_its_volume_and_taking_it_out_takes_the_cable_and_undo_gives_it_back() {
+        let (mut ctl, mut graph, nodes) = gains_over_an_audio_thread();
+        let before = modulators_as_they_are(&ctl, &graph);
+        let lane = nodes[0];
+        // Another instrument in the lane is the lane's volume all the same.
+        ctl.apply(Intent::ReplaceInstrument { node: lane, plugin: "builtin:osc".to_string() }).unwrap();
+        graph.drain_commands();
+        assert_eq!(ctl.model.free_modulators[0].targets.len(), 6);
+        ctl.undo().unwrap();
+        graph.drain_commands();
+        assert_same_modulators(&modulators_as_they_are(&ctl, &graph), &before, "the instrument replaced and put back");
+        // With no instrument a lane has no volume to drive.
+        ctl.apply(Intent::ClearInstrument { node: lane }).unwrap();
+        graph.drain_commands();
+        let aims: Vec<Driven> = ctl.model.free_modulators[0].targets.iter().map(|t| t.aim).collect();
+        assert!(!aims.contains(&Driven::Gain { node: lane, gain: crate::app::model::ModGain::Volume }), "{aims:?}");
+        assert_eq!(aims.len(), 5);
+        ctl.undo().unwrap();
+        graph.drain_commands();
+        assert_same_modulators(&modulators_as_they_are(&ctl, &graph), &before, "the instrument taken out and put back");
     }
 }

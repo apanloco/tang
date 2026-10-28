@@ -48,7 +48,7 @@ import type { HistoryState, Made, Plan } from "./history";
 import { noise } from "./noise";
 import { deviceName, eventCableEnds, withHears } from "./noteWiring";
 import { noteName } from "./notes";
-import { fieldsOf, samePort } from "./reach";
+import { fieldsOf, gainPorts, isGainPort, samePort } from "./reach";
 import { applyEvent } from "./reducers";
 import { parseScale } from "./scales";
 import { stepsOutput, stepsPlace } from "./steps";
@@ -273,6 +273,10 @@ function addModEdgeOutcome(snapshot: Snapshot, modulator: NodeId, to: Edge["to"]
   switch (to.port.type) {
     case "param":
       return addParamCable(snapshot, from, to.node, to.port.index, counters);
+    case "volume":
+    case "mix":
+    case "pan":
+      return addGainCable(snapshot, from, to.node, to.port, counters);
     case "rate":
     case "attack":
     case "decay":
@@ -281,7 +285,7 @@ function addModEdgeOutcome(snapshot: Snapshot, modulator: NodeId, to: Edge["to"]
     case "depth":
       return addFieldCable(snapshot, from, to, counters);
     default:
-      return invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth");
+      return invalid("a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth");
   }
 }
 
@@ -377,6 +381,20 @@ function addParamCable(snapshot: Snapshot, from: Node, node: NodeId, index: numb
   const port: Port = { type: "param", index };
   const drivesIt = (e: Edge): boolean => isModulation(e) && e.from.node === from.id && e.to.node === node && samePort(e.to.port, port);
   if (edges.some(drivesIt)) return invalid("that modulator drives that parameter already");
+
+  return withDrawnCable(snapshot, from, { from: { node: from.id, port: { type: "modOut" } }, to: { node, port }, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH }, counters);
+}
+
+/**
+ * A cable to the volume, the mix or the pan that the host keeps for a node (`add_mod_edge_intent`, `gain_cable`): a lane that has an instrument has a volume, an effect a mix, a group a volume and a pan
+ * (`gainPorts`), and a modulator drives each once (another may drive it as well: the two add up). The value gets a slot in the layout of the telemetry unless another cable drives it already; the cable takes a slot either way.
+ */
+function addGainCable(snapshot: Snapshot, from: Node, node: NodeId, port: Extract<Port, { type: "volume" | "mix" | "pan" }>, counters: Counters): Outcome {
+  const { nodes, edges } = snapshot.graph;
+  const target = nodes.find((n) => n.id === node && n.kind !== "master");
+  if (!target) return noNode(node);
+  if (!gainPorts(target).some((own) => samePort(own, port))) return invalid(`that node has no ${port.type}`);
+  if (edges.some((e) => isModulation(e) && e.from.node === from.id && e.to.node === node && samePort(e.to.port, port))) return invalid(`that modulator drives that ${port.type} already`);
 
   return withDrawnCable(snapshot, from, { from: { node: from.id, port: { type: "modOut" } }, to: { node, port }, kind: "modulation", id: counters.edge(), amount: NEW_CABLE_DEPTH }, counters);
 }
@@ -622,10 +640,11 @@ function modulateOutcome(snapshot: Snapshot, to: Edge["to"], kind: ModulatorKind
   if (depth !== null && !holds(depth)) return invalid(`${shown(depth)} is not a value for the depth of a cable`);
   const target = snapshot.graph.nodes.find((n) => n.id === to.node && n.kind !== "master");
   if (!target) return noNode(to.node);
-  if (target.kind === "group" || target.kind === "source") return invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither");
-  // The new one hears the lane of a lane's instrument or of an effect of its chain, the group of a bus effect, and what a modulator hears.
+  // (A group has no plugin: what a cable can drive in it is its volume and its pan, and the modulator hears the group.)
+  if ((target.kind === "group" && !isGainPort(to.port)) || target.kind === "source") return invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them");
+  // The new one hears the lane of a lane's instrument or of an effect of its chain, the group of a bus effect or a group, and what a modulator hears.
   if (target.kind === "effect" && target.parent === null) return invalid("that node is in no lane or group");
-  const hears = target.kind === "instrument" ? target.id : target.kind === "effect" ? target.parent : target.kind === "modulator" ? (target.hears ?? null) : null;
+  const hears = target.kind === "instrument" || target.kind === "group" ? target.id : target.kind === "effect" ? target.parent : target.kind === "modulator" ? (target.hears ?? null) : null;
   const mark = counters.mark();
   const { session, node } = withModulator(snapshot, kind, counters, hears);
   const drawn = addModEdgeOutcome(session, node.id, to, counters);
@@ -773,7 +792,8 @@ function replaceInstrumentOutcome(snapshot: Snapshot, lane: NodeId, plugin: stri
   if ("error" in found) return found.error;
   const { made } = found;
 
-  const touching = snapshot.graph.edges.filter(isModulation).filter((e) => e.to.node === lane).map((e) => e.id);
+  // (Only the cables that drove the old plugin's parameters go: the lane's volume is the lane's, and the new instrument is in the lane all the same.)
+  const touching = snapshot.graph.edges.filter(isModulation).filter((e) => e.to.node === lane && e.to.port.type === "param").map((e) => e.id);
   const taken = without(snapshot, cablesThatGo(snapshot.graph.edges, touching), new Set());
   const replaced: Node = { ...target, name: made.name, plugin: made.plugin };
   return { restructured: { ...taken, graph: { ...taken.graph, nodes: taken.graph.nodes.map((n) => (n.id === lane ? replaced : n)) } } };
@@ -1906,12 +1926,40 @@ export class MockServer {
   }
 
   /**
+   * The volume, the mix or the pan that the host keeps for a node, as the cables aimed at it make it: what the user set, and the offsets of the cables added up, each from the value the user set, and
+   * held to the value's range, as `apply_gain_drives` does it.
+   */
+  #gainEffective(entry: LayoutEntry, port: Extract<Port, { type: "volume" | "mix" | "pan" }>, outputOf: (id: NodeId) => number): number {
+    const { nodes, edges } = this.#snapshot.graph;
+    const node = nodes.find((n) => n.id === entry.node);
+    const found: { base: number; range: readonly [number, number] } | undefined =
+      node?.kind === "instrument" && port.type === "volume"
+        ? { base: node.volume, range: GAIN_RANGES.volume }
+        : node?.kind === "effect" && port.type === "mix"
+          ? { base: node.mix, range: GAIN_RANGES.mix }
+          : node?.kind === "group" && port.type === "volume"
+            ? { base: node.volume, range: GAIN_RANGES.groupVolume }
+            : node?.kind === "group" && port.type === "pan"
+              ? { base: node.pan, range: GAIN_RANGES.groupPan }
+              : undefined;
+    if (!found) return 0;
+    const { base, range } = found;
+    let offset = 0;
+    for (const edge of edges) {
+      if (!isModulation(edge) || edge.to.node !== entry.node || !samePort(edge.to.port, port)) continue;
+      offset += offsetOf(nodes.find((n) => n.id === edge.from.node), outputOf(edge.from.node), edge.amount, base, range[0], range[1]);
+    }
+    return clamp(base + offset, range[0], range[1]);
+  }
+
+  /**
    * The value a parameter is set to: what the user set, and the offsets that the cables aimed at it make of it, each from the value the user set (an LFO or a control swings it around
    * that value, an envelope's peak is that value) and added, as the engine does (`apply_free_modulators`), and clamped.
    */
   #effective(entry: LayoutEntry, outputOf: (id: NodeId) => number): number {
     const { nodes, edges } = this.#snapshot.graph;
     const node = nodes.find((n) => n.id === entry.node);
+    if (isGainPort(entry.port)) return this.#gainEffective(entry, entry.port, outputOf);
     if (entry.port.type !== "param") return this.#settingEffective(entry, outputOf);
     const index = entry.port.index;
     const param = node ? pluginOf(node)?.params.find((p) => p.index === index) : undefined;

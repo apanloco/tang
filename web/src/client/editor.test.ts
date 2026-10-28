@@ -284,9 +284,9 @@ describe("modulating a parameter", () => {
     expect(await editor.modulate(MASTER, { type: "param", index: 1 }, "envelope")).toBeNull();
     expect(await editor.modulate(group.id, { type: "modOut" }, "midiLearn")).toBeNull();
     expect(said(notices)).toEqual([
-      `Could not modulate ${group.name} with an LFO: a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither`,
+      `Could not modulate ${group.name} with an LFO: a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them`,
       "Could not modulate Master with an envelope: there is no node 4294967295",
-      `Could not modulate ${group.name} with a MIDI control: a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither`,
+      `Could not modulate ${group.name} with a MIDI control: a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them`,
     ]);
     expect(client.state.snapshot).toEqual(before);
     expect(shown).toEqual([]);
@@ -1474,7 +1474,7 @@ describe("drawing a cable to a setting of another modulator", () => {
       ["Could not draw a cable from ADSR to ADSR: decay: a modulator cannot drive its own settings", () => editor.addCable(3, 3, { type: "decay" })],
       ["Could not draw a cable from LFO to Oscillator: rate: a cable ends at the settings of a modulator, and that is not one", () => editor.addCable(lfo.id, oscillator.id, { type: "rate" })],
       ["Could not draw a cable from LFO to that node: rate: there is no node 99", () => editor.addCable(lfo.id, 99, { type: "rate" })],
-      ["Could not draw a cable from LFO to ADSR: a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth", () => editor.addCable(lfo.id, 3, { type: "modOut" })],
+      ["Could not draw a cable from LFO to ADSR: a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth", () => editor.addCable(lfo.id, 3, { type: "modOut" })],
     ];
     for (const [words, draw] of refused) {
       expect(await draw()).toBe(false);
@@ -1496,6 +1496,46 @@ describe("drawing a cable to a setting of another modulator", () => {
     client.stop();
     expect(await editor.removeCable(1)).toBe(false);
     expect(said(notices)).toEqual(["Could not take out the cable ADSR → LFO: rate: Not connected to the server."]);
+  });
+});
+
+describe("drawing a cable to a host-side value", () => {
+  test("joins a modulator to the volume of a lane, the mix of an effect and the volume and pan of a group, and says nothing", async () => {
+    const { client, notices, editor } = await open();
+    const group = await editor.addGroup([oscillator.id]);
+    expect(group).not.toBeNull();
+    expect(await editor.addCable(lfo.id, oscillator.id, { type: "volume" })).toBe(true);
+    expect(await editor.addCable(lfo.id, filter.id, { type: "mix" })).toBe(true);
+    expect(await editor.addCable(lfo.id, group ?? -1, { type: "volume" })).toBe(true);
+    expect(await editor.addCable(lfo.id, group ?? -1, { type: "pan" })).toBe(true);
+    const cables = client.state.snapshot?.graph.edges.filter((e) => e.kind === "modulation" && e.from.node === lfo.id).map((e) => `${String(e.to.node)}:${e.to.port.type}`);
+    expect(cables).toEqual([`${String(filter.id)}:param`, `${String(oscillator.id)}:volume`, `${String(filter.id)}:mix`, `${String(group)}:volume`, `${String(group)}:pan`]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("that is refused says which cable, in the names the canvas has, and why: the node has no such value, or the modulator drives it already", async () => {
+    const { notices, editor } = await open();
+    expect(await editor.addCable(lfo.id, filter.id, { type: "mix" })).toBe(true);
+    // (Each is said when it is refused: only the last few notices are kept.)
+    const refused: [string, () => Promise<boolean>][] = [
+      ["Could not draw a cable from LFO to Filter: mix: that modulator drives that mix already", () => editor.addCable(lfo.id, filter.id, { type: "mix" })],
+      ["Could not draw a cable from LFO to Filter: volume: that node has no volume", () => editor.addCable(lfo.id, filter.id, { type: "volume" })],
+      ["Could not draw a cable from LFO to Oscillator: mix: that node has no mix", () => editor.addCable(lfo.id, oscillator.id, { type: "mix" })],
+      ["Could not draw a cable from LFO to Oscillator: pan: that node has no pan", () => editor.addCable(lfo.id, oscillator.id, { type: "pan" })],
+      ["Could not draw a cable from LFO to that node: mix: there is no node 99", () => editor.addCable(lfo.id, 99, { type: "mix" })],
+    ];
+    for (const [words, draw] of refused) {
+      expect(await draw()).toBe(false);
+      expect(said(notices).at(-1)).toBe(words);
+    }
+  });
+
+  test("is told of, when it cannot be taken out, by the value it ends at: the lane's volume is its output volume", async () => {
+    const { client, notices, editor } = await open();
+    expect(await editor.addCable(lfo.id, oscillator.id, { type: "volume" })).toBe(true);
+    client.stop();
+    expect(await editor.removeCable(1)).toBe(false);
+    expect(said(notices)).toEqual(["Could not take out the cable LFO → Oscillator: output volume: Not connected to the server."]);
   });
 });
 

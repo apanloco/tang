@@ -1755,3 +1755,27 @@ pub fn model_groups(model: &SessionModel) -> Vec<GroupFacts> {
         .collect()
 }
 
+/// A group with a bus effect, a lane in it that has an instrument and an effect, and a lane that has no instrument and an effect: every host-side value that a cable can drive, and a lane
+/// whose volume it cannot.
+pub const GAINS: &str = r#"
+[[group]]
+name = "Pad"
+volume = 0.8
+pan = -0.25
+[[group.effect]]
+plugin = "builtin:reverb"
+mix = 0.6
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.7
+group = 0
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 0.9
+
+[[instrument]]
+[[instrument.effect]]
+plugin = "builtin:delay"
+mix = 0.4
+"#;

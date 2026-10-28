@@ -90,7 +90,7 @@ impl Master {
 /// that has latency makes its output late, so the dry part goes through `dry`, a line of as many frames, to be as late (P3f): the line is run whatever the `mix` is, so that it has
 /// what was put in when the `mix` is turned down. An effect that has a second input has a second port in the plan (step 95): `side_patched` says whether a cable ends there, and the
 /// plugin is given what the second port has if it does, and told that nothing is patched if not (it may have a sound of its own in its place).
-fn run_effect(effect: &mut dyn Plugin, mix: f32, dry: Option<&mut DelayLine>, side_patched: bool, io: &mut Io, num_channels: usize) -> Result<()> {
+fn run_effect(effect: &mut dyn Plugin, mix: f32, mix_ramp: Option<(f32, f32)>, dry: Option<&mut DelayLine>, side_patched: bool, io: &mut Io, num_channels: usize) -> Result<()> {
     let frames = io.frames();
     let (inputs, outputs) = io.split();
     let (first, rest) = inputs.split_at_mut(1);
@@ -113,7 +113,17 @@ fn run_effect(effect: &mut dyn Plugin, mix: f32, dry: Option<&mut DelayLine>, si
     if let Some(line) = dry {
         line.run(input);
     }
-    if mix < 1.0 {
+    // A mix that cables drive goes from where the last buffer left it to where they put it now over this one, so that it does not zipper (`mix_ramp`: what the user set is not touched); a mix that
+    // nothing drives is `mix` all through.
+    let (from, mix) = mix_ramp.unwrap_or((mix, mix));
+    if from != mix {
+        for ch in 0..num_channels {
+            for i in 0..frames {
+                let at = from + (mix - from) * ((i + 1) as f32 / frames as f32);
+                output[ch][i] = input[ch][i] * (1.0 - at) + output[ch][i] * at;
+            }
+        }
+    } else if mix < 1.0 {
         let dry = 1.0 - mix;
         for ch in 0..num_channels {
             for i in 0..frames {
@@ -150,13 +160,7 @@ impl InstrumentLane {
             let mut storage = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
             let refs = mut_slices(&mut out[..outputs], &mut storage);
             instrument.process(effective_events, &[], refs)?;
-            if (self.volume - 1.0).abs() >= f32::EPSILON {
-                for channel in out.iter_mut().take(outputs) {
-                    for sample in channel.iter_mut() {
-                        *sample *= self.volume;
-                    }
-                }
-            }
+            apply_volume(out, outputs, self.volume, self.volume_ramp.take());
         } else {
             // More outputs than the chain has channels (Pianoteq has sixteen): the first stereo pair goes on and the rest are dropped.
             for buf in self.inst_buf.iter_mut() {
@@ -168,13 +172,7 @@ impl InstrumentLane {
                 let refs = mut_slices(&mut self.inst_buf, &mut storage);
                 instrument.process(effective_events, &[], refs)?;
             }
-            if (self.volume - 1.0).abs() >= f32::EPSILON {
-                for channel in self.inst_buf.iter_mut().take(num_channels) {
-                    for sample in channel.iter_mut() {
-                        *sample *= self.volume;
-                    }
-                }
-            }
+            apply_volume(&mut self.inst_buf, num_channels, self.volume, self.volume_ramp.take());
             for (channel, buf) in out.iter_mut().zip(&self.inst_buf) {
                 channel.copy_from_slice(buf);
             }
@@ -198,7 +196,8 @@ impl InstrumentLane {
     /// (a reverb's tail rings out, and what another lane sends into one of them is heard through it).
     fn run_fx(&mut self, index: usize, dry: Option<&mut DelayLine>, side_patched: bool, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         let (Some(effect), Some(&mix)) = (self.effects.get_mut(index), self.mix_values.get(index)) else { return Ok(()) };
-        run_effect(effect.as_mut(), mix as f32, dry, side_patched, io, cx.num_channels)?;
+        let mix_ramp = self.mix_ramps.iter().find(|(at, ..)| *at == index).map(|&(_, from, to)| (from, to));
+        run_effect(effect.as_mut(), mix as f32, mix_ramp, dry, side_patched, io, cx.num_channels)?;
         store_taps(&self.taps, cx.telemetry, TapStage::Effect(index), &io.outputs()[0]);
         Ok(())
     }
@@ -223,13 +222,7 @@ impl Group {
     /// The head of the group as a node: its input is the sum of its members, the bus, which the group's volume is applied to in place.
     fn run_head(&mut self, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         let bus = &mut io.inputs_mut()[0];
-        if (self.volume - 1.0).abs() >= f32::EPSILON {
-            for channel in bus.iter_mut().take(cx.num_channels) {
-                for sample in channel.iter_mut() {
-                    *sample *= self.volume;
-                }
-            }
-        }
+        apply_volume(bus, cx.num_channels, self.volume, self.volume_ramp.take());
         io.forward(0, 0);
         Ok(())
     }
@@ -237,7 +230,8 @@ impl Group {
     /// An effect of the group's bus as a node (its place in the chain is `index`).
     fn run_fx(&mut self, index: usize, dry: Option<&mut DelayLine>, side_patched: bool, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         let (Some(effect), Some(&mix)) = (self.effects.get_mut(index), self.mix_values.get(index)) else { return Ok(()) };
-        run_effect(effect.as_mut(), mix as f32, dry, side_patched, io, cx.num_channels)?;
+        let mix_ramp = self.mix_ramps.iter().find(|(at, ..)| *at == index).map(|&(_, from, to)| (from, to));
+        run_effect(effect.as_mut(), mix as f32, mix_ramp, dry, side_patched, io, cx.num_channels)?;
         store_taps(&self.taps, cx.telemetry, TapStage::Effect(index), &io.outputs()[0]);
         Ok(())
     }
@@ -246,7 +240,8 @@ impl Group {
     /// is not muted is heard when nothing is soloed, when it is, and when a lane in it is.
     fn run_tail(&mut self, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         let bus = &mut io.inputs_mut()[0];
-        self.apply_pan(bus, cx.num_channels);
+        let pan_ramp = self.pan_ramp.take();
+        self.apply_pan(bus, cx.num_channels, pan_ramp);
         store_taps(&self.taps, cx.telemetry, TapStage::Output, bus);
         fade(bus, cx.num_channels, self.heard_at, self.heard_goal);
         self.heard_at = self.heard_goal;

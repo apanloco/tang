@@ -318,6 +318,21 @@ param = "detune"
     }
 
     #[test]
+    fn a_cable_to_a_volume_a_mix_or_a_pan_names_its_slot_by_the_node_and_the_port_that_it_drives() {
+        let model = load(&format!(
+            "{}\n[[modulator]]\n[[modulator.target]]\nto = \"instrument[0]\"\ngain = \"volume\"\n[[modulator.target]]\nto = \"instrument[0].effect[0]\"\ngain = \"mix\"\n\
+             [[modulator.target]]\nto = \"group[0]\"\ngain = \"volume\"\n[[modulator.target]]\nto = \"group[0]\"\ngain = \"pan\"\n[[modulator.target]]\nto = \"group[0].effect[0]\"\ngain = \"mix\"\n",
+            crate::app::testutil::GAINS
+        ))
+        .model;
+        let cables = &model.free_modulators[0].targets;
+        let (lane, filter, group, reverb) = (model.instruments[0].node, model.instruments[0].effects[0].node, model.groups[0].node, model.groups[0].effects[0].node);
+        let named: Vec<(u32, NodeId, Port)> = model.telemetry_layout().modulation.iter().filter(|e| e.kind == SlotKind::Effective).map(|e| (e.slot, e.node, e.port)).collect();
+        let slot = |i: usize| cables[i].effective.unwrap().index();
+        assert_eq!(named, [(slot(0), lane, Port::Volume), (slot(1), filter, Port::Mix), (slot(2), group, Port::Volume), (slot(3), group, Port::Pan), (slot(4), reverb, Port::Mix)]);
+    }
+
+    #[test]
     fn a_target_that_drives_a_modulator_or_has_no_slot_or_no_aim_has_no_entry() {
         let mut model = load(GROUPS).model;
         let before = model.telemetry_layout().modulation.len();

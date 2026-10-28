@@ -469,6 +469,40 @@ const FREE_MODULATOR_EDITS: [(u64, Edit); 19] = [
     (42_000, Edit::Undo),
 ];
 
+/// What is done to the values that the host keeps in `CABLED` while a cable drives them (step 97): a free LFO drives lane 0's volume and the mix of its filter, a free step sequencer the mix
+/// of the reverb on the bus and the group's pan, a free envelope the group's volume and the mix of lane 1's delay; the user turns the mix of the filter, the pan and the volume of the group
+/// while a cable drives each (the cables are centred on what is set); the filter is taken out while a cable drives its mix and put back by Undo; the step sequencer is taken out (its cables
+/// to the pan and to the reverb's mix go, and the values go back to what the user set over a buffer) and put back by Undo; lane 0 is taken out with its volume's cable and put back by Undo; the
+/// group is taken out with the cables to its volume, its pan and its reverb's mix and put back by Undo, taken out again by Redo and put back again; and lane 0 has no instrument and so no
+/// volume to drive (the cable goes), and has it again by Undo. Each is made (`Counts` says so: none is skipped or refused). The places among the values are 0 and 1 for lane 0's volume and its
+/// filter's mix, 2 and 3 for lane 1's volume and its delay's mix, and 4, 5 and 6 for the group's volume and pan and the reverb's mix.
+const GAIN_EDITS: [(u64, Edit); 24] = [
+    (4_000, Edit::AddFreeModulator { kind: ModulatorKind::Lfo }),
+    (5_000, Edit::GainCable { modulator: 0, value: 0 }),
+    (6_000, Edit::GainCable { modulator: 0, value: 1 }),
+    (8_000, Edit::AddFreeModulator { kind: ModulatorKind::Steps }),
+    (9_000, Edit::GainCable { modulator: 1, value: 6 }),
+    (10_000, Edit::GainCable { modulator: 1, value: 5 }),
+    (12_000, Edit::AddFreeModulator { kind: ModulatorKind::Envelope }),
+    (13_000, Edit::GainCable { modulator: 2, value: 4 }),
+    (14_000, Edit::GainCable { modulator: 2, value: 3 }),
+    (16_000, Edit::Mix { lane: 0, effect: 0, value: 0.35 }),
+    (17_000, Edit::GroupPan { group: 0, value: -0.4 }),
+    (18_000, Edit::GroupVolume { group: 0, value: 0.6 }),
+    (20_000, Edit::RemoveEffect { lane: 0, effect: 0 }),
+    (22_000, Edit::Undo),
+    (24_000, Edit::RemoveFreeModulator { index: 1 }),
+    (26_000, Edit::Undo),
+    (28_000, Edit::RemoveLane { lane: 0 }),
+    (30_000, Edit::Undo),
+    (32_000, Edit::RemoveGroup { group: 0 }),
+    (34_000, Edit::Undo),
+    (36_000, Edit::Redo),
+    (38_000, Edit::Undo),
+    (40_000, Edit::ClearInstrument { lane: 0 }),
+    (42_000, Edit::Undo),
+];
+
 /// What is done to what the free modulators of `CABLED` hear while it plays (step 93): lane 0 is given the keys from the high C up, so that it does not take the chord; a free envelope with a
 /// cable to its filter's cutoff hears every note and then lane 0 (it lets go of the chord, which is not the lane's) and then every note again; a free step sequencer with a cable to lane 1's
 /// detune hears the group (lane 0, which takes the high key alone and then every key), then lane 1, which is taken out while it hears it (every event) and put back by Undo (the lane); the envelope
@@ -516,7 +550,7 @@ pub fn edited() -> Vec<Scenario> {
         edits: edits.to_vec(),
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS), scenario("gains", &GAIN_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -1056,7 +1090,7 @@ mod tests {
     fn the_scenarios_that_have_free_modulators_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
         let with: Vec<String> = always_on().iter().filter(|scenario| scenario.has_free_modulators()).map(|scenario| scenario.id.clone()).collect();
         let named: Vec<&String> = with.iter().filter(|id| !id.starts_with("generated:")).collect();
-        assert_eq!(named, ["session:arp@256", "session:bell@256", "session:cross@256", "session:echo@256", "session:epiano@256", "session:fold@256", "session:freeear@256", "session:freemod@256", "session:gate@256", "session:melody@256", "session:mix@256", "session:pwm@256", "session:remap@256", "session:split@256", "session:sub-bass@256", "session:supersaw@256", "session:sync-lead@256", "session:tracer@256", "session:wind@256", "session:wobble@256", "edited:freemods@256", "edited:freeears@256"]);
+        assert_eq!(named, ["session:arp@256", "session:bell@256", "session:cross@256", "session:echo@256", "session:epiano@256", "session:fold@256", "session:freeear@256", "session:freemod@256", "session:gains@256", "session:gate@256", "session:melody@256", "session:mix@256", "session:pwm@256", "session:remap@256", "session:split@256", "session:sub-bass@256", "session:supersaw@256", "session:sync-lead@256", "session:tracer@256", "session:wind@256", "session:wobble@256", "edited:freemods@256", "edited:freeears@256", "edited:gains@256"]);
         assert!(always_on().iter().filter(|scenario| scenario.has_free_modulators()).all(|scenario| !scenario.is_in_the_old_loop()));
         // (A scenario of the generator has them where its session draws any, in a lane or a group, or where its edits are a lane's "+" or a knob's "~", which make a modulator of the session's own since step 94.)
         for scenario in always_on().iter().filter(|scenario| scenario.id.starts_with("generated:")) {

@@ -4,11 +4,11 @@ import type { NodeTypes } from "@xyflow/react";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, test } from "vitest";
 
-import { fieldsFixture, nodeNamed, tracerSnapshot } from "../../client/fixtures";
+import { fieldsFixture, freeReachFixture, nodeNamed, tracerSnapshot } from "../../client/fixtures";
 import { displayNames } from "../../client/names";
 import type { Edge, Port } from "../../protocol";
 import { rig } from "../testing";
-import { ModulatorSettingCell, ParamCell, ParamRow } from "./controls";
+import { GainCell, ModulatorSettingCell, ParamCell, ParamRow } from "./controls";
 import { ModulateMenu } from "./ModulateMenu";
 
 afterEach(cleanup);
@@ -272,5 +272,148 @@ describe("the controls that have the button that modulates them", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "New LFO" }));
     await settle();
     expect(requests().map((r) => r.intent)).toEqual([{ type: "modulate", to: { node: 3, port: { type: "param", index: 2 } }, kind: "lfo", depth: null }]);
+  });
+});
+
+// The volume of a lane, the mix of an effect and the volume and the pan of a group are values that the host keeps, and a modulator drives them as it drives a parameter of a plugin
+// (the controller's `gain_targets`): the knob of each has the button, which makes a modulator that hears what the value is of and a cable to it, or draws a cable from one that is there.
+describe("the button that modulates a host-side gain", () => {
+  const mix: Port = { type: "mix" };
+  const volume: Port = { type: "volume" };
+  const pan: Port = { type: "pan" };
+
+  test("makes a modulator that hears the lane of the effect, and a cable at half depth to its mix, with the request that does both", async () => {
+    const { server, requests } = await rig(<ModulateMenu node={filter.id} port={mix} name="mix" />);
+    open("Modulate mix");
+    fireEvent.click(screen.getByRole("menuitem", { name: "New envelope" }));
+    await settle();
+    expect(requests().map((r) => r.intent)).toEqual([{ type: "modulate", to: { node: filter.id, port: mix }, kind: "envelope", depth: null }]);
+    const made = server.snapshot.graph.nodes.find((n) => n.kind === "modulator" && n.source.type === "envelope");
+    // (The tracer's filter is in the oscillator's lane: that is what the new modulator hears.)
+    expect(made?.kind === "modulator" ? made.hears : undefined).toBe(oscillator.id);
+    expect(cablesFrom(server.snapshot.graph.edges, made?.id ?? -1)).toMatchObject([{ kind: "modulation", to: { node: filter.id, port: mix }, amount: 0.5 }]);
+  });
+
+  test("offers the modulators that are there under Attach, and draws a cable to the mix from the one that is chosen, which makes no modulator", async () => {
+    const { server, requests } = await rig(<ModulateMenu node={filter.id} port={mix} name="mix" />);
+    const before = server.snapshot.graph.nodes.length;
+    open("Modulate mix");
+    // (The tracer's LFO drives the cutoff and not the mix.)
+    expect(menuItems()).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "New velocity", "New key", "New step sequencer", "LFO"]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "LFO" }));
+    await settle();
+    expect(requests().map((r) => r.intent)).toEqual([{ type: "addModEdge", modulator: lfo.id, to: { node: filter.id, port: mix } }]);
+    expect(server.snapshot.graph.nodes).toHaveLength(before);
+    expect(cablesFrom(server.snapshot.graph.edges, lfo.id).some((e) => e.kind === "modulation" && e.to.node === filter.id && e.to.port.type === "mix")).toBe(true);
+  });
+
+  test("offers it again to a modulator that drives the mix already only when another can: the same one is not offered twice", async () => {
+    const { server } = await rig(<ModulateMenu node={filter.id} port={mix} name="mix" />);
+    await act(async () => {
+      server.apply({ type: "addModEdge", modulator: lfo.id, to: { node: filter.id, port: mix } });
+      await settle();
+    });
+    open("Modulate mix");
+    expect(menuItems()).toEqual(["New LFO", "New envelope", "New macro", "New MIDI control", "New velocity", "New key", "New step sequencer"]);
+  });
+
+  test("makes a modulator that hears the group for a group's pan and for its volume, and the group is what the cable ends at", async () => {
+    const { snapshot } = freeReachFixture;
+    const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!group) throw new Error("the fixture has a group");
+    const { server, requests } = await rig(
+      <>
+        <ModulateMenu node={group.id} port={pan} name="pan" />
+        <ModulateMenu node={group.id} port={volume} name="volume" />
+      </>,
+      { snapshot },
+    );
+    // (The fixture has modulators that hear the group already.)
+    const heardBefore = new Set(server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.hears === group.id).map((n) => n.id));
+    open("Modulate pan");
+    fireEvent.click(screen.getByRole("menuitem", { name: "New LFO" }));
+    await settle();
+    open("Modulate volume");
+    fireEvent.click(screen.getByRole("menuitem", { name: "New macro" }));
+    await settle();
+    expect(requests().map((r) => r.intent)).toEqual([
+      { type: "modulate", to: { node: group.id, port: pan }, kind: "lfo", depth: null },
+      { type: "modulate", to: { node: group.id, port: volume }, kind: "macro", depth: null },
+    ]);
+    await waitFor(() => {
+      const made = server.snapshot.graph.nodes.filter((n) => n.kind === "modulator" && n.hears === group.id && !heardBefore.has(n.id));
+      expect(made.map((n) => n.name)).toEqual(["LFO", "Macro"]);
+    });
+    const cables = server.snapshot.graph.edges.filter((e) => e.kind === "modulation" && e.to.node === group.id);
+    expect(cables.map((e) => e.kind === "modulation" && e.to.port.type).sort()).toEqual(["pan", "volume"]);
+  });
+
+  test("is not offered the modulators that a modulator's own settings are: a gain's button lists no `rate` of another, only the new ones and the modulators to attach", async () => {
+    const { snapshot } = freeReachFixture;
+    const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null);
+    if (!lane) throw new Error("the fixture has a lane that has an instrument");
+    await rig(<ModulateMenu node={lane.id} port={volume} name="output volume" />, { snapshot });
+    open("Modulate output volume");
+    const attach = menuItems().slice(NEW_ITEMS);
+    // Every modulator of the session is offered, whatever it hears (as for a parameter), and none twice.
+    expect(attach).toHaveLength(snapshot.graph.nodes.filter((n) => n.kind === "modulator").length);
+    expect(new Set(attach).size).toBe(attach.length);
+  });
+});
+
+describe("the cell of a host-side gain", () => {
+  const { snapshot } = freeReachFixture;
+  const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null);
+  const bare = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin === null);
+  const effect = snapshot.graph.nodes.find((n) => n.kind === "effect");
+  const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+  if (!lane || !bare || !effect || !group) throw new Error("the fixture has a lane, a lane without an instrument, an effect and a group");
+  const NODE_TYPES: NodeTypes = {
+    gains: () => (
+      <div>
+        <GainCell node={lane.id} gain="volume" />
+        <GainCell node={bare.id} gain="volume" />
+        <GainCell node={effect.id} gain="mix" />
+        <GainCell node={group.id} gain="groupVolume" />
+        <GainCell node={group.id} gain="groupPan" />
+      </div>
+    ),
+  };
+  const modulateButtons = (): string[] => screen.queryAllByRole("button", { name: /^Modulate / }).map((b) => b.getAttribute("aria-label") ?? "");
+
+  async function gains() {
+    const made = await rig(
+      <ReactFlowProvider>
+        <div style={{ width: 800, height: 600 }}>
+          <ReactFlow nodes={[{ id: "1", type: "gains", position: { x: 0, y: 0 }, data: {} }]} edges={[]} nodeTypes={NODE_TYPES} />
+        </div>
+      </ReactFlowProvider>,
+      { snapshot },
+    );
+    await screen.findByTestId("rf__node-1");
+    return made;
+  }
+
+  test("has the button on the volume of a lane that has an instrument, the mix of an effect, and the volume and the pan of a group, and none on the volume of a lane that has none", async () => {
+    await gains();
+    expect(modulateButtons()).toEqual(["Modulate output volume", "Modulate mix", "Modulate volume", "Modulate pan"]);
+    // (Its knob is there all the same: the volume of the lane is turned by a person.)
+    expect(screen.getAllByRole("slider", { name: "Volume" })).toHaveLength(3);
+  });
+
+  test("modulates what its cell sets: the lane's volume, the effect's mix, the group's volume and pan", async () => {
+    const { requests } = await gains();
+    open("Modulate output volume");
+    fireEvent.click(screen.getByRole("menuitem", { name: "New LFO" }));
+    open("Modulate mix");
+    fireEvent.click(screen.getByRole("menuitem", { name: "New envelope" }));
+    open("Modulate pan");
+    fireEvent.click(screen.getByRole("menuitem", { name: "New LFO" }));
+    await settle();
+    expect(requests().map((r) => r.intent)).toEqual([
+      { type: "modulate", to: { node: lane.id, port: { type: "volume" } }, kind: "lfo", depth: null },
+      { type: "modulate", to: { node: effect.id, port: { type: "mix" } }, kind: "envelope", depth: null },
+      { type: "modulate", to: { node: group.id, port: { type: "pan" } }, kind: "lfo", depth: null },
+    ]);
   });
 });

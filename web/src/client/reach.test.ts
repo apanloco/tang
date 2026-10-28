@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 import type { Edge, Graph, ModulatorSource, Node, Port } from "../protocol";
 import { MASTER, fieldsFixture, freeReachFixture, reachFixture, tracerSnapshot } from "./fixtures";
 import { displayNames, portName } from "./names";
-import { drivablesOf, driversOf, fieldsOf, modulatorsInReach, reachFrom } from "./reach";
+import { drivablesOf, driversOf, fieldsOf, gainPorts, isGainPort, modulatorsInReach, reachFrom } from "./reach";
 
 const sorted = (nodes: Iterable<number>): number[] => [...nodes].sort((a, b) => a - b);
 
@@ -108,8 +108,9 @@ describe("where a modulator may draw a cable in a session with a group and a bus
     const { graph } = withFreeModulators();
     const names = displayNames(graph);
     const listed = drivablesOf(graph, 80, names);
-    // The parameters of the plugins, node by node in the order of the graph (the bus effect, then the tracer's lane), and then the settings of the others.
-    expect(listed.map((group) => group.node)).toEqual([71, 0, 1, 2, 81]);
+    // The parameters of the plugins and the values that the host keeps, node by node in the order of the graph (the group, which has its volume and its pan and no parameter, its bus effect, then the tracer's lane),
+    // and then the settings of the others.
+    expect(listed.map((group) => group.node)).toEqual([70, 71, 0, 1, 2, 81]);
     expect(listed.find((group) => group.node === 81)?.fields.map((field) => field.port.type)).toEqual(["attack", "decay", "sustain", "release"]);
     // A parameter that it drives is not offered again, and another that drives it does not take it away.
     const cable: Edge = { kind: "modulation", id: 501, amount: 0.5, from: { node: 80, port: { type: "modOut" } }, to: { node: 71, port: { type: "param", index: 0 } } };
@@ -201,7 +202,10 @@ describe("what a modulator can still be drawn to", () => {
       to: { node: 1, port: { type: "param" as const, index: param.index } },
     }));
     const driven: Graph = { ...tracer, edges: [...tracer.edges.filter((e) => e.kind !== "modulation"), ...cables] };
-    expect(drivablesOf(driven, 2, displayNames(driven)).map((group) => group.node)).toEqual([0]);
+    const left = drivablesOf(driven, 2, displayNames(driven));
+    expect(left.map((group) => group.node)).toEqual([0, 1]);
+    // (What the filter has left is its mix, which the host keeps: not a parameter of the plugin.)
+    expect(left.find((group) => group.node === 1)).toEqual({ node: 1, name: "Filter", params: [], fields: [{ port: { type: "mix" }, name: "mix" }] });
     // And what is no modulator reaches nothing.
     expect(drivablesOf(tracer, 0, names)).toEqual([]);
   });
@@ -292,6 +296,7 @@ describe("what a modulator can still be drawn to among the settings of the other
   /** The modulators a modulator is offered, with the settings and the depths of the cables (`depth#1` is the depth of the cable 1). */
   const offered = (id: number) =>
     drivablesOf(snapshot.graph, id, names)
+      .map((group) => ({ ...group, fields: group.fields.filter((f) => !isGainPort(f.port)) }))
       .filter((group) => group.fields.length > 0)
       .map((group) => [group.node, group.fields.map((f) => (f.port.type === "depth" ? `depth#${String(f.port.edge)}` : f.port.type))]);
 
@@ -378,7 +383,7 @@ describe("what a modulator can still be drawn to among the settings of the other
     const every = fieldsOf(snapshot.graph, 7);
     expect(every.length).toBeGreaterThan(4);
     const all: Graph = { ...snapshot.graph, edges: [...snapshot.graph.edges, ...every.map((field, i) => edge(50 + i, 7, field.node, field.port))] };
-    expect(drivablesOf(all, 7, displayNames(all)).filter((g) => g.fields.length > 0)).toEqual([]);
+    expect(drivablesOf(all, 7, displayNames(all)).flatMap((g) => g.fields.filter((f) => !isGainPort(f.port)))).toEqual([]);
   });
 });
 
@@ -468,5 +473,87 @@ describe("which modulators can still drive a port", () => {
       // (So that the agreement says something.)
       expect(listed).toBeGreaterThan(40);
     }
+  });
+});
+
+describe("the host-side values a cable can end at: a lane's volume, an effect's mix, a group's volume and pan", () => {
+  const { snapshot, gains } = freeReachFixture;
+  const modulators = snapshot.graph.nodes.filter((node) => node.kind === "modulator");
+  const lines = (found: readonly { node: number; port: object }[]): string[] => found.map((f) => `${String(f.node)} ${JSON.stringify(f.port, Object.keys(f.port).sort())}`).sort();
+  const expected = snapshot.graph.nodes.flatMap((node) => gainPorts(node).map((port) => ({ node: node.id, port })));
+
+  test("are, for every modulator, what the controller accepts: the volume of each lane that has an instrument, the mix of each effect, the volume and the pan of each group", () => {
+    expect(sorted(Object.keys(gains).map(Number))).toEqual(sorted(modulators.map((node) => node.id)));
+    for (const one of modulators) {
+      expect(lines(expected), `${one.name} ${String(one.id)}`).toEqual(lines(gains[String(one.id)] ?? []));
+    }
+    // (Nine plugins: the volume of the lanes that have an instrument and the mix of the effects, and a volume and a pan for each of the two groups: so that the agreement says something.)
+    expect(expected.filter((found) => found.port.type === "volume")).toHaveLength(snapshot.graph.nodes.filter((n) => (n.kind === "instrument" && n.plugin !== null) || n.kind === "group").length);
+    expect(expected.filter((found) => found.port.type === "mix")).toHaveLength(snapshot.graph.nodes.filter((n) => n.kind === "effect").length);
+    expect(expected.filter((found) => found.port.type === "pan")).toHaveLength(snapshot.graph.nodes.filter((n) => n.kind === "group").length);
+  });
+
+  test("are not a lane's that has no instrument, nor anything of a modulator, a source or the master", () => {
+    const empty = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin === null);
+    if (!empty) throw new Error("the session has no lane without an instrument");
+    expect(gainPorts(empty)).toEqual([]);
+    for (const node of snapshot.graph.nodes.filter((n) => n.kind === "modulator" || n.kind === "master" || n.kind === "source")) expect(gainPorts(node), node.name).toEqual([]);
+  });
+
+  test("are what a modulator is offered after the parameters of each plugin, named by what they are, and a group is offered its two with no parameter", () => {
+    const names = displayNames(snapshot.graph);
+    const [one] = modulators;
+    if (!one) throw new Error("the session has no modulator");
+    const offered = drivablesOf(snapshot.graph, one.id, names);
+    const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null);
+    const effect = snapshot.graph.nodes.find((n) => n.kind === "effect");
+    const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!lane || !effect || !group) throw new Error("the session lacks a lane, an effect or a group");
+    // A lane's volume is its output volume, which is not the oscillator's own `volume` parameter (it is in the list too).
+    expect(offered.find((g) => g.node === lane.id)?.fields.map((f) => f.name)).toEqual(["output volume"]);
+    expect(offered.find((g) => g.node === lane.id)?.params.map((p) => p.name)).toContain("volume");
+    expect(offered.find((g) => g.node === effect.id)?.fields.map((f) => [f.port.type, f.name])).toEqual([["mix", "mix"]]);
+    expect(offered.find((g) => g.node === group.id)).toEqual({ node: group.id, name: names.get(group.id), params: [], fields: [{ port: { type: "volume" }, name: "volume" }, { port: { type: "pan" }, name: "pan" }] });
+  });
+
+  test("are offered again to a modulator that drives them, to another, but not to the same", () => {
+    const names = displayNames(snapshot.graph);
+    const [first, second] = modulators;
+    const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!first || !second || !group) throw new Error("the session lacks two modulators or a group");
+    const cable: Edge = { kind: "modulation", id: 700, amount: 0.5, from: { node: first.id, port: { type: "modOut" } }, to: { node: group.id, port: { type: "pan" } } };
+    const graph: Graph = { ...snapshot.graph, edges: [...snapshot.graph.edges, cable] };
+    expect(drivablesOf(graph, first.id, names).find((g) => g.node === group.id)?.fields.map((f) => f.port.type)).toEqual(["volume"]);
+    expect(drivablesOf(graph, second.id, names).find((g) => g.node === group.id)?.fields.map((f) => f.port.type)).toEqual(["volume", "pan"]);
+    // From the other side: the pan of the group can be driven by every modulator but the one that does.
+    expect(driversOf(graph, group.id, { type: "pan" }).map((n) => n.id)).toEqual(modulators.filter((m) => m.id !== first.id).map((m) => m.id));
+    expect(driversOf(snapshot.graph, group.id, { type: "pan" }).map((n) => n.id)).toEqual(modulators.map((m) => m.id));
+  });
+
+  test("have no drivers where the node has not the value: a pan of a lane, a volume of an effect, a mix of a group, a volume of a lane that has no instrument", () => {
+    const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null);
+    const empty = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin === null);
+    const effect = snapshot.graph.nodes.find((n) => n.kind === "effect");
+    const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!lane || !empty || !effect || !group) throw new Error("the session lacks a lane, an empty lane, an effect or a group");
+    expect(driversOf(snapshot.graph, lane.id, { type: "pan" })).toEqual([]);
+    expect(driversOf(snapshot.graph, effect.id, { type: "volume" })).toEqual([]);
+    expect(driversOf(snapshot.graph, group.id, { type: "mix" })).toEqual([]);
+    expect(driversOf(snapshot.graph, empty.id, { type: "volume" })).toEqual([]);
+    expect(driversOf(snapshot.graph, 999_999, { type: "mix" })).toEqual([]);
+    // (And the ones it has, by every modulator.)
+    expect(driversOf(snapshot.graph, lane.id, { type: "volume" })).toHaveLength(modulators.length);
+    expect(driversOf(snapshot.graph, effect.id, { type: "mix" })).toHaveLength(modulators.length);
+  });
+
+  test("are said in the words of a cable: a lane's volume as its output volume, an effect's mix, a group's pan", () => {
+    const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null);
+    const effect = snapshot.graph.nodes.find((n) => n.kind === "effect");
+    const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+    if (!lane || !effect || !group) throw new Error("the session lacks a lane, an effect or a group");
+    expect(portName(snapshot.graph, lane.id, { type: "volume" })).toBe("output volume");
+    expect(portName(snapshot.graph, effect.id, { type: "mix" })).toBe("mix");
+    expect(portName(snapshot.graph, group.id, { type: "volume" })).toBe("volume");
+    expect(portName(snapshot.graph, group.id, { type: "pan" })).toBe("pan");
   });
 });

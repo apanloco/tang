@@ -460,6 +460,10 @@ pub struct ModTargetConfig {
     /// `group[0].effect[1]`. A free modulator is in no lane, so its cable names the plugin and not a chain slot, a member or a bus.
     #[serde(default)]
     pub to: Option<String>,
+    /// (Free modulators) A host-side value that the cable drives instead of a plugin's parameter, `volume`, `mix` or `pan`; `to` says whose, as it does for a `param`: `instrument[0]` (a lane's volume),
+    /// `instrument[0].effect[1]` or `group[0].effect[0]` (an effect's mix) or `group[0]` (a group's volume or pan). Mutually exclusive with `param` and the `mod_*` fields.
+    #[serde(default)]
+    pub gain: Option<String>,
     /// Chain slot a `param` target lives on: 0 = instrument (default),
     /// 1..N = effects in order.
     #[serde(default)]
@@ -1648,9 +1652,12 @@ fn is_lfo_type(s: &String) -> bool {
 struct ModTargetOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     param: Option<String>,
-    /// The place of the plugin a `param` target drives.
+    /// The place of the plugin a `param` target drives, or of the lane, the effect or the group whose volume, mix or pan a `gain` target drives.
     #[serde(skip_serializing_if = "Option::is_none")]
     to: Option<String>,
+    /// Which host-side value a cable drives, `volume`, `mix` or `pan`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gain: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mod_rate: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1689,6 +1696,7 @@ fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
     let mut out = ModTargetOut {
         param: None,
         to: None,
+        gain: None,
         mod_rate: None,
         mod_depth: None,
         mod_attack: None,
@@ -1700,6 +1708,10 @@ fn save_mod_target_to_out(t: &SaveModTarget) -> ModTargetOut {
     match &t.kind {
         ModTargetKind::FreeParam { .. } => {
             out.param = Some(t.label.clone());
+            out.to = t.to.map(|place| place.to_string());
+        }
+        ModTargetKind::Gain { gain, .. } => {
+            out.gain = Some(gain.name().to_string());
             out.to = t.to.map(|place| place.to_string());
         }
         ModTargetKind::ModulatorRate { mod_index } => {

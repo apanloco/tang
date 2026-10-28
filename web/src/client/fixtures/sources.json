@@ -6450,7 +6450,7 @@
           }
         },
         {
-          "error": "a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither",
+          "error": "a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them",
           "intent": {
             "depth": null,
             "kind": "lfo",
@@ -6465,7 +6465,7 @@
           }
         },
         {
-          "error": "a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither",
+          "error": "a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them",
           "intent": {
             "depth": null,
             "kind": "lfo",
@@ -6906,7 +6906,7 @@
           }
         },
         {
-          "error": "a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither",
+          "error": "a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them",
           "intent": {
             "depth": null,
             "kind": "lfo",
@@ -6921,7 +6921,7 @@
           }
         },
         {
-          "error": "a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither",
+          "error": "a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them",
           "intent": {
             "depth": null,
             "kind": "lfo",

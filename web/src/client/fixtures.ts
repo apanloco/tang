@@ -56,7 +56,12 @@ export const reachFixture = reach as unknown as { snapshot: Snapshot; reach: Rec
  * its filter's resonance), and, for each modulator (by its node id), the plugin nodes (`reach`) and the settings and cable depths of other modulators (`fields`) that the controller let a cable be drawn to: written by the
  * controller (`the_web_clients_fixture_of_what_a_modulator_that_is_in_no_lane_reaches_is_current`).
  */
-export const freeReachFixture = freeReach as unknown as { snapshot: Snapshot; reach: Record<string, number[]>; fields: Record<string, { node: NodeId; port: Port }[]> };
+export const freeReachFixture = freeReach as unknown as {
+  snapshot: Snapshot;
+  reach: Record<string, number[]>;
+  fields: Record<string, { node: NodeId; port: Port }[]>;
+  gains: Record<string, { node: NodeId; port: Port }[]>;
+};
 
 /**
  * A session with a group of three modulators whose first member has three of its own (an envelope with two cables among them), a

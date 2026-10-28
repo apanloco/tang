@@ -2549,6 +2549,9 @@ fn selector_rows(h: &Harness) -> Vec<String> {
         );
         let row = if is_param {
             format!("params of {}", item.cells[0])
+        } else if matches!(entry.kind, crate::plugin::chain::ModTargetKind::Gain { .. }) {
+            // (A volume, a mix or a pan is named by whose it is: the node's id is not for a test to say.)
+            item.cells.join(" | ")
         } else {
             format!("{} | {:?}", item.cells.join(" | "), entry.kind)
         };
@@ -2691,6 +2694,13 @@ fn the_target_selector_of_a_free_modulator_lists_every_plugin_of_the_session_and
         "params of L2 Oscillator",
         "params of L2 Filter",
         "params of G1 Filter",
+        "L1 Oscillator | output volume",
+        "L1 Reverb | dry/wet mix",
+        "L2 Oscillator | output volume",
+        "L2 Filter | dry/wet mix",
+        "G1 Group 1 | output volume",
+        "G1 Group 1 | pan",
+        "G1 Filter | dry/wet mix",
         "Mod | Mod 1 attack | ModulatorAttack { mod_index: 1 }",
         "Mod | Mod 1 decay | ModulatorDecay { mod_index: 1 }",
         "Mod | Mod 1 sustain | ModulatorSustain { mod_index: 1 }",
@@ -3000,6 +3010,93 @@ fn the_modulate_popup_on_a_bus_parameter_makes_a_modulator_of_the_sessions_own_t
         [("decay".to_string(), format!("FreeParam {{ plugin: NodeId({}), param_index: 0 }}", reverb.0), 0.5, 0.1, 0.99)]
     );
     assert_eq!(h.s.ctl.model.free_modulators[3].ear, Some(pad));
+}
+
+#[test]
+fn the_modulate_popup_on_the_volume_and_the_pan_of_a_group_makes_a_modulator_that_hears_the_group_and_binds_the_value() {
+    let mut h = Harness::new(scene_group());
+    let pad = node_at(&h, NodePath::Group(0));
+    let (volume, pan) = (h.s.ctl.model.groups[0].volume, h.s.ctl.model.groups[0].pan);
+    h.goto(TreeAddress::Group(0));
+    // The rows of a group's pane are its volume and then its pan: the first, and the second.
+    h.press(KeyCode::Enter).press(KeyCode::Char('m')).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands(),
+        [
+            "InsertFreeModulator index=3 source=Lfo { waveform: Sine, rate: 1.0, phase: 0.0, retrigger: false, fade: 0.0, sync: 0.0, age: inf }".to_string(),
+            format!("SetModulatorEar Free index=3 ear={}", pad.0),
+            format!("AddFreeModTarget mod=3 aim=Gain {{ node: NodeId({}), gain: Volume }} depth=0.500 base={volume:.3} range=[0.000, 4.000]", pad.0),
+        ]
+    );
+    assert_eq!(h.s.ctl.model.free_modulators[3].ear, Some(pad));
+    h.press(KeyCode::Esc);
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Enter).press(KeyCode::Down).press(KeyCode::Char('m')).press(KeyCode::Enter);
+    assert_eq!(
+        h.commands().last().cloned(),
+        Some(format!("AddFreeModTarget mod=4 aim=Gain {{ node: NodeId({}), gain: Pan }} depth=0.500 base={pan:.3} range=[-1.000, 1.000]", pad.0))
+    );
+    // The tree says whose value each cable drives, under the group that the modulators hear.
+    let tree = h.tree().join("\n");
+    assert!(tree.contains("→ G1 volume (50%)") && tree.contains("→ G1 pan (50%)"), "{tree}");
+    // A value that a modulator drives already is not drawn again, and a row that has no value (there are two) is no place for one.
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Enter).press_n(KeyCode::Down, 5).press(KeyCode::Char('m'));
+    assert!(h.s.modulate.is_none(), "the pane of a group has two rows");
+}
+
+#[test]
+fn learning_the_volume_of_a_group_arms_a_midi_modulator_bound_to_it_at_full_depth() {
+    let mut h = Harness::new(scene_group());
+    let pad = node_at(&h, NodePath::Group(0));
+    let volume = h.s.ctl.model.groups[0].volume;
+    h.goto(TreeAddress::Group(0));
+    h.press(KeyCode::Enter).press(KeyCode::Char('l'));
+    assert_eq!(
+        h.commands(),
+        [
+            "InsertFreeModulator index=3 source=MidiLearn { source: None, value: 0.0, learning: true }".to_string(),
+            format!("SetModulatorEar Free index=3 ear={}", pad.0),
+            format!("AddFreeModTarget mod=3 aim=Gain {{ node: NodeId({}), gain: Volume }} depth=0.500 base={volume:.3} range=[0.000, 4.000]", pad.0),
+            "SetFreeModTargetDepth mod=3 target=0 depth=1.000".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn the_target_selector_binds_a_volume_a_mix_or_a_pan_and_the_tree_says_whose_it_is() {
+    let mut h = Harness::new(crate::app::testutil::FREE_MODULATORS);
+    let (filter, osc) = (node_at(&h, NodePath::GroupEffect { group: 0, index: 0 }), node_at(&h, NodePath::Instrument(0)));
+    let mix = h.s.ctl.model.groups[0].effects[0].mix;
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.commands();
+    // The row of the bus filter's mix, and the one of the first lane's volume: found in the list, which has every row when nothing is typed.
+    let place = |h: &Harness, owner: &str, name: &str| {
+        let selector = h.s.target_selector.as_ref().expect("the selector is open");
+        selector.items.iter().position(|item| item.cells == [owner, name]).unwrap_or_else(|| panic!("{owner} {name}: {:?}", selector.items.iter().map(|i| i.cells.clone()).collect::<Vec<_>>()))
+    };
+    h.press(KeyCode::Char('t'));
+    let at = place(&h, "G1 Filter", "dry/wet mix");
+    h.press_n(KeyCode::Down, at).press(KeyCode::Enter);
+    assert_eq!(h.commands(), [format!("AddFreeModTarget mod=0 aim=Gain {{ node: NodeId({}), gain: Mix }} depth=0.500 base={mix:.3} range=[0.000, 1.000]", filter.0)]);
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.press(KeyCode::Char('t'));
+    let at = place(&h, "L1 Oscillator", "output volume");
+    h.press_n(KeyCode::Down, at).press(KeyCode::Enter);
+    assert_eq!(h.commands().len(), 1);
+    let tree = h.tree().join("\n");
+    assert!(tree.contains("G1 Filter (bus) mix (50%)") && tree.contains("L1 Oscillator volume (50%)") && !tree.contains("L1 Oscillator: volume"), "{tree}");
+    // (The modulator had four cables: the mix is the fifth and the volume the sixth.)
+    assert_eq!(h.s.ctl.model.kind_of_target(ModulatorLocation::Free, 0, 4), Some(crate::plugin::chain::ModTargetKind::Gain { node: filter, gain: crate::app::model::ModGain::Mix }));
+    assert_eq!(h.s.ctl.model.kind_of_target(ModulatorLocation::Free, 0, 5), Some(crate::plugin::chain::ModTargetKind::Gain { node: osc, gain: crate::app::model::ModGain::Volume }));
+    // A value that the modulator drives already is not drawn again: the controller refuses it, and nothing is sent.
+    h.goto(TreeAddress::FreeModulator { index: 0 });
+    h.press(KeyCode::Char('t'));
+    let at = place(&h, "L1 Oscillator", "output volume");
+    let before = h.s.ctl.model.free_modulators[0].targets.len();
+    h.press_n(KeyCode::Down, at).press(KeyCode::Enter);
+    assert_eq!(h.s.ctl.model.free_modulators[0].targets.len(), before);
+    assert!(h.commands().is_empty());
 }
 
 #[test]

@@ -25,7 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::model::{Driven, EdgeId, FieldTarget, ModSetting, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, SourceKind};
+use crate::app::model::{Driven, EdgeId, FieldTarget, ModGain, ModSetting, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, SourceKind};
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::{Feed, NodeUi, Route};
 
@@ -318,6 +318,12 @@ pub enum Port {
     ModOut,
     /// A parameter of the plugin in a node, by the plugin's own index.
     Param { index: u32 },
+    /// The output volume that the host keeps for a lane (before its effects) or a group (step 97): where a cable from a modulator can end, beside the plugin's parameters.
+    Volume,
+    /// The dry/wet mix that the host keeps for an effect (step 97).
+    Mix,
+    /// The stereo balance that the host keeps for a group (step 97).
+    Pan,
     /// A LFO's rate.
     Rate,
     /// An envelope's attack, decay, sustain and release.
@@ -327,6 +333,27 @@ pub enum Port {
     Release,
     /// The depth of a modulation edge that starts at this modulator.
     Depth { edge: EdgeId },
+}
+
+impl Port {
+    /// The port that a cable from a modulator ends at to drive the host-side value `gain` of a node.
+    pub fn of_gain(gain: ModGain) -> Port {
+        match gain {
+            ModGain::Volume => Port::Volume,
+            ModGain::Mix => Port::Mix,
+            ModGain::Pan => Port::Pan,
+        }
+    }
+
+    /// The host-side value that this port is, if it is one.
+    pub fn gain(self) -> Option<ModGain> {
+        match self {
+            Port::Volume => Some(ModGain::Volume),
+            Port::Mix => Some(ModGain::Mix),
+            Port::Pan => Some(ModGain::Pan),
+            _ => None,
+        }
+    }
 }
 
 impl crate::app::model::AudioCable {
@@ -527,6 +554,7 @@ impl SessionModel {
                 let (at, index, _) = self.locate_edge(edge)?;
                 Some(Endpoint { node: self.modulators(at)?.get(index)?.node, port: Port::Depth { edge } })
             }
+            Driven::Gain { node, gain } => Some(Endpoint { node, port: Port::of_gain(gain) }),
         }
     }
 
@@ -545,6 +573,7 @@ impl SessionModel {
         let sibling = |mod_index: usize, port: Port| rack.get(mod_index).map(|m| Endpoint { node: m.node, port });
         match kind {
             K::FreeParam { plugin, param_index } => self.plugin_slot(*plugin).map(|_| Endpoint { node: *plugin, port: Port::Param { index: *param_index } }),
+            K::Gain { node, gain } => self.gain_of(*node, *gain).map(|_| Endpoint { node: *node, port: Port::of_gain(*gain) }),
             K::ModulatorRate { mod_index } => sibling(*mod_index, Port::Rate),
             K::ModulatorAttack { mod_index } => sibling(*mod_index, Port::Attack),
             K::ModulatorDecay { mod_index } => sibling(*mod_index, Port::Decay),
@@ -1703,6 +1732,10 @@ depth = 0.2
                     (Port::Param { index }, NodeKind::Instrument { plugin: Some(p), .. } | NodeKind::Effect { plugin: p, .. }) => {
                         assert!(p.params.iter().any(|q| q.index == index), "{what}: {e:?} names a parameter {index} the plugin lacks");
                     }
+                    // (The host-side values: a lane that has an instrument and a group have a volume, an effect a mix, a group a pan.)
+                    (Port::Volume, NodeKind::Instrument { plugin: Some(_), .. } | NodeKind::Group { .. }) => {}
+                    (Port::Mix, NodeKind::Effect { .. }) => {}
+                    (Port::Pan, NodeKind::Group { .. }) => {}
                     (Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release, NodeKind::Modulator { .. }) => {}
                     (Port::Depth { edge }, NodeKind::Modulator { .. }) => {
                         assert!(modulation_ids.contains(&edge), "{what}: {e:?} names an edge that is not there");

@@ -13,7 +13,7 @@ use crossbeam_channel::Sender;
 
 use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
-    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, Driven, EdgeId, EventCable, FREE, GroupNode, InstrumentNode, ModSourceSlot, ModTargetSlot, ModulatorSlot, NEW_CABLE_GAIN, NodeId, NodeIds,
+    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, Driven, EdgeId, EventCable, FREE, GroupNode, InstrumentNode, ModGain, ModSourceSlot, ModTargetSlot, ModulatorSlot, NEW_CABLE_GAIN, NodeId, NodeIds,
     ParamKind, ParamSlot, PatternState, PluginSlot, SYNC_DIVISIONS, SessionModel, SourceKind, SourceNode, format_from_id, mod_source_slot_to_graph, modulator_slot_commands,
     setting_of, sync_from_name, sync_name, tempo_of_patterns,
 };
@@ -1095,6 +1095,33 @@ impl FreeSession<'_> {
         }
     }
 
+    /// The node of the lane, the effect or the group that `place` names, with the value that the loaded session gives its `gain` (a cable to it is centred on that): the volume of a lane that
+    /// has an instrument (`instrument[0]`) or of a group (`group[0]`), the mix of an effect (`instrument[0].effect[1]`, `group[0].effect[0]`) or the pan of a group. `Err` says why a place has none.
+    fn gain_at(&self, place: session::CablePlace, gain: ModGain) -> Result<(NodeId, f32), String> {
+        use session::CablePlace as Place;
+        let missing = || format!("{place} is not in the session");
+        match (place, gain) {
+            (Place::Instrument(lane), ModGain::Volume) => {
+                let lane = self.lanes.get(lane).ok_or_else(missing)?;
+                if lane.instrument.is_none() {
+                    return Err(format!("{place} has no instrument, and so no volume to drive"));
+                }
+                Ok((lane.node, lane.volume))
+            }
+            (Place::Effect { instrument, effect }, ModGain::Mix) => {
+                let slot = self.lanes.get(instrument).and_then(|lane| lane.effects.get(effect)).ok_or_else(missing)?;
+                Ok((slot.node, slot.mix))
+            }
+            (Place::BusEffect { group, effect }, ModGain::Mix) => {
+                let slot = self.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?;
+                Ok((slot.node, slot.mix))
+            }
+            (Place::Group(group), ModGain::Volume) => self.groups.get(group).map(|bus| (bus.node, bus.volume)).ok_or_else(missing),
+            (Place::Group(group), ModGain::Pan) => self.groups.get(group).map(|bus| (bus.node, bus.pan)).ok_or_else(missing),
+            _ => Err(format!("{place} has no {}", gain.name())),
+        }
+    }
+
     /// The plugin that `place` names, with its node and its parameters: `instrument[0]` is a lane's instrument, `instrument[0].effect[1]` an effect of its chain and `group[0].effect[1]` an
     /// effect of a group's bus. `Err` says why a place is not one.
     fn plugin_at(&self, place: session::CablePlace) -> Result<(NodeId, &[plugin::ParameterInfo]), String> {
@@ -1128,6 +1155,9 @@ struct FreeTargets<'a> {
 /// What the cable `config` of the free modulator `me` is: a parameter of a plugin anywhere in the session (`to` says where, as a cable's places are written: `instrument[0].effect[1]`), or a
 /// field of another free modulator, or the depth of one of its cables. `None`, and the log says why, for a cable that cannot be made.
 fn plan_free_target(config: &session::ModTargetConfig, me: usize, free: &FreeTargets) -> Option<Plan> {
+    if let Some(ref gain_name) = config.gain {
+        return plan_gain_target(config, gain_name, free);
+    }
     let Some(ref param_name) = config.param else {
         let info = |index: usize, field| sibling_field_info(free.siblings.get(index), field);
         return plan_sibling_target(config, me, 0, free.nodes, "Free modulator target has no param or mod_* field, skipping", info);
@@ -1154,6 +1184,28 @@ fn plan_free_target(config: &session::ModTargetConfig, me: usize, free: &FreeTar
         param_max: info.max,
         base_value: info.default,
     })
+}
+
+/// What a cable of a file that drives a host-side value is (`gain = "volume"`, `"mix"` or `"pan"`, and `to`, whose it is): the value that the loaded session gives it is what the cable is centred
+/// on, and its range is the value's own. `None`, and the log says why, for a cable that cannot be made.
+fn plan_gain_target(config: &session::ModTargetConfig, gain_name: &str, free: &FreeTargets) -> Option<Plan> {
+    let Some(gain) = ModGain::parse(gain_name) else {
+        log::warn!("Free modulator target gain '{gain_name}' is not a volume, a mix or a pan: left out");
+        return None;
+    };
+    let Some(place) = config.to.as_deref().and_then(session::CablePlace::parse) else {
+        log::warn!("Free modulator target gain '{gain_name}' has no `to` that names a lane, an effect or a group of the session: left out");
+        return None;
+    };
+    let (node, value) = match free.session.gain_at(place, gain) {
+        Ok(found) => found,
+        Err(why) => {
+            log::warn!("Free modulator target gain '{gain_name}': {why}: left out");
+            return None;
+        }
+    };
+    let (param_min, param_max) = gain.range();
+    Some(Plan { drives: Drives::Known { aim: Driven::Gain { node, gain } }, label: gain.name().to_string(), param_min, param_max, base_value: value })
 }
 
 /// Build the session's free modulators (the top-level `[[modulator]]` tables: in no lane and no group) and send them to the audio thread. Their cables name a plugin by its place in the
@@ -3105,6 +3157,95 @@ plugin = "builtin:reverb"
         assert_eq!(saved(&again), text, "and the file is the same");
     }
 
+    /// `GAINS` and a modulator of the session's own that has a cable to every value that a cable can drive in it (a lane's volume, the mix of three effects, a group's volume and pan), and the cables
+    /// that a file can say and no session can have (the volume of a lane that has no instrument, a pan of a lane, a volume of an effect, a value that is not one, a place that is not there, no place):
+    /// the loader leaves each of those out.
+    fn gains_with_cables() -> String {
+        format!(
+            r#"{}
+[[modulator]]
+type = "lfo"
+hears = "group[0]"
+
+[[modulator.target]]
+to = "instrument[0]"
+gain = "volume"
+depth = 0.3
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+gain = "mix"
+depth = -0.4
+[[modulator.target]]
+to = "instrument[1].effect[0]"
+gain = "mix"
+[[modulator.target]]
+to = "group[0].effect[0]"
+gain = "mix"
+depth = 0.1
+[[modulator.target]]
+to = "group[0]"
+gain = "volume"
+depth = 0.2
+[[modulator.target]]
+to = "group[0]"
+gain = "pan"
+depth = 0.6
+[[modulator.target]]
+to = "instrument[1]"
+gain = "volume"
+[[modulator.target]]
+to = "instrument[0]"
+gain = "pan"
+[[modulator.target]]
+to = "group[0].effect[0]"
+gain = "volume"
+[[modulator.target]]
+to = "instrument[0]"
+gain = "loudness"
+[[modulator.target]]
+to = "instrument[7]"
+gain = "volume"
+[[modulator.target]]
+gain = "mix"
+"#,
+            testutil::GAINS
+        )
+    }
+
+    #[test]
+    fn a_free_cable_to_a_volume_a_mix_or_a_pan_is_centred_on_what_the_session_sets_it_to_and_one_that_names_nothing_that_has_one_is_left_out() {
+        let run = load(&gains_with_cables());
+        let model = &run.model;
+        assert_eq!(
+            modulators_described(model),
+            [
+                "LFO 1.0Hz sine hears group[0] [instrument[0] volume depth 0.300 centre Some(\"0.700\") range [0.000, 4.000]; instrument[0].effect[0] mix depth -0.400 centre Some(\"0.900\") range [0.000, 1.000]; \
+                 instrument[1].effect[0] mix depth 0.500 centre Some(\"0.400\") range [0.000, 1.000]; group[0].effect[0] mix depth 0.100 centre Some(\"0.600\") range [0.000, 1.000]; \
+                 group[0] volume depth 0.200 centre Some(\"0.800\") range [0.000, 4.000]; group[0] pan depth 0.600 centre Some(\"-0.250\") range [-1.000, 1.000]]"
+            ]
+        );
+        // The audio thread is told each cable by the node and the value, in the order of the file.
+        let told: Vec<&String> = run.commands.iter().filter(|c| c.starts_with("AddFreeModTarget")).collect();
+        let (lane, group) = (model.instruments[0].node, model.groups[0].node);
+        assert_eq!(told.len(), 6, "{told:?}");
+        assert_eq!(told[0], &format!("AddFreeModTarget mod=0 aim={:?} depth=0.300 base=0.700 range=[0.000, 4.000]", Driven::Gain { node: lane, gain: ModGain::Volume }));
+        assert_eq!(told[5], &format!("AddFreeModTarget mod=0 aim={:?} depth=0.600 base=-0.250 range=[-1.000, 1.000]", Driven::Gain { node: group, gain: ModGain::Pan }));
+        model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_session_with_cables_to_volumes_mixes_and_pans_is_saved_as_the_same_cables_and_the_same_file() {
+        let model = load(&gains_with_cables()).model;
+        let text = saved(&model);
+        assert_eq!(text.matches("gain = ").count(), 6, "the six that drive something: {text}");
+        assert!(text.contains("to = \"group[0]\"\ngain = \"pan\""), "a group is a place of its own: {text}");
+        assert!(text.contains("to = \"instrument[1].effect[0]\"\ngain = \"mix\""), "{text}");
+        assert!(!text.contains("loudness") && !text.contains("instrument[7]"), "what was left out is not written: {text}");
+        let again = load(&text).model;
+        assert_eq!(modulators_described(&again), modulators_described(&model));
+        assert_eq!(saved(&again), text, "and the file is the same");
+    }
+
     /// Three modulators of the session's own, the first hearing the second lane, the second the group and the third every event.
     const FREE_EARS: &str = r#"
 [[modulator]]
@@ -3462,6 +3603,14 @@ slot = 4
         }
     }
 
+    /// Where the lane, the effect or the group `node`, whose volume, mix or pan a cable drives, is, as a file names it: a plugin's place, or `group[0]` for a group.
+    fn gain_place(model: &SessionModel, node: NodeId) -> String {
+        match model.locate(node) {
+            Some(NodePath::Group(group)) => format!("group[{group}]"),
+            _ => plugin_place(model, node),
+        }
+    }
+
     /// Every modulator of `model` in the order of the session's own rack (the lanes' that the move made, the groups', and the file's own), with whom it hears, what it is and what each of its
     /// cables drives (a plugin by its place, a modulator by its place in this order, and the depth of a cable by the modulator and the place of the cable), the depth it is at and what it
     /// is centred on: what a file says of a modulator, whether it says it in a lane, in a group or among the session's own.
@@ -3480,6 +3629,7 @@ slot = 4
                             Driven::Param { plugin, index } => format!("{}:{index} ({})", plugin_place(model, plugin), t.param_name),
                             Driven::Setting { modulator, field } => format!("#{} {field:?}", place_of(modulator)),
                             Driven::Depth(edge) => format!("depth of {}", cable_at(edge)),
+                            Driven::Gain { node, gain } => format!("{} {}", gain_place(model, node), gain.name()),
                         };
                         format!("{drives} depth {:.3} centre {:?} range [{:.3}, {:.3}]", t.depth, model.centre_of(t.aim).map(|centre| format!("{centre:.3}")), t.param_min, t.param_max)
                     })

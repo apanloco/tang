@@ -1149,7 +1149,7 @@ describe("drawing a cable", () => {
       for (const port of [{ type: "modOut" }, { type: "audioIn" }, { type: "audioOut" }] as const) {
         expect(await failure({ type: "addModEdge", modulator: lane0Lfo, to: { node: osc0, port } })).toEqual([
           "invalid",
-          "a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth",
+          "a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth",
         ]);
       }
       // (The settings of a modulator are not a plugin's: a plugin has none to take.)
@@ -3415,6 +3415,43 @@ describe("the value of a parameter that several cables drive", () => {
     await groupWithAnLfo(client);
     // The group's LFO is at its top and adds its depth, 0.5, of the range of the resonance (0.5 to 10) to the 2 the user set.
     await until(() => Math.abs((resonanceOf(client) ?? 0) - (2 + 0.5 * (10 - 0.5))) < 1e-5, "the resonance the group's LFO makes of it");
+  });
+});
+
+describe("the volume, the mix and the pan that cables drive in the mock engine (step 97): the value the user set and what the cables make of it, held to the range of that value", () => {
+  /** Where the telemetry says the volume, the mix or the pan `port` of `node` is. */
+  const valueOf = (client: Client, node: number, port: Port): number | undefined => client.telemetry.value("modulation", node, port, "effective");
+  /** Whether that is `expected`. */
+  const is = (client: Client, node: number, port: Port, expected: number): boolean => Math.abs((valueOf(client, node, port) ?? Number.NaN) - expected) < 1e-5;
+  /** A cable from the tracer's LFO (0.5 Hz: at its top at 0.5 s, at its bottom at 1.5 s) to the value, at the half depth that a new cable has: half of the range of the value, each way from where the user set it. */
+  const draw = (client: Client, node: number, port: Port) => client.request({ type: "addModEdge", modulator: lfo.id, to: { node, port } });
+
+  test("a mix goes up by half of its range where the LFO is at its top and is held to 1, and down by as much at its bottom", async () => {
+    let seconds = 0.5;
+    const client = await open(new MockServer({ telemetryPeriod: 2, clock: () => seconds }), { telemetry: ["modulation"] });
+    await client.request({ type: "setGain", node: filter.id, gain: "mix", value: 0.8 });
+    await draw(client, filter.id, { type: "mix" });
+    // 0.8 and half of 1 more is 1.3, and a mix runs 0 to 1.
+    await until(() => is(client, filter.id, { type: "mix" }, 1), "the mix held to the top of its range");
+    seconds = 1.5;
+    await until(() => is(client, filter.id, { type: "mix" }, 0.3), "the mix at the bottom of the LFO");
+  });
+
+  test("the volume of a lane and of a group run 0 to 4 and the pan of a group -1 to 1, each held to its own range", async () => {
+    let seconds = 0.5;
+    const client = await open(new MockServer({ telemetryPeriod: 2, clock: () => seconds }), { telemetry: ["modulation"] });
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    await client.request({ type: "setGain", node: oscillator.id, gain: "volume", value: 3 });
+    await client.request({ type: "addGroup", members: [oscillator.id] });
+    const group = (client.state.snapshot?.graph.nodes ?? []).find((n) => n.kind === "group")?.id ?? -1;
+    await draw(client, oscillator.id, { type: "volume" });
+    await draw(client, group, { type: "volume" });
+    await draw(client, group, { type: "pan" });
+    // At the top: the lane's 3 and half of 4 more is 5, held to 4; the group's 1 and as much more is 3; the pan, from the centre, goes half of 2 up, to 1.
+    await until(() => is(client, oscillator.id, { type: "volume" }, 4) && is(client, group, { type: "volume" }, 3) && is(client, group, { type: "pan" }, 1), "the volumes and the pan at the top of the LFO");
+    seconds = 1.5;
+    // At the bottom: the lane's 3 less 2 is 1; the group's 1 less 2 is held to 0; the pan goes down to -1, which a volume's range, which starts at 0, would not let it.
+    await until(() => is(client, oscillator.id, { type: "volume" }, 1) && is(client, group, { type: "volume" }, 0) && is(client, group, { type: "pan" }, -1), "the volumes and the pan at the bottom of the LFO");
   });
 });
 

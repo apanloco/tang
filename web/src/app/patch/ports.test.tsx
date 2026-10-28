@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { ReactFlow, ReactFlowProvider } from "@xyflow/react";
 import type { NodeProps, NodeTypes } from "@xyflow/react";
-import { cleanup, screen } from "@testing-library/react";
+import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test } from "vitest";
 
-import { fieldsFixture } from "../../client/fixtures";
+import { fieldsFixture, freeReachFixture } from "../../client/fixtures";
 import { rig } from "../testing";
 import { ConnectingContext } from "./connection";
-import { AudioPort, DepthPort, ModulatorSettingCell, NotesPort, ParamCell } from "./controls";
+import { AudioPort, DepthPort, GainCell, ModulatorSettingCell, NotesPort, ParamCell } from "./controls";
 
 afterEach(cleanup);
 
@@ -305,5 +305,74 @@ describe("the notes ports of a node", () => {
       expect(ports.some((port) => port.classList.contains("tang-port--takes"))).toBe(false);
       cleanup();
     }
+  });
+});
+
+// The volume of a lane, the mix of an effect and the volume and the pan of a group: a cable from a modulator ends at the top edge of the knob, as at a parameter's, and the handle is named by the value
+// (`volume`, `mix`, `pan`: `handleOf`). A lane that has no instrument has no volume to drive and no port.
+describe("the port of a host-side gain", () => {
+  const { snapshot } = freeReachFixture;
+  const lane = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null);
+  const bare = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin === null);
+  const effect = snapshot.graph.nodes.find((n) => n.kind === "effect");
+  const group = snapshot.graph.nodes.find((n) => n.kind === "group");
+  const modulator = snapshot.graph.nodes.find((n) => n.kind === "modulator");
+  if (!lane || !bare || !effect || !group || !modulator) throw new Error("the fixture has a lane, a lane without an instrument, an effect, a group and a modulator");
+  const GAIN_TYPES: NodeTypes = {
+    gains: () => (
+      <div>
+        <GainCell node={lane.id} gain="volume" />
+        <GainCell node={bare.id} gain="volume" />
+        <GainCell node={effect.id} gain="mix" />
+        <GainCell node={group.id} gain="groupVolume" />
+        <GainCell node={group.id} gain="groupPan" />
+      </div>
+    ),
+  };
+
+  async function gains(connecting: ReadonlySet<string> | null) {
+    const made = await rig(
+      <ReactFlowProvider>
+        <ConnectingContext.Provider value={connecting}>
+          <div style={{ width: 800, height: 600 }}>
+            <ReactFlow nodes={[{ id: "1", type: "gains", position: { x: 0, y: 0 }, data: {} }]} edges={[]} nodeTypes={GAIN_TYPES} />
+          </div>
+        </ConnectingContext.Provider>
+      </ReactFlowProvider>,
+      { snapshot },
+    );
+    await screen.findByTestId("rf__node-1");
+    const ports = Array.from(made.view.container.querySelectorAll(".react-flow__handle"));
+    return { ...made, ports };
+  }
+
+  test("is a port named by the value, on the top edge of its knob, where a cable ends and is not started: none for the volume of a lane that has no instrument", async () => {
+    const { ports } = await gains(null);
+    expect(ports.map((port) => port.getAttribute("data-handleid"))).toEqual(["volume", "mix", "volume", "pan"]);
+    for (const port of ports) {
+      const id = port.getAttribute("data-handleid") ?? "?";
+      expect(port.getAttribute("data-handlepos"), id).toBe("top");
+      expect(port.classList.contains("tang-port--param"), id).toBe(true);
+      expect(port.classList.contains("connectablestart"), id).toBe(false);
+      expect(port.classList.contains("connectableend"), id).toBe(true);
+    }
+  });
+
+  test("says that a cable ends at it when one does, and not before", async () => {
+    const { ports, server } = await gains(null);
+    expect(ports.some((port) => port.classList.contains("tang-port--driven"))).toBe(false);
+    await act(async () => {
+      server.apply({ type: "addModEdge", modulator: modulator.id, to: { node: effect.id, port: { type: "mix" } } });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    await waitFor(() => {
+      const now = Array.from(document.querySelectorAll(".react-flow__handle"));
+      expect(now.filter((port) => port.classList.contains("tang-port--driven")).map((port) => port.getAttribute("data-handleid"))).toEqual(["mix"]);
+    });
+  });
+
+  test("says that it takes the cable that is dragged when the node and the handle are among those that do: the group's pan and not its volume", async () => {
+    const { ports } = await gains(new Set([`${String(effect.id)}:mix`, `${String(group.id)}:pan`, `${String(bare.id)}:volume`]));
+    expect(ports.filter((port) => port.classList.contains("tang-port--takes")).map((port) => port.getAttribute("data-handleid"))).toEqual(["mix", "pan"]);
   });
 });

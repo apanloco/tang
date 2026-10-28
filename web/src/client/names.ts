@@ -1,6 +1,6 @@
 // What the nodes of a session are called, wherever a person reads it: on the canvas, in what a screen
 // reader says of a control, in what the page says of a cable or of what it could not do.
-import type { EdgeId, Endpoint, Graph, NodeId, Port } from "../protocol";
+import type { EdgeId, Endpoint, Graph, Node, NodeId, Port } from "../protocol";
 import { holdersOf } from "./holders";
 
 /**
@@ -73,6 +73,12 @@ export function cableWords(graph: Graph, names: Names, cable: { from: Endpoint; 
 }
 
 /**
+ * What a host-side value of `node` is called in a list of what can be driven and in the words of a cable (`Filter: mix`, `Pad: pan`). A lane's volume is its output volume, which is not the instrument's own
+ * `volume` parameter (a list has both); the others are what they are called.
+ */
+export const gainName = (node: Node | undefined, port: { type: "volume" | "mix" | "pan" }): string => (port.type === "volume" && node?.kind === "instrument" ? "output volume" : port.type);
+
+/**
  * What the port of a node that a cable ends at is called, for the cable's words: a parameter is what its plugin calls it (by the
  * plugin's own index), a setting of a modulator is `rate`, `attack`, `decay`, `sustain` or `release`, the depth of a cable is
  * `depth`. The two inputs of an effect that has a second one are what its plugin calls them (`A` and `B`: `SideInfo`), so that the words of a cable say which it is; every other input of audio, a
@@ -92,6 +98,10 @@ export function portName(graph: Graph, node: NodeId, port: Port): string | null 
     case "release":
     case "depth":
       return port.type;
+    case "volume":
+    case "mix":
+    case "pan":
+      return gainName(graph.nodes.find((n) => n.id === node), port);
     case "audioIn":
     case "audioInSide": {
       const found = graph.nodes.find((n) => n.id === node);

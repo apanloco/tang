@@ -19,7 +19,7 @@ use crate::source::SourceSet;
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 use std::collections::{BTreeMap, VecDeque};
 
-pub use crate::ids::{Driven, EdgeId, ModSetting, NodeId};
+pub use crate::ids::{Driven, EdgeId, ModGain, ModSetting, NodeId};
 
 /// The ids that were handed out for something: the nodes and the cables, each in the order they were made.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -827,6 +827,23 @@ impl SessionModel {
                 let (at, modulator, target) = self.locate_edge(edge)?;
                 Some(self.modulators(at)?.get(modulator)?.targets.get(target)?.depth)
             }
+            Driven::Gain { node, gain } => self.gain_of(node, gain),
+        }
+    }
+
+    /// What the user has set the host-side value `gain` of node `node` to (step 97): the volume of a lane that has an instrument (one that has none has no sound to turn down) or of a group, the
+    /// mix of an effect of a lane's chain or of a group's bus, the pan of a group. `None` for any other pair, and for a node that is not there.
+    pub fn gain_of(&self, node: NodeId, gain: ModGain) -> Option<f32> {
+        match (self.locate(node)?, gain) {
+            (NodePath::Instrument(inst), ModGain::Volume) => {
+                let lane = self.instruments.get(inst)?;
+                lane.instrument.as_ref().map(|_| lane.volume)
+            }
+            (NodePath::Effect { inst, index }, ModGain::Mix) => Some(self.instruments.get(inst)?.effects.get(index)?.mix),
+            (NodePath::GroupEffect { group, index }, ModGain::Mix) => Some(self.groups.get(group)?.effects.get(index)?.mix),
+            (NodePath::Group(group), ModGain::Volume) => Some(self.groups.get(group)?.volume),
+            (NodePath::Group(group), ModGain::Pan) => Some(self.groups.get(group)?.pan),
+            _ => None,
         }
     }
 
@@ -880,6 +897,7 @@ impl SessionModel {
                 let (_, index, target) = self.locate_edge(edge)?;
                 (index != source).then(|| sibling_kind(index, CrossModField::Depth(target)))
             }
+            Driven::Gain { node, gain } => self.gain_of(node, gain).map(|_| K::Gain { node, gain }),
         }
     }
 
@@ -944,10 +962,24 @@ impl SessionModel {
             .collect()
     }
 
-    /// The cables of the modulators that drive a parameter of a plugin in any of `nodes`: the plugins of a lane or a group that goes out. A modulator is in neither the lane nor the group and
-    /// stays, so what it drives there is taken out first, each by itself.
+    /// The cables that drive a host-side value of the node `node` (a lane's volume, an effect's mix, a group's volume or pan): what goes with the node, or with the instrument that
+    /// gives a lane's volume its meaning (a lane that has none has no volume to drive).
+    pub fn cables_into_gains_of(&self, node: NodeId) -> Vec<EdgeId> {
+        self.racks()
+            .flat_map(|(_, rack)| rack.iter().flat_map(|m| &m.targets))
+            .filter(|t| matches!(t.aim, Driven::Gain { node: driven, .. } if driven == node))
+            .map(|t| t.edge)
+            .collect()
+    }
+
+    /// The cables of the modulators that drive a parameter of a plugin in any of `nodes`, or a volume, a mix or a pan of one: the plugins of a lane or a group that goes out, and the lane's
+    /// and the group's own. A modulator is in neither the lane nor the group and stays, so what it drives there is taken out first, each by itself.
     pub fn free_cables_into(&self, nodes: &[NodeId]) -> Vec<EdgeId> {
-        let drives_one = |t: &&ModTargetSlot| matches!(t.aim, Driven::Param { plugin, .. } if nodes.contains(&plugin));
+        let drives_one = |t: &&ModTargetSlot| match t.aim {
+            Driven::Param { plugin, .. } => nodes.contains(&plugin),
+            Driven::Gain { node, .. } => nodes.contains(&node),
+            Driven::Setting { .. } | Driven::Depth(_) => false,
+        };
         self.free_modulators.iter().flat_map(|m| &m.targets).filter(drives_one).map(|t| t.edge).collect()
     }
 
@@ -1056,6 +1088,33 @@ impl SessionModel {
         }
         for effect in self.groups.iter().flat_map(|bus| &bus.effects) {
             push_params(&mut targets, effect, 0, |param_index| ModTargetKind::FreeParam { plugin: effect.node, param_index });
+        }
+        targets
+    }
+
+    /// The host-side values that a modulator in the rack at `at` can drive (step 97), in the order a person is offered them, after the plugin parameters: lane by lane, the volume of the lane
+    /// (if it has an instrument) and the mix of each effect of its chain, and then group by group, the volume and the pan of the group and the mix of each of its bus effects.
+    pub fn gain_targets(&self, at: ModulatorLocation) -> Vec<GainTarget> {
+        let ModulatorLocation::Free = at;
+        let mut targets = Vec::new();
+        let mut push = |node: NodeId, gain: ModGain, owner_name: String, value: f32| {
+            targets.push(GainTarget { node, gain, kind: ModTargetKind::Gain { node, gain }, owner_name, value });
+        };
+        for lane in &self.instruments {
+            if let Some(instrument) = &lane.instrument {
+                push(lane.node, ModGain::Volume, instrument.name.clone(), lane.volume);
+            }
+            for effect in &lane.effects {
+                push(effect.node, ModGain::Mix, effect.name.clone(), effect.mix);
+            }
+        }
+        for (index, group) in self.groups.iter().enumerate() {
+            let name = group.display_name(index);
+            push(group.node, ModGain::Volume, name.clone(), group.volume);
+            push(group.node, ModGain::Pan, name, group.pan);
+            for effect in &group.effects {
+                push(effect.node, ModGain::Mix, effect.name.clone(), effect.mix);
+            }
         }
         targets
     }
@@ -1682,6 +1741,27 @@ impl ParamTarget {
     /// What a cable to this parameter drives, by the node and the port.
     pub fn aim(&self) -> Driven {
         Driven::Param { plugin: self.node, index: self.param }
+    }
+}
+
+/// A host-side value that a cable can drive (`SessionModel::gain_targets`, step 97): what a front-end needs to list it and what the controller needs to bind a cable to it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GainTarget {
+    /// The node the value is of: a lane, an effect or a group.
+    pub node: NodeId,
+    pub gain: ModGain,
+    /// How the rack addresses it.
+    pub kind: ModTargetKind,
+    /// What the node is called: its plugin's name (an instrument's, an effect's) or the group's.
+    pub owner_name: String,
+    /// What the user has set it to, where its modulation is centred.
+    pub value: f32,
+}
+
+impl GainTarget {
+    /// What a cable to this value drives, by the node and the port.
+    pub fn aim(&self) -> Driven {
+        Driven::Gain { node: self.node, gain: self.gain }
     }
 }
 
@@ -3064,6 +3144,48 @@ mod_rate = 0
         assert!(model.field_targets(at, 1).iter().any(|t| t.node == first));
         assert_eq!(model.modulators_in_reach(at, 0), vec![second]);
         assert_eq!(model.modulators_in_reach(at, 1), vec![first]);
+    }
+
+    #[test]
+    fn a_host_side_value_is_there_for_the_node_that_has_it_and_a_cable_to_it_has_a_place_and_for_no_other() {
+        use crate::app::testutil::GAINS;
+        let model = load(GAINS).model;
+        let at = ModulatorLocation::Free;
+        let (group, lane, empty_lane) = (model.groups[0].node, model.instruments[0].node, model.instruments[1].node);
+        let (filter, reverb, delay) = (model.instruments[0].effects[0].node, model.groups[0].effects[0].node, model.instruments[1].effects[0].node);
+        let has: [(NodeId, ModGain, f32); 6] = [
+            (lane, ModGain::Volume, 0.7),
+            (filter, ModGain::Mix, 0.9),
+            (group, ModGain::Volume, 0.8),
+            (group, ModGain::Pan, -0.25),
+            (reverb, ModGain::Mix, 0.6),
+            (delay, ModGain::Mix, 0.4),
+        ];
+        for (node, gain, value) in has {
+            assert_eq!(model.gain_of(node, gain), Some(value), "{node:?} {gain:?}");
+            assert_eq!(model.centre_of(Driven::Gain { node, gain }), Some(value), "what a cable to it is centred on");
+            assert_eq!(model.kind_of(at, 0, Driven::Gain { node, gain }), Some(ModTargetKind::Gain { node, gain }), "{node:?} {gain:?}");
+        }
+        // A lane that has no instrument has no volume to drive, an effect no volume or pan, a lane no pan or mix, a group no mix, and a node that is not there nothing.
+        let has_not = [
+            (empty_lane, ModGain::Volume),
+            (filter, ModGain::Volume),
+            (filter, ModGain::Pan),
+            (lane, ModGain::Pan),
+            (lane, ModGain::Mix),
+            (group, ModGain::Mix),
+            (NodeId(9_999), ModGain::Volume),
+            (NodeId(9_999), ModGain::Mix),
+            (NodeId(9_999), ModGain::Pan),
+        ];
+        for (node, gain) in has_not {
+            assert_eq!(model.gain_of(node, gain), None, "{node:?} {gain:?}");
+            assert_eq!(model.centre_of(Driven::Gain { node, gain }), None, "{node:?} {gain:?}");
+            assert_eq!(model.kind_of(at, 0, Driven::Gain { node, gain }), None, "{node:?} {gain:?}");
+        }
+        // The lists say the same: the volume of the lane that has none is not offered.
+        assert!(model.gain_targets(at).iter().all(|t| model.gain_of(t.node, t.gain).is_some()));
+        assert!(model.gain_targets(at).iter().all(|t| !(t.node == empty_lane && t.gain == ModGain::Volume)));
     }
 
     #[test]

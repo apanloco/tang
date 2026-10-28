@@ -46,12 +46,61 @@ impl ModSetting {
     }
 }
 
+/// A value that the host keeps for a node, outside the plugin's own parameter list, and that a cable can drive (step 97): what the intents call a `Gain`, less the difference between a lane's
+/// volume and a group's, which the kind of node says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModGain {
+    /// The output volume of a lane (applied before its effects) or of a group (applied to the sum of its members): 0 to 4, where 1 is unity.
+    Volume,
+    /// The dry/wet mix of an effect, a lane's or a bus's: 0 is dry and 1 is wet.
+    Mix,
+    /// The stereo balance of a group: -1 is left, 0 the middle and 1 right.
+    Pan,
+}
+
+impl ModGain {
+    /// The lowest and the highest value, as `Gain::range` says them.
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            ModGain::Volume => (0.0, 4.0),
+            ModGain::Mix => (0.0, 1.0),
+            ModGain::Pan => (-1.0, 1.0),
+        }
+    }
+
+    /// What the value is called, in the tree and in the file (`gain = "mix"`).
+    pub fn name(self) -> &'static str {
+        match self {
+            ModGain::Volume => "volume",
+            ModGain::Mix => "mix",
+            ModGain::Pan => "pan",
+        }
+    }
+
+    /// What the value is called in a list that has the plugins' own parameters in it, where a lane's `volume` would be the oscillator's own: the words of the terminal's `v` and `x` (an output
+    /// volume, a dry/wet mix) and a group's pan.
+    pub fn label(self) -> &'static str {
+        match self {
+            ModGain::Volume => "output volume",
+            ModGain::Mix => "dry/wet mix",
+            ModGain::Pan => "pan",
+        }
+    }
+
+    /// The gain that a word names, exactly as `name` writes it.
+    pub fn parse(text: &str) -> Option<ModGain> {
+        [ModGain::Volume, ModGain::Mix, ModGain::Pan].into_iter().find(|gain| gain.name() == text)
+    }
+}
+
 /// What a cable drives, named so that it can be found again once other cables and modulators have come and gone and the places in the racks have moved: a plugin's parameter (by the
-/// node of the plugin and the parameter's own index), a modulator's rate or a stage of its envelope (by the node of the modulator), or the depth of a cable (by its edge). The model
-/// keeps it for each cable, and the engine too (P5b-1 of `docs/patch-graph.md` §11.6): neither names a place.
+/// node of the plugin and the parameter's own index), a modulator's rate or a stage of its envelope (by the node of the modulator), the depth of a cable (by its edge), or a value that
+/// the host keeps for a node (`ModGain`: the volume of a lane or a group, the mix of an effect, the pan of a group: by the node it is of). The model keeps it for each cable, and the engine
+/// too (P5b-1 of `docs/patch-graph.md` §11.6): neither names a place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Driven {
     Param { plugin: NodeId, index: u32 },
     Setting { modulator: NodeId, field: ModSetting },
     Depth(EdgeId),
+    Gain { node: NodeId, gain: ModGain },
 }

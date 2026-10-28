@@ -48,8 +48,8 @@ test("the button is quiet until the pointer or the focus is on the control, and 
   await expect(modulate(node(page, "Oscillator"), "waveform")).toHaveCount(0);
   await expect(modulate(filter, "type")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Modulate wave/i })).toHaveCount(0);
-  // The knobs have it: the oscillator's seven, the filter's three and the LFO's rate (the filter's mix is no parameter of the plugin), and the row of the LFO's cable.
-  await expect(page.getByRole("button", { name: /^Modulate / })).toHaveCount(7 + 3 + 1 + 1);
+  // The knobs have it: the oscillator's seven, the filter's three and the LFO's rate, the row of the LFO's cable, and the two values that the host keeps and no plugin lists (step 97): the lane's output volume and the filter's mix.
+  await expect(page.getByRole("button", { name: /^Modulate / })).toHaveCount(7 + 3 + 1 + 1 + 2);
 });
 
 test("a cable let go over the button of a control is drawn to that control: the buttons give way while a cable is dragged", async ({ page }) => {

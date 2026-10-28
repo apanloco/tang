@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Endpoint, Graph, Node } from "../protocol";
-import { builtinEffects, reachFixture, tracerSnapshot } from "./fixtures";
-import { cableWords, displayNames, endLabel, portName } from "./names";
+import { builtinEffects, freeReachFixture, reachFixture, tracerSnapshot } from "./fixtures";
+import { cableWords, displayNames, endLabel, gainName, portName } from "./names";
 
 const lfo = (id: number, parent: number): Node => ({ id, parent, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } });
 
@@ -130,6 +130,22 @@ describe("what the ports a cable ends at are called", () => {
     for (const type of ["modOut", "audioIn", "audioInSide", "audioOut"] as const) expect(portName(graph, 2, { type })).toBeNull();
   });
 
+  test("a value that the host keeps is called what it is, and a lane's volume is its output volume, which is not the volume that its instrument has among its parameters", () => {
+    const { graph: grouped } = freeReachFixture.snapshot;
+    const group = grouped.nodes.find((node) => node.kind === "group");
+    const lane = grouped.nodes.find((node) => node.kind === "instrument" && node.plugin !== null);
+    const effect = grouped.nodes.find((node) => node.kind === "effect");
+    expect([group?.id, lane?.id, effect?.id].every((id) => id !== undefined)).toBe(true);
+    expect(portName(grouped, lane?.id ?? -1, { type: "volume" })).toBe("output volume");
+    expect(portName(grouped, effect?.id ?? -1, { type: "mix" })).toBe("mix");
+    expect(portName(grouped, group?.id ?? -1, { type: "volume" })).toBe("volume");
+    expect(portName(grouped, group?.id ?? -1, { type: "pan" })).toBe("pan");
+    // (A node that is not there, or has none of it, is told by the port: the controller refuses such a cable, and its words are about the cable.)
+    expect(portName(grouped, 999, { type: "volume" })).toBe("volume");
+    expect(gainName(undefined, { type: "pan" })).toBe("pan");
+    expect(gainName(effect, { type: "volume" })).toBe("volume");
+  });
+
   test("the two inputs of an effect that has a second one are called what its plugin calls them, and an effect that has one, a node that is not an effect or none has no name for either", () => {
     const math = { id: 20, parent: 0, ...builtinEffects["builtin:math"] } as Node;
     const filter = { id: 21, parent: 0, ...builtinEffects["builtin:filter"] } as Node;
@@ -163,6 +179,12 @@ describe("what a cable joins, in words", () => {
     expect(tracerCable).toBeDefined();
     expect(words(graph, tracerCable)).toBe("LFO → Filter: cutoff");
     expect(endLabel(graph, names, tracerCable?.to ?? { node: -1, port: { type: "modOut" } })).toBe("Filter: cutoff");
+  });
+
+  test("a value that the host keeps is the node, a colon and the value: the mix of the filter, the output volume of the oscillator", () => {
+    const withGains = withCables(cable(5, 7, { node: 1, port: { type: "mix" } }), cable(6, 7, { node: 0, port: { type: "volume" } }));
+    expect(words(withGains, withGains.edges.at(-2))).toBe("ADSR → Filter: mix");
+    expect(words(withGains, withGains.edges.at(-1))).toBe("ADSR → Oscillator: output volume");
   });
 
   test("a setting of a modulator is the modulator, a colon and the setting", () => {

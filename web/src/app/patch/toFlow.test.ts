@@ -1727,6 +1727,30 @@ describe("the cables on the canvas", () => {
     expect(edge?.zIndex ?? 0).toBeGreaterThan(0);
   });
 
+  test("carry modulation to the volume of a lane, the mix of an effect and the volume and pan of a group by the name of the value, in the words that the cable has", () => {
+    const base = tracerSnapshot.graph;
+    const filter = base.nodes.find((node) => node.name === "Filter");
+    const oscillator = base.nodes.find((node) => node.name === "Oscillator");
+    const lfoNode = base.nodes.find((node) => node.name === "LFO");
+    if (!filter || !oscillator || !lfoNode) throw new Error("the tracer has an oscillator, a filter and an LFO");
+    const group: Node = { id: 40, parent: null, name: "Pad", kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" };
+    const cable = (id: number, node: NodeId, port: Edge["to"]["port"]): Edge => ({ kind: "modulation", id, amount: 0.5, from: { node: lfoNode.id, port: { type: "modOut" } }, to: { node, port } });
+    const graph: Graph = {
+      nodes: [...base.nodes, group],
+      edges: [...base.edges, cable(10, oscillator.id, { type: "volume" }), cable(11, filter.id, { type: "mix" }), cable(12, group.id, { type: "volume" }), cable(13, group.id, { type: "pan" })],
+    };
+    const drawn = toFlow(graph).edges.filter((edge) => edge.type === "modulation" && edge.data?.cable !== undefined && edge.data.cable >= 10);
+    expect(drawn.map((edge) => [edge.id, edge.source, edge.sourceHandle, edge.target, edge.targetHandle, edge.data?.label])).toEqual([
+      ["mod:10", String(lfoNode.id), "modOut", String(oscillator.id), "volume", "LFO → Oscillator: output volume"],
+      ["mod:11", String(lfoNode.id), "modOut", String(filter.id), "mix", "LFO → Filter: mix"],
+      ["mod:12", String(lfoNode.id), "modOut", "40", "volume", "LFO → Pad: volume"],
+      ["mod:13", String(lfoNode.id), "modOut", "40", "pan", "LFO → Pad: pan"],
+    ]);
+    // (Each is a row at the foot of its modulator's node, with the depth of the cable, as a cable to a parameter is.)
+    const rows = toFlow(graph).nodes.find((node) => node.id === String(lfoNode.id))?.data.cables;
+    expect(rows?.map((row) => row.label)).toEqual(["Filter: cutoff", "Oscillator: output volume", "Filter: mix", "Pad: volume", "Pad: pan"]);
+  });
+
   test("are named so that two cables of one modulator are two", () => {
     const flow = toFlow(twoLanes);
     const ids = flow.edges.map((edge) => edge.id);

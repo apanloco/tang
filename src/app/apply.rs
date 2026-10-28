@@ -765,9 +765,13 @@ impl Controller {
         };
         match to.port {
             Port::Param { index: param } => self.add_param_cable(at, index, to.node, param)?,
+            Port::Volume | Port::Mix | Port::Pan => {
+                let cable = self.gain_cable(at, index, to.node, to.port)?;
+                self.add_target(at, index, cable);
+            }
             Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release | Port::Depth { .. } => self.add_field_cable(at, index, &to)?,
             Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => {
-                return Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth"));
+                return Err(invalid("a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth"));
             }
         }
         Ok(Done::Restructured)
@@ -787,14 +791,17 @@ impl Controller {
             NodePath::Instrument(inst) | NodePath::Effect { inst, .. } => (ModulatorLocation::Free, Some(self.model.instruments[inst].node)),
             NodePath::GroupEffect { group, .. } => (ModulatorLocation::Free, Some(self.model.groups[group].node)),
             NodePath::Modulator { at: ModulatorLocation::Free, index } => (ModulatorLocation::Free, self.model.free_modulators.get(index).and_then(|slot| self.model.ear_of(slot))),
-            NodePath::Group(_) | NodePath::Source(_) => return Err(invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither")),
+            // (A group has no plugin: what a cable can drive in it is its volume and its pan, and the modulator hears the group.)
+            NodePath::Group(group) if to.port.gain().is_some() => (ModulatorLocation::Free, Some(self.model.groups[group].node)),
+            NodePath::Group(_) | NodePath::Source(_) => return Err(invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them")),
         };
         let index = self.model.modulators(at).map_or(0, |rack| rack.len());
         let cable = match to.port {
             Port::Param { index: param } => self.param_cable(at, index, to.node, param)?,
+            Port::Volume | Port::Mix | Port::Pan => self.gain_cable(at, index, to.node, to.port)?,
             Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release | Port::Depth { .. } => self.field_cable(at, index, &to)?,
             Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => {
-                return Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth"));
+                return Err(invalid("a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth"));
             }
         };
         let made = self.add_modulator_hearing(at, kind.source(), ear).ok_or(IntentError::NotFound(to.node))?;
@@ -846,6 +853,25 @@ impl Controller {
         Ok(())
     }
 
+    /// What a cable from the modulator at `index` of the rack at `at` to the host-side value that `port` is (`Port::Volume`, `Mix` or `Pan`) of the node `node` is, if it can be drawn (the
+    /// modulator need not be there, as for `param_cable`). The node has to be one that has such a value (`SessionModel::gain_targets`: the volume of a lane that has an instrument and of a
+    /// group, the mix of an effect, the pan of a group). Nothing is changed.
+    fn gain_cable(&mut self, at: ModulatorLocation, index: usize, node: NodeId, port: Port) -> Result<NewTarget, IntentError> {
+        let gain = port.gain().ok_or_else(|| invalid("that is not a volume, a mix or a pan"))?;
+        self.model.locate(node).ok_or(IntentError::NotFound(node))?;
+        let target = self
+            .model
+            .gain_targets(at)
+            .into_iter()
+            .find(|t| t.node == node && t.gain == gain)
+            .ok_or_else(|| invalid(format!("that node has no {}", gain.name())))?;
+        let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.aim == target.aim()));
+        if drives_it_already {
+            return Err(invalid(format!("that modulator drives that {} already", gain.name())));
+        }
+        Ok(NewTarget::to_gain(&target, NEW_CABLE_DEPTH))
+    }
+
     /// What a cable from the modulator at `index` of the rack at `at` to `to` (a setting of a modulator, or the depth of one of its cables) is, if it
     /// can be drawn (the modulator need not be there, as for `param_cable`). Nothing is changed.
     fn field_cable(&mut self, at: ModulatorLocation, index: usize, to: &Endpoint) -> Result<NewTarget, IntentError> {
@@ -867,7 +893,7 @@ impl Controller {
                 Port::Decay => invalid("that modulator has no decay"),
                 Port::Sustain => invalid("that modulator has no sustain"),
                 Port::Release => invalid("that modulator has no release"),
-                Port::Param { .. } | Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => invalid("that is not a setting of a modulator"),
+                Port::Param { .. } | Port::Volume | Port::Mix | Port::Pan | Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => invalid("that is not a setting of a modulator"),
             });
         };
         let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.aim == target.aim()));
@@ -4842,11 +4868,11 @@ type = "steps"
         let before = racks(&ctl);
         let refused: Vec<(&str, NodeId, Port, Option<f32>, IntentError)> = vec![
             ("a node that is not there", NodeId(9_999), Port::Param { index: 0 }, None, IntentError::NotFound(NodeId(9_999))),
-            ("a group, which has no parameter", group, Port::Param { index: 0 }, None, invalid("a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither")),
+            ("a group, which has no parameter", group, Port::Param { index: 0 }, None, invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them")),
             ("a parameter the plugin has not", lane, Port::Param { index: 999 }, None, invalid("the plugin has no parameter 999")),
             ("a setting that the modulator has not", envelope, Port::Rate, None, invalid("that modulator has no rate")),
             ("the depth of a cable that is not there", lane_lfo, Port::Depth { edge: EdgeId(9_999) }, None, IntentError::EdgeNotFound(EdgeId(9_999))),
-            ("a port that no cable ends at", lane, Port::ModOut, None, invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth")),
+            ("a port that no cable ends at", lane, Port::ModOut, None, invalid("a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth")),
             ("a depth that is no number", lane, Port::Param { index: detune }, Some(f32::NAN), invalid("NaN is not a value for the depth of a cable")),
         ];
         for (what, to, port, depth, error) in refused {
@@ -5116,7 +5142,7 @@ type = "midi"
         assert_eq!(reached, [9, 9, 9, 9, 9, 9, 9, 9]);
     }
 
-    /// The session of `reaching_with_free()`, and what the controller lets each of its modulators draw a cable to: the plugins (`reach`), and the settings and cable depths of other modulators (`fields`), as the
+    /// The session of `reaching_with_free()`, and what the controller lets each of its modulators draw a cable to: the plugins (`reach`), the settings and cable depths of other modulators (`fields`) and the volumes, mixes and pans that the host keeps (`gains`), as the
     /// web client's tests read it (`web/src/client/fixtures/freeReach.json`): they pin the rules the client draws its valid targets by (`reachFrom`, `fieldsOf`) to the controller's for a modulator that is in no lane
     /// and no group, which reaches every plugin and the other modulators like it. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
     #[test]
@@ -5134,12 +5160,21 @@ type = "midi"
                 (modulator.0.to_string(), reached.into_iter().map(|(node, port)| serde_json::json!({ "node": node, "port": port })).collect())
             })
             .collect();
+        // The volume, the mix and the pan that the host keeps (step 97): each of the three is tried at every node there is, and the controller takes the ones that the node has.
+        let gains_to_try: Vec<(NodeId, Port)> = ctl.model.graph().nodes.iter().flat_map(|node| [Port::Volume, Port::Mix, Port::Pan].map(move |port| (node.id, port))).collect();
+        let gains: std::collections::BTreeMap<String, Vec<serde_json::Value>> = modulators
+            .iter()
+            .map(|&modulator| {
+                let reached = fields_reached_by_the_controller_on(reaching_with_free, modulator, &gains_to_try);
+                (modulator.0.to_string(), reached.into_iter().map(|(node, port)| serde_json::json!({ "node": node, "port": port })).collect())
+            })
+            .collect();
         // Through the text the wire carries, so that the numbers read as they do there.
         let wire = serde_json::to_string(&ctl.snapshot()).unwrap();
         let mut snapshot: serde_json::Value = serde_json::from_str(&wire).unwrap();
         // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
         snapshot["telemetry"]["rev"] = serde_json::json!(1);
-        let fixture = serde_json::json!({ "snapshot": snapshot, "reach": reach, "fields": fields });
+        let fixture = serde_json::json!({ "snapshot": snapshot, "reach": reach, "fields": fields, "gains": gains });
         let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
 
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/freeReach.json");
@@ -5169,7 +5204,7 @@ type = "midi"
         let heading = ctl.model.instruments[0].instrument.as_ref().unwrap().params[1].index;
         ctl.model.instruments[0].instrument.as_mut().unwrap().params[1].kind = ParamKind::Separator;
 
-        let not_a_parameter = invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth");
+        let not_a_parameter = invalid("a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth");
         let from_a_modulator = invalid("a cable starts at a modulator");
         let cases = [
             ("a modulator that is not there", cable_to(ghost, osc, detune), IntentError::NotFound(ghost)),
@@ -5361,7 +5396,7 @@ type = "midi"
         // The ports that are neither a parameter nor a setting.
         for port in [Port::ModOut, Port::AudioIn, Port::AudioOut] {
             let intent = cable_to_field(lfo, envelope, port);
-            assert_eq!(ctl.apply(intent), Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth")), "{port:?}");
+            assert_eq!(ctl.apply(intent), Err(invalid("a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth")), "{port:?}");
         }
 
         assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
@@ -7345,6 +7380,169 @@ plugin = "builtin:osc"
         ctl.undo().unwrap();
         assert_eq!(the_modulators_of(&ctl), vec![(Some(lane), 1), (Some(group), 1)]);
         assert_eq!(ctl.model.ear_of(&ctl.model.free_modulators[0]), Some(lane), "the lane that came back is heard again");
+        ctl.model.check_ids().unwrap();
+    }
+
+    // -- The host-side values: a lane's volume, an effect's mix, a group's volume and pan (step 97) --
+
+    use crate::app::model::ModGain;
+
+    /// The nodes of `GAINS` that have a host-side value, by what they are.
+    struct GainNodes {
+        group: NodeId,
+        lane: NodeId,
+        filter: NodeId,
+        reverb: NodeId,
+        empty_lane: NodeId,
+        delay: NodeId,
+    }
+
+    /// `GAINS` with an LFO that hears every note.
+    fn gains_scene() -> (StubEngine, Controller, GainNodes) {
+        let (handles, engine) = testutil::stub_engine();
+        let mut ctl = Controller::new(load(testutil::GAINS).model, handles, None);
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: None }).unwrap();
+        let nodes = GainNodes {
+            group: ctl.model.groups[0].node,
+            lane: ctl.model.instruments[0].node,
+            filter: ctl.model.instruments[0].effects[0].node,
+            reverb: ctl.model.groups[0].effects[0].node,
+            empty_lane: ctl.model.instruments[1].node,
+            delay: ctl.model.instruments[1].effects[0].node,
+        };
+        sent(&engine);
+        (engine, ctl, nodes)
+    }
+
+    fn cable_to_port(modulator: NodeId, node: NodeId, port: Port) -> Intent {
+        Intent::AddModEdge { modulator, to: Endpoint { node, port } }
+    }
+
+    #[test]
+    fn a_cable_can_be_drawn_to_every_host_side_value_there_is_and_the_audio_thread_is_told_what_it_is_centred_on() {
+        let (engine, mut ctl, n) = gains_scene();
+        let lfo = ctl.model.free_modulators[0].node;
+        let cases = [
+            (n.lane, Port::Volume, ModGain::Volume, 0.7, (0.0, 4.0)),
+            (n.filter, Port::Mix, ModGain::Mix, 0.9, (0.0, 1.0)),
+            (n.group, Port::Volume, ModGain::Volume, 0.8, (0.0, 4.0)),
+            (n.group, Port::Pan, ModGain::Pan, -0.25, (-1.0, 1.0)),
+            (n.reverb, Port::Mix, ModGain::Mix, 0.6, (0.0, 1.0)),
+            (n.delay, Port::Mix, ModGain::Mix, 0.4, (0.0, 1.0)),
+        ];
+        for (node, port, gain, value, (min, max)) in cases {
+            ctl.apply(cable_to_port(lfo, node, port)).unwrap();
+            let aim = Driven::Gain { node, gain };
+            assert_eq!(sent(&engine), [format!("AddFreeModTarget mod=0 aim={aim:?} depth=0.500 base={value:.3} range=[{min:.3}, {max:.3}]")], "{aim:?}");
+            let cable = ctl.model.free_modulators[0].targets.last().unwrap();
+            assert_eq!((cable.aim, cable.param_name.as_str(), cable.depth, (cable.param_min, cable.param_max)), (aim, gain.name(), 0.5, (min, max)));
+            assert_eq!(ctl.model.centre_of(aim), Some(value), "the user's value is what it is centred on");
+            assert_eq!(ctl.model.kind_of(ModulatorLocation::Free, 0, aim), Some(ModTargetKind::Gain { node, gain }));
+        }
+        assert_eq!(ctl.model.free_modulators[0].targets.len(), 6);
+        assert!(ctl.dirty);
+        ctl.model.check_ids().unwrap();
+        // The graph has each cable as an edge from the modulator to the port of the node, and a client is told the telemetry slot of each by that port.
+        let graph = ctl.model.graph();
+        let ends: Vec<(NodeId, Port)> = graph.edges.iter().filter(|e| matches!(e.kind, crate::app::graph::EdgeKind::Modulation { .. })).map(|e| (e.to.node, e.to.port)).collect();
+        assert_eq!(ends, cases.map(|(node, port, ..)| (node, port)));
+    }
+
+    #[test]
+    fn a_cable_to_a_host_side_value_that_the_node_has_not_is_refused_and_changes_nothing_not_even_the_ids() {
+        let (engine, mut ctl, n) = gains_scene();
+        let lfo = ctl.model.free_modulators[0].node;
+        let refused = [
+            ("the volume of a lane that has no instrument", n.empty_lane, Port::Volume, invalid("that node has no volume")),
+            ("the pan of a lane", n.lane, Port::Pan, invalid("that node has no pan")),
+            ("the mix of a lane", n.lane, Port::Mix, invalid("that node has no mix")),
+            ("the volume of an effect", n.filter, Port::Volume, invalid("that node has no volume")),
+            ("the pan of an effect", n.filter, Port::Pan, invalid("that node has no pan")),
+            ("the mix of a group", n.group, Port::Mix, invalid("that node has no mix")),
+            ("the volume of a node that is not there", NodeId(9_999), Port::Volume, IntentError::NotFound(NodeId(9_999))),
+        ];
+        let rev = ctl.rev;
+        for (what, node, port, error) in refused {
+            assert_eq!(ctl.apply(cable_to_port(lfo, node, port)), Err(error), "{what}");
+            assert_eq!(ctl.rev, rev, "{what}");
+            assert!(sent(&engine).is_empty(), "{what}");
+        }
+        assert!(ctl.model.free_modulators[0].targets.is_empty());
+        ctl.apply(cable_to_port(lfo, n.filter, Port::Mix)).unwrap();
+        // A modulator drives a value once; another may drive it as well, and the two add up.
+        assert_eq!(ctl.apply(cable_to_port(lfo, n.filter, Port::Mix)), Err(invalid("that modulator drives that mix already")));
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: None }).unwrap();
+        let envelope = ctl.model.free_modulators[1].node;
+        ctl.apply(cable_to_port(envelope, n.filter, Port::Mix)).unwrap();
+        // The cables of the refusals used no id: this one has the id the next would have had.
+        let ids: Vec<EdgeId> = ctl.model.free_modulators.iter().flat_map(|m| m.targets.iter().map(|t| t.edge)).collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[1].0, ids[0].0 + 1);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn modulate_makes_a_modulator_for_a_host_side_value_that_hears_the_lane_or_the_group_it_belongs_to() {
+        let (engine, mut ctl, n) = gains_scene();
+        for (node, port, gain, hears) in [
+            (n.lane, Port::Volume, ModGain::Volume, n.lane),
+            (n.filter, Port::Mix, ModGain::Mix, n.lane),
+            (n.delay, Port::Mix, ModGain::Mix, n.empty_lane),
+            (n.reverb, Port::Mix, ModGain::Mix, n.group),
+            (n.group, Port::Volume, ModGain::Volume, n.group),
+            (n.group, Port::Pan, ModGain::Pan, n.group),
+        ] {
+            sent(&engine);
+            modulate(&mut ctl, node, port, ModulatorKind::Lfo, None).unwrap();
+            let made = ctl.model.free_modulators.last().unwrap();
+            assert_eq!(made.ear, Some(hears), "{gain:?} of {node:?}");
+            assert_eq!(made.targets.iter().map(|t| (t.aim, t.depth)).collect::<Vec<_>>(), [(Driven::Gain { node, gain }, 0.5)]);
+            let told = sent(&engine);
+            assert!(told.first().unwrap().starts_with("InsertFreeModulator"), "{told:?}: the modulator first");
+            assert!(told.last().unwrap().contains(&format!("aim={:?}", Driven::Gain { node, gain })), "{told:?}: its cable last");
+            // One step of the history: the modulator and its cable, in the words of the button.
+            assert_eq!(ctl.history_state().undo.as_deref(), Some(&*format!("modulate {}", gain.name())));
+        }
+        ctl.model.check_ids().unwrap();
+        // The modulator is undone with its cable, and made again under its ids.
+        let count = ctl.model.free_modulators.len();
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.free_modulators.len(), count - 1);
+        ctl.redo().unwrap();
+        assert_eq!(ctl.model.free_modulators.len(), count);
+        assert_eq!(ctl.model.free_modulators.last().unwrap().targets[0].aim, Driven::Gain { node: n.group, gain: ModGain::Pan });
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn taking_a_cable_to_a_host_side_value_out_gives_the_user_s_value_back_unless_another_cable_drives_it() {
+        let (engine, mut ctl, n) = gains_scene();
+        let lfo = ctl.model.free_modulators[0].node;
+        for (node, port) in [(n.lane, Port::Volume), (n.filter, Port::Mix), (n.reverb, Port::Mix), (n.group, Port::Volume), (n.group, Port::Pan)] {
+            ctl.apply(cable_to_port(lfo, node, port)).unwrap();
+        }
+        let edges: Vec<EdgeId> = ctl.model.free_modulators[0].targets.iter().map(|t| t.edge).collect();
+        sent(&engine);
+        for (edge, back) in edges.iter().zip(["SetVolume inst=0 value=0.700", "SetMix inst=0 slot=1 value=0.900", "SetGroupMix group=0 fx=0 value=0.600", "SetGroupVolume group=0 value=0.800", "SetGroupPan group=0 value=-0.250"]) {
+            ctl.apply(Intent::RemoveEdge { edge: *edge }).unwrap();
+            let told = sent(&engine);
+            assert_eq!(told.len(), 2, "{told:?}");
+            assert!(told[0].starts_with("RemoveFreeModTarget"), "{told:?}");
+            assert_eq!(told[1], back);
+        }
+        // A cable that another still drives the value with leaves the value to it.
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Envelope, hears: None }).unwrap();
+        let envelope = ctl.model.free_modulators[1].node;
+        ctl.apply(cable_to_port(lfo, n.filter, Port::Mix)).unwrap();
+        ctl.apply(cable_to_port(envelope, n.filter, Port::Mix)).unwrap();
+        let first = ctl.model.free_modulators[0].targets[0].edge;
+        sent(&engine);
+        ctl.apply(Intent::RemoveEdge { edge: first }).unwrap();
+        let told = sent(&engine);
+        assert_eq!(told.len(), 1, "{told:?}: the envelope still drives the mix, and the value is not given back");
+        // The user's own change is what the cables are centred on, and what is given back.
+        ctl.apply(Intent::SetGain { node: n.filter, gain: Gain::Mix, value: 0.5 }).unwrap();
+        assert_eq!(ctl.model.centre_of(Driven::Gain { node: n.filter, gain: ModGain::Mix }), Some(0.5));
         ctl.model.check_ids().unwrap();
     }
 }

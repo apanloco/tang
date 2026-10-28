@@ -23,8 +23,8 @@ test("a cable is drawn by dragging it from a modulator's output to a parameter, 
 test("the parameters that take the cable are marked while it is dragged, and not the one that is driven already", async ({ page }) => {
   await open(page);
   await drag(page, output(node(page, "LFO")), port(node(page, "Oscillator"), "detune"), false);
-  // The oscillator's eight and the filter's three (the cutoff is driven by this LFO).
-  await expect(page.locator(".tang-port--takes")).toHaveCount(11);
+  // The oscillator's eight and the filter's three (the cutoff is driven by this LFO), and the two values that the host keeps (step 97): the oscillator's lane's volume and the filter's mix.
+  await expect(page.locator(".tang-port--takes")).toHaveCount(11 + 2);
   await expect(port(node(page, "Filter"), "cutoff")).not.toHaveClass(/tang-port--takes/);
   await expect(port(node(page, "Oscillator"), "detune")).toHaveClass(/valid/);
   await page.mouse.up();
@@ -322,7 +322,7 @@ test("a cable is drawn by dragging it from a modulator's output to the depth of 
   // While it is dragged the port of the row says that it takes the cable, and is the one it is over (with the LFO's rate and the parameters it can drive).
   await expect(rowPort).toHaveClass(/tang-port--takes/);
   await expect(rowPort).toHaveClass(/valid/);
-  await expect(page.locator(".tang-port--takes")).toHaveCount(8 + 4 + 1 + 1); // the oscillator's eight, the filter's four, the LFO's rate and the depth of its cable
+  await expect(page.locator(".tang-port--takes")).toHaveCount(8 + 4 + 1 + 1 + 2); // the oscillator's eight, the filter's four, the LFO's rate and the depth of its cable, and the lane's volume and the filter's mix
   await page.mouse.up();
   await expect(cables(page)).toHaveCount(2);
   await expect(page.getByRole("slider", { name: "Depth of ADSR → depth of LFO → Filter: cutoff" })).toHaveValue("0.5");

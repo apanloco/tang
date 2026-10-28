@@ -190,10 +190,10 @@ describe("the mock engine's modulate", () => {
   test("is refused, and nothing is made or used up, for what a cable to the port is refused, a group, a node that is not there and a depth that is not a number", () => {
     const refused: [string, Intent, string][] = [
       ["a node that is not there", modulate(9_999, { type: "param", index: 1 }), "there is no node 9999"],
-      ["a group", modulate(group.id, { type: "param", index: 1 }), "a modulator drives a parameter of a plugin or a setting of a modulator, and that is neither"],
+      ["a group", modulate(group.id, { type: "param", index: 1 }), "a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them"],
       ["a parameter the plugin lacks", modulate(filter.id, { type: "param", index: 9_999 }), "the plugin has no parameter 9999"],
       ["a modulator, which has no plugin", modulate(lfo.id, { type: "param", index: 1 }), "that node has no plugin"],
-      ["a port that is no target", modulate(filter.id, { type: "modOut" }), "a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth"],
+      ["a port that is no target", modulate(filter.id, { type: "modOut" }), "a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth"],
       ["a setting of an effect", modulate(filter.id, { type: "rate" }), "a cable ends at the settings of a modulator, and that is not one"],
       ["a setting the modulator has not", modulate(envelope.id, { type: "rate" }), "that modulator has no rate"],
       ["a cable that is not there", modulate(lfo.id, { type: "depth", edge: 9_999 }), "there is no cable 9999"],

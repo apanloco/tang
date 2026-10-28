@@ -7,7 +7,7 @@
 // of them: `fixtures/reach.json`, `fixtures/freeReach.json`, and for the settings of modulators `fixtures/fields.json`) pin the two together.
 import type { Edge, Graph, Node, NodeId, Port } from "../protocol";
 import { isModulation } from "./cables";
-import { endLabel } from "./names";
+import { endLabel, gainName } from "./names";
 
 /** Whether a node has a plugin, whose parameters a cable can end at. */
 const hasPlugin = (node: Node): boolean => (node.kind === "instrument" && node.plugin !== null) || node.kind === "effect";
@@ -19,6 +19,29 @@ const hasPlugin = (node: Node): boolean => (node.kind === "instrument" && node.p
 export function reachFrom(graph: Graph, modulator: NodeId): Set<NodeId> {
   const from = graph.nodes.find((node) => node.id === modulator);
   return from?.kind === "modulator" ? new Set(graph.nodes.filter(hasPlugin).map((node) => node.id)) : new Set();
+}
+
+/** The ports of the values that the host keeps for a node, which a cable ends at beside a plugin's parameters: a lane's volume, an effect's mix, a group's volume and pan. */
+export type GainPort = Extract<Port, { type: "volume" | "mix" | "pan" }>;
+
+/** Whether a port is a host-side value (`GainPort`). */
+export const isGainPort = (port: Port): port is GainPort => port.type === "volume" || port.type === "mix" || port.type === "pan";
+
+/**
+ * The host-side values of a node that a cable can end at (`SessionModel::gain_targets`): the volume of a lane that has an instrument (a lane that has none has no volume to drive), the mix of an effect,
+ * a group's volume and its pan. Every modulator reaches them all, as it reaches every plugin.
+ */
+export function gainPorts(node: Node): GainPort[] {
+  switch (node.kind) {
+    case "instrument":
+      return node.plugin === null ? [] : [{ type: "volume" }];
+    case "effect":
+      return [{ type: "mix" }];
+    case "group":
+      return [{ type: "volume" }, { type: "pan" }];
+    default:
+      return [];
+  }
 }
 
 /** A setting of a modulator, or the depth of one of its cables: the node of the modulator and the port on it that a cable ends at. */
@@ -73,7 +96,7 @@ export function fieldsOf(graph: Graph, modulator: NodeId): FieldRef[] {
 
 /**
  * A node a modulator can still draw a cable to, and what it can still drive in it: the parameters of a plugin (`params`, by the
- * plugin's own index), or the settings of a modulator and the depths of its cables (`fields`, by the port).
+ * plugin's own index), the settings of a modulator and the depths of its cables, or the volume, the mix or the pan that the host keeps for a lane, an effect or a group (`fields`, by the port).
  */
 export interface Drivable {
   node: NodeId;
@@ -104,17 +127,21 @@ const fieldKey = (node: NodeId, port: Port): string => (port.type === "depth" ? 
  */
 export function drivablesOf(graph: Graph, modulator: NodeId, names: ReadonlyMap<NodeId, string>): Drivable[] {
   const reached = reachFrom(graph, modulator);
+  const isModulator = graph.nodes.some((node) => node.id === modulator && node.kind === "modulator");
   const driven = new Set(
     graph.edges.flatMap((edge) => (edge.kind === "modulation" && edge.from.node === modulator && edge.to.port.type === "param" ? [`${String(edge.to.node)}:${String(edge.to.port.index)}`] : [])),
   );
+  const drivenFields = new Set(graph.edges.flatMap((edge) => (edge.kind === "modulation" && edge.from.node === modulator && edge.to.port.type !== "param" ? [fieldKey(edge.to.node, edge.to.port)] : [])));
   const groups: Drivable[] = [];
   for (const node of graph.nodes) {
-    if (!reached.has(node.id)) continue;
     const plugin = node.kind === "instrument" || node.kind === "effect" ? node.plugin : null;
-    const params = (plugin?.params ?? []).filter((param) => !driven.has(`${String(node.id)}:${String(param.index)}`)).map(({ index, name }) => ({ index, name }));
-    if (params.length > 0) groups.push({ node: node.id, name: names.get(node.id) ?? node.name, params, fields: [] });
+    const params = reached.has(node.id)
+      ? (plugin?.params ?? []).filter((param) => !driven.has(`${String(node.id)}:${String(param.index)}`)).map(({ index, name }) => ({ index, name }))
+      : [];
+    // (The volume, the mix and the pan that the host keeps: a lane's, an effect's and a group's, after the parameters of the plugin, if it has one.)
+    const gains = isModulator ? gainPorts(node).filter((port) => !drivenFields.has(fieldKey(node.id, port))).map((port) => ({ port, name: gainName(node, port) })) : [];
+    if (params.length > 0 || gains.length > 0) groups.push({ node: node.id, name: names.get(node.id) ?? node.name, params, fields: gains });
   }
-  const drivenFields = new Set(graph.edges.flatMap((edge) => (edge.kind === "modulation" && edge.from.node === modulator && edge.to.port.type !== "param" ? [fieldKey(edge.to.node, edge.to.port)] : [])));
   const byModulator = new Map<NodeId, Drivable>();
   for (const { node, port } of fieldsOf(graph, modulator)) {
     if (drivenFields.has(fieldKey(node, port))) continue;
@@ -134,10 +161,14 @@ export function driversOf(graph: Graph, node: NodeId, port: Port): Node[] {
   const target = graph.nodes.find((n) => n.id === node);
   const plugin = target?.kind === "instrument" || target?.kind === "effect" ? target.plugin : null;
   if (port.type === "param" && !plugin?.params.some((param) => param.index === port.index)) return [];
+  // (A host-side value that the node has not, a volume of an effect or a pan of a lane, is no place for a cable.)
+  if (isGainPort(port) && !(target && gainPorts(target).some((own) => samePort(own, port)))) return [];
   return graph.nodes.filter((modulator) => {
     if (modulator.kind !== "modulator") return false;
     const reaches =
-      port.type === "param" ? reachFrom(graph, modulator.id).has(node) : fieldsOf(graph, modulator.id).some((field) => field.node === node && samePort(field.port, port));
+      port.type === "param"
+        ? reachFrom(graph, modulator.id).has(node)
+        : isGainPort(port) || fieldsOf(graph, modulator.id).some((field) => field.node === node && samePort(field.port, port));
     const drivesIt = graph.edges.some((edge) => isModulation(edge) && edge.from.node === modulator.id && edge.to.node === node && samePort(edge.to.port, port));
     return reaches && !drivesIt;
   });
