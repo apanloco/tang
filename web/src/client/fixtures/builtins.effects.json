@@ -324,6 +324,21 @@
           "name": "amount",
           "stepCount": 0,
           "unit": null,
+          "usedWhen": {
+            "condition": {
+              "param": 0,
+              "type": "choice",
+              "values": [
+                1,
+                2,
+                3,
+                4,
+                10,
+                11
+              ]
+            },
+            "why": "only in the modes am, fold, warp, compare, hold, follow"
+          },
           "value": 0.5
         },
         {
@@ -351,6 +366,18 @@
           "name": "bits",
           "stepCount": 11,
           "unit": null,
+          "usedWhen": {
+            "condition": {
+              "param": 0,
+              "type": "choice",
+              "values": [
+                7,
+                8,
+                9
+              ]
+            },
+            "why": "only in the modes xor, and, or"
+          },
           "value": 5.0
         },
         {
@@ -365,6 +392,12 @@
           "name": "pitch",
           "stepCount": 0,
           "unit": null,
+          "usedWhen": {
+            "condition": {
+              "type": "sideUnpatched"
+            },
+            "why": "only while nothing is patched at B"
+          },
           "value": 57.0
         },
         {
@@ -384,6 +417,12 @@
           "name": "wave",
           "stepCount": 3,
           "unit": null,
+          "usedWhen": {
+            "condition": {
+              "type": "sideUnpatched"
+            },
+            "why": "only while nothing is patched at B"
+          },
           "value": 0.0
         },
         {
@@ -398,6 +437,16 @@
           "name": "attack",
           "stepCount": 0,
           "unit": "s",
+          "usedWhen": {
+            "condition": {
+              "param": 0,
+              "type": "choice",
+              "values": [
+                11
+              ]
+            },
+            "why": "only in the mode follow"
+          },
           "value": 0.005
         },
         {
@@ -412,6 +461,16 @@
           "name": "release",
           "stepCount": 0,
           "unit": "s",
+          "usedWhen": {
+            "condition": {
+              "param": 0,
+              "type": "choice",
+              "values": [
+                11
+              ]
+            },
+            "why": "only in the mode follow"
+          },
           "value": 0.12
         },
         {

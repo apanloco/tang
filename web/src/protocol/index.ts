@@ -38,6 +38,8 @@ export type { Snapshot } from "./generated/Snapshot";
 export type { StampedEvent } from "./generated/StampedEvent";
 export type { TelemetryChannel } from "./generated/TelemetryChannel";
 export type { TelemetryLayout } from "./generated/TelemetryLayout";
+export type { UsedCondition } from "./generated/UsedCondition";
+export type { UsedWhen } from "./generated/UsedWhen";
 export type { Waveform } from "./generated/Waveform";
 export type { WireError } from "./generated/WireError";
 export {

@@ -35,6 +35,26 @@ fn describe_says_which_effect_has_a_second_input_and_what_it_calls_the_two() {
 }
 
 #[test]
+fn describe_says_when_a_parameter_has_an_effect_if_it_has_one_only_sometimes() {
+    let said = |plugin: &str| String::from_utf8_lossy(&tang(&["describe", plugin]).stdout).to_string();
+    let math = said("builtin:math");
+    // (The parameters of the Math that depend on its mode or on what is patched at B say so; the mode and the level, which always have one, do not.)
+    for line in [
+        "[1] amount (min=0, max=1, default=0.5): only in the modes am, fold, warp, compare, hold, follow\n",
+        "[2] bits (1|2|3|4|5|6|7|8|9|10|11|12, default=6): only in the modes xor, and, or\n",
+        "[3] pitch (min=-48, max=120, default=57): only while nothing is patched at B\n",
+        "[4] wave (sine|triangle|saw|square, default=sine): only while nothing is patched at B\n",
+        "[5] attack (min=0.0005, max=0.2, default=0.005): only in the mode follow\n",
+        "[6] release (min=0.005, max=1.5, default=0.12): only in the mode follow\n",
+        "[7] level (min=0, max=1, default=0.7)\n",
+    ] {
+        assert!(math.contains(line), "{line:?} is not in: {math}");
+    }
+    assert!(math.contains("follow, default=ring)\n"), "the mode has no condition: {math}");
+    assert!(!said("builtin:filter").contains("only "), "a plugin that says nothing says nothing: {}", said("builtin:filter"));
+}
+
+#[test]
 fn a_command_that_fails_says_why_on_stderr_and_ends_with_status_1() {
     let output = tang(&["describe", "builtin:nope"]);
     assert_eq!(output.status.code(), Some(1));

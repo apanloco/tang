@@ -11,7 +11,7 @@ import { NOTE_NAMES } from "../../client/notes";
 import type { Drivable } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { rateAt } from "../../client/tempo";
-import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
+import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, paramUnusedBecause, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
 import { CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, SYNC_DIVISIONS, SYNC_FREE, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
@@ -77,6 +77,14 @@ function useParam(node: NodeId, index: number) {
   const pending = useSyncExternalStore(control.subscribe, control.getPending);
   const readEffective = useMemo(() => slotReader(client.telemetry, "modulation", node, { type: "param", index }, "effective"), [client, node, index]);
   return { facts, shown: pending ?? stored, control, readEffective };
+}
+
+/**
+ * What a control of a parameter that has no effect now says of itself (`why`: null if it has one): the stylesheet dims it, and the pointer says why. It can be turned all the same: the value is
+ * kept for when the parameter has an effect.
+ */
+function unusedProps(why: string | null): { "data-unused"?: ""; title?: string } {
+  return why === null ? {} : { "data-unused": "", title: `No effect now: ${why}` };
 }
 
 /** A parameter of the plugin in a node: a knob, or a choice if its values have names. */
@@ -162,6 +170,7 @@ export const ParamRow = memo(function ParamRow({ node, index }: { node: NodeId; 
   const id = useId();
   const { facts, shown, control, readEffective } = useParam(node, index);
   const driven = useClientState((state) => (state.snapshot ? modulationsOn(state.snapshot.graph, node, index).length > 0 : false));
+  const unused = useClientState((state) => paramUnusedBecause(state, node, index));
   const format = useMemo(() => formatterFor(facts?.unit ?? null), [facts?.unit]);
   if (!facts || shown === undefined) return null;
 
@@ -178,7 +187,7 @@ export const ParamRow = memo(function ParamRow({ node, index }: { node: NodeId; 
   );
   if (facts.labels) {
     return (
-      <div className="tang-row">
+      <div className="tang-row" {...unusedProps(unused)}>
         {name}
         <select
           id={id}
@@ -200,7 +209,7 @@ export const ParamRow = memo(function ParamRow({ node, index }: { node: NodeId; 
   }
   const { min, max } = facts;
   return (
-    <div className="tang-row">
+    <div className="tang-row" {...unusedProps(unused)}>
       {name}
       <input
         id={id}
@@ -746,8 +755,9 @@ export function NotesPort({ node, direction }: { node: NodeId; direction: "in" |
  * there when a cable ends at it is for `toFlow` to see to: a parameter that is driven is always among those a node shows.)
  */
 export const ParamCell = memo(function ParamCell({ node, index, driven }: { node: NodeId; index: number; driven: boolean }) {
+  const unused = useClientState((state) => paramUnusedBecause(state, node, index));
   return (
-    <div className="tang-cell">
+    <div className="tang-cell" {...unusedProps(unused)}>
       <CablePort node={node} handle={paramHandle(index)} driven={driven} />
       <ParamControl node={node} index={index} />
       <ParamModulateButton node={node} index={index} />

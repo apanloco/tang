@@ -281,6 +281,12 @@
   padding-top: 10px;
 }
 
+/* A parameter that has no effect now (what its plugin says of when it has one: the Math's carrier while a cable is patched at B, its bits outside the logic modes) is dimmed, and still turns:
+   it keeps its value for when it has one. The pointer says why (the cell's title). */
+.tang-cell[data-unused] {
+  opacity: 0.45;
+}
+
 /* The keys of a lane, in a cell of the grid: a label over the two ends. */
 .tang-keys {
   display: flex;

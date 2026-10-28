@@ -1418,6 +1418,16 @@ pub struct PluginSlot {
 }
 
 impl PluginSlot {
+    /// Why a parameter of this plugin has no effect now, if it has none (step 95b): the words of what the plugin says of when it has one (`ParameterInfo::used_when`: `only while nothing is patched at B`), when
+    /// that does not hold of what the user has set the plugin's other parameters to and of whether a cable of `cables` ends at its second input. It is the value the user set that counts: a choice that a
+    /// modulator moves is read where it is set. The terminal dims such a row and says why under the pane; the page's `unusedBecause` is the same rule, read from the graph.
+    pub fn unused_because<'a>(&self, param: &'a ParamSlot, cables: &[AudioCable]) -> Option<&'a str> {
+        let used = param.used_when.as_ref()?;
+        let value_of = |index: u32| self.params.iter().find(|p| p.index == index).map(|p| p.value);
+        let side_patched = cables.iter().any(|cable| cable.to == CableTo::EffectSide(self.node));
+        (!used.condition.holds(value_of, side_patched)).then_some(used.why.as_str())
+    }
+
     /// The names of the pinned parameters, in order, as a session file keeps them.
     pub fn pinned_names(&self) -> Vec<String> {
         self.pinned.iter().filter_map(|index| self.params.iter().find(|p| p.index == *index)).map(|p| p.name.clone()).collect()
@@ -1465,6 +1475,8 @@ pub struct ParamSlot {
     /// parameter (`ParameterInfo::step_count`).
     #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "read by the graph a client gets (`app::graph`), which only the web runtime sends"))]
     pub step_count: u32,
+    /// When the parameter has an effect at all, if it has one only sometimes (`ParameterInfo::used_when`): `PluginSlot::unused_because` reads it against the values the user has set.
+    pub used_when: Option<plugin::UsedWhen>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2247,8 +2259,68 @@ pub fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::M
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::testutil::{LONG_CHAINS, SENDS, Sends, load};
+    use crate::app::testutil::{LONG_CHAINS, SENDS, SIDED, Sends, load};
     use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModSource, ModTargetKind as K};
+
+    /// The parameters of `slot` that have no effect now, by name, with why.
+    fn unused_of<'a>(slot: &'a PluginSlot, cables: &[AudioCable]) -> Vec<(&'a str, &'a str)> {
+        slot.params.iter().filter_map(|param| slot.unused_because(param, cables).map(|why| (param.name.as_str(), why))).collect()
+    }
+
+    fn set(slot: &mut PluginSlot, name: &str, value: f32) {
+        slot.params.iter_mut().find(|p| p.name == name).unwrap().value = value;
+    }
+
+    #[test]
+    fn a_parameter_that_has_an_effect_only_in_some_modes_is_unused_in_the_others_by_the_value_the_user_set() {
+        let mut run = load(SIDED);
+        let cables = run.model.cables.clone();
+        // The group's math effect has nothing patched at its second input: in a ring, which reads neither `amount`, `bits`, `attack` nor `release`, those four have none, and `pitch` and `wave` have (B is the carrier).
+        let bus = &mut run.model.groups[0].effects[0];
+        let ring = [("amount", "only in the modes am, fold, warp, compare, hold, follow"), ("bits", "only in the modes xor, and, or"), ("attack", "only in the mode follow"), ("release", "only in the mode follow")];
+        assert_eq!(unused_of(bus, &cables), ring);
+        // The follow mode (11) reads `amount`, `attack` and `release`; xor (7) reads `bits` and not the others.
+        set(bus, "mode", 11.0);
+        assert_eq!(unused_of(bus, &cables), [ring[1]]);
+        set(bus, "mode", 7.0);
+        assert_eq!(unused_of(bus, &cables), [ring[0], ring[2], ring[3]]);
+        // (The mode that a choice is at is the place that its value rounds to.)
+        set(bus, "mode", 10.6);
+        assert_eq!(unused_of(bus, &cables), [ring[1]], "10.6 is the twelfth mode, follow");
+    }
+
+    #[test]
+    fn a_carrier_that_has_a_cable_at_its_second_input_is_unused_and_only_a_cable_at_that_effects_second_input_is_one() {
+        let run = load(SIDED);
+        let (lane, bus) = (&run.model.instruments[0].effects[1], &run.model.groups[0].effects[0]);
+        let words = "only while nothing is patched at B";
+        // Lane 0's math effect has the cable of the file at its second input: its carrier is not heard.
+        assert_eq!(run.model.cables.len(), 1);
+        assert!(unused_of(lane, &run.model.cables).contains(&("pitch", words)) && unused_of(lane, &run.model.cables).contains(&("wave", words)));
+        // The group's has none, and a cable at another effect's second input is not a cable at its own: its carrier is heard.
+        assert!(!unused_of(bus, &run.model.cables).iter().any(|(name, _)| *name == "pitch" || *name == "wave"));
+        // Taken out of the list the lane's carrier is heard, and a cable at the first input of the effect (the input that the chain feeds) is not a cable at the second.
+        assert!(!unused_of(lane, &[]).iter().any(|(name, _)| *name == "pitch" || *name == "wave"));
+        let at_first_input = AudioCable { to: CableTo::Effect(lane.node), ..run.model.cables[0] };
+        assert!(!unused_of(lane, &[at_first_input]).iter().any(|(name, _)| *name == "pitch" || *name == "wave"));
+        // And one at the group's second input is the group's, and not the lane's.
+        let at_the_bus_effect = AudioCable { to: CableTo::EffectSide(bus.node), ..run.model.cables[0] };
+        assert!(!unused_of(lane, &[at_the_bus_effect]).iter().any(|(name, _)| *name == "pitch" || *name == "wave"));
+        assert!(unused_of(bus, &[at_the_bus_effect]).contains(&("pitch", words)));
+    }
+
+    #[test]
+    fn a_plugin_that_says_nothing_of_when_its_parameters_are_used_has_every_one_used_and_so_has_a_rule_that_names_no_parameter() {
+        let mut run = load(SIDED);
+        let osc = run.model.instruments[0].instrument.as_ref().unwrap();
+        assert!(osc.params.iter().all(|p| p.used_when.is_none()));
+        assert_eq!(unused_of(osc, &run.model.cables), []);
+        // A rule that names a parameter the plugin has not is no rule: the parameter is used.
+        let filter = &mut run.model.instruments[0].effects[0];
+        let used_when = plugin::UsedWhen { condition: plugin::UsedCondition::Choice { param: 99, values: vec![1] }, why: "only in a mode that is not there".to_string() };
+        filter.params[0].used_when = Some(used_when);
+        assert_eq!(unused_of(filter, &[]), []);
+    }
 
     #[test]
     fn every_node_is_found_by_its_id() {

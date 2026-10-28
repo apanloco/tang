@@ -1,0 +1,725 @@
+{
+  "graph": "the snapshot of sideCables.json",
+  "rows": [
+    {
+      "cables": "as they were",
+      "mode": 0,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 1,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 2,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 3,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 4,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 5,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 6,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 7,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 8,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 9,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 10,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": "only in the mode follow",
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 11,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": null,
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": "only while nothing is patched at B",
+        "release": null,
+        "wave": "only while nothing is patched at B"
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 0,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 1,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 2,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 3,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 4,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 5,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 6,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 7,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 8,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 9,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 10,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "as they were",
+      "mode": 11,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": null,
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": null,
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 0,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 1,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 2,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 3,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 4,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 5,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 6,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 7,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 8,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 9,
+      "node": 4,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 10,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 11,
+      "node": 4,
+      "unused": {
+        "amount": null,
+        "attack": null,
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": null,
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 0,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 1,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 2,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 3,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 4,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 5,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 6,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 7,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 8,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 9,
+      "node": 1,
+      "unused": {
+        "amount": "only in the modes am, fold, warp, compare, hold, follow",
+        "attack": "only in the mode follow",
+        "bits": null,
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 10,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": "only in the mode follow",
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": "only in the mode follow",
+        "wave": null
+      }
+    },
+    {
+      "cables": "taken out",
+      "mode": 11,
+      "node": 1,
+      "unused": {
+        "amount": null,
+        "attack": null,
+        "bits": "only in the modes xor, and, or",
+        "level": null,
+        "mode": null,
+        "pitch": null,
+        "release": null,
+        "wave": null
+      }
+    }
+  ]
+}

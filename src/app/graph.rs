@@ -200,6 +200,11 @@ pub struct Param {
     pub unit: Option<String>,
     pub group: Vec<String>,
     pub step_count: u32,
+    /// When the parameter has an effect at all, for one that has it only sometimes (step 95b: the Math's `bits` only in its logic modes, its carrier's `pitch` only while nothing is patched
+    /// at its second input); absent for one that always does. A front-end works out from the values and the cables whether it has one now, and dims the knob if it has not (`unusedBecause` in the page).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "web", ts(optional))]
+    pub used_when: Option<crate::plugin::UsedWhen>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -678,6 +683,7 @@ fn param(slot: &ParamSlot) -> Option<Param> {
         unit: slot.unit.clone(),
         group: slot.group.clone(),
         step_count: slot.step_count,
+        used_when: slot.used_when.clone(),
     })
 }
 
@@ -1070,6 +1076,7 @@ mod tests {
                 unit: Some("s".to_string()),
                 group: vec!["Envelope".to_string()],
                 step_count: 0,
+                used_when: None,
             }
         );
     }
@@ -2009,6 +2016,32 @@ depth = 0.2
     }
 
     #[test]
+    fn a_parameter_that_has_an_effect_only_sometimes_says_when_on_the_wire_and_the_others_say_nothing() {
+        let model = load(crate::app::testutil::SIDED).model;
+        let graph = model.graph();
+        let math = plugin_of(graph.nodes.iter().find(|node| node.id == model.instruments[0].effects[1].node).unwrap());
+        let filter = plugin_of(graph.nodes.iter().find(|node| node.id == model.instruments[0].effects[0].node).unwrap());
+        let wire = |plugin: &Plugin, name: &str| serde_json::to_value(the_param(plugin, name)).unwrap();
+        assert_eq!(
+            wire(math, "bits")["usedWhen"],
+            json!({"condition": {"type": "choice", "param": 0, "values": [7, 8, 9]}, "why": "only in the modes xor, and, or"})
+        );
+        assert_eq!(wire(math, "pitch")["usedWhen"], json!({"condition": {"type": "sideUnpatched"}, "why": "only while nothing is patched at B"}));
+        // A parameter that always has an effect has no key for it, so that every older plugin's node is the same JSON.
+        for name in ["mode", "level"] {
+            assert!(wire(math, name).get("usedWhen").is_none(), "{name}");
+        }
+        assert!(filter.params.iter().all(|p| p.used_when.is_none()));
+        assert!(wire(filter, "cutoff").get("usedWhen").is_none());
+        // It is read back, and a node that a client wrote before there was such a thing has none.
+        let back: Param = serde_json::from_value(wire(math, "wave")).unwrap();
+        assert_eq!(&back, the_param(math, "wave"));
+        let mut old = wire(math, "wave");
+        old.as_object_mut().unwrap().remove("usedWhen");
+        assert_eq!(serde_json::from_value::<Param>(old).unwrap().used_when, None);
+    }
+
+    #[test]
     fn nodes_edges_and_ports_are_tagged_objects_in_camel_case() {
         let node = Node {
             id: NodeId(3),
@@ -2032,6 +2065,7 @@ depth = 0.2
                         unit: Some("s".to_string()),
                         group: vec!["Tail".to_string()],
                         step_count: 0,
+                        used_when: None,
                     }],
                     presets: vec![Preset { id: "room".to_string(), name: "Small Room".to_string() }],
                     current_preset: None,

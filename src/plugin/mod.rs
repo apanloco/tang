@@ -29,6 +29,51 @@ pub struct ParameterInfo {
     /// How many steps there are between `min` and `max`: 0 for a continuous
     /// parameter, 3 for one with four values (an enum with four labels).
     pub step_count: u32,
+    /// When the parameter has an effect at all, for one that has it only sometimes; `None` for one that always does (and for every plugin that does not say).
+    pub used_when: Option<UsedWhen>,
+}
+
+/// When a parameter has an effect at all, for a parameter that has one only sometimes (step 95b): the Math's `bits` only in its logic modes, its carrier's `pitch` only while nothing is patched at
+/// its second input. A front-end shows a parameter that has none dimmed, and says why (`why`); it does not keep it from being turned, since the value is kept for when it has one. The plugin
+/// says the rule and does not work it out: the host does that where the values are (the model's `PluginSlot::unused_because`, the page's `unusedBecause`), from what the user set, so that the rule
+/// is data that any front-end reads, and a plugin's parameter that is turned is not a message to the plugin.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct UsedWhen {
+    /// What has to hold for the parameter to have an effect.
+    pub condition: UsedCondition,
+    /// The rule in words, for a front-end to say when it does not hold: `only while nothing is patched at B`, `only in the modes xor, and, or`.
+    pub why: String,
+}
+
+/// What it is that a parameter's having an effect depends on.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum UsedCondition {
+    /// The choice `param` (a `ParameterInfo::index` of the same plugin) is set to one of `values`, places in its list of labels.
+    Choice { param: u32, values: Vec<u32> },
+    /// Nothing is patched at the plugin's second input (`Plugin::side_input`): what the plugin makes of its own is what is heard there then.
+    SideUnpatched,
+}
+
+impl UsedCondition {
+    /// Whether it holds, with `value_of` saying what the user set each parameter of the plugin to (nothing for one it has not: a rule that names no parameter is no rule, and holds)
+    /// and `side_patched` whether a cable ends at the plugin's second input.
+    pub fn holds(&self, value_of: impl Fn(u32) -> Option<f32>, side_patched: bool) -> bool {
+        match self {
+            UsedCondition::Choice { param, values } => match value_of(*param) {
+                Some(value) => {
+                    // (A place below the list is not the first of it: a cast to a whole number would make it one.)
+                    let place = value.round();
+                    place >= 0.0 && values.contains(&(place as u32))
+                }
+                None => true,
+            },
+            UsedCondition::SideUnpatched => !side_patched,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -168,5 +213,32 @@ pub fn load(
         PluginType::Clap => clap::load(&resolved, sample_rate, max_block_size),
         #[cfg(feature = "vst3")]
         PluginType::Vst3 => vst3::load(&resolved, sample_rate, max_block_size),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_choice_holds_when_its_value_rounds_to_one_of_its_places_and_not_below_the_list() {
+        let choice = UsedCondition::Choice { param: 3, values: vec![0, 2] };
+        let at = |value: f32| choice.holds(|param| (param == 3).then_some(value), false);
+        assert!(at(0.0) && at(0.4) && at(2.0) && at(1.6), "a value is the place that it rounds to");
+        assert!(!at(1.0) && !at(0.6) && !at(3.0) && !at(7.0), "and a place that is not one of them is outside");
+        // (A place below the list is not the first of it: a cast to a whole number would make it one.)
+        assert!(!at(-1.0) && !at(-3.0) && !at(f32::NAN));
+        // It reads the parameter that it names and no other, and a rule that names one that is not there is no rule.
+        assert!(!choice.holds(|param| (param == 4).then_some(0.0).or((param == 3).then_some(1.0)), false));
+        assert!(choice.holds(|_| None, false));
+        assert!(choice.holds(|param| (param == 3).then_some(2.0), true), "(the cables do not matter to it)");
+    }
+
+    #[test]
+    fn a_carrier_is_used_while_nothing_is_patched_at_the_second_input_and_the_values_do_not_matter_to_it() {
+        let condition = UsedCondition::SideUnpatched;
+        assert!(condition.holds(|_| None, false));
+        assert!(!condition.holds(|_| None, true));
+        assert!(!condition.holds(|_| Some(0.0), true) && condition.holds(|_| Some(7.0), false));
     }
 }

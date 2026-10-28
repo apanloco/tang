@@ -4188,6 +4188,47 @@ type = "steps"
         );
     }
 
+    /// When each parameter of the math effects of `sided_and_wired()` has an effect, as the web client's tests read it (`web/src/client/fixtures/uses.json`): they pin the page's `unusedBecause` to the model's
+    /// `PluginSlot::unused_because`. The graph that the page reads is the snapshot of `sideCables.json` (the same session): lane 0's math effect has three cables at its second input and the group's has none.
+    /// A row is one of the two effects with its cables as they are or taken out, set to one of its twelve modes, and for each parameter why it has no effect then, or null if it has one.
+    /// `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_when_a_parameter_has_an_effect_is_current() {
+        let (_engine, mut ctl, n, _lfo) = sided_and_wired();
+        let cables: Vec<EdgeId> = ctl.model.cables.iter().map(|cable| cable.id).collect();
+        assert_eq!(cables.len(), 3);
+        let mut rows = Vec::new();
+        for taken_out in [false, true] {
+            if taken_out {
+                for edge in &cables {
+                    ctl.apply(Intent::RemoveEdge { edge: *edge }).unwrap();
+                }
+            }
+            for node in [n.math, n.bus_math] {
+                for mode in 0..12 {
+                    ctl.apply(Intent::SetParam { node, param: 0, value: mode as f32 }).unwrap();
+                    let slot = if node == n.math { &ctl.model.instruments[0].effects[1] } else { &ctl.model.groups[0].effects[0] };
+                    assert_eq!(slot.node, node);
+                    let unused: serde_json::Map<String, serde_json::Value> =
+                        slot.params.iter().map(|p| (p.name.clone(), slot.unused_because(p, &ctl.model.cables).map_or(serde_json::Value::Null, |why| serde_json::json!(why)))).collect();
+                    rows.push(serde_json::json!({ "node": testutil::wire(&node), "cables": if taken_out { "taken out" } else { "as they were" }, "mode": mode, "unused": unused }));
+                }
+            }
+        }
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "graph": "the snapshot of sideCables.json", "rows": rows })).unwrap() + "\n";
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/uses.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not when a parameter has an effect now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
     fn add(ctl: &mut Controller, parent: NodeId, kind: ModulatorKind) -> Result<Applied, IntentError> {
         ctl.apply(Intent::AddModulator { parent, kind })
     }

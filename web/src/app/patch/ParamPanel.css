@@ -98,6 +98,11 @@
   row-gap: 2px;
 }
 
+/* (A row whose parameter has no effect now is dimmed as its knob on the node is, and still turns.) */
+.tang-row[data-unused] {
+  opacity: 0.5;
+}
+
 .tang-row__name {
   grid-column: 1;
   overflow: hidden;

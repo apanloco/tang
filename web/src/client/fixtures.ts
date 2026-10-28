@@ -19,6 +19,7 @@ import audible from "./fixtures/audible.json";
 import audibleCables from "./fixtures/audibleCables.json";
 import audioCables from "./fixtures/audioCables.json";
 import sideCables from "./fixtures/sideCables.json";
+import uses from "./fixtures/uses.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
 import moves from "./fixtures/moves.json";
 import noise from "./fixtures/noise.json";
@@ -145,6 +146,15 @@ export const audioCablesFixture = audioCables as unknown as {
 export const sideCablesFixture = sideCables as unknown as {
   snapshot: Snapshot;
   rows: ({ intent: Intent } & ({ error: string } | { sends: string[] } | { after: Shape }))[];
+};
+
+/**
+ * When each parameter of the two math effects of the session of `sideCablesFixture` has an effect, as the model says (`PluginSlot::unused_because`): a row is one of the effects (node 4 is the lane's, which has
+ * three cables at its second input, and node 1 the group's, which has none), with the cables as they are in that snapshot or taken out, set to one of its twelve modes, and for each parameter by its name why it
+ * has no effect then, in the plugin's words, or null if it has one. Written by the controller (`the_web_clients_fixture_of_when_a_parameter_has_an_effect_is_current`).
+ */
+export const usesFixture = uses as unknown as {
+  rows: { node: NodeId; cables: "as they were" | "taken out"; mode: number; unused: Record<string, string | null> }[];
 };
 
 /**

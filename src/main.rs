@@ -174,9 +174,11 @@ fn run() -> anyhow::Result<()> {
             let params = p.parameters();
             println!("  Parameters:    {}", params.len());
             for param in &params {
+                // A parameter that has an effect only sometimes says when.
+                let when = param.used_when.as_ref().map(|used| format!(": {}", used.why)).unwrap_or_default();
                 if let Some(labels) = &param.labels {
                     println!(
-                        "    [{}] {} ({}, default={})",
+                        "    [{}] {} ({}, default={}){when}",
                         param.index,
                         param.name,
                         labels.join("|"),
@@ -187,7 +189,7 @@ fn run() -> anyhow::Result<()> {
                     );
                 } else {
                     println!(
-                        "    [{}] {} (min={}, max={}, default={})",
+                        "    [{}] {} (min={}, max={}, default={}){when}",
                         param.index, param.name, param.min, param.max, param.default
                     );
                 }

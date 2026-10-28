@@ -7,6 +7,7 @@ import type { Stages } from "./envelope";
 import { audibleOf, ownAudibleOf } from "./audible";
 import { displayNames } from "./names";
 import { shownParams } from "./pinning";
+import { unusedBecause } from "./uses";
 
 /** The node of the session with this id, if the client has a session and it has one. */
 export function nodeById(state: ClientState, id: NodeId): Node | undefined {
@@ -18,6 +19,14 @@ export function paramOf(state: ClientState, id: NodeId, index: number): Param | 
   const node = nodeById(state, id);
   if (node?.kind !== "instrument" && node?.kind !== "effect") return undefined;
   return node.plugin?.params.find((param) => param.index === index);
+}
+
+/** Why parameter `index` of the plugin in node `id` has no effect now (`unusedBecause`), or null if it has one. */
+export function paramUnusedBecause(state: ClientState, id: NodeId, index: number): string | null {
+  const param = paramOf(state, id, index);
+  const node = nodeById(state, id);
+  if (!state.snapshot || !param?.usedWhen || !node) return null;
+  return unusedBecause(state.snapshot.graph, node, param);
 }
 
 /**

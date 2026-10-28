@@ -150,6 +150,7 @@ fn plugin_slot(
             unit: p.unit.clone(),
             group: p.group.clone(),
             step_count: p.step_count,
+            used_when: p.used_when.clone(),
         })
         .collect();
     PluginSlot {

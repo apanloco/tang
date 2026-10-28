@@ -39,7 +39,7 @@ use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, PatternField, Taper};
 use crate::app::model::{
-    BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, Driven, EdgeId, FREE, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId, NodePath,
+    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, Driven, EdgeId, FREE, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId, NodePath,
     ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, SYNC_DIVISIONS, SessionModel, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
@@ -3497,6 +3497,7 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
                 &s.ctl.model.instruments,
                 &s.ctl.model.groups,
                 &s.ctl.model.free_modulators,
+                &s.ctl.model.cables,
                 &s.param_state,
                 s.focus_params,
                 &s.param_filter_input,
@@ -3621,6 +3622,7 @@ fn render_session(
     instruments: &[InstrumentNode],
     groups: &[GroupNode],
     free_modulators: &[ModulatorSlot],
+    cables: &[AudioCable],
     param_state: &ListState,
     focus_params: bool,
     param_filter_input: &TextInputState,
@@ -3668,6 +3670,7 @@ fn render_session(
     let selected = chain_state.selected;
     let mut mod_params: Vec<ParamSlot> = Vec::new(); // temp storage for modulator pseudo-params
     let mut mod_looks: Vec<RowLook> = Vec::new(); // how each of them is drawn, if it is not as the others are
+    let mut plugin_slot: Option<&PluginSlot> = None; // the plugin whose parameters the pane shows, which says which of them have no effect now
     let (plugin_name, plugin_params) = if selected < tree_entries.len() {
         let addr = &tree_entries[selected].address;
         match addr {
@@ -3802,7 +3805,10 @@ fn render_session(
                     _ => None,
                 };
                 match slot {
-                    Some(p) => (p.name.clone(), p.params.as_slice()),
+                    Some(p) => {
+                        plugin_slot = Some(p);
+                        (p.name.clone(), p.params.as_slice())
+                    }
                     None => ("(none)".to_string(), &[] as &[ParamSlot]),
                 }
             }
@@ -3811,24 +3817,46 @@ fn render_session(
         ("(none)".to_string(), &[] as &[ParamSlot])
     };
 
-    let right_style = if focus_params {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(DIM)
-    };
-    let right_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(right_style)
-        .title(format!(" {} ", plugin_name));
-    let right_inner = right_block.inner(right);
-    frame.render_widget(right_block, right);
-
-    // Determine if the filter bar should be shown.
+    // Determine if the filter bar can be shown.
     let is_plugin_node = selected < tree_entries.len()
         && matches!(
             tree_entries[selected].address,
             TreeAddress::Instrument(_) | TreeAddress::Effect { .. }
         );
+
+    // Build the display params — apply filter for plugin nodes.
+    let display_params: Vec<&ParamSlot> = if is_plugin_node && !param_filtered.is_empty() {
+        param_filtered.iter().filter_map(|&i| plugin_params.get(i)).collect()
+    } else if is_plugin_node && param_filtered.is_empty() && !param_filter_input.value.is_empty() {
+        // Filter active but no matches.
+        vec![]
+    } else {
+        plugin_params.iter().collect()
+    };
+    // Why each of them has no effect now, if it has none (step 95b). A row is told from its parameter and not from its place, which a filter changes.
+    let unused: Vec<Option<&str>> = display_params.iter().map(|p| plugin_slot.and_then(|slot| slot.unused_because(p, cables))).collect();
+    // The reason for the row that the cursor is on, said under the pane while the cursor is in it.
+    let reason = focus_params
+        .then(|| display_params.get(param_state.selected).zip(unused.get(param_state.selected).copied().flatten()))
+        .flatten()
+        .map(|(p, why)| format!(" {} has no effect now: {why} ", p.name));
+
+    let right_style = if focus_params {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(DIM)
+    };
+    let mut right_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(right_style)
+        .title(format!(" {} ", plugin_name));
+    if let Some(reason) = reason {
+        right_block = right_block.title_bottom(reason);
+    }
+    let right_inner = right_block.inner(right);
+    frame.render_widget(right_block, right);
+
+    // Determine if the filter bar should be shown.
     let show_filter = is_plugin_node
         && (param_filtering || !param_filter_input.value.is_empty());
 
@@ -3856,16 +3884,6 @@ fn render_session(
             Rect::new(fa.x + pw, fa.y, fa.width.saturating_sub(pw), 1),
         );
     }
-
-    // Build the display params — apply filter for plugin nodes.
-    let display_params: Vec<&ParamSlot> = if is_plugin_node && !param_filtered.is_empty() {
-        param_filtered.iter().filter_map(|&i| plugin_params.get(i)).collect()
-    } else if is_plugin_node && param_filtered.is_empty() && !param_filter_input.value.is_empty() {
-        // Filter active but no matches.
-        vec![]
-    } else {
-        plugin_params.iter().collect()
-    };
 
     let name_width = 24;
     let bar_width = list_area.width.saturating_sub(name_width as u16 + 12) as usize;
@@ -3910,8 +3928,8 @@ fn render_session(
         .iter()
         .enumerate()
         .map(|(i, (name, col1, col2, col3, row_kind))| {
-            // (Only a modulator's pane has looks, and it shows every row it has, so a row's look is at its own place.)
-            let look = mod_looks.get(i).copied().unwrap_or_default().style();
+            // (Only a modulator's pane has looks of its own, and it shows every row it has, so a row's look is at its own place; a plugin's parameter that has no effect now is dimmed as a step past the length is.)
+            let look = if unused.get(i).copied().flatten().is_some() { RowLook::Unused } else { mod_looks.get(i).copied().unwrap_or_default() }.style();
             match row_kind {
                 ParamRow::Separator => ListItem::spans(vec![
                     ListSpan::new(name, sep_style),
@@ -4438,13 +4456,13 @@ fn modulator_field_label(field: ModulatorField) -> &'static str {
     }
 }
 
-/// How a row of a pane is drawn besides what it says. Only the steps of a step sequencer, and the rate of a modulator that follows the tempo, have a look of their own.
+/// How a row of a pane is drawn besides what it says. Only the steps of a step sequencer, the rate of a modulator that follows the tempo and a plugin's parameter that has no effect now have a look of their own.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum RowLook {
     #[default]
     Normal,
-    /// A step that the sequencer does not go through: it is past its length (it keeps its value for when the sequencer is longer); or the rate of a modulator that follows the tempo
-    /// (it keeps it for when it is free again).
+    /// A step that the sequencer does not go through: it is past its length (it keeps its value for when the sequencer is longer); the rate of a modulator that follows the tempo
+    /// (it keeps it for when it is free again); or a plugin's parameter that has no effect now (`PluginSlot::unused_because`: it keeps its value for when it has one).
     Unused,
     /// The step that the sequencer is at.
     Playing,

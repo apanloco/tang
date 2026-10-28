@@ -615,6 +615,141 @@ fn session_filter_param_focus() {
     assert_golden("session_filter_param_focus", &mut h);
 }
 
+/// A lane with a Math effect in its chain, in its `follow` mode (the Pump preset), and a second lane whose sound is patched at the Math's second input.
+fn scene_math_patched() -> &'static str {
+    r#"
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument.effect]]
+plugin = "builtin:math"
+preset = "Pump"
+
+[[instrument]]
+plugin = "builtin:osc"
+route = "none"
+
+[[cable]]
+from = "instrument[1]"
+to = "instrument[0].effect[0].side"
+"#
+}
+
+/// Whether the row of the parameter pane that has the name `name` at its start is drawn dimmed: the look of its name, since the rest of a choice's row has none.
+fn pane_row_is_dimmed(h: &mut Harness, name: &str) -> bool {
+    h.dump();
+    let (buf, pane) = (h.terminal.backend().buffer(), h.s.areas.param_inner);
+    let text = |y: u16| (pane.x..pane.right()).map(|x| buf[(x, y)].symbol()).collect::<String>();
+    let wanted = format!("{name} ");
+    let (y, at) = (pane.y..pane.bottom())
+        .find_map(|y| {
+            let line = text(y);
+            let start = line.find(|c: char| c != '▸' && c != ' ')?;
+            line[start..].starts_with(&wanted).then(|| (y, line[..start].chars().count() as u16))
+        })
+        .unwrap_or_else(|| panic!("the pane has no row that begins with {name:?}: {}", dump_buffer(buf)));
+    buf[(pane.x + at, y)].modifier.contains(Modifier::DIM)
+}
+
+/// The names of the parameters of the Math in the pane that are drawn dimmed: the ones that have no effect now.
+fn dimmed_math_rows(h: &mut Harness) -> Vec<&'static str> {
+    ["mode", "amount", "bits", "pitch", "wave", "attack", "release", "level"].into_iter().filter(|name| pane_row_is_dimmed(h, name)).collect()
+}
+
+#[test]
+fn session_math_param_focus_with_a_cable_at_b() {
+    // The Pump preset is the follow mode: `amount`, `attack` and `release` are used, `bits` is not, and `pitch` and `wave` are not while a cable is patched at B. The cursor is on `pitch`, and the pane says why.
+    let mut h = Harness::new(scene_math_patched());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Enter).press_n(KeyCode::Down, 3);
+    assert_golden("session_math_param_focus_with_a_cable_at_b", &mut h);
+}
+
+#[test]
+fn a_parameter_that_has_no_effect_now_is_dimmed_and_the_pane_says_why_while_the_cursor_is_on_it() {
+    let mut h = Harness::new(scene_math_patched());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Enter);
+    assert_eq!(dimmed_math_rows(&mut h), ["bits", "pitch", "wave"], "follow, with a cable at B");
+    // The pane says why for the row that the cursor is on, under it, and for no other: a row that has an effect has nothing to say.
+    let says = |h: &mut Harness| h.dump().lines().find(|line| line.contains("has no effect now")).map(|line| line.trim().to_string());
+    assert_eq!(says(&mut h), None, "the cursor is on the mode");
+    h.press(KeyCode::Down);
+    assert_eq!(says(&mut h), None, "the cursor is on `amount`, which follow reads");
+    h.press(KeyCode::Down);
+    let line = says(&mut h).expect("the cursor is on `bits`");
+    assert!(line.contains(" bits has no effect now: only in the modes xor, and, or "), "{line}");
+    h.press(KeyCode::Down);
+    let line = says(&mut h).expect("the cursor is on `pitch`");
+    assert!(line.contains(" pitch has no effect now: only while nothing is patched at B "), "{line}");
+    // (Not while the cursor is in the chain: the pane's rows are not the ones that the keys go to.)
+    h.press(KeyCode::Esc);
+    assert_eq!(says(&mut h), None);
+}
+
+#[test]
+fn what_has_no_effect_follows_the_mode_that_is_set_and_the_cable_that_is_patched() {
+    let mut h = Harness::new(scene_math_patched());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    h.press(KeyCode::Enter);
+    // The mode is stepped down from follow to xor (four places): the logic reads `bits` and not `amount`, `attack` and `release`.
+    h.press_n(KeyCode::Left, 4);
+    assert_eq!(dimmed_math_rows(&mut h), ["amount", "pitch", "wave", "attack", "release"], "xor, with a cable at B");
+    // One more and it is a ring, which reads none of them.
+    h.press_n(KeyCode::Left, 7);
+    assert_eq!(dimmed_math_rows(&mut h), ["amount", "bits", "pitch", "wave", "attack", "release"], "ring, with a cable at B");
+    // The cable taken out: B is the carrier, and its `pitch` and `wave` are used.
+    let edge = h.s.ctl.model.cables[0].id;
+    h.s.ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+    assert_eq!(dimmed_math_rows(&mut h), ["amount", "bits", "attack", "release"], "ring, with nothing at B");
+    // And the cable drawn again, the carrier is not.
+    let (from, to) = (h.s.ctl.model.instruments[1].node, h.s.ctl.model.instruments[0].effects[0].node);
+    h.s.ctl.apply(Intent::AddCable { from: Endpoint { node: from, port: Port::AudioOut }, to: Endpoint { node: to, port: Port::AudioInSide }, gain: None }).unwrap();
+    assert_eq!(dimmed_math_rows(&mut h), ["amount", "bits", "pitch", "wave", "attack", "release"], "ring, with a cable at B again");
+}
+
+#[test]
+fn a_row_is_dimmed_by_its_parameter_and_not_by_its_place_when_the_list_is_filtered() {
+    let mut h = Harness::new(scene_math_patched());
+    h.goto(TreeAddress::Effect { inst: 0, index: 0 });
+    // The filter keeps `wave` alone, which comes first in the list and was fifth; the Math is an effect of a lane, whose pane has a filter.
+    h.press(KeyCode::Enter).press(KeyCode::Char('/'));
+    h.type_chars("wave");
+    let text = h.dump();
+    assert!(text.contains("wave") && !text.contains("pitch"), "{text}");
+    assert!(pane_row_is_dimmed(&mut h, "wave"), "it has no effect with a cable at B");
+    h.press(KeyCode::Esc);
+    // `amount` is the one that is left of the next filter, and follow reads it.
+    h.press(KeyCode::Char('/'));
+    h.type_chars("amount");
+    assert!(!pane_row_is_dimmed(&mut h, "amount"), "follow reads it");
+}
+
+#[test]
+fn the_parameters_of_an_effect_on_a_bus_are_dimmed_as_those_of_an_effect_of_a_lane_are() {
+    let mut h = Harness::new(
+        r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:math"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+
+[[instrument]]
+plugin = "builtin:osc"
+route = "none"
+"#,
+    );
+    h.goto(TreeAddress::GroupEffect { group: 0, index: 0 });
+    h.press(KeyCode::Enter);
+    assert_eq!(dimmed_math_rows(&mut h), ["amount", "bits", "attack", "release"], "a ring, with nothing at B: its carrier is B");
+    let (from, to) = (h.s.ctl.model.instruments[1].node, h.s.ctl.model.groups[0].effects[0].node);
+    h.s.ctl.apply(Intent::AddCable { from: Endpoint { node: from, port: Port::AudioOut }, to: Endpoint { node: to, port: Port::AudioInSide }, gain: None }).unwrap();
+    assert_eq!(dimmed_math_rows(&mut h), ["amount", "bits", "pitch", "wave", "attack", "release"], "a cable at B");
+}
+
 // ---------------------------------------------------------------------------
 // Session tab popups
 // ---------------------------------------------------------------------------

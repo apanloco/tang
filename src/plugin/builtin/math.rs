@@ -20,11 +20,14 @@
 
 use std::f32::consts::TAU;
 
-use crate::plugin::{ParameterInfo, Plugin, Preset, SideInput};
+use crate::plugin::{ParameterInfo, Plugin, Preset, SideInput, UsedCondition, UsedWhen};
 
 pub const NAME: &str = "Math";
 pub const ID: &str = "builtin:math";
 pub const PARAM_COUNT: usize = 8;
+
+/// What the two inputs are called.
+const SIDE: SideInput = SideInput { main: "A", side: "B" };
 
 /// The places of the parameters.
 const MODE: usize = 0;
@@ -205,6 +208,23 @@ fn wave_at(wave: u32, phase: f64) -> f32 {
             }
         }
         _ => (TAU * p).sin(),
+    }
+}
+
+/// When a parameter has an effect: `amount` in the modes that read it, `bits` in the logic modes, `attack` and `release` in `follow`, and `pitch` and `wave` while nothing is patched at B, which is
+/// when the carrier is what B is. The others, `mode` and `level`, always do. What `render` reads, in words: `a_parameter_that_says_it_has_no_effect_has_none_and_one_that_says_it_has_one_has_one`
+/// holds this to it, state by state.
+fn used_when(index: usize) -> Option<UsedWhen> {
+    let in_modes = |places: &[usize]| UsedWhen {
+        condition: UsedCondition::Choice { param: MODE as u32, values: places.iter().map(|&place| place as u32).collect() },
+        why: format!("only in the {} {}", if places.len() == 1 { "mode" } else { "modes" }, places.iter().map(|&place| MODE_NAMES[place]).collect::<Vec<_>>().join(", ")),
+    };
+    match index {
+        AMOUNT => Some(in_modes(&[1, 2, 3, 4, 10, 11])),
+        BITS => Some(in_modes(&[7, 8, 9])),
+        ATTACK | RELEASE => Some(in_modes(&[11])),
+        PITCH | WAVE => Some(UsedWhen { condition: UsedCondition::SideUnpatched, why: format!("only while nothing is patched at {}", SIDE.side) }),
+        _ => None,
     }
 }
 
@@ -392,7 +412,7 @@ impl Plugin for Math {
     }
 
     fn side_input(&self) -> Option<SideInput> {
-        Some(SideInput { main: "A", side: "B" })
+        Some(SIDE)
     }
 
     fn process(&mut self, _midi_events: &[(u64, [u8; 3])], audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
@@ -431,6 +451,7 @@ impl Plugin for Math {
                         _ => Vec::new(),
                     },
                     step_count: labels.map_or(0, |names| (names.len() - 1) as u32),
+                    used_when: used_when(i),
                 }
             })
             .collect()
@@ -953,6 +974,57 @@ mod tests {
                 m.set_parameter(MODE as u32, mode as f32).unwrap();
                 let out = run(&mut m, &a, Some(&b));
                 assert!(out.iter().all(|x| x.is_finite() && x.abs() <= 1.5), "round {round}, mode {mode}");
+            }
+        }
+    }
+
+    #[test]
+    fn its_parameters_say_when_they_have_an_effect() {
+        let params = Math::new(SAMPLE_RATE).parameters();
+        let choice = |values: &[u32]| UsedCondition::Choice { param: MODE as u32, values: values.to_vec() };
+        let said = |name: &str| params.iter().find(|p| p.name == name).unwrap().used_when.clone().map(|used| (used.condition, used.why));
+        assert_eq!(said("mode"), None);
+        assert_eq!(said("level"), None);
+        assert_eq!(said("amount"), Some((choice(&[1, 2, 3, 4, 10, 11]), "only in the modes am, fold, warp, compare, hold, follow".to_string())));
+        assert_eq!(said("bits"), Some((choice(&[7, 8, 9]), "only in the modes xor, and, or".to_string())));
+        for name in ["attack", "release"] {
+            assert_eq!(said(name), Some((choice(&[11]), "only in the mode follow".to_string())), "{name}");
+        }
+        for name in ["pitch", "wave"] {
+            assert_eq!(said(name), Some((UsedCondition::SideUnpatched, "only while nothing is patched at B".to_string())), "{name}");
+        }
+        // The modes that the rules name are the ones that the names say.
+        for (name, modes) in [("amount", &["am", "fold", "warp", "compare", "hold", "follow"][..]), ("bits", &["xor", "and", "or"]), ("attack", &["follow"])] {
+            let Some(UsedWhen { condition: UsedCondition::Choice { param, values }, .. }) = params.iter().find(|p| p.name == name).unwrap().used_when.clone() else { panic!("{name} has a rule") };
+            assert_eq!(param, MODE as u32);
+            assert_eq!(values.iter().map(|&place| MODE_NAMES[place as usize]).collect::<Vec<_>>(), modes, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_parameter_that_says_it_has_no_effect_has_none_and_one_that_says_it_has_one_has_one() {
+        // In every mode, with a cable at B and with none, each parameter is set to two values and what the effect puts out is compared. Where the parameter says that it has no effect the two are
+        // the same bits (nothing that runs reads it); where it says it has one they are not the same sound. So that the rules that a front-end dims a knob by are what the arithmetic does.
+        let sound = |n: usize, hz: f32, amplitude: f32| amplitude * (TAU * hz * n as f32 / SAMPLE_RATE).sin();
+        let a: Vec<f32> = (0..9_600).map(|n| sound(n, 220.0, 0.6) + sound(n, 1_450.0, 0.3)).collect();
+        // B is loud for the first tenth of a second and quiet after it, so that the follower rises and falls, and it goes up through zero often, for `hold`.
+        let b: Vec<f32> = (0..9_600).map(|n| sound(n, 330.0, if n < 4_800 { 0.9 } else { 0.1 })).collect();
+        let params = Math::new(SAMPLE_RATE).parameters();
+        let settings = [(AMOUNT, 0.2, 0.9), (BITS, 2.0, 9.0), (PITCH, 48.0, 60.0), (WAVE, 0.0, 2.0), (ATTACK, 0.001, 0.1), (RELEASE, 0.01, 1.0), (LEVEL, 0.3, 0.9)];
+        for (mode, mode_name) in MODE_NAMES.iter().enumerate() {
+            for patched in [false, true] {
+                for (index, low, high) in settings {
+                    let play = |value: f32| run(&mut math_with(&[(MODE, mode as f32), (index, value)]), &a, patched.then_some(&b[..]));
+                    let (first, second) = (play(low), play(high));
+                    let used = params[index].used_when.as_ref().is_none_or(|used| used.condition.holds(|param| (param == MODE as u32).then_some(mode as f32), patched));
+                    let worst = first.iter().zip(&second).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+                    let what = format!("{} in {mode_name}, with {}", PARAMS[index].name, if patched { "a cable at B" } else { "nothing at B" });
+                    if used {
+                        assert!(worst > 1e-3, "{what}: it says it has an effect and the two sounds differ by {worst}");
+                    } else {
+                        assert!(first == second, "{what}: it says it has none and the two sounds differ by {worst}");
+                    }
+                }
             }
         }
     }
