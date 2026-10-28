@@ -1,5 +1,13 @@
 [
   {
+    "id": "builtin:input",
+    "name": "Audio Input",
+    "format": "Built-in",
+    "isInstrument": true,
+    "params": 3,
+    "presets": 0
+  },
+  {
     "id": "builtin:delay",
     "name": "Delay",
     "format": "Built-in",

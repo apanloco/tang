@@ -56,7 +56,11 @@ describe("the plugins a person can choose an effect from", () => {
 
 describe("the plugins a person can choose an instrument from", () => {
   test("are the ones that are instruments, each by the id the server knows it by, under the format it is of", () => {
-    expect(instrumentItems(builtinCatalog)).toEqual([{ id: "builtin:osc", label: "Oscillator", group: "Built-in" }]);
+    // (The built-ins are the oscillator and the audio input, by name as the server gives them.)
+    expect(instrumentItems(builtinCatalog)).toEqual([
+      { id: "builtin:input", label: "Audio Input", group: "Built-in" },
+      { id: "builtin:osc", label: "Oscillator", group: "Built-in" },
+    ]);
     expect(instrumentItems([])).toEqual([]);
     expect(instrumentItems([entry("builtin:filter", "Filter", "Built-in")])).toEqual([]);
   });

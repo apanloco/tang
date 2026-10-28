@@ -349,6 +349,8 @@ fn run_session(
     mode: Mode,
 ) -> anyhow::Result<()> {
     let use_tui = matches!(mode, Mode::Tui(_));
+    // With no sound card (`--audio-device none`: CI, headless runs) there is no microphone to listen to either: the audio input plays a quiet test tone, so that what a cable does to it is heard.
+    plugin::builtin::use_test_tone(audio_device.as_deref() == Some(audio::NULL_DEVICE));
     #[cfg(feature = "web")]
     let serving = matches!(mode, Mode::Serve(_));
     #[cfg(not(feature = "web"))]

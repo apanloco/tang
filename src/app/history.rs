@@ -6383,6 +6383,26 @@ size = 0.5
                 redo(),
             ],
         ));
+        // The audio input (`builtin:input`, step 99) starts bare, as an effect that stands by itself does: its lane's way out is cut, so that it is heard only through the cables that are drawn from it, and a
+        // cable from it to the mix is the way out given back (`link_or_cable`: a step in the words of the link). Undo takes the lane out and redo makes it again bare, under its id.
+        scripts.push((
+            "an audio input is added in a lane whose way out is cut, the cable from it to the mix gives the way out back, and undo and redo keep both",
+            vec![
+                add_instrument("builtin:input"),
+                Op::Do(Intent::AddCable { from: Endpoint { node: fresh(0), port: Port::AudioOut }, to: Endpoint { node: NodeId::MASTER, port: Port::AudioIn }, gain: None }),
+                Op::Do(Intent::AddCable { from: Endpoint { node: fresh(0), port: Port::AudioOut }, to: Endpoint { node: reverb, port: Port::AudioIn }, gain: Some(0.5) }),
+                Op::Do(Intent::SetRoute { node: fresh(0), route: Route::None }),
+                undo(),
+                undo(),
+                undo(),
+                undo(),
+                redo(),
+                redo(),
+                redo(),
+                redo(),
+                undo(),
+            ],
+        ));
         // An effect that stands by itself is a lane with the effect in it (the lane's node, and then the effect's, are the next two ids) and no way out (step 88: a bare module): undo takes the lane out
         // with it, and what is done to the lane, a mute and a way out given, is in the words of what it holds, the effect, or a chain of effects when there is more than one.
         scripts.push((

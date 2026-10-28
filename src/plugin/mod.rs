@@ -129,6 +129,13 @@ pub trait Plugin: Send {
         None
     }
 
+    /// Whether a lane that is made for this instrument has its way out cut to begin with (`Route::None`: it is heard where audio cables are drawn from it, and nowhere before). A
+    /// plugin whose sound is not its own to put in the mix says so: the audio input is a microphone, which is heard through the speakers that it listens to. The default is a plugin that
+    /// is heard as it is.
+    fn starts_bare(&self) -> bool {
+        false
+    }
+
     /// `process` for an effect that has a side input: `side` is the sound that the cables at its second input bring (a buffer for each channel, as `audio_in` has), or `None` while no
     /// cable ends there, so that the plugin can have a sound of its own in its place. The default is a plugin that has no side input, and leaves it.
     fn process_side(

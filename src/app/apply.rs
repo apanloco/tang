@@ -6977,6 +6977,44 @@ type = "midi"
     }
 
     #[test]
+    fn an_audio_input_is_added_in_a_lane_whose_way_out_is_cut_so_that_it_is_heard_where_a_cable_is_drawn_from_it_and_nowhere_before() {
+        use crate::app::graph::EdgeKind;
+        use crate::session::Route;
+        let (engine, mut ctl) = controller_with_builtins();
+        sent(&engine);
+        add_instrument(&mut ctl, "builtin:input").unwrap();
+        // The way out is cut before the instrument is in: one that was there for a moment would be heard, and a microphone that is heard through the speakers it listens to howls.
+        assert_eq!(sent(&engine), ["AddInstrument range=None", "SetLaneRoute inst=2 route=none", "SwapInstrument inst=2 plugin=Audio Input bufs=2 remap=false"]);
+        let (node, route, name) = {
+            let lane = &ctl.model.instruments[2];
+            (lane.node, lane.route, lane.instrument.as_ref().map(|p| p.name.clone()))
+        };
+        assert_eq!((route, name.as_deref()), (Route::None, Some("Audio Input")));
+        let graph = ctl.model.graph();
+        assert!(!graph.edges.iter().any(|e| !matches!(e.kind, EdgeKind::Modulation { .. }) && e.from.node == node), "no link leaves it: it sends where a cable is drawn");
+        // An instrument that is heard as it is has its way out, and the input's cut is the lane's: the next lane has its own.
+        add_instrument(&mut ctl, "builtin:osc").unwrap();
+        assert_eq!(ctl.model.instruments[3].route, Route::Out);
+        // Undo takes the lane out and redo makes it again, bare as it was; a cable from it to the mix gives the way out back as any lane's does (it is a cable of the lane's instrument).
+        ctl.apply(Intent::Undo).unwrap();
+        ctl.apply(Intent::Undo).unwrap();
+        assert_eq!(ctl.model.instruments.len(), 2);
+        ctl.apply(Intent::Redo).unwrap();
+        assert_eq!((ctl.model.instruments.len(), ctl.model.instruments[2].route), (3, Route::None));
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_audio_input_that_replaces_the_instrument_of_a_lane_leaves_the_way_out_as_it_was() {
+        use crate::session::Route;
+        let (_engine, mut ctl) = controller_with_builtins();
+        let lane0 = lane(&ctl);
+        assert_eq!(ctl.model.instruments[0].route, Route::Out);
+        replace_instrument(&mut ctl, lane0, "builtin:input").unwrap();
+        assert_eq!((ctl.model.instruments[0].route, ctl.model.instruments[0].instrument.as_ref().map(|p| p.name.as_str())), (Route::Out, Some("Audio Input")));
+    }
+
+    #[test]
     fn the_graph_after_adding_an_instrument_has_its_node_its_audio_path_to_the_master_and_its_meter() {
         use crate::app::graph::EdgeKind;
         use crate::app::layout::SlotKind;

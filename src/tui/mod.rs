@@ -825,6 +825,15 @@ impl State {
 
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
+        // An instrument is chosen for a lane that has one (the oscillator that `n` has just put in a new lane, say): the list starts on it, so that Enter keeps it, as the preset
+        // selector starts on the preset that is loaded. (With the audio input in the list, which sorts before the oscillator, the first row is not the one that was always there.)
+        if matches!(mode, SelectorMode::Instrument) {
+            let current = self.selected_inst().and_then(|inst| self.ctl.model.instruments.get(inst)).and_then(|lane| lane.instrument.as_ref()).map(|slot| slot.id.as_str());
+            let plugins = self.ctl.catalog.plugins();
+            if let Some(at) = current.and_then(|id| items.iter().position(|item| plugins.get(item.index).is_some_and(|entry| entry.id == id))) {
+                filter.list.selected = at;
+            }
+        }
 
         self.selector = Some(SelectorState {
             mode,

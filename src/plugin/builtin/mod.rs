@@ -1,6 +1,7 @@
 mod delay;
 mod drive;
 mod filter;
+mod input;
 mod math;
 mod oscillator;
 mod reverb;
@@ -10,6 +11,7 @@ use super::{Plugin, PluginInfo};
 use delay::Delay;
 use drive::Drive;
 use filter::Filter;
+use input::AudioInput;
 use math::Math;
 use oscillator::{Oscillator, Waveform};
 use reverb::Reverb;
@@ -51,16 +53,19 @@ pub fn load(
         "delay" => Ok(Box::new(Delay::new(sample_rate))),
         "drive" => Ok(Box::new(Drive::new(sample_rate))),
         "math" => Ok(Box::new(Math::new(sample_rate))),
+        "input" => Ok(Box::new(AudioInput::new(sample_rate))),
         // Only in the tests: an effect with one audio output, which the chains (stereo) have no place for.
         #[cfg(test)]
         "mono-effect" => Ok(Box::new(crate::app::testutil::MonoEffect)),
         _ => anyhow::bail!(
             "Unknown built-in plugin: {name:?}\n\
-             Available built-ins: osc, reverb, filter, delay, drive, math\n\
+             Available built-ins: osc, input, reverb, filter, delay, drive, math\n\
              Usage: builtin:osc"
         ),
     }
 }
+
+pub use input::use_test_tone;
 
 /// Return enumeration info for all built-in plugins.
 pub fn enumerate_plugins() -> Vec<PluginInfo> {
@@ -70,6 +75,15 @@ pub fn enumerate_plugins() -> Vec<PluginInfo> {
             id: "builtin:osc".into(),
             is_instrument: true,
             param_count: oscillator::PARAM_COUNT,
+            preset_count: 0,
+            path: "(built-in)".into(),
+            scan_ms: 0,
+        },
+        PluginInfo {
+            name: input::NAME.into(),
+            id: input::ID.into(),
+            is_instrument: true,
+            param_count: input::PARAM_COUNT,
             preset_count: 0,
             path: "(built-in)".into(),
             scan_ms: 0,
@@ -300,10 +314,9 @@ mod tests {
     }
 
     #[test]
-    fn enumerate_lists_one_oscillator() {
+    fn enumerate_lists_one_oscillator_and_the_audio_input_as_the_instruments() {
         let plugins = enumerate_plugins();
-        let oscs: Vec<_> = plugins.iter().filter(|p| p.is_instrument).collect();
-        assert_eq!(oscs.len(), 1, "should enumerate a single oscillator");
-        assert_eq!(oscs[0].id, "builtin:osc");
+        let instruments: Vec<_> = plugins.iter().filter(|p| p.is_instrument).map(|p| p.id.as_str()).collect();
+        assert_eq!(instruments, ["builtin:osc", "builtin:input"], "a single oscillator (the old ids are aliases that load, not plugins), and the audio input (step 99)");
     }
 }

@@ -1151,6 +1151,76 @@ async fn a_browser_draws_a_cable_between_the_ends_of_a_link_that_is_cut_and_the_
     assert!(!saved.contains("route") && !saved.contains("[[cable]]"), "{saved}");
 }
 
+#[tokio::test]
+async fn a_browser_adds_the_audio_input_and_it_is_silent_until_a_cable_is_drawn_from_it_and_then_the_null_backends_tone_is_heard_and_the_saved_file_has_the_lane_bare_and_a_program_started_on_it_has_it() {
+    // One sine that is never played, so that nothing is heard but what the input makes. (The null backend has no sound card to listen to, so the input is a tone of 220 Hz at a level of 0.25 in place of a microphone.)
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("input.toml");
+    std::fs::write(&file, "[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 0.2\n").unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, _) = listening(&tang).await;
+    until_installed(&mut client, &tang, "builtin:input").await;
+    peak_until(&mut client, &tang, at, SOON, "the session, with nothing played", |peak| peak < 0.001).await;
+
+    // The input is added in a lane of its own that starts bare: its way out is cut, so there is no link from it, and it is silent at the master though its tone is running.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addInstrument", "plugin": "builtin:input"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!(answered["type"], "ack", "{answered}\n{}", tang.log());
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("the new structure is told as a snapshot");
+    assert_eq!(node_names(told), ["Oscillator", "Audio Input", "Master"]);
+    let (lane, osc) = (id_of(told, "Audio Input"), id_of(told, "Oscillator"));
+    let node = told["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().find(|n| n["id"] == lane).unwrap();
+    assert_eq!((node["route"].clone(), node["kind"].clone(), node["volume"].clone()), (json!("none"), json!("instrument"), json!(1.0)), "{node}");
+    assert_eq!(audio_path_of(told), [(osc, MASTER, "audio".to_string())], "the oscillator's link, and none for the input");
+    peak_until(&mut client, &tang, at, SOON, "the input, bare", |peak| peak < 0.001).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    peak_until(&mut client, &tang, at, SOON, "the input, bare, a moment later", |peak| peak < 0.001).await;
+
+    // A cable from it to the mix is the way out given back, and the tone is heard: a sine of 0.25 at a gain of 1 and the lane's volume of 1.
+    let (start, end) = (json!({"node": lane, "port": {"type": "audioOut"}}), json!({"node": MASTER, "port": {"type": "audioIn"}}));
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "addCable", "from": start, "to": end, "gain": null}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 2).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    assert_eq!(said.iter().rfind(|m| m["type"] == "history").cloned().expect("a message of the history"), json!({"type": "history", "undo": "give the lane of Audio Input its way out", "redo": null}));
+    let tone = peak_until(&mut client, &tang, at, SOON, "the tone through the cable", |peak| (peak - 0.25).abs() < 0.02).await;
+    assert!((tone - 0.25).abs() < 0.02, "{tone}");
+
+    // Its gain is the level (the plugin's own `gain`, 0 to 4): twice the gain is twice the tone.
+    let (_, gain) = param_of(told, "Audio Input", "gain");
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "setParam", "node": lane, "param": gain, "value": 2.0}})).await;
+    assert_eq!(answer(&mut client, 3).await["type"], "ack");
+    peak_until(&mut client, &tang, at, SOON, "the tone at a gain of 2", |peak| (peak - 0.5).abs() < 0.03).await;
+
+    // The file has the lane with its way out (given back, so no word of one) and the gain; and no cable, since the link is no cable.
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 4).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(saved.matches("[[instrument]]").count(), 2, "{saved}");
+    assert!(saved.contains("plugin = \"builtin:input\"") && saved.contains("gain = 2"), "{saved}");
+    assert!(!saved.contains("route") && !saved.contains("[[cable]]"), "{saved}");
+
+    // Cut again, the lane is silent; the file says so, and a program started on it has the lane bare and silent, and hears the tone through a cable at the gain that the file keeps.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "setRoute", "node": lane, "route": "none"}})).await;
+    assert_eq!(answer(&mut client, 5).await["type"], "ack");
+    peak_until(&mut client, &tang, at, SOON, "the input, with its way out cut", |peak| peak < 0.001).await;
+    tell(&mut client, json!({"type": "request", "reqId": 6, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 6).await["type"], "ack");
+    let bare = std::fs::read_to_string(&file).unwrap();
+    assert!(bare.contains("plugin = \"builtin:input\"\n") && bare.contains("route = \"none\""), "{bare}");
+
+    let again = Tang::start_on(&file);
+    let (mut second, at, snapshot) = listening(&again).await;
+    assert_eq!(node_names(&snapshot), ["Oscillator", "Audio Input", "Master"]);
+    let lane = id_of(&snapshot, "Audio Input");
+    peak_until(&mut second, &again, at, SOON, "the input that the file keeps bare", |peak| peak < 0.001).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    peak_until(&mut second, &again, at, SOON, "the input that the file keeps bare, a moment later", |peak| peak < 0.001).await;
+    let (start, end) = (json!({"node": lane, "port": {"type": "audioOut"}}), json!({"node": MASTER, "port": {"type": "audioIn"}}));
+    tell(&mut second, json!({"type": "request", "reqId": 1, "intent": {"type": "addCable", "from": start, "to": end, "gain": null}})).await;
+    assert_eq!(answer(&mut second, 1).await["type"], "ack");
+    peak_until(&mut second, &again, at, SOON, "the tone that the file's gain makes", |peak| (peak - 0.5).abs() < 0.03).await;
+}
+
 /// The edges of a snapshot message that carry notes: the cables of notes that were drawn, and what a lane that has none hears (`hears`).
 fn notes_edges_of(snapshot: &Value) -> Vec<Value> {
     snapshot["snapshot"]["graph"]["edges"].as_array().unwrap().iter().filter(|e| e["kind"] == "events" || e["kind"] == "hears").cloned().collect()

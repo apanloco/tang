@@ -35,15 +35,39 @@ pub fn audio() -> anyhow::Result<()> {
         })
         .collect();
 
+    // The audio input (`builtin:input`) opens its stream on the host that `audio::input_host` says, which is not always the output's.
+    let input_host = crate::audio::input_host();
+    let default_input = input_host.default_input_device().and_then(|d| d.name().ok());
+    let inputs: Vec<_> = input_host
+        .input_devices()
+        .map(|found| {
+            found
+                .filter_map(|device| {
+                    let name = device.name().ok()?;
+                    let config = device.default_input_config().ok()?;
+                    Some((name, config))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let _ = stderr_guard;
 
-    println!("=== Audio Output Devices ===");
+    print_devices("Audio Output Devices", &devices, default_name.as_deref());
+    println!();
+    print_devices("Audio Input Devices", &inputs, default_input.as_deref());
+    Ok(())
+}
+
+/// One list of audio devices as `tang enumerate audio` prints it: the default marked, and each with its channels, rate and sample format.
+fn print_devices(title: &str, devices: &[(String, cpal::SupportedStreamConfig)], default: Option<&str>) {
+    println!("=== {title} ===");
     if devices.is_empty() {
         println!("  (none found)");
-        return Ok(());
+        return;
     }
-    for (name, config) in &devices {
-        let is_default = default_name.as_deref() == Some(name.as_str());
+    for (name, config) in devices {
+        let is_default = default == Some(name.as_str());
         let marker = if is_default { " *" } else { "" };
         println!(
             "  {name}{marker}  ({ch}ch, {rate}Hz, {fmt})",
@@ -52,7 +76,6 @@ pub fn audio() -> anyhow::Result<()> {
             fmt = format_sample_fmt(config.sample_format()),
         );
     }
-    Ok(())
 }
 
 fn format_sample_fmt(fmt: cpal::SampleFormat) -> &'static str {

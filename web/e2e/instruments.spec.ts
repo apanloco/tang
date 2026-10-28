@@ -21,7 +21,7 @@ test("an instrument is put in a lane from its menu, another is added in a lane o
   await expect(waveform).toHaveValue("3");
   await page.getByRole("button", { name: "Change the instrument of Oscillator" }).click();
   const instruments = page.getByRole("menu", { name: "Change the instrument of Oscillator" }).getByRole("group", { name: "Built-in" });
-  await expect(instruments.getByRole("menuitem")).toHaveText(["Oscillator"]);
+  await expect(instruments.getByRole("menuitem")).toHaveText(["Audio Input", "Oscillator"]);
   await instruments.getByRole("menuitem", { name: "Oscillator" }).click();
   await expect(waveform).toHaveValue("0");
   await expect(lane("Filter")).toBeVisible();
@@ -39,7 +39,7 @@ test("an instrument is put in a lane from its menu, another is added in a lane o
   // The bar's menu has what the program found installed: the built-ins are always there.
   await page.getByRole("button", { name: "Add an instrument" }).click();
   const builtins = page.getByRole("menu", { name: "Add an instrument" }).getByRole("group", { name: "Built-in" });
-  await expect(builtins.getByRole("menuitem")).toHaveText(["Oscillator"]);
+  await expect(builtins.getByRole("menuitem")).toHaveText(["Audio Input", "Oscillator"]);
   await builtins.getByRole("menuitem", { name: "Oscillator" }).click();
 
   // A lane of its own is on the canvas, called by a number now that there are two, with the buttons of a lane. It was added below

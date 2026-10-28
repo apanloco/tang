@@ -757,13 +757,13 @@ describe("the patch", () => {
       await rig(<PatchView />);
       const menu = await opened("Change the instrument of Oscillator");
       const groups = within(menu).getAllByRole("group").map((group) => [group.getAttribute("aria-label"), within(group).getAllByRole("menuitem").map((item) => item.textContent)]);
-      expect(groups).toEqual([["Built-in", ["Oscillator"]]]);
+      expect(groups).toEqual([["Built-in", ["Audio Input", "Oscillator"]]]);
     });
 
     test("has what the scan finds as it finds it, while it is open", async () => {
       const { server } = await rig(<PatchView />, { catalog: { entries: builtinCatalog, scanning: true } });
       const menu = await opened("Change the instrument of Oscillator");
-      expect(within(menu).getAllByRole("menuitem")).toHaveLength(1);
+      expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
       act(() => {
         server.announceCatalog(
           [
@@ -775,7 +775,7 @@ describe("the patch", () => {
         );
       });
       await waitFor(() => {
-        expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Oscillator", "Acme Synth"]);
+        expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Audio Input", "Oscillator", "Acme Synth"]);
       });
     });
 

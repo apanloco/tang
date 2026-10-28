@@ -148,7 +148,8 @@ describe("the page", () => {
     const groups = within(menu)
       .getAllByRole("group")
       .map((group) => [group.getAttribute("aria-label"), within(group).getAllByRole("menuitem").map((item) => item.textContent)]);
-    expect(groups).toEqual([["Built-in", ["Oscillator"]]]);
+    // (The catalog is by name: the audio input comes before the oscillator.)
+    expect(groups).toEqual([["Built-in", ["Audio Input", "Oscillator"]]]);
   });
 
   test("asks for a lane with the instrument that was chosen, and the lane is on the canvas when the server has made it", async () => {

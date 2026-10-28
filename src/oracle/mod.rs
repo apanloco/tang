@@ -155,6 +155,7 @@ impl Scenario {
     pub fn has_cut_routes(&self) -> bool {
         self.session.contains("route = \"none\"")
             || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::Route { route: Route::None, .. } | Edit::RouteGroup { route: Route::None, .. } | Edit::AddFreeEffect { .. }))
+            || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddLane { plugin } if *plugin == "builtin:input"))
     }
 
     /// Whether an effect has the link into it cut, in its file or by its edits (step 86): the old loop has no such thing either (every effect is fed by the stage before it).
@@ -529,6 +530,26 @@ const FREE_EAR_EDITS: [(u64, Edit); 18] = [
     (41_000, Edit::Undo),
 ];
 
+/// What is done to an audio input in `CABLED` while it plays (step 99: under the oracle it plays a quiet sine of 220 Hz): it is added in a lane of its own, which starts bare, cables are drawn from it
+/// to the reverb on the group's bus (output 4 is its instrument, input 3 the reverb) and to the mix, its gain is turned, its lane is muted and soloed, its volume is turned, and the lane is taken out with
+/// its cables, put back whole by Undo and taken out again by Redo (the tone goes on where it was: the plugin is the very one that comes back).
+const INPUT_EDITS: [(u64, Edit); 14] = [
+    (6_000, Edit::AddLane { plugin: "builtin:input" }),
+    (9_000, Edit::AddCable { from: 4, to: 3, gain: 0.8 }),
+    (12_000, Edit::AddCable { from: 4, to: 4, gain: 0.3 }),
+    (15_000, Edit::Param { lane: 2, slot: 0, param: 0, fraction: 0.5 }),
+    (18_000, Edit::Mute { lane: 2, muted: true }),
+    (21_000, Edit::Mute { lane: 2, muted: false }),
+    (24_000, Edit::Solo { lane: 2, solo: true }),
+    (27_000, Edit::Solo { lane: 2, solo: false }),
+    (30_000, Edit::Volume { lane: 2, value: 0.5 }),
+    (33_000, Edit::Param { lane: 2, slot: 0, param: 1, fraction: 0.9 }),
+    (36_000, Edit::RemoveLane { lane: 2 }),
+    (39_000, Edit::Undo),
+    (42_000, Edit::Redo),
+    (45_000, Edit::Undo),
+];
+
 /// What the keys play into `edited:sources`: `performance`, and a key (E4) that is hit and let go of after the pedal is up, which a lane that has been given the keys again plays.
 fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     let mut events = performance();
@@ -550,7 +571,7 @@ pub fn edited() -> Vec<Scenario> {
         edits: edits.to_vec(),
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS), scenario("gains", &GAIN_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS), scenario("gains", &GAIN_EDITS), scenario("input", &INPUT_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -1069,6 +1090,7 @@ mod tests {
             with,
             [
                 "session:free@256",
+                "session:input@256",
                 "session:math@256",
                 "session:patched@256",
                 "session:routed@256",
@@ -1081,7 +1103,8 @@ mod tests {
                 "edited:instruments@256",
                 "edited:feeds@256",
                 "edited:free@256",
-                "edited:math@256"
+                "edited:math@256",
+                "edited:input@256"
             ]
         );
     }
@@ -1256,7 +1279,7 @@ mod tests {
     #[test]
     fn the_scenarios_that_cut_a_way_out_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
         let cut: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cut_routes()).map(|scenario| scenario.id.clone()).collect();
-        assert_eq!(cut, ["session:free@256", "session:math@256", "session:routed@256", "edited:routes@256", "edited:free@256", "edited:math@256"]);
+        assert_eq!(cut, ["session:free@256", "session:input@256", "session:math@256", "session:routed@256", "edited:routes@256", "edited:free@256", "edited:math@256", "edited:input@256"]);
         // (A scenario that has no cable, no cut and no modulator is what the loop can run: since step 96 a modulator, in a lane, in a group or in a table of its own, is the session's own, which the loop does not
         // tick, so that few of the always-on scenarios are held to it now, and the modulated ones are held to the stored hashes, which are what they were.)
         assert_eq!(always_on().iter().filter(|scenario| scenario.is_in_the_old_loop()).count(), 4);

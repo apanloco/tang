@@ -18,6 +18,9 @@ edited:freemods@64 5506fd8c82dfff86 03fcfda472fa49f6
 edited:gains@1024 08679e9c0dda8e79 56d135635efafe35
 edited:gains@256 8302e375e471eb1a 4ce8c0892415d4e3
 edited:gains@64 8872f63eb0e146cf 8940a4c04e626115
+edited:input@1024 8f8cf8527ba249c0 a796cf786f8a7aa6
+edited:input@256 4332e74ef1fceddf 9ae06c750f576bd7
+edited:input@64 9a4aba575f468d3b 3e2ad34602a3a3d0
 edited:instruments@1024 6df135d7b2de700d 0959b8dbe4e75868
 edited:instruments@256 1135a1139d30f714 6ffb68fb8875ebd9
 edited:instruments@64 e47e99b8559860e3 ee7c80d1b4ec2baa
@@ -972,6 +975,9 @@ session:gains@64 150566abc36674da 3ec2b44b6ce53a70
 session:gate@1024 9ebd4b337a69da67 e2df37fe2e3d224f
 session:gate@256 e1c14474a07ee0c8 f9aa6bc5792e39d4
 session:gate@64 d6388cd4b810badf af8a9be199880d9e
+session:input@1024 b2ec370cdcf5488a 734f135412be7869
+session:input@256 cbf244d7941aff41 c39a8cc91456cebe
+session:input@64 b2a1d7120a693fcc fe788ca2f2961231
 session:math@1024 2813efd1abfbfba1 45e435df6855ed19
 session:math@256 2813efd1abfbfba1 6fce7f6d2d5ed3e0
 session:math@64 ec7814c2b5b0547d fcd2da557befcf9a

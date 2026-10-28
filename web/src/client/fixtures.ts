@@ -4,7 +4,7 @@
 // program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Event, Feed, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, SideInfo, Snapshot, StampedEvent } from "../protocol";
+import type { CatalogEntry, Event, Feed, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Route, SideInfo, Snapshot, StampedEvent } from "../protocol";
 import { isLink } from "./cables";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
@@ -307,12 +307,13 @@ export const builtinEffects = builtinEffectNodes as unknown as Record<string, { 
 
 /**
  * What the controller makes of each built-in instrument that is added in a lane of its own, by the plugin's id: the node's
- * name, the plugin with the parameters it has when it is new, and the lane's range, transposition and volume (full range,
- * none, 1); the ids are the mock's to hand out. Written by Rust (`the_web_clients_fixture_of_the_builtin_instruments_is_current`).
+ * name, the plugin with the parameters it has when it is new, the lane's range, transposition and volume (full range,
+ * none, 1) and its way out (`out`, except for an instrument that starts bare, as the audio input does: `none`, so that it is heard
+ * only through the cables that are drawn from it); the ids are the mock's to hand out. Written by Rust (`the_web_clients_fixture_of_the_builtin_instruments_is_current`).
  */
 export const builtinInstruments = builtinInstrumentNodes as unknown as Record<
   string,
-  { name: string; kind: "instrument"; plugin: Plugin; range: NoteRange | null; transpose: number; volume: number }
+  { name: string; kind: "instrument"; plugin: Plugin; range: NoteRange | null; transpose: number; volume: number; route: Route }
 >;
 
 /**

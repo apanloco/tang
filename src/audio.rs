@@ -107,6 +107,19 @@ fn select_audio_host(_buffer_size: u32, _sample_rate: u32) -> cpal::Host {
     cpal::default_host()
 }
 
+/// The audio host an input stream is opened on (the audio input, `builtin:input`): JACK where the system has it and it has an input device (on Linux, where the output
+/// prefers it, so that the input does not go through the ALSA layer of PipeWire that choice avoids), and the system's default host everywhere else. It sets nothing in the
+/// environment (`select_audio_host` does that once, at startup, before other threads read it), and it is asked by name, so that it is the same code on every platform.
+pub fn input_host() -> cpal::Host {
+    let jack = cpal::available_hosts().into_iter().find(|id| id.name() == "JACK");
+    if let Some(host) = jack.and_then(|id| cpal::host_from_id(id).ok()) {
+        if host.default_input_device().is_some() {
+            return host;
+        }
+    }
+    cpal::default_host()
+}
+
 /// Attempt to promote the current thread to SCHED_FIFO real-time scheduling.
 /// Called once from the audio callback thread on its first invocation.
 /// Fails silently (with a log warning) if the process lacks `rtprio` privileges.
@@ -1196,7 +1209,7 @@ mod tests {
     // -- The example sessions --
 
     /// The example sessions of this repository that show what the built-in plugins do (the others name a plugin that has to be installed, or are somebody's saved sound).
-    const SOUND_EXAMPLES: [&str; 17] = [
+    const SOUND_EXAMPLES: [&str; 18] = [
         "supersaw.toml",
         "wind.toml",
         "bell.toml",
@@ -1214,6 +1227,7 @@ mod tests {
         "ring-bell.toml",
         "growl.toml",
         "pump.toml",
+        "microphone.toml",
     ];
 
     fn example(name: &str) -> String {
@@ -1265,6 +1279,24 @@ mod tests {
             assert!(peak > 0.05, "{name} is heard: its loudest sample is {peak}");
             assert!(peak < 0.6, "{name} is not loud: its loudest sample is {peak}");
         }
+    }
+
+    #[test]
+    fn the_microphone_example_is_heard_through_its_cables_alone_and_the_tone_of_the_null_backend_stands_in_for_the_microphone() {
+        // (In a test, as under `--audio-device none`, the audio input plays a sine of 220 Hz at 0.25 where there would be a microphone, and no key is held: the input does not hear them.)
+        let session = example("microphone.toml");
+        let out = play(&session, &[], 0.0, 0.0, 3.0);
+        assert!(rms(&out[48_000..]) > 0.03, "the tone is heard through the cables: {}", rms(&out[48_000..]));
+        // The lane has no way out of its own: with the two cables taken out the session is silent, to the bit (what is left is a lane that is cut and a lane of effects that nothing feeds).
+        let without = session.split("\n# The microphone into the echo").next().expect("the cables come last");
+        assert!(!without.contains("[[cable]]"), "{without}");
+        let silent = play(without, &[], 0.0, 0.0, 3.0);
+        assert!(silent.iter().all(|sample| *sample == 0.0), "no cable, no sound: {}", silent.iter().fold(0.0f32, |m, x| m.max(x.abs())));
+        // The dry cable alone is the tone at half of the lane's 0.8 volume, a sine of 0.25: its peak is 0.1, and the echo and the reverb are more.
+        let dry_only = session.replace("to = \"instrument[1].effect[0]\"\n", "to = \"instrument[1].effect[0]\"\ngain = 0.0\n");
+        let dry = play(&dry_only, &[], 0.0, 0.0, 3.0);
+        let peak = dry[48_000..].iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!((peak - 0.1).abs() < 0.005, "the tone at half of 0.8 of 0.25: {peak}");
     }
 
     /// The frequency of the periodic signal in `window`, from its autocorrelation: the first of the lags between 40 and 1000 Hz that is nearly as good as the best (the multiples of a

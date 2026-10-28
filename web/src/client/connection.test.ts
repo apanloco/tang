@@ -1898,6 +1898,34 @@ describe("adding an instrument", () => {
     expect(audioPath(client.state.snapshot).slice(0, -1)).toEqual(audioPath(reach));
   });
 
+  test("puts the audio input in a lane whose way out is cut, with no link to the master, as the controller does, and the cable drawn from it to the mix gives the way out back", async () => {
+    const server = new MockServer();
+    const client = await open(server);
+    await client.request(add("builtin:input"));
+    const snapshot = client.state.snapshot;
+    // The lane is there, bare: its node is what the controller made for an input (its way out is `none`), and the audio path has the links it had and none for the new lane.
+    const node = snapshot?.graph.nodes.find((n) => n.id === 3);
+    expect(node).toEqual({ id: 3, parent: null, ...builtinInstruments["builtin:input"] });
+    expect(node).toMatchObject({ kind: "instrument", name: "Audio Input", route: "none", range: null, volume: 1 });
+    expect(audioPath(snapshot)).toEqual(["audio 0→1", `audio 1→${String(MASTER)}`]);
+    // It has its meters all the same (a lane that goes nowhere has its meter), and the oscillator beside it keeps its way out.
+    expect(snapshot?.telemetry.meters.slice(-2).map((entry) => [entry.node, entry.kind])).toEqual([[3, "peak"], [3, "clips"]]);
+    expect(builtinInstruments["builtin:osc"]?.route).toBe("out");
+    // A cable between the two ends of the cut link is the way out given back (and not a second cable beside it), in the words of the link.
+    await client.request({ type: "addCable", from: { node: 3, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } }, gain: null });
+    expect(audioPath(client.state.snapshot)).toEqual(["audio 0→1", `audio 1→${String(MASTER)}`, `audio 3→${String(MASTER)}`]);
+    expect(client.state.snapshot?.graph.nodes.find((n) => n.id === 3)).toMatchObject({ route: "out" });
+    expect(client.state.history.undo).toBe("give the lane of Audio Input its way out");
+    // Undo cuts it again; undoing the add takes the lane out and redoing it makes it again, bare.
+    await client.request({ type: "undo" });
+    expect(client.state.snapshot?.graph.nodes.find((n) => n.id === 3)).toMatchObject({ route: "none" });
+    await client.request({ type: "undo" });
+    expect(client.state.snapshot?.graph.nodes.find((n) => n.id === 3)).toBeUndefined();
+    await client.request({ type: "redo" });
+    expect(client.state.snapshot?.graph.nodes.find((n) => n.id === 3)).toMatchObject({ route: "none" });
+    expect(audioPath(client.state.snapshot)).toEqual(["audio 0→1", `audio 1→${String(MASTER)}`]);
+  });
+
   test("numbers the nodes after the ones that have been made, whatever has been taken out", async () => {
     const server = new MockServer();
     const client = await open(server);

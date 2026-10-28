@@ -751,7 +751,8 @@ const endOfLinks = (edges: readonly Edge[]): number => {
  * A lane added at the end with an instrument in it, as the controller does it (`Controller::add_instrument_lane`): full range, in no
  * group. The graph lists the groups, then the lanes, then the master, so the lane goes before the master; its link to the master
  * comes after the links the others have (the rest of the edges come after all of them); and the layout of the telemetry gets its
- * two meters, a peak and a clip count, after those of the lanes there are.
+ * two meters, a peak and a clip count, after those of the lanes there are. An instrument that starts bare (the audio input: its fixture
+ * says `route: none`) is in a lane whose way out is cut and has no link to the master, so that it is heard through the cables that are drawn from it and nowhere before.
  */
 function addInstrumentOutcome(snapshot: Snapshot, plugin: string, counters: Counters, catalog: readonly CatalogEntry[]): Outcome {
   const found = instrumentFor(plugin, catalog);
@@ -761,9 +762,9 @@ function addInstrumentOutcome(snapshot: Snapshot, plugin: string, counters: Coun
   const master = nodes.find((n) => n.kind === "master");
   if (!master) return invalid("the session has no master to hear a lane");
 
-  const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume, muted: false, solo: false, route: "out", pattern: null };
+  const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume, muted: false, solo: false, route: made.route, pattern: null };
   const atNode = endOfLanes(nodes);
-  const link: Edge = { from: { node: added.id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };
+  const links: Edge[] = made.route === "none" ? [] : [{ from: { node: added.id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" }];
   const atEdge = endOfLinks(edges);
   const meters: LayoutEntry[] = [
     { slot: counters.slot(), node: added.id, port: { type: "audioOut" }, kind: "peak" },
@@ -772,7 +773,7 @@ function addInstrumentOutcome(snapshot: Snapshot, plugin: string, counters: Coun
   return {
     restructured: {
       ...snapshot,
-      graph: { nodes: [...nodes.slice(0, atNode), added, ...nodes.slice(atNode)], edges: [...edges.slice(0, atEdge), link, ...edges.slice(atEdge)] },
+      graph: { nodes: [...nodes.slice(0, atNode), added, ...nodes.slice(atNode)], edges: [...edges.slice(0, atEdge), ...links, ...edges.slice(atEdge)] },
       telemetry: { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, meters: [...snapshot.telemetry.meters, ...meters] },
     },
   };

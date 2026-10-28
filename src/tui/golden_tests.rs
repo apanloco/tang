@@ -2044,11 +2044,55 @@ fn choosing_a_plugin_after_n_swaps_it_into_the_new_lane() {
 }
 
 #[test]
+fn the_instrument_selector_starts_on_the_instrument_that_the_lane_has_so_that_enter_keeps_it() {
+    // (The audio input sorts before the oscillator, so that the first row is not the one that a hand that presses `n` and Enter, or `i` and Enter, has always chosen.)
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    let chosen = |h: &Harness| {
+        let sel = h.s.selector.as_ref().expect("the selector is open");
+        let item = sel.filter.selected_item(&sel.items).expect("a row is selected");
+        h.s.ctl.catalog.plugins()[item.index].id.clone()
+    };
+    h.press(KeyCode::Char('n'));
+    h.commands();
+    assert_eq!(chosen(&h), "builtin:osc", "the lane that `n` made has the oscillator");
+    h.press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SwapInstrument inst=2 plugin=Oscillator bufs=2 remap=false keep"]);
+    assert_eq!(h.s.ctl.model.instruments[2].instrument.as_ref().unwrap().id, "builtin:osc");
+    assert_eq!(h.s.ctl.model.instruments[2].route, Route::Out, "the lane is heard");
+    // `i` on a lane that has an instrument starts on it (the lane that `n` made: the scene's own lanes have stand-ins); on a lane that has none the list starts at its first row.
+    h.goto(TreeAddress::Instrument(2));
+    h.press(KeyCode::Char('i'));
+    assert_eq!(chosen(&h), "builtin:osc");
+    h.press(KeyCode::Esc);
+    h.press(KeyCode::Char('d')); // takes the instrument out of the lane, which stays
+    h.commands();
+    h.press(KeyCode::Char('i'));
+    assert_eq!(chosen(&h), "builtin:input", "an empty lane: the first row");
+}
+
+#[test]
+fn an_audio_input_chosen_in_the_selector_is_in_a_lane_that_has_its_way_out_and_w_cuts_it() {
+    // (The terminal makes the lane with an oscillator and the selector replaces it: the lane is the user's, and has its way out, which `w` cuts, as it does for any lane.)
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+    h.press(KeyCode::Char('n'));
+    h.commands();
+    h.type_chars("audio").press(KeyCode::Enter);
+    assert_eq!(h.commands(), ["SwapInstrument inst=2 plugin=Audio Input bufs=2 remap=false keep"]);
+    assert_eq!(h.s.ctl.model.instruments[2].instrument.as_ref().unwrap().id, "builtin:input");
+    assert_eq!(h.s.ctl.model.instruments[2].route, Route::Out);
+    h.press(KeyCode::Char('w'));
+    assert_eq!(h.s.ctl.model.instruments[2].route, Route::None);
+}
+
+#[test]
 fn replacing_the_instrument_loads_a_fresh_plugin() {
     let mut h = Harness::new(scene_split());
     h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
     h.s.ctl.model.instruments[0].instrument.as_mut().unwrap().params[2].value = 0.25; // volume, edited
-    h.press(KeyCode::Char('i')).press(KeyCode::Enter);
+    // (The scene's lane has a stand-in for an instrument, which the list does not have: it starts at its first row, the audio input, so the oscillator is asked for by name.)
+    h.press(KeyCode::Char('i')).type_chars("oscillator").press(KeyCode::Enter);
     // (The lane's vibrato cable into the old plugin goes first: see the next test.)
     assert_eq!(
         h.commands(),
@@ -2065,7 +2109,8 @@ fn replacing_the_instrument_takes_out_the_cables_into_the_old_one() {
     let mut h = Harness::new(scene_split());
     h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
     h.goto(TreeAddress::Instrument(0));
-    h.press(KeyCode::Char('i')).press(KeyCode::Enter);
+    // (The scene's lane has a stand-in for an instrument, which the list does not have: it starts at its first row, the audio input, so the oscillator is asked for by name.)
+    h.press(KeyCode::Char('i')).type_chars("oscillator").press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
         ["RemoveFreeModTarget mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false keep"]
@@ -4333,7 +4378,8 @@ fn replacing_the_instrument_keeps_the_lanes_id() {
     h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
     let lane = node_at(&h, NodePath::Instrument(0));
     h.goto(TreeAddress::Instrument(0));
-    h.press(KeyCode::Char('i')).press(KeyCode::Enter);
+    // (The scene's lane has a stand-in for an instrument, which the list does not have: it starts at its first row, the audio input, so the oscillator is asked for by name.)
+    h.press(KeyCode::Char('i')).type_chars("oscillator").press(KeyCode::Enter);
     assert_eq!(
         h.commands(),
         ["RemoveFreeModTarget mod=0 target=0", "SwapInstrument inst=0 plugin=Oscillator bufs=2 remap=false keep"]
@@ -7126,7 +7172,8 @@ mod undo_and_redo {
         let before = shape(&h);
         h.commands();
         h.goto(TreeAddress::Instrument(0));
-        h.press(KeyCode::Char('i')).press(KeyCode::Enter);
+        // (The scene's lane has a stand-in for an instrument, which the list does not have: it starts at its first row, the audio input, so the oscillator is asked for by name.)
+        h.press(KeyCode::Char('i')).type_chars("oscillator").press(KeyCode::Enter);
         assert_ne!(shape(&h), before, "another instrument is in the lane, and the cable is gone");
         assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("change the instrument to Oscillator"));
         // (The commands are read: the audio thread, which the test has not, would have handed the old instrument back, so that it is loaded again from the model.)

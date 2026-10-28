@@ -545,7 +545,7 @@ impl Controller {
     }
 
     /// Add a lane at the end with the instrument `source` in it, as `put_instrument` loads it: the lane is full range and in no
-    /// group, and has a meter. Its node. Refused, with no lane made, for what `put_instrument` refuses.
+    /// group, and has a meter, and its way out is cut if the plugin says so (`Plugin::starts_bare`: the audio input). Its node. Refused, with no lane made, for what `put_instrument` refuses.
     pub fn add_instrument_lane(&mut self, source: &str) -> Result<NodeId, IntentError> {
         let loaded = self.load_from_catalog(source, true)?;
         self.place_instrument_in_new_lane(loaded, source)
@@ -555,6 +555,12 @@ impl Controller {
     fn place_instrument_in_new_lane(&mut self, mut loaded: Box<dyn Plugin>, source: &str) -> Result<NodeId, IntentError> {
         has_audio_output(loaded.as_ref())?;
         let inst = self.add_lane();
+        if loaded.starts_bare() {
+            // (Cut before the instrument is in, as for an effect that stands by itself: a way out that was there for a moment would be heard. An audio input is a microphone, and it is heard where
+            // cables are drawn from it: through the speakers that it listens to, by itself, it would howl.)
+            self.model.instruments[inst].route = Route::None;
+            let _ = self.cmd_tx.send(GraphCommand::SetLaneRoute { inst, route: Route::None });
+        }
         let node = self.model.instruments[inst].node;
         let slot = fresh_slot(loaded.as_mut(), source, node);
         self.install_instrument(inst, loaded, slot);

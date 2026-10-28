@@ -55,6 +55,24 @@ fn describe_says_when_a_parameter_has_an_effect_if_it_has_one_only_sometimes() {
 }
 
 #[test]
+fn describe_says_that_the_audio_input_is_an_instrument_with_a_gain_a_pan_and_a_device_to_listen_to() {
+    // (The names of the devices are the machine's, so the choice is looked at by its first label and its default only.)
+    let said = String::from_utf8_lossy(&tang(&["describe", "builtin:input"]).stdout).to_string();
+    for line in ["Audio Input\n", "\n  Type:          instrument\n", "\n  Audio outputs: 2\n", "\n  Latency:       none\n", "\n    [0] gain (min=0, max=4, default=1)\n", "\n    [1] pan (min=-1, max=1, default=0)\n", "\n    [2] device (Default input", ", default=Default input)\n", "\n  Presets:       (none)\n"] {
+        assert!(said.contains(line), "{line:?} is not in: {said}");
+    }
+}
+
+#[test]
+fn enumerate_builtins_lists_the_audio_input_after_the_oscillator_as_an_instrument() {
+    let said = String::from_utf8_lossy(&tang(&["enumerate", "builtins"]).stdout).to_string();
+    let osc = said.find("[instrument] Oscillator").expect("the oscillator is listed");
+    let input = said.find("[instrument] Audio Input").expect("the audio input is listed");
+    assert!(osc < input, "{said}");
+    assert!(said[input..].starts_with("[instrument] Audio Input (") && said[input..].contains("ID:      builtin:input\n          Params:  3\n          Presets: 0\n"), "{said}");
+}
+
+#[test]
 fn a_command_that_fails_says_why_on_stderr_and_ends_with_status_1() {
     let output = tang(&["describe", "builtin:nope"]);
     assert_eq!(output.status.code(), Some(1));
