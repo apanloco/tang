@@ -7,18 +7,24 @@
 // (and no set of nodes that are held to each other by cables that have just their room, which is moved as one) can be moved to a place that is better:
 //
 //  - a cable is the curve that the page draws between the two places it joins on the boxes of its nodes (a cable of audio leaves the right edge and arrives at the left edge, one of modulation
-//    leaves the bottom edge of a modulator and arrives at the top edge of what it drives: the same curve as the page's `getBezierPath`), and it costs its length, and as much again for each
-//    pixel by which it is short of the room that it should have in front of its start (`GAP_X` of a cable of audio, `GAP_Y` of one of modulation: the room for its button and its slider and for
-//    being seen is the spacing that the user asked for, and it is the one number to turn to have more or less);
+//    leaves the bottom edge of a modulator and arrives at the top edge of what it drives, in the column of the knob that it drives: the same curve as the page's `getBezierPath`), and it costs
+//    its length, and as much again for each pixel by which it is short of the room that it should have in front of its start (`GAP_X` of a cable of audio, `GAP_Y` of one of modulation: the room
+//    for its button and its slider and for being seen is the spacing that the user asked for, and it is the one number to turn to have more or less);
 //  - a cable that passes over a node that it does not join costs `OVER_RATE` for each pixel of it that is over the node (a cable is drawn over the nodes it passes, and one that crosses a node
 //    hides it and says nothing of where it goes);
+//  - the nodes that feed one node (two oscillators into one effect) are drawn to be in a column, `ALIGN` for each pixel that they are out of line, as the layers of a drawing of a graph are, and
+//    the cables that end at one node on two places of its left edge are not to cross (the source of the cable that ends higher is not lower than the other's: `INVERT` for each pixel);
 //  - no node comes nearer to another than `MARGIN`;
 //  - a node is a little drawn to where the layout had it (`HOME`), which keeps the nodes that are indifferent where they were, and a node that no cable is at is drawn to the middle of the others
 //    (`PACK`), so that it is not left where the rest has moved away from.
 //
-// It is a function of the nodes and the cables and nothing else: the same session is arranged the same way in every browser (no random numbers, the same order of work, a fixed number of
-// steps, integer places on a grid of `GRID` pixels), so that what a person arranges and what another opens are alike, and a test can say what it is. It is run when the nodes are asked to be
-// arranged, and not when the session changes.
+// Moving one node at a time to its best place ends where no single move is better, which is not always the best there is (a node that is in the way of the one that would let the others in, a modulator
+// that is wedged between two nodes that would be one over the other): the work is made again with the nodes looked at in other orders, up to `STARTS` in all while the budget of `TOTAL_WORK` lasts, and
+// the best of what they come to is taken.
+//
+// It is a function of the nodes and the cables and nothing else: the same session is arranged the same way in every browser (no random numbers but a generator with a state of its own that every
+// browser runs alike, the same orders of work, a fixed number of steps, integer places on a grid of `GRID` pixels), so that what a person arranges and what another opens are alike, and a test can say
+// what it is. It is run when the nodes are asked to be arranged, and not when the session changes.
 import type { NodeId } from "../../protocol";
 
 /** A node as the arrangement sees it: where its box is and how big. */
@@ -38,6 +44,11 @@ export interface Wire {
   toHandle: string;
   /** How much a pixel of this cable costs: 1 for a cable that is drawn as one, less for the faint links by which a lane hears every source and the ties that keep a modulator by what it hears. */
   weight: number;
+  /**
+   * Where the cable ends along the top edge of its node, in pixels from the node's left edge, when that is not the middle: the column of the knob that a cable of modulation drives (the cable comes
+   * down to the knob's port from above, and a node that is under another has the cable come down beside it, not through it). Only for a cable that ends at the top.
+   */
+  toX?: number;
 }
 
 /** A place. */
@@ -54,6 +65,12 @@ export const GAP_Y = 56;
 
 /** How near a node may be to another: nothing is nearer than this. */
 export const MARGIN = 24;
+
+/**
+ * How near a node may be to the left edge of a node that a cable goes down beside, to come in at a port on that edge (the cable to the depth of one of the node's cables: the page runs it, round the node,
+ * `SIDE_OFFSET` of `cableRoute.ts`, 24 pixels from the edge): more than `MARGIN`, so that the cable is not along the edge of the node next to it, over it.
+ */
+export const SIDE_ROOM = 32;
 
 /** The grid that the nodes are put on, in pixels. */
 export const GRID = 8;
@@ -75,6 +92,18 @@ const HOME = 0.03;
 
 /** The pull of the middle of the nodes that have cables on a node that has none, for each pixel away from it. */
 const PACK = 0.05;
+
+/** What a pixel by which two nodes that feed one node are out of line costs, so that they are put in a column (the sources of a join are one under the other, as the layers of a drawing of a graph are). */
+const ALIGN = 2;
+
+/** What a pixel by which the sources of two cables that end one above the other at a node are the wrong way round costs: the cables cross (the first input of an effect that has two is above the second, and what feeds it is above what feeds the second). */
+const INVERT = 1;
+
+/** How many orders of the nodes the work is made with, at the most: the first is the order of the graph, and the best of what they come to is taken (one order can end where another does not: a node in the way of the one that would let the others in). */
+const STARTS = 12;
+
+/** How much work the starts make in all, at the most (places priced, each as many times as there are nodes, since a place is priced against them all): a start after the first is made only while there is room left for another of the size of the first. */
+export const TOTAL_WORK = 1_500_000;
 
 /** How many times each node is looked at, at the most: the work stops before when nothing can be moved to a better place. */
 const PASSES = 12;
@@ -98,6 +127,8 @@ export interface Anchor {
   fx: number;
   fy: number;
   side: Side;
+  /** Pixels to add to `fx` times the width: where along the edge a knob's port is. */
+  ox?: number;
 }
 
 const RIGHT: Anchor = { fx: 1, fy: 0.5, side: "right" };
@@ -110,8 +141,8 @@ const TOP: Anchor = { fx: 0.5, fy: 0, side: "top" };
 /**
  * Where the handle `handle` of a node is on its box: the ends of audio and of notes are in the middle of the right and the left edge (the two inputs of an effect that has two at a third and two
  * thirds of the height, the first as `audioIn:pair`), the output of a modulator is at the middle of its bottom edge, and the place that a cable of modulation ends at (a parameter, a volume, a mix, a
- * pan, a setting of a modulator, the depth of a cable, whose port is on the left edge at the foot of the node but whose cable comes down to it) is taken as the middle of the top edge: which knob of the
- * node it is does not move the node.
+ * pan, a setting of a modulator, the depth of a cable, whose port is on the left edge at the foot of the node but whose cable comes down to it) is taken as the top edge, in the middle unless the
+ * cable says which column of the node's grid of knobs it comes down to (`Wire.toX`: the height of the knob in the node is not told, and does not move the node).
  */
 export function anchorOf(handle: string): Anchor {
   switch (handle) {
@@ -138,6 +169,8 @@ interface Rect {
   y: number;
   width: number;
   height: number;
+  /** How much more than `MARGIN` is kept free at its left edge: where a cable goes down beside the node (`SIDE_ROOM`). */
+  corridor?: number;
 }
 
 /** A cable with the places it joins worked out, and the other end's. */
@@ -246,8 +279,19 @@ function insideOf(curve: Curve, box: Rect): number {
   return total;
 }
 
-/** Whether two boxes are nearer to each other than `MARGIN`. */
-const tooNear = (a: Rect, b: Rect): boolean => a.x + a.width + MARGIN > b.x && b.x + b.width + MARGIN > a.x && a.y + a.height + MARGIN > b.y && b.y + b.height + MARGIN > a.y;
+/** Whether two boxes are nearer to each other than `MARGIN`, and than `SIDE_ROOM` at the left edge of one that a cable goes down beside (`Rect.corridor`). */
+const tooNear = (a: Rect, b: Rect): boolean =>
+  a.x + a.width + MARGIN + (b.corridor ?? 0) > b.x && b.x + b.width + MARGIN + (a.corridor ?? 0) > a.x && a.y + a.height + MARGIN > b.y && b.y + b.height + MARGIN > a.y;
+
+/** The handle of the port of a row of a modulator's cables, where a cable that drives the depth of one ends (`depthHandle` of `toFlow.ts`): on the left edge, at the foot of the node. */
+const DEPTH_HANDLE = "depth-";
+
+/** The extra room that each of `count` nodes keeps free at its left edge: `SIDE_ROOM` less the margin for a node that a cable to the depth of a cable ends at, none for the others. */
+function corridors(cables: readonly Anchored[], count: number): number[] {
+  const extra = new Array<number>(count).fill(0);
+  for (const cable of cables) if (cable.toHandle.startsWith(DEPTH_HANDLE)) extra[cable.b] = SIDE_ROOM - MARGIN;
+  return extra;
+}
 
 /** What an arrangement is worth, for a person to compare two by and a test to say what it holds. */
 export interface Measure {
@@ -259,6 +303,10 @@ export interface Measure {
   over: number;
   /** How many pixels of cable there are over the nodes that they do not join, all the cables together. */
   inside: number;
+  /** How many pixels the sources of the cables that end one above the other at a node are the wrong way round, all the pairs together (the cables cross). */
+  inverted: number;
+  /** How many pixels the nodes that feed one node are out of line, all the pairs of them together (a pair feeds one node by cables of audio or notes that matter). */
+  stagger: number;
   /** How many cables end behind where their room is (`GAP_X` of a cable of audio in front of its start, `GAP_Y` of one of modulation under it). */
   backwards: number;
   /** How many pairs of nodes are nearer to each other than `MARGIN`, or on each other. */
@@ -274,12 +322,14 @@ function anchored(blocks: readonly Block[], wires: readonly Wire[]): Anchored[] 
   return wires.flatMap((wire) => {
     const a = index.get(wire.from);
     const b = index.get(wire.to);
-    return a === undefined || b === undefined || a === b ? [] : [{ ...wire, start: anchorOf(wire.fromHandle), end: anchorOf(wire.toHandle), a, b }];
+    if (a === undefined || b === undefined || a === b) return [];
+    const end = anchorOf(wire.toHandle);
+    return [{ ...wire, start: anchorOf(wire.fromHandle), end: wire.toX !== undefined && end.side === "top" ? { ...end, fx: 0, ox: wire.toX } : end, a, b }];
   });
 }
 
 /** The x and y of where the anchor `anchor` is on the box `box`. */
-const pointX = (box: Rect, anchor: Anchor): number => box.x + anchor.fx * box.width;
+const pointX = (box: Rect, anchor: Anchor): number => box.x + anchor.fx * box.width + (anchor.ox ?? 0);
 const pointY = (box: Rect, anchor: Anchor): number => box.y + anchor.fy * box.height;
 
 /** The curve of the cable `cable` when its nodes are in the boxes `a` and `b`. */
@@ -304,6 +354,40 @@ function shortOf(cable: Anchored, a: Rect, b: Rect): number {
 /** What a cable costs for its length and for not having its room, as much as it matters. */
 const lengthCost = (cable: Anchored, curve: Curve, a: Rect, b: Rect): number => cable.weight * (curve.length + BACKWARDS * shortOf(cable, a, b));
 
+/** The pairs of cables (by their places among `cables`) that end at one node at two places of its left edge, the cable that ends higher first. */
+function crossings(cables: readonly Anchored[]): [number, number][] {
+  const pairs: [number, number][] = [];
+  cables.forEach((upper, i) => {
+    cables.forEach((lower, j) => {
+      if (i === j || upper.b !== lower.b || upper.weight < 1 || lower.weight < 1) return;
+      if (upper.start.side !== "right" || lower.start.side !== "right" || upper.end.side !== "left" || lower.end.side !== "left") return;
+      if (upper.end.fy < lower.end.fy) pairs.push([i, j]);
+    });
+  });
+  return pairs;
+}
+
+/** How many pixels the cable `upper`, which ends higher, starts lower than the cable `lower` does, when the nodes are in the boxes that `box` says: none if they do not cross. */
+const inversion = (upper: Anchored, lower: Anchored, box: (n: number) => Rect): number => Math.max(0, pointY(box(upper.a), upper.start) - pointY(box(lower.a), lower.start));
+
+/** The pairs of nodes (by their places among the blocks) that feed one node by cables of audio or notes that matter: they are put in a column. */
+function feeders(cables: readonly Anchored[]): [number, number][] {
+  const feeding = new Map<number, number[]>();
+  for (const cable of cables) {
+    if (cable.weight < 1 || cable.start.side !== "right") continue;
+    const sources = feeding.get(cable.b) ?? [];
+    if (!sources.includes(cable.a)) sources.push(cable.a);
+    feeding.set(cable.b, sources);
+  }
+  const pairs: [number, number][] = [];
+  for (const sources of feeding.values()) {
+    for (let i = 0; i < sources.length; i += 1) {
+      for (let j = i + 1; j < sources.length; j += 1) pairs.push([got(sources, i), got(sources, j)]);
+    }
+  }
+  return pairs;
+}
+
 /** What an arrangement of `blocks` is worth for the cables `wires` (`Measure`): the same for any two arrangements of the same session, whatever made them. */
 export function measure(blocks: readonly Block[], wires: readonly Wire[]): Measure {
   let length = 0;
@@ -311,7 +395,8 @@ export function measure(blocks: readonly Block[], wires: readonly Wire[]): Measu
   let over = 0;
   let inside = 0;
   let backwards = 0;
-  for (const wire of anchored(blocks, wires)) {
+  const cables = anchored(blocks, wires);
+  for (const wire of cables) {
     const from = blocks[wire.a];
     const to = blocks[wire.b];
     if (!from || !to) continue;
@@ -329,19 +414,24 @@ export function measure(blocks: readonly Block[], wires: readonly Wire[]): Measu
       inside += wire.weight * passed;
     }
   }
+  let stagger = 0;
+  for (const [i, j] of feeders(cables)) stagger += Math.abs(got(blocks, i).x - got(blocks, j).x);
+  let inverted = 0;
+  for (const [i, j] of crossings(cables)) inverted += inversion(got(cables, i), got(cables, j), (n) => got(blocks, n));
   let crowded = 0;
+  const aisles = corridors(cables, blocks.length);
   for (let i = 0; i < blocks.length; i += 1) {
     for (let j = i + 1; j < blocks.length; j += 1) {
       const a = blocks[i];
       const b = blocks[j];
-      if (a && b && tooNear(a, b)) crowded += 1;
+      if (a && b && tooNear({ ...a, corridor: aisles[i] ?? 0 }, { ...b, corridor: aisles[j] ?? 0 })) crowded += 1;
     }
   }
   const left = Math.min(...blocks.map((block) => block.x));
   const top = Math.min(...blocks.map((block) => block.y));
   const right = Math.max(...blocks.map((block) => block.x + block.width));
   const bottom = Math.max(...blocks.map((block) => block.y + block.height));
-  return { length, short, over, inside, backwards, crowded, width: blocks.length > 0 ? right - left : 0, height: blocks.length > 0 ? bottom - top : 0 };
+  return { length, short, over, inside, inverted, stagger, backwards, crowded, width: blocks.length > 0 ? right - left : 0, height: blocks.length > 0 ? bottom - top : 0 };
 }
 
 /** The item at `index` of `items`, which has to be there (the places that the arrangement looks up are made from the same lists). */
@@ -359,8 +449,8 @@ function middle(values: readonly number[]): number {
   return sorted[Math.floor((sorted.length - 1) / 2)] ?? 0;
 }
 
-/** What a whole arrangement is worth in one number, for deciding between two: what the cables cost as the work prices them (their length, `BACKWARDS` times what they are short of their room, `OVER_RATE` times what is over nodes). */
-const score = (m: Measure): number => m.length + BACKWARDS * m.short + OVER_RATE * m.inside;
+/** What a whole arrangement is worth in one number, for deciding between two: what the cables cost as the work prices them (their length, `BACKWARDS` times what they are short of their room, `OVER_RATE` times what is over nodes) `ALIGN` times what the nodes that feed one node are out of line and `INVERT` times what the cables that end at one node are crossed. */
+export const score = (m: Measure): number => m.length + BACKWARDS * m.short + OVER_RATE * m.inside + ALIGN * m.stagger + INVERT * m.inverted;
 
 /**
  * Where each of `blocks` goes to make the cables `wires` short (see the top of this file), or the places that came in if what comes out is worse for them (a session of nodes that no cable joins is
@@ -368,31 +458,81 @@ const score = (m: Measure): number => m.length + BACKWARDS * m.short + OVER_RATE
  */
 export function arrange(blocks: readonly Block[], wires: readonly Wire[], fixed: ReadonlySet<NodeId> = new Set()): Map<NodeId, Place> {
   const start = new Map<NodeId, Place>(blocks.map((block) => [block.id, { x: block.x, y: block.y }]));
-  const arranged = descend(blocks, wires, fixed);
-  if (arranged === null) return start;
+  const work = { priced: 0 };
+  const first = descend(blocks, wires, fixed, undefined, work);
+  if (first === null) return start;
+  const worth = (places: ReadonlyMap<NodeId, Place>): number => score(measure(blocks.map((block) => ({ ...block, ...places.get(block.id) })), wires));
+  let best = first;
+  let bestWorth = worth(first);
+  // (The same work with the nodes looked at in other orders, while there is room for another of the size of the first: where a node ends can depend on which was moved before it, and the best of them is taken.)
+  const size = work.priced;
+  for (let k = 1; k < STARTS && roomForAnother(work.priced, size, blocks.length); k += 1) {
+    const places = descend(blocks, wires, fixed, shuffled(blocks.length, k), work);
+    if (places === null) break;
+    const found = worth(places);
+    if (found < bestWorth) {
+      best = places;
+      bestWorth = found;
+    }
+  }
   // (What came in is kept if what comes out is worse: the places are put on the grid, which can cost a pixel or two on a layout that had its room to the pixel. One that is as good is taken: it has the nodes that no cable is at drawn in.)
-  return score(measure(blocks.map((block) => ({ ...block, ...arranged.get(block.id) })), wires)) > score(measure(blocks, wires)) ? start : arranged;
+  return bestWorth > score(measure(blocks, wires)) ? start : best;
+}
+
+/** Whether a start of the size of `size` places priced can be made after `done` places have been priced, for `nodes` nodes (a place is priced against them all): the work in all stays within `TOTAL_WORK`. */
+export const roomForAnother = (done: number, size: number, nodes: number): boolean => (done + size) * nodes <= TOTAL_WORK;
+
+/** The places 0 to `count - 1` in an order that is the same every time for the same `start` (a shuffle by a generator that has a state of its own: no two browsers differ). */
+export function shuffled(count: number, start: number): number[] {
+  let seed = (Math.imul(start + 1, 0x9e3779b1) ^ 0x85ebca6b) >>> 0;
+  const next = (): number => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 2 ** 32;
+  };
+  const order = Array.from({ length: count }, (_, i) => i);
+  for (let i = count - 1; i > 0; i -= 1) {
+    const j = Math.floor(next() * (i + 1));
+    const kept = got(order, i);
+    order[i] = got(order, j);
+    order[j] = kept;
+  }
+  return order;
 }
 
 /**
- * The work of `arrange` before it is judged: every block starts where it is (on the grid), and the blocks are looked at in turn, over and over, each one moved (alone, and with the blocks that are held
- * to it by cables that have just their room) to the place that is best for the cables at it among the places that are tried (against the cables' own ends, against the other boxes' edges, a few steps
- * either way) until none moves. The places are on a grid of `GRID` pixels, and the whole is moved so that its left and top are those of the blocks that came in (not if some are `fixed`). It is none
+ * The work of `arrange` before it is judged: every block starts where it is (on the grid), and the blocks are looked at in turn (in the order of `order`, which is the order of the blocks if it is not
+ * given), over and over, each one moved (alone, and with the blocks that are held to it by cables that have just their room) to the place that is best for the cables at it among the places that are
+ * tried (against the cables' own ends, against the other boxes' edges, a few steps either way) until none moves. The places are on a grid of `GRID` pixels, and the whole is moved so that its left and top
+ * are those of the blocks that came in (not if some are `fixed`). The places that it prices are added to `work.priced`, for `arrange` to see how much of its budget the work has taken. It is none
  * if there is nothing to move (fewer than two blocks, or no cable between two of them). Exported so that a test can see what it comes to.
  */
-export function descend(blocks: readonly Block[], wires: readonly Wire[], fixed: ReadonlySet<NodeId> = new Set()): Map<NodeId, Place> | null {
+export function descend(blocks: readonly Block[], wires: readonly Wire[], fixed: ReadonlySet<NodeId> = new Set(), order?: readonly number[], work?: { priced: number }): Map<NodeId, Place> | null {
   const cables = anchored(blocks, wires);
   if (blocks.length < 2 || cables.length === 0) return null;
 
   const pinned: boolean[] = blocks.map((block) => fixed.has(block.id));
+  const aisles = corridors(cables, blocks.length);
   // (A node that is fixed is where it is, to the pixel; the others start on the grid, so that every move is a number of steps of it.)
-  const nodes: Rect[] = blocks.map((block, n) => ({ x: pinned[n] ? block.x : snap(block.x), y: pinned[n] ? block.y : snap(block.y), width: block.width, height: block.height }));
+  const nodes: Rect[] = blocks.map((block, n) => ({ x: pinned[n] ? block.x : snap(block.x), y: pinned[n] ? block.y : snap(block.y), width: block.width, height: block.height, corridor: aisles[n] ?? 0 }));
   const home: Place[] = nodes.map((node) => ({ x: node.x, y: node.y }));
   /** The cables at each node, by their places in `cables`. */
   const at: number[][] = nodes.map(() => []);
   cables.forEach((cable, wire) => {
     at[cable.a]?.push(wire);
     at[cable.b]?.push(wire);
+  });
+  /** The pairs of nodes that feed one node (a column is made of them), and the pairs that each node is in. */
+  const pairs = feeders(cables);
+  const pairsAt: number[][] = nodes.map(() => []);
+  pairs.forEach(([i, j], pair) => {
+    pairsAt[i]?.push(pair);
+    pairsAt[j]?.push(pair);
+  });
+  /** The pairs of cables that cross if their sources are the wrong way round, and the pairs that each node is a source of (where the node that they end at is does not decide it). */
+  const crossed = crossings(cables);
+  const crossedAt: number[][] = nodes.map(() => []);
+  crossed.forEach(([i, j], pair) => {
+    for (const n of new Set([got(cables, i).a, got(cables, j).a])) crossedAt[n]?.push(pair);
   });
   /** Each cable's curve as the nodes are now. */
   const curves: Curve[] = cables.map((cable) => curveBetween(cable, got(nodes, cable.a), got(nodes, cable.b)));
@@ -420,7 +560,7 @@ export function descend(blocks: readonly Block[], wires: readonly Wire[], fixed:
 
   /**
    * What everything that the nodes in `set` have to do with costs while they are where `moved` says (the others where they are): the cables at them, the cables at them that pass over other nodes,
-   * the other cables that pass over them, and their pull to where they were or, for a node that has no cable, to the middle of the rest.
+   * the other cables that pass over them, their pull to where they were or, for a node that has no cable, to the middle of the rest, how far out of line they are with the nodes that feed the same node, and how far the cables that end at one node are crossed.
    */
   const costOf = (set: readonly number[], moved: ReadonlyMap<number, Rect>, middleOfAll: Place): number => {
     priced += 1;
@@ -457,6 +597,19 @@ export function descend(blocks: readonly Block[], wires: readonly Wire[], fixed:
         cost += HOME * Math.sqrt((node.x - pull.x) ** 2 + (node.y - pull.y) ** 2);
       }
     }
+    // (A pair of which both nodes are in the set is priced once for each of them, which a move of the whole set does not change: the nodes of the pair stay as far from each other as they were.)
+    for (const n of set) {
+      for (const pair of pairsAt[n] ?? []) {
+        const [i, j] = got(pairs, pair);
+        cost += ALIGN * Math.abs(box(i).x - box(j).x);
+      }
+    }
+    for (const n of set) {
+      for (const pair of crossedAt[n] ?? []) {
+        const [i, j] = got(crossed, pair);
+        cost += INVERT * inversion(got(cables, i), got(cables, j), box);
+      }
+    }
     return cost;
   };
 
@@ -487,7 +640,7 @@ export function descend(blocks: readonly Block[], wires: readonly Wire[], fixed:
       // (The anchor is a gap behind the other end, on the side that the cable leaves by or arrives at.)
       const ax = pointX(other, theirs) - (mine.side === "right" ? 1 : mine.side === "left" ? -1 : 0) * gap;
       const ay = pointY(other, theirs) - (mine.side === "bottom" ? 1 : mine.side === "top" ? -1 : 0) * gap;
-      places.push({ x: ax - mine.fx * node.width, y: ay - mine.fy * node.height });
+      places.push({ x: ax - mine.fx * node.width - (mine.ox ?? 0), y: ay - mine.fy * node.height });
     }
     return places;
   };
@@ -519,9 +672,11 @@ export function descend(blocks: readonly Block[], wires: readonly Wire[], fixed:
     return held;
   };
 
+  const visit = order ?? nodes.map((_, n) => n);
   for (let pass = 0; pass < PASSES && priced < BUDGET; pass += 1) {
     let moved = false;
-    for (let n = 0; n < nodes.length && priced < BUDGET; n += 1) {
+    for (const n of visit) {
+      if (priced >= BUDGET) break;
       const node = nodes[n];
       if (!node || pinned[n]) continue;
       const middleOfAll = centre();
@@ -569,14 +724,16 @@ export function descend(blocks: readonly Block[], wires: readonly Wire[], fixed:
           const other = nodes[m];
           if (m === n || !other || set.includes(m)) continue;
           if (Math.abs(other.x - aimed.x) > NEAR + other.width || Math.abs(other.y - aimed.y) > NEAR + other.height) continue;
-          consider(other.x + other.width + MARGIN, aimed.y);
-          consider(other.x - MARGIN - node.width, aimed.y);
+          consider(other.x + other.width + MARGIN + (node.corridor ?? 0), aimed.y);
+          consider(other.x - MARGIN - (other.corridor ?? 0) - node.width, aimed.y);
           consider(aimed.x, other.y + other.height + MARGIN);
           consider(aimed.x, other.y - MARGIN - node.height);
-          consider(other.x + other.width + MARGIN, other.y);
-          consider(other.x + other.width + MARGIN, other.y + other.height - node.height);
+          consider(other.x + other.width + MARGIN + (node.corridor ?? 0), other.y);
+          consider(other.x + other.width + MARGIN + (node.corridor ?? 0), other.y + other.height - node.height);
           consider(other.x, other.y + other.height + MARGIN);
           consider(other.x + other.width - node.width, other.y + other.height + MARGIN);
+          consider(other.x, other.y - MARGIN - node.height);
+          consider(other.x + other.width - node.width, other.y - MARGIN - node.height);
         }
         // And a few steps from where it is.
         for (const step of [GRID, GRID * 4, GRID * 16]) {
@@ -600,6 +757,7 @@ export function descend(blocks: readonly Block[], wires: readonly Wire[], fixed:
     if (!moved) break;
   }
 
+  if (work) work.priced += priced;
   // The same top and left as the blocks that came in (unless some stay where they are).
   const left = Math.min(...blocks.map((block) => block.x));
   const top = Math.min(...blocks.map((block) => block.y));

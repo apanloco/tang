@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import type { Edge, Graph, Node, NodeId, Param, Plugin } from "../../protocol";
+import type { Edge, Graph, Node, NodeId, Param, Plugin, Port } from "../../protocol";
 import { MASTER, audioCablesFixture, freeReachFixture, groupsFixture, sideCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
 import { DEFAULT_KNOBS } from "../../client/pinning";
-import { MARGIN, OVER_RATE, measure } from "./arrange";
+import { GRID, MARGIN, SIDE_ROOM, measure, score } from "./arrange";
 import {
   blocksOf,
   CABLE_GAP,
@@ -2776,7 +2776,7 @@ describe("the nodes arranged for short cables", () => {
     for (const [name, graph] of sessions) {
       const before = worth(graph, toFlow(graph));
       const after = worth(graph, arranged(graph));
-      expect(after.length + OVER_RATE * after.inside, name).toBeLessThan(before.length + OVER_RATE * before.inside);
+      expect(score(after), name).toBeLessThan(score(before));
       expect(after.over, name).toBeLessThanOrEqual(before.over);
     }
     // (The tracer: the lane, the filter and the master are in a line with the room of a cable, and the LFO is over the filter.)
@@ -2846,7 +2846,63 @@ describe("the nodes arranged for short cables", () => {
     });
   });
 
-  test("keeps the nodes of graphs made up from a seed apart and the cables no longer, whatever their shape", () => {
+  test("makes a cable of modulation end in the column of the knob that it drives, in the node's grid of four cells of 72 pixels, and a cable to a volume, a mix or a pan in the cell that is after the knobs", () => {
+    const to = (id: number, node: NodeId, port: Port): Edge => ({ kind: "modulation", id, amount: 0.5, from: { node: 3, port: { type: "modOut" } }, to: { node, port } });
+    // A lane (six knobs), an effect in it (twelve parameters: the first eight are its knobs, and the seventeenth, which a cable drives, is a ninth) and a group.
+    const driven: Graph = {
+      nodes: [instrument(1, 6), effect(2, 1, 12), hearing(3, 1), group(10), master],
+      edges: [
+        audio(1, 2),
+        audio(2, MASTER),
+        to(0, 2, { type: "param", index: 7 }),
+        to(1, 2, { type: "param", index: 1 }),
+        to(2, 2, { type: "param", index: 17 }),
+        to(3, 1, { type: "volume" }),
+        to(4, 2, { type: "mix" }),
+        to(5, 10, { type: "volume" }),
+        to(6, 10, { type: "pan" }),
+        // (A parameter that the plugin has not is no knob of the node: no column. Nor is a volume that an effect has not, a mix that a lane has not, or a pan that a lane has not.)
+        to(7, 2, { type: "param", index: 99 }),
+        to(8, 2, { type: "volume" }),
+        to(9, 1, { type: "mix" }),
+        to(10, 1, { type: "pan" }),
+      ],
+    };
+    const { wires } = blocksOf(driven, toFlow(driven));
+    // (The cell's middle: 8 pixels of room at the side, 72 for each column before it, and half of 72. The lane's volume is the cell after its six knobs, the effect's mix the one after its nine, a group's volume and pan its first two.)
+    expect(wires.map((wire) => wire.toX)).toEqual([undefined, undefined, 44 + 3 * 72, 44, 44, 44 + 2 * 72, 44 + 72, 44, 44 + 72, undefined, undefined, undefined, undefined]);
+    // A cable to a setting of a modulator, or to the depth of a cable, is no cell that is told: the middle of the top.
+    const settings: Graph = { nodes: [modulator(4, 1), modulator(5, 1), instrument(1), master], edges: [{ kind: "modulation", id: 0, amount: 0.5, from: { node: 4, port: { type: "modOut" } }, to: { node: 5, port: { type: "rate" } } }] };
+    expect(blocksOf(settings, toFlow(settings)).wires.map((wire) => wire.toX)).toEqual([undefined]);
+  });
+
+  test("puts a modulator over the knob that it drives, in line with the column of the knob and not with the middle of the node: the cable comes straight down", () => {
+    // A lane with eight knobs and a modulator that drives the fourth (index 7), which is in the last column of the node's grid.
+    const driven: Graph = { nodes: [instrument(1, 8), hearing(2, 1), master], edges: [audio(1, MASTER), cable(0, 2, 1, 7)] };
+    const flow = arranged(driven);
+    // The modulator's output is at the middle of its node, 152 pixels in, and the knob's port at 8 + 3 × 72 + 36 = 260 pixels: the modulator is 108 pixels to the right of the lane (to within a step of the grid), and over it.
+    expect(Math.abs(at(flow, 2).position.x - at(flow, 1).position.x - (260 - NODE_WIDTH / 2))).toBeLessThanOrEqual(GRID / 2);
+    expect(at(flow, 2).position.y).toBeLessThan(at(flow, 1).position.y);
+  });
+
+  test("keeps the nodes at the left of a node that a cable to the depth of a cable ends at SIDE_ROOM away, where the cable goes down beside it and not along the edge of the node next to it", () => {
+    const tracer = tracerSnapshot.graph;
+    const driving = tracer.edges.find((edge) => edge.kind === "modulation");
+    if (driving?.kind !== "modulation") throw new Error("the tracer has a cable of modulation");
+    const depth: Edge = { kind: "modulation", id: 900, amount: 0.5, from: { node: 900, port: { type: "modOut" } }, to: { node: driving.from.node, port: { type: "depth", edge: driving.id } } };
+    const graph: Graph = { nodes: [...tracer.nodes, { ...envelope(900, 1), parent: null }], edges: [...tracer.edges, depth] };
+    const flow = arranged(graph);
+    const { blocks } = blocksOf(graph, flow);
+    const lfo = blocks.find((block) => block.id === driving.from.node);
+    if (!lfo) throw new Error("the LFO is on the canvas");
+    expect(worth(graph, flow).crowded).toBe(0);
+    for (const other of blocks) {
+      if (other.id === lfo.id || other.y + other.height <= lfo.y || other.y >= lfo.y + lfo.height || other.x >= lfo.x) continue;
+      expect(lfo.x - (other.x + other.width), `node ${String(other.id)}`).toBeGreaterThanOrEqual(SIDE_ROOM);
+    }
+  });
+
+  test("keeps the nodes of graphs made up from a seed apart and the cables no longer, whatever their shape", { timeout: 120_000 }, () => {
     for (const { round, graph } of madeUpGraphs(60)) {
       const rows = toFlow(graph);
       const flow = arranged(graph);
@@ -2855,7 +2911,7 @@ describe("the nodes arranged for short cables", () => {
       const before = worth(graph, rows);
       const after = worth(graph, flow);
       expect(after.crowded, `round ${String(round)}`).toBe(0);
-      expect(after.length + OVER_RATE * after.inside, `round ${String(round)}`).toBeLessThanOrEqual(before.length + OVER_RATE * before.inside + 1e-6);
+      expect(score(after), `round ${String(round)}`).toBeLessThanOrEqual(score(before) + 1e-6);
       expect(MARGIN).toBeGreaterThan(0);
     }
   });

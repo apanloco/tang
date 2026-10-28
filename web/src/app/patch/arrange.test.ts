@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { GAP_X, GAP_Y, GRID, MARGIN, OVER_RATE, anchorOf, arrange, measure } from "./arrange";
+import { GAP_X, GAP_Y, GRID, MARGIN, SIDE_ROOM, TOTAL_WORK, anchorOf, arrange, descend, measure, roomForAnother, score, shuffled } from "./arrange";
 import type { Block, Wire } from "./arrange";
 
 const WIDTH = 304;
@@ -42,7 +42,7 @@ describe("what an arrangement is worth", () => {
     const blocks = [block(1, 0, 0), block(2, WIDTH + GAP_X, 0)];
     const worth = measure(blocks, [audio(1, 2)]);
     expect(worth.length).toBeCloseTo(GAP_X, 6);
-    expect({ ...worth, length: 0 }).toEqual({ length: 0, short: 0, over: 0, inside: 0, backwards: 0, crowded: 0, width: 2 * WIDTH + GAP_X, height: 120 });
+    expect({ ...worth, length: 0 }).toEqual({ length: 0, short: 0, over: 0, inside: 0, inverted: 0, stagger: 0, backwards: 0, crowded: 0, width: 2 * WIDTH + GAP_X, height: 120 });
   });
 
   test("a cable whose end is behind its start, or has less room than it should, is counted; one that is level is as long as the line, and one that goes up or down is longer, as the curve that the page draws is", () => {
@@ -86,6 +86,65 @@ describe("what an arrangement is worth", () => {
     expect(measure([...blocks.slice(0, 2), block(3, WIDTH + GAP_X - 6, 20, 100)], [audio(1, 2)])).toMatchObject({ over: 1 });
   });
 
+  test("a cable of modulation that says which column of its node it ends in comes down to that column, and one that ends at a side has no column", () => {
+    const above = block(1, 0, 0, 100);
+    const under = block(2, 0, 100 + GAP_Y);
+    // (The modulator's output is at the middle of its bottom edge, 152 pixels in: a cable to the column that is the middle of the node's top is straight down.)
+    expect(measure([above, under], [modulation(1, 2)]).length).toBeCloseTo(GAP_Y, 6);
+    expect(measure([above, under], [{ ...modulation(1, 2), toX: WIDTH / 2 }]).length).toBeCloseTo(GAP_Y, 6);
+    // A column 108 pixels to the right of that: the curve is longer than the line between the two places.
+    expect(measure([above, under], [{ ...modulation(1, 2), toX: WIDTH / 2 + 108 }]).length).toBeGreaterThan(Math.sqrt(GAP_Y ** 2 + 108 ** 2));
+    // A cable that arrives at a side is not drawn to a column of the top.
+    const level = [block(1, 0, 0), block(2, WIDTH + GAP_X, 0)];
+    expect(measure(level, [{ ...audio(1, 2), toX: 100 }])).toEqual(measure(level, [audio(1, 2)]));
+  });
+
+  test("the nodes that feed one node are out of line by the distance of their left edges, and not when only one node feeds it or the cables matter little", () => {
+    const blocks = [block(1, 0, 0), block(2, 40, 400), block(3, 600, 200)];
+    expect(measure(blocks, [audio(1, 3), audio(2, 3)]).stagger).toBe(40);
+    expect(measure(blocks, [audio(1, 3)]).stagger).toBe(0);
+    // (One that feeds two nodes is no pair; a faint link is not what a column is made of.)
+    expect(measure(blocks, [audio(1, 3), audio(1, 2)]).stagger).toBe(0);
+    expect(measure(blocks, [audio(1, 3), { ...audio(2, 3), weight: 0.25 }]).stagger).toBe(0);
+    // (A node that sends two cables to one node is one source of it, and not two that are in line with each other: 1 is 40 from 2 and no more for its second cable.)
+    expect(measure(blocks, [audio(1, 3), { ...audio(1, 3), toHandle: "audioInSide" }, audio(2, 3)]).stagger).toBe(40);
+    // (Two modulators that drive one node are side by side above it, and not a column.)
+    expect(measure([block(1, 0, 0), block(2, 500, 0), block(3, 250, 400)], [modulation(1, 3), modulation(2, 3)]).stagger).toBe(0);
+    // Three nodes make three pairs: 40 + 100 + 60.
+    expect(measure([block(1, 0, 0), block(2, 40, 400), block(3, 100, 800), block(4, 600, 200)], [audio(1, 4), audio(2, 4), audio(3, 4)]).stagger).toBe(40 + 100 + 60);
+  });
+
+  test("two cables that end one above the other at a node cross when the one that ends higher starts lower, by how much lower, and do not when they are the right way round or end at one place", () => {
+    const pair = (from: number, handle: string): Wire => ({ from, fromHandle: "audioOut", to: 3, toHandle: handle, weight: 1 });
+    const top = block(1, 0, 0, 100);
+    const bottom = block(2, 0, 400, 100);
+    const sink = block(3, 600, 100, 300);
+    // 1 feeds the first input of 3 (the higher), 2 the second: the right way round.
+    expect(measure([top, bottom, sink], [pair(1, "audioIn:pair"), pair(2, "audioInSide")]).inverted).toBe(0);
+    // 2 feeds the first and 1 the second: the sources are 400 pixels the wrong way round.
+    expect(measure([top, bottom, sink], [pair(2, "audioIn:pair"), pair(1, "audioInSide")]).inverted).toBe(400);
+    // Two cables at one place have no order.
+    expect(measure([top, bottom, sink], [pair(2, "audioIn"), pair(1, "audioIn")]).inverted).toBe(0);
+    // A faint cable, at either input, does not cross (a link by which a lane hears every source is not what an order is made of), and neither does a cable of modulation, which comes down to a knob.
+    expect(measure([top, bottom, sink], [{ ...pair(2, "audioIn:pair"), weight: 0.25 }, pair(1, "audioInSide")]).inverted).toBe(0);
+    expect(measure([top, bottom, sink], [pair(2, "audioIn:pair"), { ...pair(1, "audioInSide"), weight: 0.25 }]).inverted).toBe(0);
+    expect(measure([top, bottom, sink], [{ ...modulation(2, 3), toHandle: "param-1" }, pair(1, "audioIn:pair")]).inverted).toBe(0);
+    // Cables that end at two nodes are not crossed by one another.
+    expect(measure([top, bottom, sink, block(4, 600, 600, 100)], [pair(2, "audioIn:pair"), { ...pair(1, "audioInSide"), to: 4 }]).inverted).toBe(0);
+    // Every pair that is the wrong way round is counted: 2 and 4 feed the first input and 1 the second, 400 and 800 pixels the wrong way round.
+    expect(measure([top, bottom, sink, block(4, 0, 800, 100)], [pair(2, "audioIn:pair"), pair(4, "audioIn:pair"), pair(1, "audioInSide")]).inverted).toBe(400 + 800);
+  });
+
+  test("what an arrangement is worth in one number is its length, twice what the cables are short of their room, once and a half what is over nodes, twice what the nodes that feed one node are out of line and once what the cables that end at one node are crossed by, and nothing for what is only counted", () => {
+    const nothing = measure([], []);
+    expect(score({ ...nothing, length: 10 })).toBe(10);
+    expect(score({ ...nothing, short: 10 })).toBe(20);
+    expect(score({ ...nothing, inside: 10 })).toBe(15);
+    expect(score({ ...nothing, stagger: 10 })).toBe(20);
+    expect(score({ ...nothing, inverted: 10 })).toBe(10);
+    expect(score({ ...nothing, over: 3, backwards: 4, crowded: 5, width: 600, height: 400 })).toBe(0);
+  });
+
   test("a cable that passes over a node that it does not join is counted, and one that goes round it is not", () => {
     const blocks = [block(1, 0, 0), block(2, 2 * (WIDTH + GAP_X), 0), block(3, WIDTH + GAP_X, 0)];
     expect(measure(blocks, [audio(1, 2)]).over).toBe(1);
@@ -98,6 +157,19 @@ describe("what an arrangement is worth", () => {
     expect(measure([block(1, 0, 0), block(2, WIDTH + MARGIN - 1, 0)], []).crowded).toBe(1);
     expect(measure([block(1, 0, 0), block(2, WIDTH + MARGIN, 0)], []).crowded).toBe(0);
     expect(measure([block(1, 0, 0), block(2, 100, 50)], []).crowded).toBe(1);
+  });
+
+  test("a node that a cable to the depth of a cable ends at keeps SIDE_ROOM free at its left edge, where the cable goes down beside it: two nodes the margin apart are crowded then, and not otherwise", () => {
+    const depth: Wire = { ...modulation(3, 2), toHandle: "depth-7" };
+    const far = block(3, 1000, 600);
+    expect(measure([block(1, 0, 0), block(2, WIDTH + MARGIN, 0), far], []).crowded).toBe(0);
+    // 2 is the margin from 1, at its left: the cable that goes down beside 2 would run along the edge of 1.
+    expect(measure([block(1, 0, 0), block(2, WIDTH + MARGIN, 0), far], [depth]).crowded).toBe(1);
+    expect(measure([block(1, 0, 0), block(2, WIDTH + SIDE_ROOM - 1, 0), far], [depth]).crowded).toBe(1);
+    expect(measure([block(1, 0, 0), block(2, WIDTH + SIDE_ROOM, 0), far], [depth]).crowded).toBe(0);
+    // The room is at the left edge only: a node at the right of 2 keeps the margin, and so does one that no such cable ends at.
+    expect(measure([block(2, 0, 0), block(1, WIDTH + MARGIN, 0), far], [depth]).crowded).toBe(0);
+    expect(measure([block(1, 0, 0), block(2, WIDTH + MARGIN, 0), far], [modulation(3, 2)]).crowded).toBe(0);
   });
 
   test("the box that holds the nodes is said by its width and its height, and nothing of nothing", () => {
@@ -293,6 +365,24 @@ describe("arranging the nodes", () => {
     expect(measure(arranged, wires).length).toBeLessThan(340);
   });
 
+  test("a node that a cable to the depth of a cable ends at is not put at the margin from the node at its left, where the cable goes down: the room is SIDE_ROOM (the tracer with an envelope on the depth of its LFO's cable)", () => {
+    // The oscillator (1) feeds the filter (2), which the LFO (3) drives at its first knob; the envelope (5) drives the depth of that cable: the LFO is put over the left of the filter, at the oscillator's edge.
+    const blocks = [block(1, 0, 774, 481), block(2, 376, 774, 276), block(3, 376, 420, 282), block(4, 752, 513.5, 228), block(5, 0, 0, 348)];
+    const wires: Wire[] = [audio(1, 2), audio(2, 4), { ...modulation(3, 2, "param-0"), toX: 44 }, { ...modulation(5, 3), toHandle: "depth-0" }];
+    const arranged = moved(blocks, arrange(blocks, wires));
+    expect(measure(arranged, wires)).toMatchObject({ crowded: 0, over: 0 });
+    // (Whatever is left of the LFO and as high as it is, is SIDE_ROOM from it or farther, and the oscillator is left of it.)
+    const lfo = at(arranged, 3);
+    const oscillator = at(arranged, 1);
+    expect(oscillator.x + oscillator.width).toBeLessThanOrEqual(lfo.x);
+    // (Not farther than it has to be: the node that is put against it has the room that the cable needs and no more.)
+    expect(lfo.x - (oscillator.x + oscillator.width)).toBe(SIDE_ROOM);
+    for (const other of arranged) {
+      if (other.id === 3 || other.y + other.height <= lfo.y || other.y >= lfo.y + lfo.height || other.x >= lfo.x) continue;
+      expect(lfo.x - (other.x + other.width), `node ${String(other.id)}`).toBeGreaterThanOrEqual(SIDE_ROOM);
+    }
+  });
+
   test("what came in is kept when what comes out is worse for the cables: the places are put on a grid, which a layout that had its room to the pixel is not on", () => {
     // Nodes 301 wide: the second is 72 pixels after the edge of the first at 373, which is not on the grid, and the nearest place that is is 3 pixels too far.
     const blocks: Block[] = [
@@ -303,6 +393,79 @@ describe("arranging the nodes", () => {
       [1, { x: 0, y: 0 }],
       [2, { x: 373, y: 0 }],
     ]);
+  });
+
+  test("two nodes that feed one node are put one under the other, in a column, with the node that they feed level with the room between them", () => {
+    const blocks = [block(1, 0, 0), block(2, 900, 1500), block(3, 1800, 700)];
+    const wires = [audio(1, 3), audio(2, 3)];
+    const arranged = moved(blocks, arrange(blocks, wires));
+    expect(Math.abs(at(arranged, 1).x - at(arranged, 2).x)).toBeLessThanOrEqual(GRID);
+    // (Not on each other: the one that is lower is under the margin of the other.)
+    const [upper, lower] = at(arranged, 1).y < at(arranged, 2).y ? [at(arranged, 1), at(arranged, 2)] : [at(arranged, 2), at(arranged, 1)];
+    expect(lower.y - (upper.y + upper.height)).toBeGreaterThanOrEqual(MARGIN);
+    expect(at(arranged, 3).x - (at(arranged, 1).x + WIDTH)).toBe(GAP_X);
+    expect(measure(arranged, wires)).toMatchObject({ crowded: 0, over: 0 });
+  });
+
+  test("the nodes that feed one node are put in a column by their left edges, even where one is narrower and its cable would have its room a little further on: the column is worth more than the pixels of cable", () => {
+    // 1 stays where it is. 2 is 104 pixels narrower, so that its cable has its room 104 pixels further right than 1's does: alone it would be put there.
+    const blocks = [block(1, 0, 0, 120), { ...block(2, 300, 500, 120), width: WIDTH - 104 }, block(3, 800, 250, 120)];
+    const wires = [audio(1, 3), audio(2, 3)];
+    const arranged = moved(blocks, arrange(blocks, wires, new Set([1])));
+    expect(at(arranged, 2).x).toBe(at(arranged, 1).x);
+  });
+
+  test("a node is put the right way round with the node that shares a node with it, whichever of the two it is that is free: what feeds the first input above what feeds the second", () => {
+    const pair = (from: number, handle: string): Wire => ({ from, fromHandle: "audioOut", to: 3, toHandle: handle, weight: 1 });
+    const sink = block(3, 900, 300, 120);
+    const wires = [pair(1, "audioIn:pair"), pair(2, "audioInSide")];
+    // 1 feeds the first input and stays below where 2 is, which feeds the second input: 2, which is free, is put below it.
+    const second = [block(1, 0, 400, 120), block(2, 0, 144, 120), sink];
+    expect(measure(moved(second, arrange(second, wires, new Set([1, 3]))), wires).inverted).toBe(0);
+    // 2 feeds the second input and stays above where 1 is, which feeds the first: 1, which is free, is put above it.
+    const first = [block(1, 0, 400, 120), block(2, 0, 144, 120), sink];
+    expect(measure(moved(first, arrange(first, wires, new Set([2, 3]))), wires).inverted).toBe(0);
+  });
+
+  test("the sources of the two inputs of a node are put the right way round: what feeds the first input is above what feeds the second", () => {
+    // 2 feeds the first input of 3 and 1 the second, and 1 starts above 2: the arrangement swaps them, and does not leave the cables crossed.
+    const blocks = [block(1, 0, 0), block(2, 0, 600), block(3, 600, 300, 300)];
+    const wires: Wire[] = [
+      { from: 2, fromHandle: "audioOut", to: 3, toHandle: "audioIn:pair", weight: 1 },
+      { from: 1, fromHandle: "audioOut", to: 3, toHandle: "audioInSide", weight: 1 },
+    ];
+    expect(measure(blocks, wires).inverted).toBeGreaterThan(0);
+    const arranged = moved(blocks, arrange(blocks, wires));
+    expect(measure(arranged, wires).inverted).toBe(0);
+    expect(at(arranged, 2).y).toBeLessThan(at(arranged, 1).y);
+  });
+
+  test("the oscillators of a session that feed the two inputs of a Math are a column with the Math between them, the modulator that drives both above, and nothing across a node (the user's bell-2)", () => {
+    // The nodes as the rows' layout has them, with their heights, and the cables as the page makes them: a knob's cable ends in the column of the knob (the fourth, at 260 pixels), a modulator that drives nothing is tied to what it hears.
+    const blocks = [block(0, 0, 284, 481), block(1, 0, 1147, 481), block(2, 376, 1147, 276), block(4, 0, 1684, 384), block(6, 0, 2124, 384), block(7, 0, 821, 254), block(8, 0, 0, 212), block(9, 752, 1140, 228)];
+    const attack = (to: number): Wire => ({ from: 8, fromHandle: "modOut", to, toHandle: "param-3", weight: 1, toX: 260 });
+    const wires: Wire[] = [
+      attack(0),
+      attack(1),
+      { from: 7, fromHandle: "modOut", to: 1, toHandle: "param", weight: 0.3 },
+      { from: 0, fromHandle: "audioOut", to: 6, toHandle: "audioIn:pair", weight: 1 },
+      { from: 1, fromHandle: "audioOut", to: 6, toHandle: "audioInSide", weight: 1 },
+      audio(6, 4),
+      audio(4, 2),
+      audio(2, 9),
+    ];
+    const arranged = moved(blocks, arrange(blocks, wires));
+    const [first, second, math] = [at(arranged, 0), at(arranged, 1), at(arranged, 6)];
+    // The first oscillator is over the second, which is under it with the margin, in a column (a few steps of the grid out of line at the most: the cable from above comes down beside the first).
+    expect(second.y - (first.y + first.height)).toBeGreaterThanOrEqual(MARGIN);
+    expect(Math.abs(first.x - second.x)).toBeLessThanOrEqual(64);
+    // The Math is after both, between them in height, and the others follow it in a row.
+    expect(math.x).toBeGreaterThan(Math.max(first.x, second.x) + WIDTH);
+    expect(math.y + math.height / 2).toBeGreaterThan(first.y + first.height / 2);
+    expect(math.y + math.height / 2).toBeLessThan(second.y + second.height / 2);
+    expect(measure(arranged, wires)).toMatchObject({ over: 0, inverted: 0, crowded: 0, backwards: 0 });
+    // (It is much shorter than where the rows had them.)
+    expect(score(measure(arranged, wires))).toBeLessThan(0.6 * score(measure(blocks, wires)));
   });
 
   test("it is the same for the same nodes and cables, run again", () => {
@@ -345,7 +508,7 @@ describe("arranging the nodes", () => {
     );
   });
 
-  test("it never makes a session worse and never puts a node nearer to another than the margin, for sessions drawn at random", () => {
+  test("it never makes a session worse and never puts a node nearer to another than the margin, for sessions drawn at random", { timeout: 60_000 }, () => {
     // A small generator (the same numbers on every platform).
     let seed = 20261028;
     const next = (): number => {
@@ -369,8 +532,47 @@ describe("arranging the nodes", () => {
       const arranged = moved(blocks, arrange(blocks, wires));
       const after = measure(arranged, wires);
       expect(after.crowded, `run ${String(run)}: crowded`).toBe(0);
-      expect(after.length + OVER_RATE * after.inside, `run ${String(run)}: worse`).toBeLessThanOrEqual(before.length + OVER_RATE * before.inside + 1e-6);
+      expect(score(after), `run ${String(run)}: worse`).toBeLessThanOrEqual(score(before) + 1e-6);
     }
+  });
+
+  test("what a descent prices is added to the work that has been done: a second start takes its places off the same budget", () => {
+    const blocks = [block(1, 0, 0), block(2, 700, 300), block(3, 100, 700)];
+    const wires = [audio(1, 2), audio(3, 2)];
+    const work = { priced: 0 };
+    expect(descend(blocks, wires, new Set(), undefined, work)).not.toBeNull();
+    const once = work.priced;
+    expect(once).toBeGreaterThan(0);
+    expect(descend(blocks, wires, new Set(), undefined, work)).not.toBeNull();
+    expect(work.priced).toBe(2 * once);
+    // (Nothing to move, nothing priced.)
+    expect(descend(blocks, [], new Set(), undefined, work)).toBeNull();
+    expect(work.priced).toBe(2 * once);
+  });
+
+  test("another start is made only while the work in all stays within the budget: the places priced, each against all the nodes", () => {
+    expect(roomForAnother(0, 100, 1)).toBe(true);
+    expect(roomForAnother(0, TOTAL_WORK / 10, 10)).toBe(true);
+    expect(roomForAnother(1, TOTAL_WORK / 10, 10)).toBe(false);
+    expect(roomForAnother(TOTAL_WORK / 2, TOTAL_WORK / 2, 1)).toBe(true);
+    expect(roomForAnother(TOTAL_WORK / 2 + 1, TOTAL_WORK / 2, 1)).toBe(false);
+  });
+
+  test("the orders that the starts look at the nodes in are permutations, the same every time, and another one for each start", () => {
+    for (const count of [1, 2, 3, 8, 21]) {
+      for (let start = 1; start < 12; start += 1) {
+        const order = shuffled(count, start);
+        expect([...order].sort((a, b) => a - b)).toEqual(Array.from({ length: count }, (_, i) => i));
+        expect(shuffled(count, start)).toEqual(order);
+      }
+    }
+    const orders = Array.from({ length: 11 }, (_, i) => shuffled(8, i + 1));
+    const distinct = new Set(orders.map((order) => order.join(",")));
+    expect(distinct.size).toBe(11);
+    // (None of them is the order of the graph, which the first start has.)
+    expect(distinct.has("0,1,2,3,4,5,6,7")).toBe(false);
+    // Every place of the order is taken by several nodes in the course of the starts: none is left to the node that was there.
+    for (let place = 0; place < 8; place += 1) expect(new Set(orders.map((order) => order[place])).size, `place ${String(place)}`).toBeGreaterThanOrEqual(3);
   });
 
   test("a large session is arranged in a moment (100 nodes and about as many cables)", () => {

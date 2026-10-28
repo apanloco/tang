@@ -39,6 +39,8 @@ export const ROW_GAP = 56;
 const HEADER_HEIGHT = 44;
 const CONTROL_ROW_HEIGHT = 108;
 const CONTROLS_PER_ROW = 4;
+/** The width of a control's cell in a node's grid (`.tang-node__controls`: four columns of 72 px, in the middle of the node). */
+const CELL_WIDTH = 72;
 const NODE_PADDING = 16;
 /** The list at the foot of a modulator, with which it draws a cable (measured in a browser: 29). */
 const DRIVES_HEIGHT = 30;
@@ -721,17 +723,51 @@ const HEARS_WEIGHT = 0.25;
 /** How much a pixel of the tie that keeps a modulator that has no cable by the lane or the group that it hears matters to the arrangement. */
 const TIE_WEIGHT = 0.3;
 
+/** How far from its node's left edge the middle of the cell that is `index`th among a node's controls is (the cell's port, where a cable of modulation arrives, is at the top of it). */
+const cellX = (index: number): number => (NODE_WIDTH - CONTROLS_PER_ROW * CELL_WIDTH) / 2 + CELL_WIDTH * (index % CONTROLS_PER_ROW) + CELL_WIDTH / 2;
+
 /**
- * The cables of `graph` as the arrangement sees them (`Wire`): the two nodes and the handles of each, and how much it matters that it is short. A modulator that hears a lane or a group and has no cable
- * of its own is tied to what it hears, as the layout of the rows has it (above it), so that it is not left where the rest has moved away from.
+ * Which control of its node a cable ends at, as its place among the node's controls, if that is told by the port: a knob by its place among the node's knobs, the volume of a lane and the mix of an effect
+ * by the cell that comes after the knobs, and a group's volume and pan by its first two cells. The ports of a modulator's settings and of the depths of cables are not told (their cells are the node's own).
  */
-function wiresOf(graph: Graph): Wire[] {
+function controlOf(node: Node | undefined, port: Port, knobs: readonly number[]): number | null {
+  if (!node) return null;
+  switch (port.type) {
+    case "param": {
+      const place = knobs.indexOf(port.index);
+      return place >= 0 ? place : null;
+    }
+    case "volume":
+      return node.kind === "instrument" ? knobs.length : node.kind === "group" ? 0 : null;
+    case "mix":
+      return node.kind === "effect" ? knobs.length : null;
+    case "pan":
+      return node.kind === "group" ? 1 : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The cables of `graph` as the arrangement sees them (`Wire`): the two nodes and the handles of each, where along the top of its node a cable of modulation ends (the column of the knob it drives, from
+ * `knobs`: the parameters that each node shows), and how much it matters that it is short. A modulator that hears a lane or a group and has no cable of its own is tied to what it hears, as the layout of the
+ * rows has it (above it), so that it is not left where the rest has moved away from.
+ */
+function wiresOf(graph: Graph, knobs: ReadonlyMap<NodeId, readonly number[]>): Wire[] {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const wires: Wire[] = graph.edges.map((edge) => {
     const target = nodes.get(edge.to.node);
     // (An effect that has two inputs has the first at a third of its height and not in the middle.)
     const pair = edge.to.port.type === "audioIn" && target?.kind === "effect" && target.side !== undefined;
-    return { from: edge.from.node, fromHandle: handleOf(edge.from.port), to: edge.to.node, toHandle: pair ? "audioIn:pair" : handleOf(edge.to.port), weight: edge.kind === "hears" ? HEARS_WEIGHT : 1 };
+    const control = controlOf(target, edge.to.port, knobs.get(edge.to.node) ?? []);
+    return {
+      from: edge.from.node,
+      fromHandle: handleOf(edge.from.port),
+      to: edge.to.node,
+      toHandle: pair ? "audioIn:pair" : handleOf(edge.to.port),
+      weight: edge.kind === "hears" ? HEARS_WEIGHT : 1,
+      ...(control !== null ? { toX: cellX(control) } : {}),
+    };
   });
   const driving = new Set(graph.edges.filter((edge) => edge.kind === "modulation").map((edge) => edge.from.node));
   for (const node of graph.nodes) {
@@ -741,9 +777,9 @@ function wiresOf(graph: Graph): Wire[] {
 }
 
 /** The places that `arrange` gives the nodes of `graph`, from where the layout of the rows has them (`fresh`): its boxes and its cables, as the arrangement sees them. */
-function arrangedFrom(graph: Graph, fresh: ReadonlyMap<NodeId, Position>, heightOf: (node: Node) => number): Map<NodeId, Position> {
+function arrangedFrom(graph: Graph, fresh: ReadonlyMap<NodeId, Position>, heightOf: (node: Node) => number, knobs: ReadonlyMap<NodeId, readonly number[]>): Map<NodeId, Position> {
   const blocks: Block[] = graph.nodes.map((node) => ({ id: node.id, ...(fresh.get(node.id) ?? ORIGIN), width: NODE_WIDTH, height: heightOf(node) }));
-  return new Map([...fresh, ...arrange(blocks, wiresOf(graph))]);
+  return new Map([...fresh, ...arrange(blocks, wiresOf(graph, knobs))]);
 }
 
 /**
@@ -758,7 +794,7 @@ export function blocksOf(graph: Graph, flow: Flow): { blocks: Block[]; wires: Wi
     const height = nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope, placed.data.heldIn?.first ?? false);
     return [{ id: node.id, x: placed.position.x, y: placed.position.y, width: NODE_WIDTH, height }];
   });
-  return { blocks, wires: wiresOf(graph) };
+  return { blocks, wires: wiresOf(graph, new Map(flow.nodes.map((placed) => [placed.data.node, placed.data.knobs]))) };
 }
 
 /** No node shows a scope. */
@@ -794,7 +830,7 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
   const baseline = layout(graph, heightOf, holders, ownerOf);
   // (The slots are those of the rows' layout, whatever the places are: a layout that goes on from an arrangement finds the nodes in the slots that were remembered.)
   const slots = slotsOf(shown, baseline, ownerOf);
-  const fresh = options.arrange === true && shown.nodes.every((node) => node.ui === undefined) ? arrangedFrom(shown, baseline, heightOf) : baseline;
+  const fresh = options.arrange === true && shown.nodes.every((node) => node.ui === undefined) ? arrangedFrom(shown, baseline, heightOf, knobs) : baseline;
   // Where a layout that remembers nothing puts the nodes, to say whether these are arranged.
   const arrangedAt = new Map(fresh);
   clearOfPlaced(shown, arrangedAt, heightOf);
