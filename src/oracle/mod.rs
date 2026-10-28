@@ -1486,6 +1486,50 @@ param = "detune"
     }
 
     #[test]
+    fn the_carriers_pitch_and_wave_are_heard_when_they_are_turned_while_nothing_is_patched_at_the_second_input_and_change_nothing_while_a_cable_is() {
+        // What the page's knobs do, through the controller and the real engine: `SetParam` on the math effect of lane 0 (a ring: A is the saw, and B is lane 1's sine by a cable, or the effect's own
+        // carrier, a sine of A3, where there is none), a little after the chord is down. The carrier is B only while nothing is patched there, so with a cable the two knobs do nothing.
+        const TURNED_BEFORE: usize = 40;
+        let session = sessions().into_iter().find(|scenario| scenario.id.starts_with("session:math")).expect("a session of the corpus");
+        let cable = "[[cable]]\nfrom = \"instrument[1]\"\nto = \"instrument[0].effect[0].side\"\n";
+        assert!(session.session.contains(cable));
+        let played = |scenario: &Scenario, change: Option<(&str, f32)>| -> Vec<f32> {
+            let mut rig = Rig::new(scenario, &engine);
+            let blocks = scenario.frames.div_ceil(scenario.block as u64) as usize;
+            let mut samples = Vec::with_capacity(blocks * scenario.block * 2);
+            for block in 0..blocks {
+                if let (TURNED_BEFORE, Some((name, value))) = (block, change) {
+                    let effect = &rig.ctl.model.instruments[0].effects[0];
+                    let (node, param) = (effect.node, effect.params.iter().find(|p| p.name == name).expect("the math effect has the parameter").index);
+                    rig.ctl.apply(crate::app::intent::Intent::SetParam { node, param, value }).expect("the knob is turned");
+                }
+                samples.extend_from_slice(rig.block().samples);
+                rig.poll();
+            }
+            samples
+        };
+        let from = TURNED_BEFORE * session.block * 2;
+        // Nothing patched at B: the knob is heard from the block it is turned before, and not a sample sooner.
+        let alone = Scenario { session: session.session.replace(cable, ""), ..session.clone() };
+        let untouched = played(&alone, None);
+        assert!(untouched.iter().fold(0.0f32, |peak, sample| peak.max(sample.abs())) > 0.01, "the ring of the saw and the carrier is heard");
+        for (name, value) in [("pitch", 69.0), ("wave", 3.0)] {
+            let turned = played(&alone, Some((name, value)));
+            assert_eq!(turned.len(), untouched.len());
+            assert!(turned[..from] == untouched[..from], "{name}: nothing of the knob is heard before it is turned");
+            let worst = turned[from..].iter().zip(&untouched[from..]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            // (Measured: the largest difference is 0.46 for `pitch`, A3 to A4, and 0.21 for `wave`, sine to square, against a loudest sample of 0.84; the test asks for 0.05.)
+            assert!(worst > 0.05, "{name}: with nothing patched at B the knob is heard: the largest difference is {worst}");
+        }
+        // A cable at B: the carrier is not heard, so the knobs of the carrier change nothing, to the bit.
+        let patched = played(&session, None);
+        assert!(patched != untouched, "the cable's sound is not the carrier's");
+        for (name, value) in [("pitch", 69.0), ("wave", 3.0)] {
+            assert!(played(&session, Some((name, value))) == patched, "{name}: with a cable at B the knob changes nothing");
+        }
+    }
+
+    #[test]
     fn the_scenarios_that_cut_a_way_out_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
         let cut: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cut_routes()).map(|scenario| scenario.id.clone()).collect();
         assert_eq!(cut, ["session:free@256", "session:math@256", "session:routed@256", "edited:routes@256", "edited:free@256", "edited:math@256"]);
