@@ -1581,7 +1581,7 @@ mod tests {
         let e4 = 440.0 * 2.0f32.powf(-5.0 / 12.0);
         let carrier = window(&play(&session[..session.rfind("\n[[cable]]\n").expect("the second cable") + 1], &[48], 0.0, 1.0, 1.0));
         let (up, down) = (level_at(&carrier, e4 + c3), level_at(&carrier, e4 - c3));
-        // (Measured: 54 and 57, against 0.015 and 0.008 where the two oscillators' sum and difference were, and 0.07 and 0.03 at the pitches themselves.)
+        // (Measured: 327 and 342, against 0.09 and 0.05 where the two oscillators' sum and difference were, and 0.41 and 0.20 at the pitches themselves: 790 times the loudest of those.)
         assert!(up > 100.0 * level_at(&carrier, c3 + f_sharp3) && down > 100.0 * level_at(&carrier, f_sharp3 - c3), "{up} and {down} at the carrier's sum and difference");
         assert!(up > 100.0 * level_at(&carrier, c3) && down > 100.0 * level_at(&carrier, e4), "{up} and {down}, against the pitches themselves");
     }
