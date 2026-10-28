@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Graph, Node, NodeId, Param, Plugin } from "../../protocol";
-import { MASTER, audioCablesFixture, groupsFixture, reachFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, audioCablesFixture, groupsFixture, reachFixture, sideCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
 import { moved } from "../../client/moved";
 import { DEFAULT_KNOBS } from "../../client/pinning";
 import { stressSnapshot } from "../../client/stress";
@@ -2683,5 +2683,34 @@ describe("a modulator of the session's own that hears a lane or a group", () => 
       expect(at(next, 30).position.y).toBeLessThan(at(next, 1).position.y);
       expect(overlapsIn(gone, next)).toBeNull();
     });
+  });
+});
+
+describe("an effect that has a second input of audio", () => {
+  // The session of the second input's fixture: group 0 has a math effect (1) on its bus; lane 2 has Filter 3 and Math 4, whose second input has three cables (0 from lane 5's instrument, 1 from the group, 2 from Filter 3).
+  const { graph } = sideCablesFixture.snapshot;
+  const flow = toFlow(graph);
+
+  test("is told to its node, with the names of its two inputs, and no other node is: the others have none", () => {
+    const sides = Object.fromEntries(flow.nodes.map((node) => [node.data.node, node.data.side]));
+    expect(sides[1]).toEqual({ main: "A", side: "B" });
+    expect(sides[4]).toEqual({ main: "A", side: "B" });
+    for (const id of [0, 2, 3, 5, 6, MASTER]) expect(sides[id], String(id)).toBeNull();
+  });
+
+  test("has the cables that end at its second input drawn to that handle, and a link of the chain to the first", () => {
+    const sends = flow.edges.filter((edge) => edge.type === "send");
+    expect(sends.map((edge) => [edge.id, edge.source, edge.sourceHandle, edge.target, edge.targetHandle])).toEqual([
+      ["send:0", "5", "audioOut", "4", "audioInSide"],
+      ["send:1", "0", "audioOut", "4", "audioInSide"],
+      ["send:2", "3", "audioOut", "4", "audioInSide"],
+    ]);
+    const link = flow.edges.find((edge) => edge.id === "audio:3>4");
+    expect([link?.source, link?.sourceHandle, link?.target, link?.targetHandle]).toEqual(["3", "audioOut", "4", "audioIn"]);
+  });
+
+  test("names the handle of its second input by the port, as the other handles are", () => {
+    expect(handleOf({ type: "audioInSide" })).toBe("audioInSide");
+    expect(handleOf({ type: "audioIn" })).toBe("audioIn");
   });
 });

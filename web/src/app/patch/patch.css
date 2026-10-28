@@ -891,6 +891,44 @@
   box-shadow: inset 0 0 0 2px rgb(242 153 74 / 0.9);
 }
 
+/*
+ * An effect that has a second input of audio (a Math) has its two inputs one above the other on the left edge, A a third of the way down and B two thirds, each with its name beside it, and while a cable is dragged
+ * the strip that takes it is half of the edge each (the first the upper half, the second the lower).
+ */
+.tang-port--audio.tang-port--pair-main {
+  top: 33%;
+}
+
+.tang-port--audio.tang-port--pair-side {
+  top: 67%;
+}
+
+.tang-port--audio.tang-port--in.tang-port--takes.tang-port--pair-main {
+  height: 50%;
+}
+
+.tang-port--audio.tang-port--in.tang-port--takes.tang-port--pair-side {
+  top: 50%;
+  height: 50%;
+}
+
+.tang-port-label {
+  position: absolute;
+  left: 9px;
+  transform: translateY(-50%);
+  font: 10px / 1 var(--tang-mono);
+  color: var(--tang-text-muted);
+  pointer-events: none;
+}
+
+.tang-port-label--main {
+  top: 33%;
+}
+
+.tang-port-label--side {
+  top: 67%;
+}
+
 /* The same for a cable of notes: the input of a lane that takes it is where it can be let go, along the whole left edge of the lane's node. */
 .tang-port--notes.tang-port--takes {
   background: var(--tang-notes);

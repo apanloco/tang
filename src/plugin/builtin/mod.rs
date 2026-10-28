@@ -1,6 +1,7 @@
 mod delay;
 mod drive;
 mod filter;
+mod math;
 mod oscillator;
 mod reverb;
 
@@ -9,6 +10,7 @@ use super::{Plugin, PluginInfo};
 use delay::Delay;
 use drive::Drive;
 use filter::Filter;
+use math::Math;
 use oscillator::{Oscillator, Waveform};
 use reverb::Reverb;
 
@@ -48,12 +50,13 @@ pub fn load(
         "filter" => Ok(Box::new(Filter::new(sample_rate))),
         "delay" => Ok(Box::new(Delay::new(sample_rate))),
         "drive" => Ok(Box::new(Drive::new(sample_rate))),
+        "math" => Ok(Box::new(Math::new(sample_rate))),
         // Only in the tests: an effect with one audio output, which the chains (stereo) have no place for.
         #[cfg(test)]
         "mono-effect" => Ok(Box::new(crate::app::testutil::MonoEffect)),
         _ => anyhow::bail!(
             "Unknown built-in plugin: {name:?}\n\
-             Available built-ins: osc, reverb, filter, delay, drive\n\
+             Available built-ins: osc, reverb, filter, delay, drive, math\n\
              Usage: builtin:osc"
         ),
     }
@@ -104,6 +107,15 @@ pub fn enumerate_plugins() -> Vec<PluginInfo> {
             is_instrument: false,
             param_count: drive::PARAM_COUNT,
             preset_count: drive::PRESETS.len(),
+            path: "(built-in)".into(),
+            scan_ms: 0,
+        },
+        PluginInfo {
+            name: math::NAME.into(),
+            id: math::ID.into(),
+            is_instrument: false,
+            param_count: math::PARAM_COUNT,
+            preset_count: math::PRESETS.len(),
             path: "(built-in)".into(),
             scan_ms: 0,
         },
@@ -183,6 +195,34 @@ mod tests {
             metadata("builtin:drive"),
             [row("type", None, &[], 3), row("drive", None, &[], 0), row("tone", None, &[], 0), row("level", None, &[], 0)]
         );
+    }
+
+    #[test]
+    fn the_maths_parameters_say_their_unit_their_section_and_their_steps() {
+        // Three choices (the mode, the bits of the logic and the wave) and five numbers; the pitch is a note number, which has no unit.
+        assert_eq!(
+            metadata("builtin:math"),
+            [
+                row("mode", None, &[], 11),
+                row("amount", None, &[], 0),
+                row("bits", None, &["Logic"], 11),
+                row("pitch", None, &["Carrier"], 0),
+                row("wave", None, &["Carrier"], 3),
+                row("attack", Some("s"), &["Follower"], 0),
+                row("release", Some("s"), &["Follower"], 0),
+                row("level", None, &[], 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_math_is_the_one_built_in_effect_with_a_second_input() {
+        for info in enumerate_plugins() {
+            let plugin = load(&info.id, 48000.0, 512).unwrap();
+            let side = plugin.side_input();
+            assert_eq!(side.is_some(), info.id == "builtin:math", "{}", info.id);
+        }
+        assert_eq!(load("builtin:math", 48000.0, 512).unwrap().side_input(), Some(crate::plugin::SideInput { main: "A", side: "B" }));
     }
 
     #[test]

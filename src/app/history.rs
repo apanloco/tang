@@ -524,7 +524,7 @@ impl Controller {
                     Port::Sustain => Some("sustain".to_string()),
                     Port::Release => Some("release".to_string()),
                     Port::Depth { .. } => Some("depth".to_string()),
-                    Port::ModOut | Port::AudioIn | Port::AudioOut | Port::EventsIn | Port::EventsOut => None,
+                    Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => None,
                 };
                 let verb = if matches!(kind, ModulatorKind::MidiLearn) { "learn" } else { "modulate" };
                 name.map_or(Plan::Nothing, |name| added(format!("{verb} {name}")))
@@ -6518,6 +6518,26 @@ size = 0.5
                 undo(),
                 redo(),
             ],
+        ));
+        // A math effect has a second input (step 95): a cable drawn to it is a step of its own, at the port it was drawn to, which undo takes out and redo draws again under its id; the lane that holds the effect is
+        // taken out with the cables at both its inputs (each written down) and put back with them.
+        scripts.push((
+            "a cable to the second input of a math effect is a step that undo takes out and redo draws again, and the effect is taken out with the cables at its two inputs and put back with them",
+            {
+                let math = fresh(1);
+                let from = |node: NodeId| Endpoint { node, port: Port::AudioOut };
+                let mut script = vec![
+                    Op::Do(Intent::AddFreeEffect { plugin: "builtin:math".to_string() }),
+                    Op::Do(Intent::AddCable { from: from(lane0), to: Endpoint { node: math, port: Port::AudioInSide }, gain: None }),
+                    Op::Do(Intent::AddCable { from: from(lane1), to: Endpoint { node: math, port: Port::AudioIn }, gain: Some(0.5) }),
+                    Op::Do(Intent::SetCableGain { edge: fresh_edge(0), gain: 0.25 }),
+                    Op::Do(Intent::RemoveEdge { edge: fresh_edge(1) }),
+                    Op::Do(Intent::RemoveNode { node: fresh(0) }),
+                ];
+                script.extend(n_of(6, undo));
+                script.extend(n_of(6, redo));
+                script
+            },
         ));
         scripts.push((
             "a group is added with a lane that was in none, and taken out with the lane in none again",

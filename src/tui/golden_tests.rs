@@ -7711,6 +7711,37 @@ mod patch_tab {
     }
 
     #[test]
+    fn the_matrix_of_a_session_with_effects_that_have_a_second_input_has_a_column_for_each_input_and_a_cable_at_the_second_one() {
+        use crate::app::testutil::{SIDED, Sided};
+        let mut h = Harness::new(SIDED);
+        let n = Sided::of(&h.s.ctl.model);
+        h.press(KeyCode::Char('4'));
+        // The file's cable goes from the second lane's instrument to the second input of lane 0's math effect: a level at the crosspoint of that row and that column, and not at the first input's.
+        let drawn = frame(&mut h);
+        assert!(line_of(&drawn, "L2  ♪ Oscillator").contains("1.00"), "{drawn}");
+        assert!(drawn.contains("↳B"), "the second inputs are columns of their own: {drawn}");
+        assert_golden("patch_tab_second_input", &mut h);
+        // Enter at the second input of the group's math effect (the sixth column) from the first lane's instrument (the first row) draws a cable at that input, and not at the first, which is the
+        // fifth; the foot says which of the two it joins, and Enter again takes it out.
+        at(&mut h, 0, 5);
+        assert!(frame(&mut h).contains("▸  G1 Math (bus, B)"), "{}", frame(&mut h));
+        h.press(KeyCode::Enter);
+        let cable = h.s.ctl.model.cables[1];
+        assert_eq!((cable.from, cable.to, cable.gain), (CableFrom::Instrument(n.lane[0]), CableTo::EffectSide(n.bus_math), 1.0));
+        assert_eq!(h.commands(), [format!("AddCable id={} from=Instrument({:?}) to=EffectSide({:?}) gain=1.000", cable.id.0, n.lane[0], n.bus_math)]);
+        let drawn = frame(&mut h);
+        assert!(line_of(&drawn, "L1  ♪ Oscillator").contains("1.00"), "{drawn}");
+        h.press(KeyCode::Enter);
+        assert_eq!(h.commands(), [format!("RemoveCable id={}", cable.id.0)]);
+        assert_eq!(h.s.ctl.model.cables.len(), 1, "the file's cable is still there");
+        // The first input of the same effect is another place, and takes a cable of its own beside the one at the second.
+        at(&mut h, 0, 4);
+        h.press(KeyCode::Enter);
+        assert_eq!(h.s.ctl.model.cables[1].to, CableTo::Effect(n.bus_math));
+        assert!(frame(&mut h).contains("▸  G1 Math (bus)"), "{}", frame(&mut h));
+    }
+
+    #[test]
     fn a_lane_that_is_muted_soloed_and_cut_says_so_in_the_first_columns_of_its_rows() {
         let mut h = Harness::new(SENDS);
         at(&mut h, 4, 0); // the drive of the second lane

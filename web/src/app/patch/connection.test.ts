@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { MASTER, audioCablesFixture, fieldsFixture, reachFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, audioCablesFixture, fieldsFixture, reachFixture, sideCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
 import type { Port } from "../../protocol";
 import { audioCableOf, audioTakersOf, cableOf, canConnect, canDraw, canDrawAudio, canDrawNotes, drawableFrom, drawCable, keyOf, kindOfDrag, notesCableOf, notesTakersOf, takersOf } from "./connection";
 import { handleOf, toFlow } from "./toFlow";
@@ -198,9 +198,20 @@ describe("an audio cable dragged on the canvas", () => {
   const { graph } = audioCablesFixture.snapshot;
 
   test("is read when it goes from an output of audio to an input of audio, by the ids of the nodes", () => {
-    expect(audioCableOf(connection("8", "audioOut", "5", "audioIn"))).toEqual({ from: 8, to: 5 });
-    expect(audioCableOf(connection("0", "audioOut", String(MASTER), "audioIn"))).toEqual({ from: 0, to: MASTER });
-    expect(audioCableOf(connection("12", "audioOut", "30", "audioIn"))).toEqual({ from: 12, to: 30 });
+    expect(audioCableOf(connection("8", "audioOut", "5", "audioIn"))).toEqual({ from: 8, to: 5, side: false });
+    expect(audioCableOf(connection("0", "audioOut", String(MASTER), "audioIn"))).toEqual({ from: 0, to: MASTER, side: false });
+    expect(audioCableOf(connection("12", "audioOut", "30", "audioIn"))).toEqual({ from: 12, to: 30, side: false });
+  });
+
+  test("is read as a cable to the second input of an effect when it ends at that handle", () => {
+    expect(audioCableOf(connection("8", "audioOut", "5", "audioInSide"))).toEqual({ from: 8, to: 5, side: true });
+    expect(audioCableOf(connection("8", handleOf({ type: "audioOut" }), "5", handleOf({ type: "audioInSide" })))).toEqual({ from: 8, to: 5, side: true });
+    // (A second input starts nothing, as the first does not.)
+    expect(audioCableOf(connection("8", "audioInSide", "5", "audioIn"))).toBeNull();
+    expect(audioCableOf(connection("8", "audioInSide", "5", "audioInSide"))).toBeNull();
+    expect(audioCableOf(connection("8", "audioOut", "5", "audioInSide "))).toBeNull();
+    expect(audioCableOf(connection("8", "audioOut", "5", "AudioInSide"))).toBeNull();
+    expect(audioCableOf(connection("8", "audioOut", "five", "audioInSide"))).toBeNull();
   });
 
   test("is not read when it starts or ends anywhere else: a modulator's output, a parameter, a setting, or no handle", () => {
@@ -232,18 +243,18 @@ describe("an audio cable dragged on the canvas", () => {
   });
 
   test("can be drawn where the controller would draw it: not where one is drawn already, not where the audio would go round, not from the mix or to a lane", () => {
-    expect(canDrawAudio(graph, { from: 8, to: 9 })).toBe(false); // the link of the chain, which is a cable that is there (a link that is cut is given back by one: step 88)
-    expect(canDrawAudio(graph, { from: 9, to: MASTER })).toBe(false); // the way out of the lane, the same
-    expect(canDrawAudio(graph, { from: 8, to: 1 })).toBe(true); // a bus effect
-    expect(canDrawAudio(graph, { from: 8, to: MASTER })).toBe(true); // beside the way out of the lane, which starts at the end of its chain
-    expect(canDrawAudio(graph, { from: 8, to: 5 })).toBe(false); // there already
-    expect(canDrawAudio(graph, { from: 9, to: 5 })).toBe(false); // round
-    expect(canDrawAudio(graph, { from: 0, to: 0 })).toBe(false); // a group's output to its own bus
-    expect(canDrawAudio(graph, { from: MASTER, to: 5 })).toBe(false); // the mix has no output
-    expect(canDrawAudio(graph, { from: 8, to: 10 })).toBe(false); // a lane has no input
-    expect(canDrawAudio(graph, { from: 7, to: 5 })).toBe(false); // a modulator has no audio
-    expect(canDrawAudio(graph, { from: 8, to: 77 })).toBe(false); // nothing
-    expect(canDrawAudio(graph, { from: 77, to: 5 })).toBe(false);
+    expect(canDrawAudio(graph, { from: 8, to: 9, side: false })).toBe(false); // the link of the chain, which is a cable that is there (a link that is cut is given back by one: step 88)
+    expect(canDrawAudio(graph, { from: 9, to: MASTER, side: false })).toBe(false); // the way out of the lane, the same
+    expect(canDrawAudio(graph, { from: 8, to: 1, side: false })).toBe(true); // a bus effect
+    expect(canDrawAudio(graph, { from: 8, to: MASTER, side: false })).toBe(true); // beside the way out of the lane, which starts at the end of its chain
+    expect(canDrawAudio(graph, { from: 8, to: 5, side: false })).toBe(false); // there already
+    expect(canDrawAudio(graph, { from: 9, to: 5, side: false })).toBe(false); // round
+    expect(canDrawAudio(graph, { from: 0, to: 0, side: false })).toBe(false); // a group's output to its own bus
+    expect(canDrawAudio(graph, { from: MASTER, to: 5, side: false })).toBe(false); // the mix has no output
+    expect(canDrawAudio(graph, { from: 8, to: 10, side: false })).toBe(false); // a lane has no input
+    expect(canDrawAudio(graph, { from: 7, to: 5, side: false })).toBe(false); // a modulator has no audio
+    expect(canDrawAudio(graph, { from: 8, to: 77, side: false })).toBe(false); // nothing
+    expect(canDrawAudio(graph, { from: 77, to: 5, side: false })).toBe(false);
   });
 
   test("has, for the ports of the canvas, the inputs that take a cable from an output, by the name of the node and of the handle", () => {
@@ -266,6 +277,46 @@ describe("an audio cable dragged on the canvas", () => {
 });
 
 /** The session of the sources fixture (`testutil::NOTES`): the keys (7) and a device (8) are the sources; lane 2 is in the group Pad, lane 5 is outside it and lane 6 is empty; a cable of notes (1) goes from the keys to lane 5. */
+describe("an audio cable dragged to the second input of an effect", () => {
+  const connection = (source: string, sourceHandle: string | null, target: string, targetHandle: string | null) => ({ source, sourceHandle, target, targetHandle });
+  // The session of the second input's fixture: group 0 has a math effect 1 on its bus; lane 2 has Filter 3 and Math 4, and three cables end at the second input of Math 4 (from lane 5's instrument, from the
+  // group's output and from Filter 3); lane 5's way out is cut; 6 is a free LFO.
+  const { graph } = sideCablesFixture.snapshot;
+  const start = (nodeId: string | null, handleType: "source" | "target" | null, handleId: string | null) => ({ nodeId, handleType, handleId });
+
+  test("has the second input of every effect that takes the cable, beside the first, by the name of the node and of the handle", () => {
+    expect([...audioTakersOf(graph, 5)].sort()).toEqual(["0:audioIn", "1:audioIn", "1:audioInSide", "3:audioIn", "4:audioIn", `${String(MASTER)}:audioIn`].sort());
+    // (Lane 2's own math effect has the other lane's cable at its second input already: only the bus's math effect takes one from there.)
+    expect([...audioTakersOf(graph, 2)].filter((key) => key.endsWith("audioInSide")).sort()).toEqual(["1:audioInSide", "4:audioInSide"]);
+    expect([...audioTakersOf(graph, 4)].filter((key) => key.endsWith("audioInSide"))).toEqual([]);
+    expect(keyOf(4, "audioIn")).not.toBe(keyOf(4, "audioInSide"));
+  });
+
+  test("can be drawn where the controller would take it: to a second input that has none from there and that the audio does not go round to, and not to another effect's", () => {
+    expect(canDrawAudio(graph, { from: 5, to: 1, side: true })).toBe(true); // the bus's math effect
+    expect(canDrawAudio(graph, { from: 5, to: 4, side: true })).toBe(false); // there already
+    expect(canDrawAudio(graph, { from: 5, to: 4, side: false })).toBe(true); // the first input of the same effect is another end
+    expect(canDrawAudio(graph, { from: 4, to: 4, side: true })).toBe(false); // an effect to its own second input: round
+    expect(canDrawAudio(graph, { from: 4, to: 1, side: true })).toBe(false); // round, by the group's cable to the math effect that is after it
+    expect(canDrawAudio(graph, { from: 5, to: 3, side: true })).toBe(false); // the filter has no second input
+    expect(canDrawAudio(graph, { from: 5, to: 0, side: true })).toBe(false); // a group has one input
+    expect(canDrawAudio(graph, { from: 5, to: MASTER, side: true })).toBe(false); // the mix has one
+    expect(canDrawAudio(graph, { from: 5, to: 2, side: true })).toBe(false); // a lane has none
+  });
+
+  test("is a drag that can end at the second inputs that take it, and the drop is judged by the same: an input that is not the one it was started for is another cable", () => {
+    const keys = takersOf(graph, [], start("5", "source", "audioOut"));
+    expect(keys?.has("1:audioInSide")).toBe(true);
+    expect(keys?.has("4:audioInSide")).toBe(false);
+    expect(keys?.has("4:audioIn")).toBe(true);
+    expect(canConnect(graph, [], connection("5", "audioOut", "1", "audioInSide"))).toBe(true);
+    expect(canConnect(graph, [], connection("5", "audioOut", "4", "audioInSide"))).toBe(false);
+    expect(canConnect(graph, [], connection("5", "audioOut", "4", "audioIn"))).toBe(true);
+    expect(canConnect(graph, [], connection("5", "audioOut", "3", "audioInSide"))).toBe(false);
+    expect(canConnect(null, [], connection("5", "audioOut", "1", "audioInSide"))).toBe(false);
+  });
+});
+
 function notesSession() {
   const found = sourcesFixture.cases.find((entry) => entry.name === "wired");
   if (!found) throw new Error("the fixture has the session of the sources");
@@ -458,7 +509,7 @@ describe("the kind of cable that a drag draws", () => {
   });
 
   test("is modulation for a handle that starts no other kind, and for none", () => {
-    for (const handle of ["audioIn", "eventsIn", "param-1", "rate", "AudioOut", null]) expect(kindOfDrag(handle), String(handle)).toBe("modulation");
+    for (const handle of ["audioIn", "audioInSide", "eventsIn", "param-1", "rate", "AudioOut", null]) expect(kindOfDrag(handle), String(handle)).toBe("modulation");
   });
 });
 
@@ -487,7 +538,13 @@ describe("a cable that is dropped on the canvas", () => {
   test("is an audio cable from an output of audio to an input of audio: the editor is asked to draw it between the two nodes", () => {
     const { calls, editor } = asked();
     drawCable(editor, connection("8", "audioOut", "5", "audioIn"));
-    expect(calls).toEqual([["addAudioCable", 8, 5]]);
+    expect(calls).toEqual([["addAudioCable", 8, 5, null, false]]);
+  });
+
+  test("is an audio cable to the second input of an effect when it ends at that handle: the editor is asked for the second input", () => {
+    const { calls, editor } = asked();
+    drawCable(editor, connection("8", "audioOut", "5", "audioInSide"));
+    expect(calls).toEqual([["addAudioCable", 8, 5, null, true]]);
   });
 
   test("is a cable of notes from a source's output of events to a lane's input of events: the editor is asked to draw it from the source to the lane", () => {

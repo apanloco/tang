@@ -384,12 +384,13 @@ export class Editor {
   }
 
   /**
-   * Draw an audio cable from the output of the node `from` (a lane's instrument, an effect or a group) to the input of the node `to` (an effect, the bus of a group or the master),
-   * at the level `gain` (held to the levels a cable can have), or at the level a new cable has when there is none. The audio of `from` goes there as well as where it went. True if it
-   * was drawn (the page says why if it was not: a lane has no input, a cable between the two is there already, the audio would go round).
+   * Draw an audio cable from the output of the node `from` (a lane's instrument, an effect or a group) to the input of the node `to` (an effect, the bus of a group or the master), or to the
+   * second input of an effect that has one when `side` is set (a Math's B), at the level `gain` (held to the levels a cable can have), or at the level a new cable has when there is none. The
+   * audio of `from` goes there as well as where it went. True if it was drawn (the page says why if it was not: a lane has no input, an effect has no second input, a cable between the two is
+   * there already, the audio would go round).
    */
-  addAudioCable(from: NodeId, to: NodeId, gain: number | null = null): Promise<boolean> {
-    const ends = { from: { node: from, port: { type: "audioOut" } }, to: { node: to, port: { type: "audioIn" } } } as const;
+  addAudioCable(from: NodeId, to: NodeId, gain: number | null = null, side = false): Promise<boolean> {
+    const ends = { from: { node: from, port: { type: "audioOut" } }, to: { node: to, port: { type: side ? "audioInSide" : "audioIn" } } } as const;
     const what = `draw an audio cable from ${this.#words(ends).replaceAll(" → ", " to ")}`;
     // (A number that is not a number cannot be sent: it is written as none, which is a cable at the level a new one has, and not the one that was asked for.)
     if (gain !== null && !Number.isFinite(gain)) {

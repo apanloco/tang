@@ -75,7 +75,8 @@ export function cableWords(graph: Graph, names: Names, cable: { from: Endpoint; 
 /**
  * What the port of a node that a cable ends at is called, for the cable's words: a parameter is what its plugin calls it (by the
  * plugin's own index), a setting of a modulator is `rate`, `attack`, `decay`, `sustain` or `release`, the depth of a cable is
- * `depth`. A parameter the node has not, and the ports that no cable ends at (an output, an audio port), have no name.
+ * `depth`. The two inputs of an effect that has a second one are what its plugin calls them (`A` and `B`: `SideInfo`), so that the words of a cable say which it is; every other input of audio, a
+ * parameter the node has not, and the ports that no cable ends at (an output of audio, the ports of notes), have no name.
  */
 export function portName(graph: Graph, node: NodeId, port: Port): string | null {
   switch (port.type) {
@@ -91,10 +92,15 @@ export function portName(graph: Graph, node: NodeId, port: Port): string | null 
     case "release":
     case "depth":
       return port.type;
+    case "audioIn":
+    case "audioInSide": {
+      const found = graph.nodes.find((n) => n.id === node);
+      const side = found?.kind === "effect" ? found.side : undefined;
+      return side === undefined ? null : port.type === "audioIn" ? side.main : side.side;
+    }
     case "modOut":
     case "eventsIn":
     case "eventsOut":
-    case "audioIn":
     case "audioOut":
       return null;
   }

@@ -55,7 +55,7 @@ import { parseScale } from "./scales";
 import { stepsOutput, stepsPlace } from "./steps";
 import { rateAt } from "./tempo";
 import { fractionOf, isLog, valueAt } from "./travel";
-import { cableEnds, cableLoops, effectLoops, feedLoops, laneLoops, linkOrCable, linksOf, routeLoops } from "./wiring";
+import { cableEnds, cableIsBetween, cableLoops, effectLoops, feedLoops, laneLoops, linkOrCable, linksOf, routeLoops } from "./wiring";
 
 export interface MockOptions {
   /** The session it serves; the tracer by default. */
@@ -191,11 +191,12 @@ function addCableOutcome(snapshot: Snapshot, from: Endpoint, to: Endpoint, gain:
   if ("error" in ends) return ends;
   const level = gain ?? NEW_CABLE_GAIN;
   if (!holds(level)) return invalid(`${shown(level)} is not a value for the level of a cable`);
-  if (snapshot.graph.edges.some((e) => isAudioCable(e) && e.from.node === from.node && e.to.node === to.node)) return invalid("there is a cable between those two already");
+  if (snapshot.graph.edges.some((e) => isAudioCable(e) && cableIsBetween(e, ends))) return invalid("there is a cable between those two already");
   if (cableLoops(snapshot.graph, ends)) return invalid("that cable would make the audio go round: it would feed what it comes from");
   const added: Edge & { kind: "cable" } = {
     from: { node: from.node, port: { type: "audioOut" } },
-    to: { node: to.node, port: { type: "audioIn" } },
+    // (The second input of an effect is another end than its first: a cable to each is a cable.)
+    to: { node: to.node, port: { type: ends.to.kind === "effectSide" ? "audioInSide" : "audioIn" } },
     kind: "cable",
     id: counters.edge(),
     gain: clamp(level, CABLE_GAIN_RANGE[0], CABLE_GAIN_RANGE[1]),
@@ -688,9 +689,18 @@ function addEffectOutcome(snapshot: Snapshot, parent: NodeId, plugin: string, co
   const lastEffect = nodes.findLastIndex((n) => n.parent === parent && n.kind === "effect");
   const end = lastEffect >= 0 ? nodes[lastEffect] : owner;
   const at = nodes.indexOf(end ?? owner) + 1;
-  const added: Node = { id: counters.node(), parent, name: made.name, kind: "effect", plugin: made.plugin, mix: made.mix, feed: made.feed };
+  const added: Node = { id: counters.node(), parent, name: made.name, kind: "effect", plugin: made.plugin, mix: made.mix, feed: made.feed, ...(made.side ? { side: made.side } : {}) };
   const grown: Graph = { nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)], edges };
   return { restructured: { ...snapshot, graph: { nodes: grown.nodes, edges: relinked(grown) } } };
+}
+
+/**
+ * Where the node of a new lane goes among the nodes of a graph: after the lanes there are, with their effects and their modulators, and before the modulators that are in no lane and no group and the master,
+ * as the controller lists them (`SessionModel::graph`: the groups, the lanes, the free modulators, the master).
+ */
+function endOfLanes(nodes: readonly Node[]): number {
+  const at = nodes.findIndex((n) => n.kind === "master" || (n.kind === "modulator" && n.parent === null));
+  return at < 0 ? nodes.length : at;
 }
 
 /**
@@ -711,8 +721,8 @@ function addFreeEffectOutcome(snapshot: Snapshot, plugin: string, counters: Coun
 
   // (A bare module: the lane's way out is cut, so that the effect sends where cables are drawn from it and nowhere before.)
   const lane: Node = { id: counters.node(), parent: null, name: "(empty)", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, route: "none", pattern: null };
-  const effect: Node = { id: counters.node(), parent: lane.id, name: made.name, kind: "effect", plugin: made.plugin, mix: made.mix, feed: made.feed };
-  const atNode = nodes.indexOf(master);
+  const effect: Node = { id: counters.node(), parent: lane.id, name: made.name, kind: "effect", plugin: made.plugin, mix: made.mix, feed: made.feed, ...(made.side ? { side: made.side } : {}) };
+  const atNode = endOfLanes(nodes);
   const grown: Graph = { nodes: [...nodes.slice(0, atNode), lane, effect, ...nodes.slice(atNode)], edges };
   const meters: LayoutEntry[] = [
     { slot: counters.slot(), node: lane.id, port: { type: "audioOut" }, kind: "peak" },
@@ -762,7 +772,7 @@ function addInstrumentOutcome(snapshot: Snapshot, plugin: string, counters: Coun
   if (!master) return invalid("the session has no master to hear a lane");
 
   const added: Node = { id: counters.node(), parent: null, name: made.name, kind: "instrument", plugin: made.plugin, range: made.range, transpose: made.transpose, volume: made.volume, muted: false, solo: false, route: "out", pattern: null };
-  const atNode = nodes.indexOf(master);
+  const atNode = endOfLanes(nodes);
   const link: Edge = { from: { node: added.id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };
   const atEdge = endOfLinks(edges);
   const meters: LayoutEntry[] = [
@@ -1035,7 +1045,7 @@ function addGroupOutcome(snapshot: Snapshot, members: readonly NodeId[], counter
     return owner?.kind === "instrument";
   };
   const firstLane = nodes.findIndex((n) => n.kind === "instrument");
-  const atNode = firstLane >= 0 ? firstLane : nodes.indexOf(master);
+  const atNode = firstLane >= 0 ? firstLane : endOfLanes(nodes);
   const firstLink = edges.findIndex((e) => isLink(e) && inLane(e.from.node));
   const atEdge = firstLink >= 0 ? firstLink : endOfLinks(edges);
   const link: Edge = { from: { node: id, port: { type: "audioOut" } }, to: { node: master.id, port: { type: "audioIn" } }, kind: "audio" };

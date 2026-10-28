@@ -1,0 +1,36 @@
+# Example: logic on a signal. A saw goes through a Math effect in its own chain, so the saw is its
+# input A, and nothing is patched to its second input B: B is then the effect's own carrier, a saw of
+# the preset's `pitch` (E2, 82 Hz). The Xor Growl preset makes its sound of the two by the logic of
+# their bits: the sample of A and the sample of B, as numbers of four bits (`bits`), are put
+# through an exclusive or, and what comes out is the number that is left: a crushed, buzzing growl
+# that has the pitch of neither. A slow LFO moves the carrier's `pitch` a few semitones up and down
+# (a cable of a modulator is to any plugin of the session, the Math's carrier too), so that the
+# growl talks. Hold a chord, or a low note.
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.5
+
+[instrument.params]
+waveform = 3.0 # saw
+attack = 0.01
+release = 0.2
+
+[[instrument.effect]]
+plugin = "builtin:math"
+preset = "Xor Growl"
+mix = 1.0
+
+[instrument.effect.params]
+bits = 3.0   # four bits (a place in the list: 0 is one)
+level = 0.3  # the logic makes a loud sound whatever the saw's level is: it is the effect's own that turns it down
+
+[[modulator]]
+type = "lfo"
+waveform = "sine"
+rate = 0.25
+
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "pitch"
+depth = 0.04

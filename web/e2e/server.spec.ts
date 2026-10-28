@@ -269,7 +269,7 @@ test("an effect is put in the lane from the menu, saved, and taken out again by 
   await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
   const menu = page.getByRole("menu", { name: "Add an effect to Oscillator" });
   const builtins = menu.getByRole("group", { name: "Built-in" });
-  await expect(builtins.getByRole("menuitem")).toHaveText(["Delay", "Drive", "Filter", "Reverb"]);
+  await expect(builtins.getByRole("menuitem")).toHaveText(["Delay", "Drive", "Filter", "Math", "Reverb"]);
   await builtins.getByRole("menuitem", { name: "Reverb" }).click();
 
   // The node is on the canvas, in the chain after the filter; the server has it, and the session has something to save.

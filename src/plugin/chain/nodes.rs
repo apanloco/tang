@@ -92,17 +92,26 @@ impl Master {
 
 /// An effect of a chain as a node: it makes its output of what its input is, and the output is blended with the input by `mix` (the sound that was put in is the dry part). An effect
 /// that has latency makes its output late, so the dry part goes through `dry`, a line of as many frames, to be as late (P3f): the line is run whatever the `mix` is, so that it has
-/// what was put in when the `mix` is turned down.
-fn run_effect(effect: &mut dyn Plugin, mix: f32, dry: Option<&mut DelayLine>, io: &mut Io, num_channels: usize) -> Result<()> {
+/// what was put in when the `mix` is turned down. An effect that has a second input has a second port in the plan (step 95): `side_patched` says whether a cable ends there, and the
+/// plugin is given what the second port has if it does, and told that nothing is patched if not (it may have a sound of its own in its place).
+fn run_effect(effect: &mut dyn Plugin, mix: f32, dry: Option<&mut DelayLine>, side_patched: bool, io: &mut Io, num_channels: usize) -> Result<()> {
     let frames = io.frames();
     let (inputs, outputs) = io.split();
-    let (input, output) = (&mut inputs[0], &mut outputs[0]);
+    let (first, rest) = inputs.split_at_mut(1);
+    let (input, output) = (&mut first[0], &mut outputs[0]);
     {
         let mut in_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
         let mut out_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
         let in_refs = shared_slices(input, &mut in_s);
         let out_refs = mut_slices(output, &mut out_s);
-        effect.process(&[], in_refs, out_refs)?;
+        match rest.first() {
+            Some(side) => {
+                let mut side_s = [const { MaybeUninit::uninit() }; MAX_CHANNELS];
+                let side_refs = shared_slices(side, &mut side_s);
+                effect.process_side(&[], in_refs, side_patched.then_some(side_refs), out_refs)?;
+            }
+            None => effect.process(&[], in_refs, out_refs)?,
+        }
     }
     // (The input is the node's own to use as scratch once the plugin has read it.)
     if let Some(line) = dry {
@@ -201,9 +210,9 @@ impl InstrumentLane {
     /// An effect of the lane's chain as a node (its place in the chain is `index`). A lane that has no instrument runs its effects all the same: what comes to the first of them is the
     /// silence that the head made, with what the cables that end at it or at an effect after it bring, so that the effects that a lane keeps when its instrument is taken out go on working
     /// (a reverb's tail rings out, and what another lane sends into one of them is heard through it).
-    fn run_fx(&mut self, index: usize, dry: Option<&mut DelayLine>, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
+    fn run_fx(&mut self, index: usize, dry: Option<&mut DelayLine>, side_patched: bool, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         let (Some(effect), Some(&mix)) = (self.effects.get_mut(index), self.mix_values.get(index)) else { return Ok(()) };
-        run_effect(effect.as_mut(), mix as f32, dry, io, cx.num_channels)?;
+        run_effect(effect.as_mut(), mix as f32, dry, side_patched, io, cx.num_channels)?;
         store_taps(&self.taps, cx.telemetry, TapStage::Effect(index), &io.outputs()[0]);
         Ok(())
     }
@@ -246,9 +255,9 @@ impl Group {
     }
 
     /// An effect of the group's bus as a node (its place in the chain is `index`).
-    fn run_fx(&mut self, index: usize, dry: Option<&mut DelayLine>, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
+    fn run_fx(&mut self, index: usize, dry: Option<&mut DelayLine>, side_patched: bool, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         let (Some(effect), Some(&mix)) = (self.effects.get_mut(index), self.mix_values.get(index)) else { return Ok(()) };
-        run_effect(effect.as_mut(), mix as f32, dry, io, cx.num_channels)?;
+        run_effect(effect.as_mut(), mix as f32, dry, side_patched, io, cx.num_channels)?;
         store_taps(&self.taps, cx.telemetry, TapStage::Effect(index), &io.outputs()[0]);
         Ok(())
     }
@@ -380,6 +389,8 @@ struct Store<'a> {
     delays: &'a mut [Link],
     /// The dry sound of the effects that have latency, by the effect's id.
     dry: &'a mut [(NodeId, DelayLine)],
+    /// The effects that a cable ends at the second input of (sorted), as the plan was made: the others that have a second input have none patched there.
+    sided: &'a [NodeId],
     /// Where each node was when the plan was made, in the order of the stages.
     places: &'a [(Stage, Place)],
 }
@@ -402,7 +413,7 @@ impl<'a, 'cx> Nodes<Stage, BlockCx<'cx>> for Store<'a> {
                 _ => Ok(()),
             },
             (Stage::Fx(id), Place::LaneFx(at, index)) => match self.lanes.get_mut(at) {
-                Some(lane) if lane.effect_nodes.get(index) == Some(&id) => lane.run_fx(index, dry_line(self.dry, id), io, cx),
+                Some(lane) if lane.effect_nodes.get(index) == Some(&id) => lane.run_fx(index, dry_line(self.dry, id), self.sided.binary_search(&id).is_ok(), io, cx),
                 _ => Ok(()),
             },
             (Stage::Head(id), Place::Group(at)) => match self.groups.get_mut(at) {
@@ -414,7 +425,7 @@ impl<'a, 'cx> Nodes<Stage, BlockCx<'cx>> for Store<'a> {
                 _ => Ok(()),
             },
             (Stage::Fx(id), Place::GroupFx(at, index)) => match self.groups.get_mut(at) {
-                Some(group) if group.effect_nodes.get(index) == Some(&id) => group.run_fx(index, dry_line(self.dry, id), io, cx),
+                Some(group) if group.effect_nodes.get(index) == Some(&id) => group.run_fx(index, dry_line(self.dry, id), self.sided.binary_search(&id).is_ok(), io, cx),
                 _ => Ok(()),
             },
             (Stage::Cable(id), Place::Cable(at)) => match self.cables.get_mut(at) {
@@ -457,6 +468,10 @@ const FX_LATENCY: u64 = 14 << 32;
 /// The effect that came before it in the list has its feed cut (step 86: the plan has no link into it from the stage before it). An effect that is fed has no entry, so that a session
 /// that cuts none has the shape it had.
 const CUT_FEED: u64 = 15 << 32;
+/// The effect that came before it in the list has a second input (step 95: the plan has a second port for it). An effect that has none has no entry, so that a session that has no
+/// effect with one has the shape it had.
+const SIDE: u64 = 16 << 32;
+const TO_EFFECT_SIDE: u64 = 17 << 32;
 const NO_GROUP: u64 = u32::MAX as u64;
 
 impl Shape {
@@ -482,6 +497,9 @@ impl Shape {
             }
             for (index, effect) in lane.effect_nodes.iter().enumerate() {
                 self.list.push(EFFECT | u64::from(effect.0));
+                if lane.effects.get(index).is_some_and(|plugin| plugin.side_input().is_some()) {
+                    self.list.push(SIDE);
+                }
                 if lane.cut_feeds.contains(effect) {
                     self.list.push(CUT_FEED);
                 }
@@ -497,6 +515,9 @@ impl Shape {
             }
             for (index, effect) in group.effect_nodes.iter().enumerate() {
                 self.list.push(EFFECT | u64::from(effect.0));
+                if group.effects.get(index).is_some_and(|plugin| plugin.side_input().is_some()) {
+                    self.list.push(SIDE);
+                }
                 if group.cut_feeds.contains(effect) {
                     self.list.push(CUT_FEED);
                 }
@@ -514,6 +535,7 @@ impl Shape {
             });
             self.list.push(match cable.to {
                 CableTo::Effect(id) => TO_EFFECT | u64::from(id.0),
+                CableTo::EffectSide(id) => TO_EFFECT_SIDE | u64::from(id.0),
                 CableTo::GroupBus(id) => TO_BUS | u64::from(id.0),
                 CableTo::Master => TO_MASTER,
             });
@@ -533,12 +555,20 @@ impl CableFrom {
 }
 
 impl CableTo {
-    /// The node of the plan that the cable ends at (its input 0).
+    /// The node of the plan that the cable ends at.
     fn stage(self) -> Stage {
         match self {
-            CableTo::Effect(id) => Stage::Fx(id),
+            CableTo::Effect(id) | CableTo::EffectSide(id) => Stage::Fx(id),
             CableTo::GroupBus(id) => Stage::Head(id),
             CableTo::Master => Stage::Master,
+        }
+    }
+
+    /// The input port of that node that it ends at: the first, except for the second input of an effect that has one.
+    fn port(self) -> u16 {
+        match self {
+            CableTo::EffectSide(_) => 1,
+            CableTo::Effect(_) | CableTo::GroupBus(_) | CableTo::Master => 0,
         }
     }
 }
@@ -552,6 +582,8 @@ pub(crate) struct LaneWiring {
     pub effects: Vec<NodeId>,
     /// The effects (of `effects`) that the stage before them does not feed: the plan has no link into them from it (`Feed::None`), only their cables.
     pub cut: Vec<NodeId>,
+    /// The effects (of `effects`) that have a second input (`Plugin::side_input`): their nodes have a second port, which cables can end at.
+    pub sides: Vec<NodeId>,
     /// Whether the lane's end goes anywhere: to the bus of its group, or to the mix (`Route::Out`), or nowhere but its cables (`Route::None`).
     pub route: Route,
 }
@@ -563,15 +595,24 @@ pub(crate) struct GroupWiring {
     pub effects: Vec<NodeId>,
     /// The bus effects that the stage before them does not feed (see `LaneWiring::cut`).
     pub cut: Vec<NodeId>,
+    /// The bus effects that have a second input (see `LaneWiring::sides`).
+    pub sides: Vec<NodeId>,
     /// Whether the group's end goes to the mix (`Route::Out`) or nowhere but its cables (`Route::None`).
     pub route: Route,
 }
 
 /// The wiring of the lanes and the groups as the engine has them.
 fn wiring_of(lanes: &[InstrumentLane], groups: &[Group]) -> (Vec<LaneWiring>, Vec<GroupWiring>) {
+    let sides = |nodes: &[NodeId], plugins: &[Box<dyn Plugin>]| -> Vec<NodeId> { nodes.iter().zip(plugins).filter(|(_, plugin)| plugin.side_input().is_some()).map(|(node, _)| *node).collect() };
     (
-        lanes.iter().map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effect_nodes.clone(), cut: lane.cut_feeds.clone(), route: lane.route }).collect(),
-        groups.iter().map(|group| GroupWiring { node: group.node, effects: group.effect_nodes.clone(), cut: group.cut_feeds.clone(), route: group.route }).collect(),
+        lanes
+            .iter()
+            .map(|lane| LaneWiring { node: lane.node, group: lane.group, effects: lane.effect_nodes.clone(), cut: lane.cut_feeds.clone(), sides: sides(&lane.effect_nodes, &lane.effects), route: lane.route })
+            .collect(),
+        groups
+            .iter()
+            .map(|group| GroupWiring { node: group.node, effects: group.effect_nodes.clone(), cut: group.cut_feeds.clone(), sides: sides(&group.effect_nodes, &group.effects), route: group.route })
+            .collect(),
     )
 }
 
@@ -595,6 +636,7 @@ fn start_rank(from: CableFrom, lanes: &[LaneWiring], groups: &[GroupWiring]) -> 
 fn end_exists(to: CableTo, lanes: &[LaneWiring], groups: &[GroupWiring]) -> bool {
     match to {
         CableTo::Effect(id) => lanes.iter().any(|lane| lane.effects.contains(&id)) || groups.iter().any(|group| group.effects.contains(&id)),
+        CableTo::EffectSide(id) => lanes.iter().any(|lane| lane.sides.contains(&id)) || groups.iter().any(|group| group.sides.contains(&id)),
         CableTo::GroupBus(id) => groups.iter().any(|group| group.node == id),
         CableTo::Master => true,
     }
@@ -631,7 +673,9 @@ fn build_patch(patch: &mut Patch<Stage>, lanes: &[LaneWiring], groups: &[GroupWi
         let rank = at as u32;
         patch.add_node(Stage::Head(lane.node), NodeSpec::new(vec![], vec![audio], rank));
         for effect in &lane.effects {
-            patch.add_node(Stage::Fx(*effect), NodeSpec::new(vec![chain], vec![audio], rank));
+            // (An effect that has a second input has a second port: what the cables at it bring, which is silence while there are none.)
+            let inputs = if lane.sides.contains(effect) { vec![chain, chain] } else { vec![chain] };
+            patch.add_node(Stage::Fx(*effect), NodeSpec::new(inputs, vec![audio], rank));
         }
         patch.add_node(Stage::Tail(lane.node), NodeSpec::new(vec![chain], vec![audio], rank));
     }
@@ -640,7 +684,8 @@ fn build_patch(patch: &mut Patch<Stage>, lanes: &[LaneWiring], groups: &[GroupWi
         // The head of a group takes the sum of its members, so it is an input that is a sum.
         patch.add_node(Stage::Head(group.node), NodeSpec::new(vec![audio], vec![audio], rank));
         for effect in &group.effects {
-            patch.add_node(Stage::Fx(*effect), NodeSpec::new(vec![chain], vec![audio], rank));
+            let inputs = if group.sides.contains(effect) { vec![chain, chain] } else { vec![chain] };
+            patch.add_node(Stage::Fx(*effect), NodeSpec::new(inputs, vec![audio], rank));
         }
         patch.add_node(Stage::Tail(group.node), NodeSpec::new(vec![chain], vec![audio], rank));
     }
@@ -682,7 +727,7 @@ fn build_patch(patch: &mut Patch<Stage>, lanes: &[LaneWiring], groups: &[GroupWi
     }
     for (id, from, to, _) in cables {
         patch.connect(Port::new(from.stage(), 0), Port::new(Stage::Cable(id), 0));
-        patch.connect(Port::new(Stage::Cable(id), 0), Port::new(to.stage(), 0));
+        patch.connect(Port::new(Stage::Cable(id), 0), Port::new(to.stage(), to.port()));
     }
 }
 
@@ -750,6 +795,9 @@ pub(super) struct Schedule {
     delays: Vec<Link>,
     /// The dry sound of each effect that has latency, by the effect's id (sorted): the line that makes it as late as the effect's own sound is.
     dry: Vec<(NodeId, DelayLine)>,
+    /// The effects that a cable ends at the second input of, by id (sorted), as the plan was made (a cable that is drawn or taken out makes the plan again): an effect that has a second
+    /// input and is not here has nothing patched there, and is told so.
+    sided: Vec<NodeId>,
     /// How late the latest of what the lanes and groups make is, in frames, when the plan was made: the latency of the session.
     latency: u32,
     /// Whether the paths that are added are put in step by the latencies of the plugins. It is always so in the program; the loop that the plan replaced does not do it, so the oracle
@@ -775,6 +823,7 @@ impl Schedule {
             cables: Vec::new(),
             delays: Vec::new(),
             dry: Vec::new(),
+            sided: Vec::new(),
             latency: 0,
             compensates: true,
             room: 0,
@@ -864,6 +913,11 @@ impl Schedule {
                 // A cable that has an end that is not in the wiring (a lane, a group or an effect that went) goes with it.
                 let patch = &self.patch;
                 self.cables.retain(|cable| patch.nodes().iter().any(|(stage, _)| *stage == Stage::Cable(cable.id)));
+                // The effects that have a cable at their second input (a cable that has been told to go is there until it has gone down).
+                self.sided.clear();
+                self.sided.extend(self.cables.iter().filter_map(|cable| if let CableTo::EffectSide(id) = cable.to { Some(id) } else { None }));
+                self.sided.sort_unstable();
+                self.sided.dedup();
                 self.places.clear();
                 for (at, lane) in lanes.iter().enumerate() {
                     self.places.push((Stage::Head(lane.node), Place::Lane(at)));
@@ -1084,7 +1138,7 @@ impl Schedule {
 
     /// Run one block: the lanes, the groups and the mix.
     pub(super) fn run(&mut self, lanes: &mut [InstrumentLane], groups: &mut [Group], master: &mut Master, frames: usize, cx: &mut BlockCx<'_>) -> Result<()> {
-        self.plan.run(&mut self.pool, frames, &mut Store { lanes, groups, master, cables: &mut self.cables, delays: &mut self.delays, dry: &mut self.dry, places: &self.places }, cx)
+        self.plan.run(&mut self.pool, frames, &mut Store { lanes, groups, master, cables: &mut self.cables, delays: &mut self.delays, dry: &mut self.dry, sided: &self.sided, places: &self.places }, cx)
     }
 }
 
@@ -2455,5 +2509,366 @@ mod tests {
         assert!(worst < 0.0001, "{worst} from the sine that went in, 23 frames late");
         let comb = (1000..4800).map(|n| (0.5 * input[n] + 0.5 * input[n - 23] - input[n - 23]).abs()).fold(0.0f32, f32::max);
         assert!(comb > 0.01, "the blend that the host used to make is {comb} from it, so that this test would see it");
+    }
+
+    // ---- a second input on an effect (step 95, the small half of P3g) ----------------------------------------------------------------------------------------
+
+    /// An effect with a second input, as the host sees one: it puts out its first input and ten times its second, and where nothing is patched at the second it puts out a quarter more, so
+    /// that what the host told it can be heard.
+    struct Sided;
+
+    impl Plugin for Sided {
+        fn name(&self) -> &str {
+            "Sided"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
+        fn side_input(&self) -> Option<crate::plugin::SideInput> {
+            Some(crate::plugin::SideInput { main: "A", side: "B" })
+        }
+        fn process(&mut self, midi: &[(u64, [u8; 3])], audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            self.process_side(midi, audio_in, None, audio_out)
+        }
+        fn process_side(&mut self, _: &[(u64, [u8; 3])], audio_in: &[&[f32]], side: Option<&[&[f32]]>, audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            for (channel, (out, input)) in audio_out.iter_mut().zip(audio_in).enumerate() {
+                for (frame, (o, &i)) in out.iter_mut().zip(input.iter()).enumerate() {
+                    *o = i + match side {
+                        Some(side) => 10.0 * side[channel][frame],
+                        None => 0.25,
+                    };
+                }
+            }
+            Ok(())
+        }
+        plain_plugin!();
+    }
+
+    /// Put an effect that has a second input last in a lane's chain, at a mix of 1: its id.
+    fn push_sided(lane: &mut InstrumentLane) -> NodeId {
+        let id = super::test_node();
+        lane.effects.push(Box::new(Sided));
+        lane.mix_values.push(1.0);
+        lane.effect_nodes.push(id);
+        id
+    }
+
+    /// The same for the bus of a group.
+    fn push_bus_sided(group: &mut Group) -> NodeId {
+        let id = super::test_node();
+        group.effects.push(Box::new(Sided));
+        group.mix_values.push(1.0);
+        group.effect_nodes.push(id);
+        id
+    }
+
+    /// How many input ports the node of an effect has in the plan.
+    fn input_ports(schedule: &Schedule, effect: NodeId) -> usize {
+        schedule.patch.nodes().iter().find(|(stage, _)| *stage == Stage::Fx(effect)).map(|(_, spec)| spec.inputs.len()).expect("the effect is in the plan")
+    }
+
+    /// A lane that sends what it plays and nothing else: a click of `level`, with its way out cut, so that the mix has it only through its cables.
+    fn sender(level: f32) -> InstrumentLane {
+        let mut lane = lane_of_click(level, 0);
+        lane.route = Route::None;
+        lane
+    }
+
+    /// A lane that has no instrument and has an effect with a second input: what a module that stands by itself is, in the plan.
+    fn receiver() -> (InstrumentLane, NodeId) {
+        let mut lane = InstrumentLane::new(super::test_node());
+        let fx = push_sided(&mut lane);
+        (lane, fx)
+    }
+
+    #[test]
+    fn an_effect_that_has_a_second_input_has_a_second_port_in_the_plan_and_the_others_have_the_one() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (lanes(1), groups(1));
+        with_effects(&mut lanes[0], 1);
+        let sided = push_sided(&mut lanes[0]);
+        with_bus_effects(&mut groups[0], 1);
+        let bus_sided = push_bus_sided(&mut groups[0]);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!([lanes[0].effect_nodes[0], sided, groups[0].effect_nodes[0], bus_sided].map(|effect| input_ports(&schedule, effect)), [1, 2, 1, 2]);
+        // (The second port has nothing in it that anything feeds: the plan is what it was, for the rest.)
+        assert!(feeds(&schedule, &lanes, &groups).iter().all(|(_, to)| !to.contains("fx 1") || to == "lane 0 fx 1"), "{:?}", feeds(&schedule, &lanes, &groups));
+    }
+
+    #[test]
+    fn a_cable_that_ends_at_the_second_input_is_what_the_plugin_is_given_there_and_is_added_to_nothing_else() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (vec![], groups(0));
+        let (receiving, fx) = receiver();
+        lanes.push(receiving);
+        lanes.push(sender(0.5));
+        let from = CableFrom::Instrument(lanes[1].node);
+        draw(&mut schedule, 3, from, CableTo::EffectSide(fx), &lanes, &groups);
+        assert_eq!(schedule.cable_ids(), [EdgeId(3)], "the cable is drawn");
+        // The cable comes in over its first block; a note in the second is heard through it, ten times, at the frame it is played at, and nothing else is heard.
+        let out = render(&mut schedule, &mut lanes, &mut [], &[note_at(70)], 64, 0, 128);
+        assert_eq!(arrivals(&out, 0), [(70, 5.0)], "the click, ten times, from the second input: and nothing from the first, and no quarter, since something is patched");
+    }
+
+    #[test]
+    fn an_effect_that_has_nothing_patched_at_its_second_input_is_told_so_and_a_cable_at_the_first_is_not_a_cable_at_the_second() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (vec![], groups(0));
+        let (receiving, fx) = receiver();
+        lanes.push(receiving);
+        lanes.push(sender(0.5));
+        // With no cable: the quarter, at every frame (the plugin was told that nothing is patched, and the port is silence).
+        let out = render(&mut schedule, &mut lanes, &mut [], &[note_at(70)], 64, 0, 128);
+        assert!(out.iter().all(|x| *x == 0.25), "{:?}", &out[60..80]);
+        // A cable at the first input: the click is added to what the chain gives, and the second input has nothing, so the plugin says so.
+        let from = CableFrom::Instrument(lanes[1].node);
+        draw(&mut schedule, 4, from, CableTo::Effect(fx), &lanes, &groups);
+        let out = render(&mut schedule, &mut lanes, &mut [], &[note_at(200)], 64, 128, 256);
+        assert_eq!(out[200 - 128], 0.5 + 0.25, "the click through the first input, and the quarter of an input with no cable");
+        assert_eq!(out[199 - 128], 0.25);
+    }
+
+    #[test]
+    fn a_cable_at_each_input_gives_the_plugin_both() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (vec![], groups(0));
+        let (receiving, fx) = receiver();
+        lanes.push(receiving);
+        lanes.push(sender(0.5));
+        lanes.push(sender(0.25));
+        let (a, b) = (CableFrom::Instrument(lanes[1].node), CableFrom::Instrument(lanes[2].node));
+        draw(&mut schedule, 1, a, CableTo::Effect(fx), &lanes, &groups);
+        draw(&mut schedule, 2, b, CableTo::EffectSide(fx), &lanes, &groups);
+        let out = render(&mut schedule, &mut lanes, &mut [], &[note_at(70)], 64, 0, 128);
+        assert_eq!(arrivals(&out, 0), [(70, 0.5 + 10.0 * 0.25)]);
+    }
+
+    #[test]
+    fn two_cables_at_the_second_input_are_added_there() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (vec![], groups(0));
+        let (receiving, fx) = receiver();
+        lanes.push(receiving);
+        lanes.push(sender(0.5));
+        lanes.push(sender(0.25));
+        for (id, lane) in [(1, 1), (2, 2)] {
+            let from = CableFrom::Instrument(lanes[lane].node);
+            draw(&mut schedule, id, from, CableTo::EffectSide(fx), &lanes, &groups);
+        }
+        let out = render(&mut schedule, &mut lanes, &mut [], &[note_at(70)], 64, 0, 128);
+        assert_eq!(arrivals(&out, 0), [(70, 10.0 * (0.5 + 0.25))]);
+    }
+
+    #[test]
+    fn every_effect_that_a_cable_ends_at_the_second_input_of_is_given_it_whatever_the_order_the_cables_were_drawn_in() {
+        // What is patched is found by the effect's id, so the list of them is kept in the order of the ids and not of the cables: here the first cable drawn goes to the later effect.
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (vec![], groups(0));
+        let ((first, first_fx), (second, second_fx)) = (receiver(), receiver());
+        assert!(first_fx < second_fx);
+        lanes.push(first);
+        lanes.push(second);
+        lanes.push(sender(0.5));
+        let from = CableFrom::Instrument(lanes[2].node);
+        draw(&mut schedule, 1, from, CableTo::EffectSide(second_fx), &lanes, &groups);
+        draw(&mut schedule, 2, from, CableTo::EffectSide(first_fx), &lanes, &groups);
+        let out = render(&mut schedule, &mut lanes, &mut [], &[note_at(70)], 64, 0, 128);
+        assert_eq!(arrivals(&out, 0), [(70, 10.0)], "the click, ten times, through each, and nothing else: an effect that was told that nothing is patched would add its quarter at every frame");
+    }
+
+    #[test]
+    fn the_second_input_of_a_bus_effect_takes_a_cable_as_a_lanes_does() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (vec![], groups(1));
+        let bus_fx = push_bus_sided(&mut groups[0]);
+        lanes.push(sender(0.5));
+        let from = CableFrom::Instrument(lanes[0].node);
+        draw(&mut schedule, 1, from, CableTo::EffectSide(bus_fx), &lanes, &groups);
+        let out = render(&mut schedule, &mut lanes, &mut groups, &[note_at(70)], 64, 0, 128);
+        assert_eq!(arrivals(&out, 0), [(70, 5.0)]);
+    }
+
+    #[test]
+    fn a_cable_at_a_second_input_that_an_effect_has_not_is_not_drawn() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (lanes(2), groups(0));
+        with_effects(&mut lanes[0], 1);
+        let (filter, from) = (lanes[0].effect_nodes[0], CableFrom::Instrument(lanes[1].node));
+        draw(&mut schedule, 1, from, CableTo::EffectSide(filter), &lanes, &groups);
+        assert!(schedule.cable_ids().is_empty(), "a filter has one input");
+        draw(&mut schedule, 2, from, CableTo::EffectSide(NodeId(9_999)), &lanes, &groups);
+        assert!(schedule.cable_ids().is_empty(), "and what is not there has none");
+        draw(&mut schedule, 3, from, CableTo::Effect(filter), &lanes, &groups);
+        assert_eq!(schedule.cable_ids(), [EdgeId(3)], "the first input takes one, as it did");
+        // What it is told is that the end is not there: a cable at a port that is not there does not compile either, which would say that the audio goes round.
+        let (lane_wiring, group_wiring) = wiring_of(&lanes, &groups);
+        let problem = |to| cable_problem(&lane_wiring, &group_wiring, std::iter::empty(), (EdgeId(4), from, to), 2);
+        assert!(matches!(problem(CableTo::EffectSide(filter)), Some(CableProblem::NoEnd)));
+        assert!(matches!(problem(CableTo::EffectSide(NodeId(9_999))), Some(CableProblem::NoEnd)));
+        assert!(problem(CableTo::Effect(filter)).is_none());
+    }
+
+    #[test]
+    fn a_cable_from_an_effect_to_its_own_second_input_would_make_the_audio_go_round_and_is_not_drawn() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (vec![], groups(0));
+        let (receiving, fx) = receiver();
+        lanes.push(receiving);
+        draw(&mut schedule, 1, CableFrom::Effect(fx), CableTo::EffectSide(fx), &lanes, &groups);
+        assert!(schedule.cable_ids().is_empty());
+        let (lane_wiring, group_wiring) = wiring_of(&lanes, &groups);
+        assert!(matches!(cable_problem(&lane_wiring, &group_wiring, std::iter::empty(), (EdgeId(1), CableFrom::Effect(fx), CableTo::EffectSide(fx)), 2), Some(CableProblem::Loop(_))));
+    }
+
+    #[test]
+    fn a_cable_that_comes_or_goes_at_a_second_input_makes_the_plan_again_and_its_level_does_not() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (vec![], groups(0));
+        let (receiving, fx) = receiver();
+        lanes.push(receiving);
+        lanes.push(sender(0.5));
+        schedule.refresh(&lanes, &groups, 2, 64);
+        let plans = schedule.plans_made();
+        let from = CableFrom::Instrument(lanes[1].node);
+        draw(&mut schedule, 1, from, CableTo::EffectSide(fx), &lanes, &groups);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.plans_made(), plans + 1, "drawn");
+        schedule.set_cable_gain(EdgeId(1), 0.5);
+        schedule.refresh(&lanes, &groups, 2, 64);
+        assert_eq!(schedule.plans_made(), plans + 1, "a level is a value, and is no plan");
+    }
+
+    #[test]
+    fn a_cable_that_is_taken_out_goes_down_over_a_block_and_then_the_plugin_is_told_that_nothing_is_patched() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (vec![], groups(0));
+        let (receiving, fx) = receiver();
+        lanes.push(receiving);
+        lanes.push(sender(0.5));
+        let from = CableFrom::Instrument(lanes[1].node);
+        draw(&mut schedule, 1, from, CableTo::EffectSide(fx), &lanes, &groups);
+        render(&mut schedule, &mut lanes, &mut [], &[], 64, 0, 128);
+        schedule.remove_cable(EdgeId(1));
+        // The block it goes down in has it, a ramp to nothing (no quarter: something is patched); the blocks after it have none.
+        let during = render(&mut schedule, &mut lanes, &mut [], &[], 64, 128, 192);
+        assert!(during.iter().all(|x| *x == 0.0), "the plugin is still told that there is a cable, and it carries silence");
+        let after = render(&mut schedule, &mut lanes, &mut [], &[], 64, 192, 256);
+        assert!(after.iter().all(|x| *x == 0.25), "and then it is told that there is none: {:?}", &after[..4]);
+    }
+
+    #[test]
+    fn what_is_sent_to_the_second_input_of_an_effect_lets_the_lane_it_is_in_be_heard_for_it_while_something_is_soloed() {
+        // The sender is soloed, and the receiver is not: it is heard for what its second input is sent, as it is for its first, and not otherwise.
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (vec![], groups(0));
+        let (receiving, fx) = receiver();
+        lanes.push(receiving);
+        lanes.push(sender(0.5));
+        lanes[1].solo = true;
+        let from = CableFrom::Instrument(lanes[1].node);
+        draw(&mut schedule, 1, from, CableTo::EffectSide(fx), &lanes, &groups);
+        let out = render(&mut schedule, &mut lanes, &mut [], &[note_at(70)], 64, 0, 128);
+        assert_eq!(arrivals(&out, 0), [(70, 5.0)], "heard for the cable");
+        let mut alone = Schedule::new();
+        let mut lanes = vec![receiver().0, sender(0.5)];
+        lanes[1].solo = true;
+        let out = render(&mut alone, &mut lanes, &mut [], &[note_at(70)], 64, 0, 192);
+        // (The first block lets the lane go over its length, as a mute does: what is left is silence.)
+        assert!(out[64..].iter().all(|x| *x == 0.0), "with no cable the receiver is not heard: nothing is soloed in it");
+    }
+
+    #[test]
+    fn a_muted_sender_sends_nothing_to_the_second_input_and_the_plugin_is_still_told_that_a_cable_is_patched() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, groups) = (vec![], groups(0));
+        let (receiving, fx) = receiver();
+        lanes.push(receiving);
+        lanes.push(sender(0.5));
+        lanes[1].muted = true;
+        let from = CableFrom::Instrument(lanes[1].node);
+        draw(&mut schedule, 1, from, CableTo::EffectSide(fx), &lanes, &groups);
+        let out = render(&mut schedule, &mut lanes, &mut [], &[note_at(70)], 64, 0, 128);
+        assert!(out.iter().all(|x| *x == 0.0), "silence at the second input is not no cable: no quarter");
+    }
+
+    #[test]
+    fn the_paths_that_end_at_the_two_inputs_of_an_effect_are_in_step() {
+        // The receiver has a click in its own lane (no latency), which reaches the effect's first input; the sender's click goes through an effect that is 10 frames late and ends at the
+        // second input. The two arrive together, 10 frames after the note: the first path waits for the second, as a sidechain is in step with the main input.
+        let mut schedule = Schedule::new();
+        let groups = groups(0);
+        let mut receiving = lane_of_click(0.5, 0);
+        let fx = push_sided(&mut receiving);
+        let mut sending = lane_of_click(0.25, 0);
+        sending.route = Route::None;
+        push_lagging(&mut sending, 10, 1.0);
+        let late = sending.effect_nodes[0];
+        let mut lanes = vec![receiving, sending];
+        draw(&mut schedule, 1, CableFrom::Effect(late), CableTo::EffectSide(fx), &lanes, &groups);
+        let out = render(&mut schedule, &mut lanes, &mut [], &[note_at(70)], 64, 0, 256);
+        assert_eq!(arrivals(&out, 0).iter().map(|&(frame, _)| frame).collect::<Vec<_>>(), [80], "one arrival, 10 frames late");
+        assert_eq!(out[80], 0.5 + 10.0 * 0.25, "both of them");
+    }
+
+    #[test]
+    fn a_block_with_a_second_input_and_a_cable_at_it_asks_the_allocator_for_nothing() {
+        let mut schedule = Schedule::new();
+        let (mut lanes, mut groups) = (vec![], groups(0));
+        let (receiving, fx) = receiver();
+        lanes.push(receiving);
+        lanes.push(sender(0.5));
+        let from = CableFrom::Instrument(lanes[1].node);
+        draw(&mut schedule, 1, from, CableTo::EffectSide(fx), &lanes, &groups);
+        render(&mut schedule, &mut lanes, &mut [], &[], 64, 0, 128);
+        let mut master = Master::new();
+        let mut out = vec![vec![0.0f32; 64]; 2];
+        let mut cx = BlockCx { midi: Events::keys(&NOTE_ON), audio_out: &mut out, num_channels: 2, scale: Default::default(), bpm: 120.0, telemetry: None, fall: None, learn_tx: None };
+        let (_, asked) = allocations_in(|| {
+            for _ in 0..8 {
+                schedule.refresh(&lanes, &groups, 2, 64);
+                schedule.set_gates(&mut lanes, &mut groups);
+                schedule.run(&mut lanes, &mut groups, &mut master, 64, &mut cx).unwrap();
+            }
+        });
+        assert_eq!(asked, 0);
+        assert!(loudest(&out) > 0.0, "the blocks were heard");
+    }
+
+    #[test]
+    fn the_shape_has_the_effects_that_have_a_second_input_and_the_cables_that_end_there_and_a_session_with_none_has_the_shape_it_had() {
+        let (mut lanes, groups) = (lanes(1), groups(0));
+        with_effects(&mut lanes[0], 2);
+        let mut plain = Shape::default();
+        plain.read(&lanes, &groups, &[], 2, true);
+        assert!(!plain.list.iter().any(|entry| entry >> 32 == SIDE >> 32 || entry >> 32 == TO_EFFECT_SIDE >> 32));
+        let mut sided = Shape::default();
+        let fx = push_sided(&mut lanes[0]);
+        sided.read(&lanes, &groups, &[], 2, true);
+        assert!(sided.list.contains(&SIDE) && sided != plain);
+        let cable = Cable::new(EdgeId(5), CableFrom::Instrument(lanes[0].node), CableTo::EffectSide(fx), 1.0);
+        let mut with_cable = Shape::default();
+        with_cable.read(&lanes, &groups, std::slice::from_ref(&cable), 2, true);
+        assert!(with_cable.list.contains(&(TO_EFFECT_SIDE | u64::from(fx.0))));
+        let mut at_first = Shape::default();
+        let first = Cable::new(EdgeId(5), CableFrom::Instrument(lanes[0].node), CableTo::Effect(fx), 1.0);
+        at_first.read(&lanes, &groups, std::slice::from_ref(&first), 2, true);
+        assert!(at_first != with_cable, "a cable at the first input is not a cable at the second");
+    }
+
+    #[test]
+    fn the_shape_has_a_bus_effect_that_has_a_second_input_as_it_has_a_lanes() {
+        let (lanes, mut groups) = (lanes(1), groups(1));
+        let mut plain = Shape::default();
+        plain.read(&lanes, &groups, &[], 2, true);
+        push_bus_sided(&mut groups[0]);
+        let mut sided = Shape::default();
+        sided.read(&lanes, &groups, &[], 2, true);
+        assert!(sided.list.contains(&SIDE) && sided != plain);
     }
 }

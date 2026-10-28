@@ -2232,6 +2232,9 @@ pub enum CableFrom {
 pub enum CableTo {
     /// What an effect takes in, added to what its chain gives it (an effect of a lane's chain or of a group's bus).
     Effect(NodeId),
+    /// What an effect that has a second input takes in there (its *side* input, `Plugin::side_input`: the second port of its node in the plan), added to what the other cables there
+    /// bring. Nothing else is given to it: the chain feeds the first input only.
+    EffectSide(NodeId),
     /// A group's bus, added to the lanes that are members of the group (the id is the group's).
     GroupBus(NodeId),
     /// The output mix.

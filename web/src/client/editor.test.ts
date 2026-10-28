@@ -1657,6 +1657,29 @@ describe("drawing an audio cable", () => {
     expect(await editor.addAudioCable(oscillator.id, MASTER)).toBe(false);
     expect(said(notices)).toEqual(["Could not draw an audio cable from Oscillator to Master: Not connected to the server."]);
   });
+
+  test("asks for the second input of an effect that has one as a cable of its own beside the one at its first, and says which input a refusal is about", async () => {
+    const { client, notices, editor } = await open();
+    const math = await editor.addFreeEffect("builtin:math");
+    expect(math).not.toBeNull();
+    if (math === null) return;
+    expect(await editor.addAudioCable(oscillator.id, math, null, true)).toBe(true);
+    expect(await editor.addAudioCable(oscillator.id, math)).toBe(true);
+    expect(audioCables(client).map((e) => [e.kind === "cable" ? e.id : -1, e.to.node, e.to.port.type])).toEqual([
+      [1, math, "audioInSide"],
+      [2, math, "audioIn"],
+    ]);
+    expect(said(notices)).toEqual([]);
+    // (Each input has the cable from the oscillator once: the words say which.)
+    expect(await editor.addAudioCable(oscillator.id, math, null, true)).toBe(false);
+    expect(said(notices).at(-1)).toBe("Could not draw an audio cable from Oscillator to Math: B: there is a cable between those two already");
+    expect(await editor.addAudioCable(oscillator.id, math)).toBe(false);
+    expect(said(notices).at(-1)).toBe("Could not draw an audio cable from Oscillator to Math: A: there is a cable between those two already");
+    // An effect that has one input has no second.
+    expect(await editor.addAudioCable(oscillator.id, filter.id, null, true)).toBe(false);
+    expect(said(notices).at(-1)).toBe("Could not draw an audio cable from Oscillator to Filter: that effect has no second input");
+    expect(audioCables(client)).toHaveLength(2);
+  });
 });
 
 describe("taking an audio cable out", () => {

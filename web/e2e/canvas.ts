@@ -45,8 +45,11 @@ export const audioOut = (target: Locator): Locator => target.locator('.react-flo
 /** The input of audio of a node (an effect's, a group's or the master's), where an audio cable ends. */
 export const audioIn = (target: Locator): Locator => target.locator('.react-flow__handle[data-handleid="audioIn"]');
 
+/** The second input of audio of an effect that has one (a Math's B), where an audio cable ends that only a cable feeds. */
+export const audioInSide = (target: Locator): Locator => target.locator('.react-flow__handle[data-handleid="audioInSide"]');
+
 /** The audio cables that have been drawn (the links of the audio path, which are not drawn by anybody, are not among them). */
-export const sends = (page: Page): Locator => page.locator(".tang-cable--send");
+export const sends =(page: Page): Locator => page.locator(".tang-cable--send");
 
 /** The output of events of a source of notes, where a cable of notes is started. */
 export const notesOut = (target: Locator): Locator => target.locator('.react-flow__handle[data-handleid="eventsOut"]');

@@ -240,10 +240,14 @@ pub enum CablePlace {
     Instrument(usize),
     /// `instrument[0].effect[1]`: an effect of a lane's chain.
     Effect { instrument: usize, effect: usize },
+    /// `instrument[0].effect[1].side`: the second input of an effect of a lane's chain that has one (`Plugin::side_input`), where a cable ends.
+    EffectSide { instrument: usize, effect: usize },
     /// `group[0]`: a group. A cable starts at what it puts out (after its effects, its pan and its fade), and ends at its bus.
     Group(usize),
     /// `group[0].effect[1]`: an effect of a group's bus.
     BusEffect { group: usize, effect: usize },
+    /// `group[0].effect[1].side`: the second input of an effect of a group's bus that has one.
+    BusEffectSide { group: usize, effect: usize },
     /// `master`: the output mix, where a cable ends.
     Master,
     /// `keys`: the computer's keys as a source of notes, where a cable of notes starts.
@@ -258,7 +262,8 @@ impl CablePlace {
         matches!(self, CablePlace::Keys | CablePlace::Device(_))
     }
 
-    /// The place that `text` names, if it names one: `master`, `keys`, `device[0]`, `instrument[0]`, `instrument[0].effect[1]`, `group[0]` or `group[0].effect[1]`, the numbers whole and from 0.
+    /// The place that `text` names, if it names one: `master`, `keys`, `device[0]`, `instrument[0]`, `instrument[0].effect[1]`, `instrument[0].effect[1].side`, `group[0]`, `group[0].effect[1]` or
+    /// `group[0].effect[1].side`, the numbers whole and from 0.
     pub fn parse(text: &str) -> Option<CablePlace> {
         fn indexed(text: &str) -> Option<(&str, usize)> {
             let (word, rest) = text.split_once('[')?;
@@ -275,19 +280,31 @@ impl CablePlace {
         if text == "keys" {
             return Some(CablePlace::Keys);
         }
-        let (head, effect) = match text.split_once('.') {
-            Some((head, rest)) => match indexed(rest)? {
-                ("effect", index) => (head, Some(index)),
+        let mut parts = text.split('.');
+        let head = parts.next()?;
+        let effect = match parts.next() {
+            Some(rest) => match indexed(rest)? {
+                ("effect", index) => Some(index),
                 _ => return None,
             },
-            None => (text, None),
+            None => None,
         };
-        match (indexed(head)?, effect) {
-            (("instrument", instrument), None) => Some(CablePlace::Instrument(instrument)),
-            (("instrument", instrument), Some(effect)) => Some(CablePlace::Effect { instrument, effect }),
-            (("group", group), None) => Some(CablePlace::Group(group)),
-            (("group", group), Some(effect)) => Some(CablePlace::BusEffect { group, effect }),
-            (("device", device), None) => Some(CablePlace::Device(device)),
+        let side = match parts.next() {
+            Some("side") if effect.is_some() => true,
+            Some(_) => return None,
+            None => false,
+        };
+        if parts.next().is_some() {
+            return None;
+        }
+        match (indexed(head)?, effect, side) {
+            (("instrument", instrument), None, _) => Some(CablePlace::Instrument(instrument)),
+            (("instrument", instrument), Some(effect), false) => Some(CablePlace::Effect { instrument, effect }),
+            (("instrument", instrument), Some(effect), true) => Some(CablePlace::EffectSide { instrument, effect }),
+            (("group", group), None, _) => Some(CablePlace::Group(group)),
+            (("group", group), Some(effect), false) => Some(CablePlace::BusEffect { group, effect }),
+            (("group", group), Some(effect), true) => Some(CablePlace::BusEffectSide { group, effect }),
+            (("device", device), None, _) => Some(CablePlace::Device(device)),
             _ => None,
         }
     }
@@ -298,8 +315,10 @@ impl std::fmt::Display for CablePlace {
         match self {
             CablePlace::Instrument(instrument) => write!(f, "instrument[{instrument}]"),
             CablePlace::Effect { instrument, effect } => write!(f, "instrument[{instrument}].effect[{effect}]"),
+            CablePlace::EffectSide { instrument, effect } => write!(f, "instrument[{instrument}].effect[{effect}].side"),
             CablePlace::Group(group) => write!(f, "group[{group}]"),
             CablePlace::BusEffect { group, effect } => write!(f, "group[{group}].effect[{effect}]"),
+            CablePlace::BusEffectSide { group, effect } => write!(f, "group[{group}].effect[{effect}].side"),
             CablePlace::Master => f.write_str("master"),
             CablePlace::Keys => f.write_str("keys"),
             CablePlace::Device(device) => write!(f, "device[{device}]"),
@@ -3842,6 +3861,8 @@ plugin = "builtin:osc"
             ("instrument[1].effect[0]", CablePlace::Effect { instrument: 1, effect: 0 }),
             ("group[3]", CablePlace::Group(3)),
             ("group[0].effect[2]", CablePlace::BusEffect { group: 0, effect: 2 }),
+            ("instrument[1].effect[0].side", CablePlace::EffectSide { instrument: 1, effect: 0 }),
+            ("group[2].effect[1].side", CablePlace::BusEffectSide { group: 2, effect: 1 }),
             ("master", CablePlace::Master),
             ("  master ", CablePlace::Master),
             ("keys", CablePlace::Keys),
@@ -3856,6 +3877,8 @@ plugin = "builtin:osc"
         assert_eq!(CablePlace::Effect { instrument: 2, effect: 1 }.to_string(), "instrument[2].effect[1]");
         assert_eq!(CablePlace::Group(1).to_string(), "group[1]");
         assert_eq!(CablePlace::BusEffect { group: 1, effect: 0 }.to_string(), "group[1].effect[0]");
+        assert_eq!(CablePlace::EffectSide { instrument: 2, effect: 1 }.to_string(), "instrument[2].effect[1].side");
+        assert_eq!(CablePlace::BusEffectSide { group: 1, effect: 0 }.to_string(), "group[1].effect[0].side");
         assert_eq!(CablePlace::Master.to_string(), "master");
         assert_eq!(CablePlace::Keys.to_string(), "keys");
         assert_eq!(CablePlace::Device(3).to_string(), "device[3]");
@@ -3870,6 +3893,8 @@ plugin = "builtin:osc"
             (CablePlace::Effect { instrument: 0, effect: 0 }, false),
             (CablePlace::Group(0), false),
             (CablePlace::BusEffect { group: 0, effect: 0 }, false),
+            (CablePlace::EffectSide { instrument: 0, effect: 0 }, false),
+            (CablePlace::BusEffectSide { group: 0, effect: 0 }, false),
             (CablePlace::Master, false),
         ] {
             assert_eq!(place.is_source(), source, "{place}");
@@ -3882,7 +3907,8 @@ plugin = "builtin:osc"
             "", "instrument", "instrument[]", "instrument[-1]", "instrument[1.5]", "instrument[a]", "instrument[ 1 ]", "instrument[0", "instrument 0", "Instrument[0]", "Master", "mix", "group", "group[0].effect",
             "group[0].effect[]", "group[0].effects[1]", "instrument[0].effect[0].effect[0]", "instrument[0].group[0]", "master[0]", "instrument[0]x", "[0]", "effect[0]", "instrument[99999999999999999999]",
             "instrument[0].", ".effect[0]", "instrument[+1]", "group[0].effect[+0]", "keys[0]", "Keys", "key", "device", "device[]", "device[x]", "device[-1]", "Device[0]", "device[0].effect[0]",
-            "keys.effect[0]", "devices[0]",
+            "keys.effect[0]", "devices[0]", "instrument[0].side", "group[0].side", "instrument[0].effect[0].sides", "instrument[0].effect[0].Side", "instrument[0].effect[0].side.x", "instrument[0].effect[0].",
+            "instrument[0].effect[0].side[0]", "device[0].effect[0].side", "master.side", "keys.side", "instrument[0].side.effect[0]",
         ] {
             assert_eq!(CablePlace::parse(text), None, "{text:?}");
         }

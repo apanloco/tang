@@ -207,6 +207,7 @@ function drivenName(snapshot: Snapshot, to: Endpoint): string | undefined {
     case "eventsIn":
     case "eventsOut":
     case "audioIn":
+    case "audioInSide":
     case "audioOut":
       return undefined;
   }

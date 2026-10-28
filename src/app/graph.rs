@@ -66,8 +66,16 @@ pub enum NodeKind {
     /// audio cables) and its pattern (null while it has none).
     Instrument { plugin: Option<Plugin>, range: Option<NoteRange>, transpose: i8, volume: f32, muted: bool, solo: bool, route: Route, pattern: Option<PatternInfo> },
     /// An effect in a lane's chain or in a group's bus chain, with its dry/wet mix and whether the stage before it feeds it (`feed`: `chain`, or `none` once the link into it is cut, when
-    /// it is fed by the audio cables that end at it and by nothing else).
-    Effect { plugin: Plugin, mix: f32, feed: Feed },
+    /// it is fed by the audio cables that end at it and by nothing else). An effect that has a second input (`side`: absent on the wire for the others) has a second port,
+    /// `audioInSide`, that cables can end at, and says what it calls its two inputs.
+    Effect {
+        plugin: Plugin,
+        mix: f32,
+        feed: Feed,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "web", ts(optional))]
+        side: Option<SideInfo>,
+    },
     /// A modulator, lane-scoped, group-scoped or in no lane and no group (`parent` null). What it drives are its modulation edges. A modulator that is in no lane and no group has an ear
     /// (`hears`): the node of the lane or the group whose notes it hears, as the lane's instrument or the group's members are given them. None, which is absent on the wire, is every event,
     /// whatever its source, and so is a node that is gone; a lane's modulator and a group's hear their own lane or group and have none.
@@ -83,6 +91,17 @@ pub enum NodeKind {
     Master,
     /// A source of notes that a person put in the session: the keys, or a MIDI device. Its output of events is where the event cables start.
     Source { source: SourceInfo },
+}
+
+/// What an effect that has a second audio input calls its two inputs (`Plugin::side_input`): what a front-end names the two handles by.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct SideInfo {
+    /// The first input, which the chain feeds.
+    pub main: String,
+    /// The second, which only cables end at.
+    pub side: String,
 }
 
 /// What a source of notes is, as a front-end sees it.
@@ -282,6 +301,8 @@ pub struct Endpoint {
 pub enum Port {
     /// What a node takes in (an effect, a group, the master).
     AudioIn,
+    /// What an effect that has a second input takes in there (`NodeKind::Effect::side`): where an audio cable ends beside the one that the chain feeds.
+    AudioInSide,
     /// What a node puts out (an instrument, an effect, a group).
     AudioOut,
     /// What a source of notes puts out: where an event cable starts.
@@ -311,11 +332,12 @@ impl crate::app::model::AudioCable {
         let from = match self.from {
             CableFrom::Instrument(node) | CableFrom::Effect(node) | CableFrom::Group(node) => node,
         };
-        let to = match self.to {
-            CableTo::Effect(node) | CableTo::GroupBus(node) => node,
-            CableTo::Master => NodeId::MASTER,
+        let (to, port) = match self.to {
+            CableTo::Effect(node) | CableTo::GroupBus(node) => (node, Port::AudioIn),
+            CableTo::EffectSide(node) => (node, Port::AudioInSide),
+            CableTo::Master => (NodeId::MASTER, Port::AudioIn),
         };
-        (Endpoint { node: from, port: Port::AudioOut }, Endpoint { node: to, port: Port::AudioIn })
+        (Endpoint { node: from, port: Port::AudioOut }, Endpoint { node: to, port })
     }
 }
 
@@ -602,7 +624,8 @@ fn audio_chain(edges: &mut Vec<Edge>, first: NodeId, through: impl Iterator<Item
 
 fn effect_node(slot: &PluginSlot, parent: NodeId) -> Node {
     let feed = if slot.fed { Feed::Chain } else { Feed::None };
-    Node { id: slot.node, parent: Some(parent), name: slot.name.clone(), ui: None, kind: NodeKind::Effect { plugin: plugin(slot), mix: slot.mix, feed } }
+    let side = slot.side.map(|side| SideInfo { main: side.main.to_string(), side: side.side.to_string() });
+    Node { id: slot.node, parent: Some(parent), name: slot.name.clone(), ui: None, kind: NodeKind::Effect { plugin: plugin(slot), mix: slot.mix, feed, side } }
 }
 
 fn modulator_node(modulator: &ModulatorSlot, parent: Option<NodeId>, hears: Option<NodeId>) -> Node {
@@ -1070,8 +1093,9 @@ mod tests {
         );
         assert_eq!((node(&graph, filter).parent, node(&graph, reverb).parent), (Some(osc), Some(osc)));
         assert_eq!((node(&graph, filter).name.as_str(), node(&graph, reverb).name.as_str()), ("Filter", "Reverb"));
-        let NodeKind::Effect { plugin, mix, feed } = &node(&graph, reverb).kind else { panic!() };
+        let NodeKind::Effect { plugin, mix, feed, side } = &node(&graph, reverb).kind else { panic!() };
         assert_eq!((plugin.id.as_str(), *mix, plugin.is_instrument, *feed), ("builtin:reverb", 0.25, false, Feed::Chain));
+        assert_eq!(*side, None, "a reverb has the one input");
         assert!(!plugin.presets.is_empty(), "the reverb's presets come along");
     }
 
@@ -1881,6 +1905,7 @@ depth = 0.2
                 match (end.port, &n.kind) {
                     (Port::AudioOut, NodeKind::Instrument { .. } | NodeKind::Effect { .. } | NodeKind::Group { .. }) => {}
                     (Port::AudioIn, NodeKind::Effect { .. } | NodeKind::Group { .. } | NodeKind::Master) => {}
+                    (Port::AudioInSide, NodeKind::Effect { side: Some(_), .. }) => {}
                     (Port::ModOut, NodeKind::Modulator { .. }) => {}
                     (Port::EventsOut, NodeKind::Source { .. }) => {}
                     (Port::EventsIn, NodeKind::Instrument { .. }) => {}
@@ -1966,6 +1991,24 @@ depth = 0.2
     // -- The wire --
 
     #[test]
+    fn an_effect_that_has_a_second_input_says_what_it_calls_its_inputs_and_the_others_say_nothing_on_the_wire() {
+        let (sided, plain) = (
+            NodeKind::Effect { plugin: Plugin { id: "builtin:math".to_string(), format: "Built-in".to_string(), is_instrument: false, params: vec![], presets: vec![], current_preset: None, pinned: vec![] }, mix: 1.0, feed: Feed::Chain, side: Some(SideInfo { main: "A".to_string(), side: "B".to_string() }) },
+            NodeKind::Effect { plugin: Plugin { id: "builtin:filter".to_string(), format: "Built-in".to_string(), is_instrument: false, params: vec![], presets: vec![], current_preset: None, pinned: vec![] }, mix: 1.0, feed: Feed::Chain, side: None },
+        );
+        assert_eq!(serde_json::to_value(&sided).unwrap()["side"], json!({"main": "A", "side": "B"}));
+        assert!(serde_json::to_value(&plain).unwrap().get("side").is_none(), "an effect with one input has no key for it: the older nodes are the same JSON");
+        let back: NodeKind = serde_json::from_value(serde_json::to_value(&sided).unwrap()).unwrap();
+        assert_eq!(back, sided);
+        // A node that a client wrote before there was a second input has none.
+        let mut old = serde_json::to_value(&plain).unwrap();
+        old.as_object_mut().unwrap().remove("side");
+        assert_eq!(serde_json::from_value::<NodeKind>(old).unwrap(), plain);
+        // And the port that a cable ends at there is a port of its own on the wire.
+        assert_eq!(serde_json::to_value(Port::AudioInSide).unwrap(), json!({"type": "audioInSide"}));
+    }
+
+    #[test]
     fn nodes_edges_and_ports_are_tagged_objects_in_camel_case() {
         let node = Node {
             id: NodeId(3),
@@ -1995,6 +2038,7 @@ depth = 0.2
                 },
                 mix: 0.5,
                 feed: Feed::Chain,
+                side: None,
             },
         };
         assert_eq!(

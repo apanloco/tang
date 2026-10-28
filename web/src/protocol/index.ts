@@ -30,6 +30,7 @@ export type { Port } from "./generated/Port";
 export type { Preset } from "./generated/Preset";
 export type { Route } from "./generated/Route";
 export type { Feed } from "./generated/Feed";
+export type { SideInfo } from "./generated/SideInfo";
 export type { ServerMessage } from "./generated/ServerMessage";
 export type { SlotKind } from "./generated/SlotKind";
 export type { SourceInfo } from "./generated/SourceInfo";

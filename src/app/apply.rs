@@ -777,7 +777,7 @@ impl Controller {
         match to.port {
             Port::Param { index: param } => self.add_param_cable(at, index, to.node, param)?,
             Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release | Port::Depth { .. } => self.add_field_cable(at, index, &to)?,
-            Port::ModOut | Port::AudioIn | Port::AudioOut | Port::EventsIn | Port::EventsOut => {
+            Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => {
                 return Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth"));
             }
         }
@@ -806,7 +806,7 @@ impl Controller {
         let cable = match to.port {
             Port::Param { index: param } => self.param_cable(at, index, to.node, param)?,
             Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release | Port::Depth { .. } => self.field_cable(at, index, &to)?,
-            Port::ModOut | Port::AudioIn | Port::AudioOut | Port::EventsIn | Port::EventsOut => {
+            Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => {
                 return Err(invalid("a cable can only end at a plugin's parameter, or at a modulator's rate, stage or depth"));
             }
         };
@@ -880,7 +880,7 @@ impl Controller {
                 Port::Decay => invalid("that modulator has no decay"),
                 Port::Sustain => invalid("that modulator has no sustain"),
                 Port::Release => invalid("that modulator has no release"),
-                Port::Param { .. } | Port::ModOut | Port::AudioIn | Port::AudioOut | Port::EventsIn | Port::EventsOut => invalid("that is not a setting of a modulator"),
+                Port::Param { .. } | Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => invalid("that is not a setting of a modulator"),
             });
         };
         let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.aim == target.aim()));
@@ -1124,7 +1124,7 @@ mod tests {
     use super::*;
     use crate::app::graph::{Graph, NodeKind};
     use crate::app::model::Driven;
-    use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load, load_moved};
+    use crate::app::testutil::{self, SENDS, SIDED, Sends, Sided, StubEngine, described, load, load_moved};
     use crate::plugin::chain::{CableFrom, CableTo, ModTargetKind, ModulatorLocation};
     use crate::session::{Feed, NodeUi, Route};
 
@@ -3524,6 +3524,173 @@ type = "steps"
         assert_eq!(ctl.model.cables[0].id, EdgeId(0));
     }
 
+    // -- a second input on an effect (step 95) --
+
+    fn sided() -> (StubEngine, Controller, Sided) {
+        let (handles, engine) = testutil::stub_engine();
+        let model = load(SIDED).model;
+        let nodes = Sided::of(&model);
+        let mut ctl = Controller::new(model, handles, None);
+        ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        (engine, ctl, nodes)
+    }
+
+    fn side(node: NodeId) -> Endpoint {
+        Endpoint { node, port: Port::AudioInSide }
+    }
+
+    #[test]
+    fn a_cable_is_drawn_to_the_second_input_of_an_effect_that_has_one_and_the_graph_says_which_input() {
+        let (engine, mut ctl, n) = sided();
+        sent(&engine);
+        let applied = draw(&mut ctl, out(n.lane[0]), side(n.bus_math), Some(0.5)).unwrap();
+        assert_eq!(applied, Applied::restructured(1));
+        let cable = *ctl.model.cables.last().unwrap();
+        assert_eq!((cable.from, cable.to, cable.gain), (CableFrom::Instrument(n.lane[0]), CableTo::EffectSide(n.bus_math), 0.5));
+        assert_eq!(sent(&engine), [format!("AddCable id={} from=Instrument({:?}) to=EffectSide({:?}) gain=0.500", cable.id.0, n.lane[0], n.bus_math)]);
+        ctl.model.check_ids().unwrap();
+        // The graph has the cable from the output to the second port, and the nodes say that they have one (and what the two are called) or that they have not.
+        let graph = ctl.model.graph();
+        let edge = graph.edges.iter().find(|edge| matches!(edge.kind, crate::app::graph::EdgeKind::Cable { id, .. } if id == cable.id)).expect("the cable is an edge");
+        assert_eq!((edge.from, edge.to), (out(n.lane[0]), side(n.bus_math)));
+        let sides = |node: NodeId| match &graph.nodes.iter().find(|candidate| candidate.id == node).unwrap().kind {
+            NodeKind::Effect { side, .. } => side.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(sides(n.math), Some(crate::app::graph::SideInfo { main: "A".to_string(), side: "B".to_string() }));
+        assert_eq!(sides(n.bus_math), sides(n.math));
+        assert_eq!(sides(n.filter), None);
+        // The cable from the file is the same: at the second input of lane 0's math effect.
+        assert!(graph.edges.iter().any(|edge| (edge.from, edge.to) == (out(n.lane[1]), side(n.math))));
+    }
+
+    #[test]
+    fn the_second_input_takes_a_cable_beside_the_one_at_the_first_and_a_cable_between_the_same_two_places_only_once() {
+        let (engine, mut ctl, n) = sided();
+        sent(&engine);
+        // The file has lane 1's instrument at the second input; the first input of the same effect is another end.
+        draw(&mut ctl, out(n.lane[1]), into(n.math), None).unwrap();
+        assert_eq!(ctl.model.cables.len(), 2);
+        let error = draw(&mut ctl, out(n.lane[1]), side(n.math), None).unwrap_err();
+        assert!(error.to_string().contains("already"), "{error}");
+        // Another sender is another cable.
+        draw(&mut ctl, out(n.filter), side(n.math), None).unwrap();
+        assert_eq!(ctl.model.cables.len(), 3);
+    }
+
+    #[test]
+    fn the_second_input_is_refused_where_the_effect_has_none_and_for_what_is_no_effect_and_nothing_is_changed() {
+        let (engine, mut ctl, n) = sided();
+        sent(&engine);
+        let refused = [
+            (out(n.lane[0]), side(n.filter), "that effect has no second input"),
+            (out(n.lane[0]), side(NodeId::MASTER), "the mix has no second input"),
+            (out(n.lane[0]), side(n.group), "a group has one input"),
+            (out(n.lane[1]), side(n.lane[0]), "a lane has no input of audio"),
+            (side(n.math), into(NodeId::MASTER), "starts at an output"),
+            (out(n.math), side(n.math), "go round"),
+            (out(n.group), side(n.bus_math), "go round"),
+        ];
+        let ids = ctl.model.cables.iter().map(|cable| cable.id).collect::<Vec<_>>();
+        for (from, to, why) in refused {
+            let error = draw(&mut ctl, from, to, None).unwrap_err();
+            assert!(error.to_string().contains(why), "{from:?} to {to:?}: {error}");
+        }
+        assert_eq!(draw(&mut ctl, out(n.lane[0]), side(NodeId(901)), None), Err(IntentError::NotFound(NodeId(901))));
+        assert!(sent(&engine).is_empty(), "nothing was sent");
+        assert_eq!(ctl.model.cables.iter().map(|cable| cable.id).collect::<Vec<_>>(), ids);
+        // A cable of modulation does not end at an input of audio, either.
+        let modulator = ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: None }).unwrap();
+        let _ = modulator;
+        let lfo = ctl.model.free_modulators[0].node;
+        let error = ctl.apply(Intent::AddModEdge { modulator: lfo, to: side(n.math) }).unwrap_err();
+        assert!(error.to_string().contains("a cable can only end at a plugin's parameter"), "{error}");
+    }
+
+    #[test]
+    fn the_level_of_a_cable_at_the_second_input_is_set_and_the_cable_is_taken_out_as_any_cable_is() {
+        let (engine, mut ctl, n) = sided();
+        let edge = ctl.model.cables[0].id;
+        sent(&engine);
+        ctl.apply(Intent::SetCableGain { edge, gain: 0.25 }).unwrap();
+        assert_eq!(ctl.model.cables[0].gain, 0.25);
+        assert_eq!(sent(&engine), [format!("SetCableGain id={} gain=0.250", edge.0)]);
+        ctl.apply(Intent::RemoveEdge { edge }).unwrap();
+        assert!(ctl.model.cables.is_empty());
+        assert_eq!(sent(&engine), [format!("RemoveCable id={}", edge.0)]);
+        let _ = n;
+    }
+
+    #[test]
+    fn a_cable_at_the_second_input_is_a_step_of_the_history_that_undo_takes_out_and_redo_draws_again_under_its_id_and_level() {
+        let (engine, mut ctl, n) = sided();
+        sent(&engine);
+        draw(&mut ctl, out(n.lane[0]), side(n.bus_math), Some(0.75)).unwrap();
+        let made = *ctl.model.cables.last().unwrap();
+        assert_eq!(ctl.history_state().undo.as_deref(), Some("draw an audio cable"));
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.cables.len(), 1, "only the file's is left");
+        ctl.redo().unwrap();
+        assert_eq!(*ctl.model.cables.last().unwrap(), made, "the same cable, under its id and at its level, at the same end");
+        assert_eq!(made.to, CableTo::EffectSide(n.bus_math));
+        sent(&engine);
+        // Taking it out is a step too, and undo puts it back whole.
+        ctl.apply(Intent::RemoveEdge { edge: made.id }).unwrap();
+        assert_eq!(ctl.history_state().undo.as_deref(), Some("remove an audio cable"));
+        ctl.undo().unwrap();
+        assert_eq!(*ctl.model.cables.last().unwrap(), made);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_effect_that_has_a_second_input_takes_the_cables_at_it_out_with_it_and_undo_gives_them_back_whole() {
+        let (engine, mut ctl, n) = sided();
+        let file_cable = ctl.model.cables[0];
+        assert_eq!(file_cable.to, CableTo::EffectSide(n.math));
+        sent(&engine);
+        ctl.apply(Intent::RemoveNode { node: n.math }).unwrap();
+        assert!(ctl.model.cables.is_empty(), "the cable at its second input went with it");
+        assert!(sent(&engine).iter().any(|command| command.starts_with("RemoveCable")), "{:?}", sent(&engine));
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.cables, [file_cable], "back, under its id, at the second input of the same effect");
+        assert_eq!(ctl.model.plugin_slot(n.math).unwrap().side, Some(crate::plugin::SideInput { main: "A", side: "B" }), "and the effect has its second input");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_math_effect_that_is_added_has_a_second_input_and_one_that_stands_by_itself_takes_a_cable_there_at_once() {
+        let (engine, mut ctl, n) = sided();
+        sent(&engine);
+        ctl.apply(Intent::AddFreeEffect { plugin: "builtin:math".to_string() }).unwrap();
+        let lane = ctl.model.instruments.last().unwrap();
+        let free = lane.effects[0].node;
+        assert_eq!(lane.effects[0].side, Some(crate::plugin::SideInput { main: "A", side: "B" }));
+        draw(&mut ctl, out(n.lane[0]), into(free), None).unwrap();
+        draw(&mut ctl, out(n.lane[1]), side(free), None).unwrap();
+        assert_eq!(ctl.model.cables.last().unwrap().to, CableTo::EffectSide(free));
+    }
+
+    #[test]
+    fn a_cable_is_drawn_to_the_second_input_of_a_math_effect_that_an_undo_loads_again() {
+        // An effect that undo has the plugin of again (the history has let go of it) is loaded from its id: it has its second input.
+        let (engine, mut ctl, n) = sided();
+        sent(&engine);
+        ctl.apply(Intent::RemoveNode { node: n.bus_math }).unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.plugin_slot(n.bus_math).unwrap().side, Some(crate::plugin::SideInput { main: "A", side: "B" }));
+        draw(&mut ctl, out(n.lane[0]), side(n.bus_math), None).unwrap();
+    }
+
+    #[test]
+    fn a_cable_that_is_drawn_between_the_ends_of_a_link_gives_it_back_and_one_at_the_second_input_is_never_a_link() {
+        let (_engine, mut ctl, n) = sided();
+        // The filter feeds the math effect, which is the link between them: a cable at the second input from the filter is a cable of its own, beside the link.
+        assert!(ctl.model.template_link(CableFrom::Effect(n.filter), CableTo::EffectSide(n.math)).is_none());
+        draw(&mut ctl, out(n.filter), side(n.math), None).unwrap();
+        assert_eq!(ctl.model.cables.last().unwrap().to, CableTo::EffectSide(n.math));
+        assert!(ctl.model.template_link(CableFrom::Effect(n.filter), CableTo::Effect(n.math)).is_some_and(|link| link.present), "and the link is there as it was");
+    }
+
     #[test]
     fn a_cable_that_is_there_is_not_drawn_again_between_the_same_two_ports() {
         let (engine, mut ctl, n) = sends();
@@ -3898,6 +4065,125 @@ type = "steps"
         assert!(
             committed == fresh,
             "{} is not what audio cables come to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
+    /// `testutil::SIDED` with a free LFO and two cables more at the second input of lane 0's math effect (one from the group's output, one from the filter before it), over the stub engine:
+    /// the session of the fixture of the second input, in which moving the effect before the filter and putting lane 0 in the group are loops.
+    fn sided_and_wired() -> (StubEngine, Controller, Sided, NodeId) {
+        let (engine, mut ctl, n) = sided();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: None }).unwrap();
+        let lfo = ctl.model.free_modulators[0].node;
+        draw(&mut ctl, out(n.group), side(n.math), None).unwrap();
+        draw(&mut ctl, out(n.filter), side(n.math), None).unwrap();
+        (engine, ctl, n, lfo)
+    }
+
+    /// The session of `sided_and_wired()` and what the controller makes of the intents about the second input of an effect, as the web client's tests read it
+    /// (`web/src/client/fixtures/sideCables.json`): they pin the mock engine's to the controller's, intent by intent. Every start is tried with both inputs of every end (the master, a node that is
+    /// not there and a modulator among them), the ports that are not audio's, levels, the level of each cable and the cables taken out, every node taken out (the cables at its inputs go), every lane
+    /// put in the group and out of it and every effect moved to every place of its chain (the cables at the second input make some of those go round), and a math effect, a lane, a group and effects added. A refusal is the controller's
+    /// words; a cable that is drawn and a level that is set give the audio cables that the session has after it (`sends`, with the word `side` after the nodes of a cable at a second input), and
+    /// the rest what the session comes to (`testutil::shape_of`). `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_second_input_comes_to_is_current() {
+        let (_engine, ctl, n, lfo) = sided_and_wired();
+        let before = ctl.snapshot();
+        let cables: Vec<EdgeId> = ctl.model.cables.iter().map(|cable| cable.id).collect();
+        assert_eq!(cables.len(), 3);
+        let ghost = NodeId(9_999);
+        let everything = [n.lane[0], n.lane[1], n.filter, n.math, n.group, n.bus_math, lfo, NodeId::MASTER, ghost];
+
+        let mut intents: Vec<Intent> = Vec::new();
+        for from in everything {
+            for to in everything {
+                intents.push(Intent::AddCable { from: out(from), to: into(to), gain: None });
+                intents.push(Intent::AddCable { from: out(from), to: side(to), gain: None });
+            }
+        }
+        // A start that is not an output of audio, an end that is not an input of audio, and a second input as a start.
+        for port in [Port::AudioIn, Port::AudioInSide, Port::ModOut, Port::Param { index: 0 }] {
+            intents.push(Intent::AddCable { from: Endpoint { node: n.lane[1], port }, to: side(n.bus_math), gain: None });
+        }
+        for port in [Port::AudioOut, Port::ModOut, Port::Param { index: 0 }, Port::Rate] {
+            intents.push(Intent::AddCable { from: out(n.lane[1]), to: Endpoint { node: n.bus_math, port }, gain: None });
+        }
+        // Levels at a second input: held to nothing and to twice.
+        for gain in [0.0, 0.25, 1.0, 2.0, 2.5, 9.0, -1.0] {
+            intents.push(Intent::AddCable { from: out(n.lane[0]), to: side(n.bus_math), gain: Some(gain) });
+        }
+        for edge in cables.iter().copied() {
+            for gain in [0.0, 0.25, 2.0, 9.0, -3.0] {
+                intents.push(Intent::SetCableGain { edge, gain });
+            }
+            intents.push(Intent::RemoveEdge { edge });
+        }
+        for node in everything {
+            intents.push(Intent::RemoveNode { node });
+        }
+        for lane in n.lane {
+            for group in [None, Some(n.group)] {
+                intents.push(Intent::SetLaneGroup { node: lane, group });
+            }
+        }
+        for (node, places) in [(n.filter, 2), (n.math, 2), (n.bus_math, 1)] {
+            for index in 0..places {
+                intents.push(Intent::MoveEffect { node, index });
+            }
+        }
+        // A math effect that stands by itself: a lane with the effect in it, whose second input is another end. And a lane and a group, which the graph lists before the free modulator (a lane after the other
+        // lanes, a group before them) and the page's mock engine once listed after it.
+        intents.push(Intent::AddFreeEffect { plugin: "builtin:math".to_string() });
+        intents.push(Intent::AddInstrument { plugin: "builtin:osc".to_string() });
+        intents.push(Intent::AddGroup { members: vec![n.lane[0]] });
+        intents.push(Intent::AddEffect { parent: n.lane[1], plugin: "builtin:math".to_string() });
+        intents.push(Intent::AddEffect { parent: n.group, plugin: "builtin:filter".to_string() });
+
+        let links_before = testutil::shape_of(&before).get("audio").cloned();
+        let mut rows = Vec::new();
+        for intent in intents {
+            let (_engine, mut fresh, _, _) = sided_and_wired();
+            let what = testutil::wire(&intent);
+            let row = match fresh.apply(intent.clone()) {
+                Err(error) => serde_json::json!({ "intent": what, "error": error.to_string() }),
+                Ok(applied) => {
+                    let after = testutil::shape_of(&fresh.snapshot());
+                    match intent {
+                        // (A cable that is drawn between the two ends of a link that is cut gives the link back, which changes the links of the audio path: then it is what the session comes to that is kept.)
+                        Intent::AddCable { .. } if after.get("audio") == links_before.as_ref() => {
+                            assert!(applied.restructured, "{intent:?}");
+                            serde_json::json!({ "intent": what, "sends": after.get("sends").cloned().unwrap_or(serde_json::json!([])) })
+                        }
+                        Intent::SetCableGain { .. } => {
+                            assert!(matches!(applied.events.as_slice(), [Event::CableGainSet { .. }]), "{intent:?}");
+                            serde_json::json!({ "intent": what, "sends": after.get("sends").cloned().unwrap_or(serde_json::json!([])) })
+                        }
+                        _ => {
+                            assert!(applied.restructured, "{intent:?}");
+                            serde_json::json!({ "intent": what, "after": after })
+                        }
+                    }
+                }
+            };
+            rows.push(row);
+        }
+
+        let mut snapshot = testutil::wire(&before);
+        // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let fixture = serde_json::json!({ "snapshot": snapshot, "rows": rows });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/sideCables.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what a second input comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
             path.display()
         );
     }

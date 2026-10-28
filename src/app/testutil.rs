@@ -945,6 +945,52 @@ impl Sends {
     }
 }
 
+/// A session with effects that have a second input (step 95): lane 0 is an oscillator through a filter and a math effect, lane 1 an oscillator whose way out is cut, a group has a math effect on its bus,
+/// and a cable (id 0) goes from lane 1's instrument to the second input of lane 0's math effect.
+pub const SIDED: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:math"
+
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+[[instrument.effect]]
+plugin = "builtin:math"
+
+[[instrument]]
+plugin = "builtin:osc"
+route = "none"
+
+[[cable]]
+from = "instrument[1]"
+to = "instrument[0].effect[1].side"
+"#;
+
+/// The nodes of `SIDED`: the two lanes, lane 0's filter and math effect, the group and its math effect.
+#[derive(Clone, Copy, Debug)]
+pub struct Sided {
+    pub lane: [NodeId; 2],
+    pub filter: NodeId,
+    pub math: NodeId,
+    pub group: NodeId,
+    pub bus_math: NodeId,
+}
+
+impl Sided {
+    /// The nodes of a model that was loaded from `SIDED`.
+    pub fn of(model: &SessionModel) -> Sided {
+        Sided {
+            lane: [model.instruments[0].node, model.instruments[1].node],
+            filter: model.instruments[0].effects[0].node,
+            math: model.instruments[0].effects[1].node,
+            group: model.groups[0].node,
+            bus_math: model.groups[0].effects[0].node,
+        }
+    }
+}
+
 /// A session to route notes in (P4b of `docs/patch-graph.md` §11.6): the keys (placed) and two devices (the first placed), and three lanes: lane 0 hears the keys only, lane 1 hears both
 /// devices, and lane 2 has no cable and hears every source. The cables of notes have ids 0, 1 and 2, in the order of the file, and the audio cable after them has 3.
 pub const SOURCES: &str = r#"
@@ -1508,7 +1554,11 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
     let sends: Vec<String> = edges
         .iter()
         .filter(|e| text(&e["kind"]) == "cable")
-        .map(|e| format!("#{} {}>{} @{}", e["id"], e["from"]["node"], e["to"]["node"], number(&e["gain"])))
+        .map(|e| {
+            // (The second input of an effect has its word after the nodes, so that the line of every other cable is what it was.)
+            let side = if text(&e["to"]["port"]["type"]) == "audioInSide" { " side" } else { "" };
+            format!("#{} {}>{}{side} @{}", e["id"], e["from"]["node"], e["to"]["node"], number(&e["gain"]))
+        })
         .collect();
     let slots = |entries: &Value| -> Vec<String> {
         list(entries).iter().map(|e| format!("{} {} {} {}", e["slot"], e["node"], port(&e["port"]), text(&e["kind"]))).collect()

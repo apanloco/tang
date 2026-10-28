@@ -4,7 +4,7 @@
 // program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Event, Feed, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Snapshot, StampedEvent } from "../protocol";
+import type { CatalogEntry, Event, Feed, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, SideInfo, Snapshot, StampedEvent } from "../protocol";
 import { isLink } from "./cables";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
@@ -18,6 +18,7 @@ import inputs from "./fixtures/inputs.json";
 import audible from "./fixtures/audible.json";
 import audibleCables from "./fixtures/audibleCables.json";
 import audioCables from "./fixtures/audioCables.json";
+import sideCables from "./fixtures/sideCables.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
 import moves from "./fixtures/moves.json";
 import noise from "./fixtures/noise.json";
@@ -134,6 +135,19 @@ export const audioCablesFixture = audioCables as unknown as {
 };
 
 /**
+ * A session with effects that have a second input of audio, and cables at it (a math effect on a bus, one in a lane of two effects after a filter, a lane whose way out is cut, a free LFO, and three
+ * audio cables at the second input of the lane's math effect: one from the other lane, one from the group's output and one from the filter before it: `testutil::SIDED`, with the group's
+ * cable and the filter's drawn and the LFO made), and what the controller makes of the intents about the second input: every start tried with both inputs of every end, the ports that are not
+ * audio's, levels, the cables' levels and removals, every node taken out, every lane put in the group and out of it, every effect moved to every place of its chain, and a math effect added. For one that is
+ * refused its words; for a cable that is drawn and a level that is set the audio cables the session has after it (`sends`, in the lines of `shapeOf`, which say `side` of a cable at a second input:
+ * nothing else changes); for the others what the session comes to (`shapeOf`). Written by the controller (`the_web_clients_fixture_of_what_a_second_input_comes_to_is_current`).
+ */
+export const sideCablesFixture = sideCables as unknown as {
+  snapshot: Snapshot;
+  rows: ({ intent: Intent } & ({ error: string } | { sends: string[] } | { after: Shape }))[];
+};
+
+/**
  * Two sessions, one with the keys, a device, a group, three lanes and a cable of notes and an audio cable among its cables ("wired", `testutil::NOTES`) and one with two lanes and no source ("bare"),
  * and what the controller makes of intents about sources and cables of notes tried on each, one on each fresh session: every start of a cable of notes with every end (the master, a node that is not
  * there, an effect, a group and a modulator among them), the ports that are not events', levels, the names of devices, cables and nodes taken out, and every intent that names a node, with a
@@ -231,7 +245,10 @@ const portKey = (port: Port): string => `${port.type}${"index" in port ? String(
  */
 export function shapeOf(snapshot: Snapshot): Shape {
   const { nodes, edges } = snapshot.graph;
-  const sends = edges.flatMap((e) => (e.kind === "cable" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)} @${String(e.gain)}`] : []));
+  // (The second input of an effect has its word after the nodes, so that the line of every other cable is what it was.)
+  const sends = edges.flatMap((e) =>
+    e.kind === "cable" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)}${e.to.port.type === "audioInSide" ? " side" : ""} @${String(e.gain)}`] : [],
+  );
   const routes = nodes.flatMap((n) => ((n.kind === "instrument" || n.kind === "group") && n.route === "none" ? [`${String(n.id)} none`] : []));
   const feeds = nodes.flatMap((n) => (n.kind === "effect" && n.feed === "none" ? [`${String(n.id)} none`] : []));
   const ears = nodes.flatMap((n) => (n.kind === "modulator" && n.hears !== undefined ? [`${String(n.id)} ${String(n.hears)}`] : []));
@@ -268,10 +285,10 @@ export const builtinCatalog = builtins as CatalogEntry[];
 
 /**
  * What the controller makes of each built-in effect that is added to a lane or a group, by the plugin's id: the node's name,
- * the plugin with the parameters it has when it is new, the mix it starts at and its feed (`chain`: the stage before it feeds it); the ids are the mock's to hand out. Written
- * by Rust (`the_web_clients_fixture_of_the_builtin_effects_is_current`).
+ * the plugin with the parameters it has when it is new, the mix it starts at, its feed (`chain`: the stage before it feeds it) and, for the one that has a second input of audio (the
+ * Math), what the two are called (`side`); the ids are the mock's to hand out. Written by Rust (`the_web_clients_fixture_of_the_builtin_effects_is_current`).
  */
-export const builtinEffects = builtinEffectNodes as unknown as Record<string, { name: string; kind: "effect"; plugin: Plugin; mix: number; feed: Feed }>;
+export const builtinEffects = builtinEffectNodes as unknown as Record<string, { name: string; kind: "effect"; plugin: Plugin; mix: number; feed: Feed; side?: SideInfo }>;
 
 /**
  * What the controller makes of each built-in instrument that is added in a lane of its own, by the plugin's id: the node's

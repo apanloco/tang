@@ -160,11 +160,14 @@ fn cable_starts(model: &crate::app::model::SessionModel) -> Vec<Endpoint> {
     lanes.chain(groups).collect()
 }
 
-/// The inputs of audio that a cable can end at, in the order of the model: each lane's effects, each group's bus and then its bus effects, and the mix.
+/// The inputs of audio that a cable can end at, in the order of the model: each lane's effects, each group's bus and then its bus effects, and the mix. An effect that has a second input
+/// (step 95) has it right after its first (and one that has none, which is every effect of the sessions that were there before, has no place for it: their cables are where they were).
 fn cable_ends(model: &crate::app::model::SessionModel) -> Vec<Endpoint> {
     let into = |node| Endpoint { node, port: Port::AudioIn };
-    let lanes = model.instruments.iter().flat_map(|lane| lane.effects.iter().map(|effect| into(effect.node)));
-    let groups = model.groups.iter().flat_map(|group| std::iter::once(into(group.node)).chain(group.effects.iter().map(|effect| into(effect.node))));
+    let side = |node| Endpoint { node, port: Port::AudioInSide };
+    let effect_ends = |effect: &PluginSlot| std::iter::once(into(effect.node)).chain(effect.side.map(|_| side(effect.node)));
+    let lanes = model.instruments.iter().flat_map(|lane| lane.effects.iter().flat_map(effect_ends));
+    let groups = model.groups.iter().flat_map(|group| std::iter::once(into(group.node)).chain(group.effects.iter().flat_map(effect_ends)));
     lanes.chain(groups).chain(std::iter::once(into(NodeId::MASTER))).collect()
 }
 

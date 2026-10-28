@@ -24,6 +24,14 @@
     "presets": 0
   },
   {
+    "id": "builtin:math",
+    "name": "Math",
+    "format": "Built-in",
+    "isInstrument": false,
+    "params": 8,
+    "presets": 9
+  },
+  {
     "id": "builtin:osc",
     "name": "Oscillator",
     "format": "Built-in",

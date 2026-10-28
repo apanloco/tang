@@ -257,6 +257,314 @@
       }
     ]
   },
+  "builtin:math": {
+    "decimator": [
+      {
+        "param": 0,
+        "value": 10.0
+      },
+      {
+        "param": 1,
+        "value": 0.1
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": 100.0
+      },
+      {
+        "param": 4,
+        "value": 2.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.7
+      }
+    ],
+    "fold-sweep": [
+      {
+        "param": 0,
+        "value": 2.0
+      },
+      {
+        "param": 1,
+        "value": 0.6
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": -12.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.7
+      }
+    ],
+    "pump": [
+      {
+        "param": 0,
+        "value": 11.0
+      },
+      {
+        "param": 1,
+        "value": 0.9
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": -36.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.2
+      },
+      {
+        "param": 7,
+        "value": 0.9
+      }
+    ],
+    "ring-bell": [
+      {
+        "param": 0,
+        "value": 0.0
+      },
+      {
+        "param": 1,
+        "value": 1.0
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": 64.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.7
+      }
+    ],
+    "square-up": [
+      {
+        "param": 0,
+        "value": 4.0
+      },
+      {
+        "param": 1,
+        "value": 0.9
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": -24.0
+      },
+      {
+        "param": 4,
+        "value": 1.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.6
+      }
+    ],
+    "tremolo": [
+      {
+        "param": 0,
+        "value": 1.0
+      },
+      {
+        "param": 1,
+        "value": 0.8
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": -5.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.9
+      }
+    ],
+    "vibrato": [
+      {
+        "param": 0,
+        "value": 3.0
+      },
+      {
+        "param": 1,
+        "value": 0.25
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": -5.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.9
+      }
+    ],
+    "warp-metal": [
+      {
+        "param": 0,
+        "value": 3.0
+      },
+      {
+        "param": 1,
+        "value": 1.0
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": 60.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.7
+      }
+    ],
+    "xor-growl": [
+      {
+        "param": 0,
+        "value": 7.0
+      },
+      {
+        "param": 1,
+        "value": 0.5
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": 40.0
+      },
+      {
+        "param": 4,
+        "value": 2.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.55
+      }
+    ]
+  },
   "builtin:reverb": {
     "ambient": [
       {

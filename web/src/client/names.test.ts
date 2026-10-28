@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Endpoint, Graph, Node } from "../protocol";
-import { reachFixture, tracerSnapshot } from "./fixtures";
+import { builtinEffects, reachFixture, tracerSnapshot } from "./fixtures";
 import { cableWords, displayNames, endLabel, portName } from "./names";
 
 const lfo = (id: number, parent: number): Node => ({ id, parent, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } });
@@ -127,7 +127,25 @@ describe("what the ports a cable ends at are called", () => {
   });
 
   test("the ports that no cable ends at have no name", () => {
-    for (const type of ["modOut", "audioIn", "audioOut"] as const) expect(portName(graph, 2, { type })).toBeNull();
+    for (const type of ["modOut", "audioIn", "audioInSide", "audioOut"] as const) expect(portName(graph, 2, { type })).toBeNull();
+  });
+
+  test("the two inputs of an effect that has a second one are called what its plugin calls them, and an effect that has one, a node that is not an effect or none has no name for either", () => {
+    const math = { id: 20, parent: 0, ...builtinEffects["builtin:math"] } as Node;
+    const filter = { id: 21, parent: 0, ...builtinEffects["builtin:filter"] } as Node;
+    const withEffects: Graph = { ...tracerSnapshot.graph, nodes: [...tracerSnapshot.graph.nodes, math, filter] };
+    expect(portName(withEffects, 20, { type: "audioIn" })).toBe("A");
+    expect(portName(withEffects, 20, { type: "audioInSide" })).toBe("B");
+    for (const type of ["audioIn", "audioInSide"] as const) {
+      expect(portName(withEffects, 21, { type }), `an effect that has one input: ${type}`).toBeNull();
+      expect(portName(withEffects, 0, { type }), `an oscillator: ${type}`).toBeNull();
+      expect(portName(withEffects, 999, { type }), `no node: ${type}`).toBeNull();
+    }
+    // The words of a cable say which input it ends at, where there are two.
+    const names = displayNames(withEffects);
+    expect(endLabel(withEffects, names, { node: 20, port: { type: "audioInSide" } })).toBe("Math: B");
+    expect(cableWords(withEffects, names, { from: { node: 0, port: { type: "audioOut" } }, to: { node: 20, port: { type: "audioIn" } } })).toBe("Oscillator → Math: A");
+    expect(cableWords(withEffects, names, { from: { node: 0, port: { type: "audioOut" } }, to: { node: 21, port: { type: "audioIn" } } })).toBe("Oscillator → Filter 2");
   });
 });
 

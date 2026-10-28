@@ -676,23 +676,47 @@ export function DepthPort({ node, edge, driven }: { node: NodeId; edge: EdgeId; 
 }
 
 /**
+ * One of the two inputs of an effect that has a second one (`SideInfo`): the first, which the chain feeds as well, or the second (`side`), which only cables end at, with the name its plugin calls it
+ * by (`A`, `B`), written beside the port.
+ */
+export interface InputPair {
+  side: boolean;
+  label: string;
+}
+
+/**
  * The place on the edge of a node where audio leaves it (`out`, on the right: a cable is started there and none ends there) or comes in (`in`, on the left: a cable ends there and
  * none is started there): a handle of the node named `audioOut` or `audioIn`, and, while a cable is dragged, an input saying whether it takes that one (an output never does: a
- * cable that is dragged from one ends at an input).
+ * cable that is dragged from one ends at an input). An effect that has a second input has two, one above the other (`pair`): the first is `audioIn` still, and the second `audioInSide`,
+ * each with its name beside it, and while a cable is dragged each takes half of the node's edge.
  */
-export function AudioPort({ node, direction }: { node: NodeId; direction: "in" | "out" }) {
+export function AudioPort({ node, direction, pair }: { node: NodeId; direction: "in" | "out"; pair?: InputPair }) {
   const input = direction === "in";
-  const takes = useContext(ConnectingContext)?.has(keyOf(node, "audioIn")) ?? false;
-  const classes = ["tang-port", "tang-port--audio", input ? "tang-port--in" : "tang-port--out", ...(input && takes ? ["tang-port--takes"] : [])];
+  const handle = !input ? "audioOut" : pair?.side ? "audioInSide" : "audioIn";
+  const takes = useContext(ConnectingContext)?.has(keyOf(node, handle)) ?? false;
+  const classes = [
+    "tang-port",
+    "tang-port--audio",
+    input ? "tang-port--in" : "tang-port--out",
+    ...(input && pair ? [pair.side ? "tang-port--pair-side" : "tang-port--pair-main"] : []),
+    ...(input && takes ? ["tang-port--takes"] : []),
+  ];
   return (
-    <Handle
-      isConnectableStart={!input}
-      isConnectableEnd={input}
-      type={input ? "target" : "source"}
-      position={input ? Position.Left : Position.Right}
-      id={input ? "audioIn" : "audioOut"}
-      className={classes.join(" ")}
-    />
+    <>
+      <Handle
+        isConnectableStart={!input}
+        isConnectableEnd={input}
+        type={input ? "target" : "source"}
+        position={input ? Position.Left : Position.Right}
+        id={handle}
+        className={classes.join(" ")}
+      />
+      {input && pair ? (
+        <span className={`tang-port-label ${pair.side ? "tang-port-label--side" : "tang-port-label--main"}`} aria-hidden="true">
+          {pair.label}
+        </span>
+      ) : null}
+    </>
   );
 }
 

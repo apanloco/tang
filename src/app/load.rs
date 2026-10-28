@@ -106,7 +106,7 @@ fn names(params: &[plugin::ParameterInfo]) -> String {
 /// the same way.)
 pub fn fresh_slot(plugin: &mut dyn plugin::Plugin, id: &str, node: NodeId) -> PluginSlot {
     let params = Params::snapshot(plugin);
-    plugin_slot(
+    let mut slot = plugin_slot(
         node,
         plugin.name().to_string(),
         id.to_string(),
@@ -115,7 +115,9 @@ pub fn fresh_slot(plugin: &mut dyn plugin::Plugin, id: &str, node: NodeId) -> Pl
         plugin.presets(),
         None,
         1.0,
-    )
+    );
+    slot.side = plugin.side_input();
+    slot
 }
 
 /// The model's slot for a loaded plugin. Parameters a plugin marks "(locked)" are
@@ -161,6 +163,7 @@ fn plugin_slot(
         current_preset,
         mix,
         fed: true,
+        side: None,
         pinned: Vec::new(),
     }
 }
@@ -241,6 +244,7 @@ pub fn load_session(
         for (fx_idx, effect_config) in group_config.effects.iter().enumerate() {
             let effect_source = session::resolve_plugin_path(&effect_config.plugin, session_dir);
             let mut effect = plugin::load(&effect_source, sample_rate, max_block_size, runtime)?;
+            let side = effect.side_input();
             outputs_fit_the_chain(effect.name(), effect.audio_output_count())
                 .map_err(|refusal| anyhow::anyhow!("group[{g_idx}].effect[{fx_idx}]: {refusal}"))?;
             if let Some(ref preset_name) = effect_config.preset {
@@ -286,6 +290,7 @@ pub fn load_session(
             );
             slot.pin_names(&effect_config.pinned);
             slot.fed = effect_config.feed.is_fed();
+            slot.side = side;
             group_effects.push(slot);
             group_bus_params.push(params.for_targets());
         }
@@ -430,6 +435,7 @@ pub fn load_session(
             let effect_source = session::resolve_plugin_path(&effect_config.plugin, session_dir);
             progress(Progress::Loading(&effect_config.plugin));
             let mut effect = plugin::load(&effect_source, sample_rate, max_block_size, runtime)?;
+            let side = effect.side_input();
             loaded_slots += 1;
             progress(Progress::Loaded { done: loaded_slots });
             // (The audio thread turns away an effect that has other outputs than the chain has channels, and the model would keep it: the session is refused.)
@@ -504,6 +510,7 @@ pub fn load_session(
             );
             slot.pin_names(&effect_config.pinned);
             slot.fed = effect_config.feed.is_fed();
+            slot.side = side;
             effects.push(slot);
         }
 
@@ -757,6 +764,7 @@ fn cable_start(place: session::CablePlace, model: &SessionModel) -> Result<Cable
         Place::Effect { instrument, effect } => Ok(CableFrom::Effect(model.instruments.get(instrument).and_then(|lane| lane.effects.get(effect)).ok_or_else(missing)?.node)),
         Place::Group(group) => Ok(CableFrom::Group(model.groups.get(group).ok_or_else(missing)?.node)),
         Place::BusEffect { group, effect } => Ok(CableFrom::Effect(model.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?.node)),
+        Place::EffectSide { .. } | Place::BusEffectSide { .. } => Err(format!("{place} is an input: a cable starts at an output of audio")),
         Place::Master => Err("master has no output of audio".to_string()),
         Place::Keys | Place::Device(_) => Err(format!("{place} is a source of notes, which has no output of audio")),
     }
@@ -772,8 +780,16 @@ fn cable_end(place: session::CablePlace, model: &SessionModel) -> Result<CableTo
             Err(format!("{place} has no input of audio: a cable ends at an effect, a group or master"))
         }
         Place::Effect { instrument, effect } => Ok(CableTo::Effect(model.instruments.get(instrument).and_then(|lane| lane.effects.get(effect)).ok_or_else(missing)?.node)),
+        Place::EffectSide { instrument, effect } => {
+            let slot = model.instruments.get(instrument).and_then(|lane| lane.effects.get(effect)).ok_or_else(missing)?;
+            slot.side.map(|_| CableTo::EffectSide(slot.node)).ok_or_else(|| format!("{place}: that effect has no second input"))
+        }
         Place::Group(group) => Ok(CableTo::GroupBus(model.groups.get(group).ok_or_else(missing)?.node)),
         Place::BusEffect { group, effect } => Ok(CableTo::Effect(model.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?.node)),
+        Place::BusEffectSide { group, effect } => {
+            let slot = model.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?;
+            slot.side.map(|_| CableTo::EffectSide(slot.node)).ok_or_else(|| format!("{place}: that effect has no second input"))
+        }
         Place::Master => Ok(CableTo::Master),
         Place::Keys | Place::Device(_) => Err(format!("{place} is a source of notes, which has no input of audio")),
     }
@@ -1371,7 +1387,7 @@ impl FreeSession<'_> {
                 let slot = self.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?;
                 Ok((slot.node, params_at(self.bus_params, group, effect)))
             }
-            Place::Group(_) | Place::Master | Place::Keys | Place::Device(_) => Err(format!("{place} is not a plugin")),
+            Place::EffectSide { .. } | Place::BusEffectSide { .. } | Place::Group(_) | Place::Master | Place::Keys | Place::Device(_) => Err(format!("{place} is not a plugin: it is the second input of one")),
         }
     }
 }
@@ -3114,6 +3130,71 @@ to = "master"
     fn saved(model: &SessionModel) -> String {
         let (instruments, groups, cables, sources) = crate::app::save::to_save(model);
         session::to_toml(&instruments, &groups, &cables, &sources, None, model.master_ui(), model.bpm_to_save()).unwrap()
+    }
+
+    // -- a second input on an effect (step 95) --
+
+    #[test]
+    fn a_cable_at_the_second_input_of_an_effect_is_loaded_told_to_the_audio_thread_and_saved_as_the_file_wrote_it() {
+        use crate::plugin::chain::{CableFrom as F, CableTo as T};
+        let run = load(testutil::SIDED);
+        let n = testutil::Sided::of(&run.model);
+        assert_eq!(run.model.cables.iter().map(|cable| (cable.id.0, cable.from, cable.to, cable.gain)).collect::<Vec<_>>(), [(0, F::Instrument(n.lane[1]), T::EffectSide(n.math), 1.0)]);
+        run.model.check_ids().unwrap();
+        assert_eq!(cable_commands(&run), [format!("AddCable id=0 from=Instrument({:?}) to=EffectSide({:?}) gain=1.000", n.lane[1], n.math)]);
+        // The plugins say that they have a second input: the math effects have, the filter has not, and neither has an instrument.
+        assert_eq!(run.model.plugin_slot(n.math).unwrap().side, Some(crate::plugin::SideInput { main: "A", side: "B" }));
+        assert_eq!(run.model.plugin_slot(n.bus_math).unwrap().side, Some(crate::plugin::SideInput { main: "A", side: "B" }));
+        assert_eq!((run.model.plugin_slot(n.filter).unwrap().side, run.model.plugin_slot(n.lane[0]).unwrap().side), (None, None));
+        // It is written as it was read, and read again as the same cables and the same file.
+        let text = saved(&run.model);
+        assert!(text.contains("to = \"instrument[0].effect[1].side\""), "{text}");
+        let again = load(&text).model;
+        assert_eq!(again.cables, run.model.cables);
+        assert_eq!(saved(&again), text);
+    }
+
+    #[test]
+    fn a_cable_at_the_second_input_of_a_bus_effect_names_it_by_its_group_and_its_place_in_the_bus() {
+        let text = format!("{}\n[[cable]]\nfrom = \"instrument[0].effect[0]\"\nto = \"group[0].effect[0].side\"\ngain = 0.5\n[[cable]]\nfrom = \"instrument[1]\"\nto = \"instrument[0].effect[1]\"\n", testutil::SIDED);
+        let run = load(&text);
+        let n = testutil::Sided::of(&run.model);
+        use crate::plugin::chain::{CableFrom as F, CableTo as T};
+        assert_eq!(
+            run.model.cables.iter().map(|cable| (cable.from, cable.to, cable.gain)).collect::<Vec<_>>(),
+            [(F::Instrument(n.lane[1]), T::EffectSide(n.math), 1.0), (F::Effect(n.filter), T::EffectSide(n.bus_math), 0.5), (F::Instrument(n.lane[1]), T::Effect(n.math), 1.0)],
+            "a cable at the first input of an effect and one at its second, from the same lane, are two"
+        );
+        let saved = saved(&run.model);
+        assert!(saved.contains("to = \"group[0].effect[0].side\"") && saved.contains("to = \"instrument[0].effect[1]\"\n"), "{saved}");
+        assert_eq!(load(&saved).model.cables, run.model.cables);
+    }
+
+    #[test]
+    fn a_second_input_that_the_session_cannot_have_refuses_the_session_with_the_place_of_the_cable() {
+        for (cable, why) in [
+            ("from = \"instrument[1]\"\nto = \"instrument[0].effect[0].side\"", "cable[1].to: instrument[0].effect[0].side: that effect has no second input"),
+            ("from = \"instrument[1]\"\nto = \"instrument[0].effect[7].side\"", "cable[1].to: instrument[0].effect[7].side is not in the session"),
+            ("from = \"instrument[1]\"\nto = \"group[0].effect[3].side\"", "cable[1].to: group[0].effect[3].side is not in the session"),
+            // (A second effect on the bus, a reverb, which is put in after the cable's table: the tables of an array go to the one table of the group that is there.)
+            ("from = \"instrument[1]\"\nto = \"group[0].effect[1].side\"\n[[group.effect]]\nplugin = \"builtin:reverb\"", "cable[1].to: group[0].effect[1].side: that effect has no second input"),
+            ("from = \"instrument[0].effect[1].side\"\nto = \"master\"", "cable[1].from: instrument[0].effect[1].side is an input: a cable starts at an output of audio"),
+            ("from = \"group[0].effect[0].side\"\nto = \"master\"", "cable[1].from: group[0].effect[0].side is an input"),
+            ("from = \"instrument[0].effect[1]\"\nto = \"instrument[0].effect[1].side\"", "cable[1]: that cable would make the audio go round"),
+            ("from = \"group[0].effect[0]\"\nto = \"instrument[0].effect[1].side\"\n[[cable]]\nfrom = \"instrument[0].effect[1]\"\nto = \"group[0].effect[0].side\"", "cable[2]: that cable would make the audio go round"),
+            ("from = \"instrument[1]\"\nto = \"instrument[0].effect[1].side\"", "cable[1]: there is a cable from instrument[1] to instrument[0].effect[1].side already"),
+            ("from = \"instrument[1]\"\nto = \"instrument[0].side\"", "is not a place of the session"),
+        ] {
+            let error = try_load(&format!("{}\n[[cable]]\n{cable}\n", testutil::SIDED)).expect_err(cable).to_string();
+            assert!(error.contains(why), "{error}\nfor:\n{cable}");
+        }
+    }
+
+    #[test]
+    fn a_free_modulators_cable_that_names_the_second_input_of_an_effect_is_left_out_as_one_that_names_what_is_no_plugin_is() {
+        // (A free cable that names what is no plugin is loaded without, and the log says so: the session is loaded, with no cable of modulation.)
+        let run = load(&format!("{}\n[[modulator]]\n[[modulator.target]]\nto = \"instrument[0].effect[1].side\"\nparam = \"mode\"\n", testutil::SIDED));
+        assert!(run.model.free_modulators[0].targets.is_empty(), "the second input is not a plugin: it is one of its inputs");
     }
 
     #[test]

@@ -5082,6 +5082,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  w          Cut / give back the way out of the lane or group of the row".into(),
         "  M  S       Mute / solo the lane or group of the row".into(),
         "  Ctrl+Z     Undo (Ctrl+Y redoes); a cross is where a cable would make the audio go round".into(),
+        "  ↳B         The second input of an effect that has one (the Math): a column of its own after the first".into(),
         "".into(),
         "Piano tab:".into(),
         "  k          Open scale picker (root + scale)".into(),

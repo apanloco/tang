@@ -21,6 +21,9 @@ edited:instruments@64 e47e99b8559860e3 ee7c80d1b4ec2baa
 edited:latency@1024 d7eeba6bb94a55ef 74b1778d7a2035e4
 edited:latency@256 e6ffc99c843b5968 70e60aa7a114f26c
 edited:latency@64 6344720ab14606ce 2a1bdbde95842b41
+edited:math@1024 d67c87864191820b 41052a5f62b02982
+edited:math@256 038e6276be3278e6 d2661d53978940f0
+edited:math@64 4fd706deec58fc51 8dee3aa695ee3efe
 edited:routes@1024 d5352eb7c38c3f15 41fc91179affd4b7
 edited:routes@256 651a235dd99f615a f22b1ce0541421c8
 edited:routes@64 6dfb8de39077878a d6bf5595da3f16c0
@@ -963,6 +966,9 @@ session:freemod@64 ac0f6ab59da3d830 e1669c3b8458ba8c
 session:gate@1024 9ebd4b337a69da67 e2df37fe2e3d224f
 session:gate@256 e1c14474a07ee0c8 f9aa6bc5792e39d4
 session:gate@64 d6388cd4b810badf af8a9be199880d9e
+session:math@1024 2813efd1abfbfba1 45e435df6855ed19
+session:math@256 2813efd1abfbfba1 6fce7f6d2d5ed3e0
+session:math@64 ec7814c2b5b0547d fcd2da557befcf9a
 session:melody@1024 77e005934548f47d 70a23ffd27f860a5
 session:melody@256 6931b888fb3e8c29 8f00957bfea4f864
 session:melody@64 d049ef828bb5d795 e7d681ecda1d371f

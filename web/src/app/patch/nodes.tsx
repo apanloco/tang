@@ -424,8 +424,19 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const held = data.heldIn;
   return (
     <div className={`tang-node tang-node--${type}${unheard}`}>
-      {/* (An effect takes audio in; a lane takes notes in, from the sources.) */}
-      {effect ? <AudioPort node={data.node} direction="in" /> : <NotesPort node={data.node} direction="in" />}
+      {/* (An effect takes audio in, at two places if it has a second input, and a lane takes notes in, from the sources.) */}
+      {effect ? (
+        data.side ? (
+          <>
+            <AudioPort node={data.node} direction="in" pair={{ side: false, label: data.side.main }} />
+            <AudioPort node={data.node} direction="in" pair={{ side: true, label: data.side.side }} />
+          </>
+        ) : (
+          <AudioPort node={data.node} direction="in" />
+        )
+      ) : (
+        <NotesPort node={data.node} direction="in" />
+      )}
       <AudioPort node={data.node} direction="out" />
       <Header
         name={data.name}

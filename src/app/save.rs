@@ -128,6 +128,11 @@ fn cables_to_save(model: &SessionModel) -> Vec<SaveCable> {
         };
         let to = match cable.to {
             CableTo::Effect(node) => effect_place(node),
+            CableTo::EffectSide(node) => effect_place(node).and_then(|place| match place {
+                CablePlace::Effect { instrument, effect } => Some(CablePlace::EffectSide { instrument, effect }),
+                CablePlace::BusEffect { group, effect } => Some(CablePlace::BusEffectSide { group, effect }),
+                _ => None,
+            }),
             CableTo::GroupBus(node) => group_place(node),
             CableTo::Master => Some(CablePlace::Master),
         };

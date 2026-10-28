@@ -152,11 +152,12 @@ fn node_from(from: CableFrom) -> NodeId {
     }
 }
 
-/// The node that a cable to `to` is drawn to, as the intents name it.
-fn node_to(to: CableTo) -> NodeId {
+/// The end that a cable to `to` is drawn to, as the intents name it: the node and its input (the second one of an effect that has two).
+fn end_of(to: CableTo) -> Endpoint {
     match to {
-        CableTo::Effect(node) | CableTo::GroupBus(node) => node,
-        CableTo::Master => NodeId::MASTER,
+        CableTo::Effect(node) | CableTo::GroupBus(node) => Endpoint { node, port: Port::AudioIn },
+        CableTo::EffectSide(node) => Endpoint { node, port: Port::AudioInSide },
+        CableTo::Master => Endpoint { node: NodeId::MASTER, port: Port::AudioIn },
     }
 }
 
@@ -181,6 +182,10 @@ impl Bench {
                 let name = format!("{tag} {}", effect.name);
                 rows.push(Row { from: CableFrom::Effect(effect.node), owner: lane.node, head: false, group: false, tag: tag.clone(), label: format!("  fx {}", effect.name), name: name.clone(), flags: flags.clone() });
                 cols.push(Column { to: CableTo::Effect(effect.node), tag: tag.clone(), short: short(&effect.name), name });
+                // An effect that has a second input has a column for it beside its first (step 95): `↳B`, and `L1 Math (B)` in the foot.
+                if let Some(side) = effect.side {
+                    cols.push(Column { to: CableTo::EffectSide(effect.node), tag: tag.clone(), short: format!("\u{21b3}{}", side.side), name: format!("{tag} {} ({})", effect.name, side.side) });
+                }
             }
         }
         for (index, group) in model.groups.iter().enumerate() {
@@ -193,6 +198,9 @@ impl Bench {
                 let name = format!("{tag} {} (bus)", effect.name);
                 rows.push(Row { from: CableFrom::Effect(effect.node), owner: group.node, head: false, group: true, tag: tag.clone(), label: format!("  fx {} (bus)", effect.name), name: name.clone(), flags: flags.clone() });
                 cols.push(Column { to: CableTo::Effect(effect.node), tag: tag.clone(), short: short(&effect.name), name });
+                if let Some(side) = effect.side {
+                    cols.push(Column { to: CableTo::EffectSide(effect.node), tag: tag.clone(), short: format!("\u{21b3}{}", side.side), name: format!("{tag} {} (bus, {})", effect.name, side.side) });
+                }
             }
         }
         cols.push(Column { to: CableTo::Master, tag: "Mix".to_string(), short: String::new(), name: "the mix".to_string() });
@@ -322,7 +330,7 @@ impl Patch {
                 // (A link that is cut is given back by the cable that is asked for between its ends: the controller turns it into the link.)
                 Cell::Free | Cell::Link { present: false, .. } => Act::Apply(Intent::AddCable {
                     from: Endpoint { node: node_from(row.from), port: Port::AudioOut },
-                    to: Endpoint { node: node_to(col.to), port: Port::AudioIn },
+                    to: end_of(col.to),
                     gain: None,
                 }),
                 Cell::Pin { edge, .. } => Act::Apply(Intent::RemoveEdge { edge }),
@@ -571,7 +579,7 @@ impl Layout {
 mod tests {
     use super::*;
     use crate::app::model::AudioCable;
-    use crate::app::testutil::{self, PATCHED, SENDS, Sends};
+    use crate::app::testutil::{self, PATCHED, SENDS, SIDED, Sends, Sided};
 
     fn bench_of(text: &str) -> (testutil::Run, Bench) {
         let run = testutil::load(text);
@@ -615,6 +623,63 @@ mod tests {
         );
         let cols: Vec<CableTo> = bench.cols.iter().map(|col| col.to).collect();
         assert_eq!(cols, [CableTo::Effect(n.fx[0]), CableTo::Effect(n.fx[1]), CableTo::Effect(n.fx[2]), CableTo::GroupBus(n.group), CableTo::Effect(n.bus), CableTo::Master]);
+    }
+
+    #[test]
+    fn an_effect_that_has_a_second_input_has_a_column_for_it_beside_its_first_and_the_cable_at_it_is_a_pin_there() {
+        let (run, bench) = bench_of(SIDED);
+        let n = Sided::of(&run.model);
+        let cols: Vec<CableTo> = bench.cols.iter().map(|col| col.to).collect();
+        assert_eq!(
+            cols,
+            [CableTo::Effect(n.filter), CableTo::Effect(n.math), CableTo::EffectSide(n.math), CableTo::GroupBus(n.group), CableTo::Effect(n.bus_math), CableTo::EffectSide(n.bus_math), CableTo::Master]
+        );
+        let names: Vec<&str> = bench.cols.iter().map(|col| col.name.as_str()).collect();
+        assert_eq!(names, ["L1 Filter", "L1 Math", "L1 Math (B)", "G1 Group 1's bus", "G1 Math (bus)", "G1 Math (bus, B)", "the mix"]);
+        let shorts: Vec<&str> = bench.cols.iter().map(|col| col.short.as_str()).collect();
+        assert_eq!(shorts, ["Filt", "Math", "\u{21b3}B", "bus", "Math", "\u{21b3}B", ""]);
+        assert!(bench.cols.iter().all(|col| col.tag != "L2"), "the lane that has no effect has no column");
+        // The cable of the file is a pin at lane 2's instrument and the second input of lane 1's math effect, and nowhere else.
+        let (row, col) = at(&bench, CableFrom::Instrument(n.lane[1]), CableTo::EffectSide(n.math));
+        assert_eq!(bench.pins.get(&(row, col)), Some(&run.model.cables[0].id));
+        assert_eq!(bench.pins.len(), 1);
+    }
+
+    #[test]
+    fn enter_at_the_column_of_a_second_input_draws_a_cable_there_and_one_at_the_first_input_is_another_cable() {
+        let (run, bench) = bench_of(SIDED);
+        let n = Sided::of(&run.model);
+        let model = &run.model;
+        let mut patch = on(&bench, CableFrom::Instrument(n.lane[0]), CableTo::EffectSide(n.bus_math));
+        assert_eq!(
+            key(&mut patch, model, KeyCode::Enter),
+            Act::Apply(Intent::AddCable { from: Endpoint { node: n.lane[0], port: Port::AudioOut }, to: Endpoint { node: n.bus_math, port: Port::AudioInSide }, gain: None })
+        );
+        let mut patch = on(&bench, CableFrom::Instrument(n.lane[1]), CableTo::Effect(n.math));
+        assert_eq!(
+            key(&mut patch, model, KeyCode::Enter),
+            Act::Apply(Intent::AddCable { from: Endpoint { node: n.lane[1], port: Port::AudioOut }, to: Endpoint { node: n.math, port: Port::AudioIn }, gain: None }),
+            "the same lane to the first input of the same effect: the cable of the file is at the second"
+        );
+        // Enter on the pin takes it out.
+        let mut patch = on(&bench, CableFrom::Instrument(n.lane[1]), CableTo::EffectSide(n.math));
+        assert_eq!(key(&mut patch, model, KeyCode::Enter), Act::Apply(Intent::RemoveEdge { edge: model.cables[0].id }));
+    }
+
+    #[test]
+    fn a_crosspoint_at_the_second_input_of_an_effect_from_that_effect_or_from_what_it_feeds_is_refused_as_a_loop() {
+        let (run, bench) = bench_of(SIDED);
+        let n = Sided::of(&run.model);
+        let mut patch = Patch::new();
+        for from in [CableFrom::Effect(n.math), CableFrom::Group(n.group)] {
+            let to = if from == CableFrom::Effect(n.math) { CableTo::EffectSide(n.math) } else { CableTo::EffectSide(n.bus_math) };
+            (patch.row, patch.col) = at(&bench, from, to);
+            patch.settle(&bench);
+            assert!(matches!(patch.cell(&run.model, &bench, patch.row, patch.col), Cell::Refused(why) if why.contains("go round")), "{from:?} to {to:?}");
+        }
+        // What is not a loop is free: the filter before the effect, to its second input.
+        let (row, col) = at(&bench, CableFrom::Effect(n.filter), CableTo::EffectSide(n.math));
+        assert_eq!(patch.cell(&run.model, &bench, row, col), Cell::Free);
     }
 
     #[test]

@@ -426,6 +426,31 @@ const FREE_EDITS: [(u64, Edit); 14] = [
     (45_000, Edit::Undo),
 ];
 
+/// What is done to an effect that has a second input, on `CABLED` while it plays (step 95): a math effect is added in a lane of its own that has no instrument and no way out (lane 2), lane 1's
+/// instrument is sent to its second input (B) and lane 0's to its first (A), the effect's mode is turned to an AM, the lane is given its way out (it is heard at the mix), the sender is muted and unmuted
+/// (a cable that carries silence is still a cable: no carrier takes B's place) and soloed and not (the math effect is heard for what its second input is sent), the cable at B is taken out (the effect's own
+/// carrier takes its place, which is a glide and not a click) and put back by Undo, the carrier's pitch is turned, the lane is taken out with its two cables and put back whole by Undo, and the mode is turned
+/// to a logic. Each is made (`Counts` says so: none is skipped or refused). The places of the cables are those of the session as it is at the time: the starts are each lane's instrument and effects and then
+/// each group and its bus effects, so that 2 is lane 1's instrument and 0 lane 0's; the ends are each lane's effects (an effect that has a second input has it right after its first), each group's bus and its
+/// effects and the mix, so that 2 is the math effect's first input and 3 its second.
+const MATH_EDITS: [(u64, Edit); 15] = [
+    (6_000, Edit::AddFreeEffect { plugin: "builtin:math" }),
+    (9_000, Edit::AddCable { from: 2, to: 3, gain: 0.9 }),
+    (11_000, Edit::AddCable { from: 0, to: 2, gain: 0.8 }),
+    (13_000, Edit::Param { lane: 2, slot: 0, param: 0, fraction: 0.09 }),
+    (16_000, Edit::Route { lane: 2, route: Route::Out }),
+    (19_000, Edit::Mute { lane: 1, muted: true }),
+    (22_000, Edit::Mute { lane: 1, muted: false }),
+    (24_000, Edit::Solo { lane: 1, solo: true }),
+    (27_000, Edit::Solo { lane: 1, solo: false }),
+    (29_000, Edit::RemoveCable { cable: 0 }),
+    (31_000, Edit::Undo),
+    (34_000, Edit::Param { lane: 2, slot: 0, param: 3, fraction: 0.55 }),
+    (36_000, Edit::RemoveLane { lane: 2 }),
+    (39_000, Edit::Undo),
+    (42_000, Edit::Param { lane: 2, slot: 0, param: 0, fraction: 0.7 }),
+];
+
 /// What is done to the free modulators of a session on `CABLED` while it plays (P5b-2): a free LFO is made and drives the detune of lane 0's oscillator and the cutoff of its filter, a free envelope
 /// drives the reverb on the bus (its damping and its mix), a free step sequencer drives lane 1's oscillator's detune, the user sets the filter's cutoff (what the free cable is centred on moves), the
 /// filter is taken out while a free cable drives it and put back by Undo (the very plugin, its cable with it), lane 1 is taken out with the sequencer's cable and put back by Undo, the LFO is taken out
@@ -502,7 +527,7 @@ pub fn edited() -> Vec<Scenario> {
         moved: true,
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -1320,6 +1345,7 @@ param = "detune"
             with,
             [
                 "session:free@256",
+                "session:math@256",
                 "session:patched@256",
                 "session:routed@256",
                 "session:sends@256",
@@ -1330,7 +1356,8 @@ param = "detune"
                 "edited:latency@256",
                 "edited:instruments@256",
                 "edited:feeds@256",
-                "edited:free@256"
+                "edited:free@256",
+                "edited:math@256"
             ]
         );
     }
@@ -1441,9 +1468,27 @@ param = "detune"
     }
 
     #[test]
+    fn two_lanes_are_a_ring_through_the_second_input_of_an_effect_and_with_the_cable_taken_out_the_effects_own_carrier_takes_its_place() {
+        // Lane 0's saw goes through a ring whose second input is lane 1's sine (a fifth above), which goes nowhere else: the render is the ring of the two, which has no partial at the pitch of either of them.
+        let session = sessions().into_iter().find(|scenario| scenario.id.starts_with("session:math")).expect("a session of the corpus");
+        let cable = "[[cable]]\nfrom = \"instrument[1]\"\nto = \"instrument[0].effect[0].side\"\n";
+        assert!(session.session.contains(cable));
+        let ringed = render(&session, &engine);
+        assert!(fingerprint(&ringed).peak > 0.01, "the ring is heard");
+        // With the cable taken out the effect has nothing at its second input and puts in its carrier (A4): another sound, and one that is heard.
+        let carrier = render(&Scenario { session: session.session.replace(cable, ""), ..session.clone() }, &engine);
+        assert!(fingerprint(&carrier).peak > 0.01, "the carrier is heard");
+        assert_ne!(ringed.samples, carrier.samples);
+        // Lane 1 sends and is heard nowhere else: with its instrument taken out of the ring (the cable pointed at the effect's first input, where it is added to the saw) the sound is another again.
+        let added = render(&Scenario { session: session.session.replace("effect[0].side", "effect[0]"), ..session.clone() }, &engine);
+        assert_ne!(added.samples, ringed.samples);
+        assert_ne!(added.samples, carrier.samples);
+    }
+
+    #[test]
     fn the_scenarios_that_cut_a_way_out_are_those_that_the_loop_the_plan_replaced_is_not_held_to_either() {
         let cut: Vec<String> = always_on().iter().filter(|scenario| scenario.has_cut_routes()).map(|scenario| scenario.id.clone()).collect();
-        assert_eq!(cut, ["session:free@256", "session:routed@256", "edited:routes@256", "edited:free@256"]);
+        assert_eq!(cut, ["session:free@256", "session:math@256", "session:routed@256", "edited:routes@256", "edited:free@256", "edited:math@256"]);
         // (A scenario that has no cable and no cut is what the loop can run, as the file is written: there are many of them, and every generated session is one that has no modulator that is
         // made for a lane or a knob.)
         assert!(always_on().iter().map(Scenario::unmoved).filter(|scenario| scenario.is_in_the_old_loop()).count() > 20);

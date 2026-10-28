@@ -1196,7 +1196,25 @@ mod tests {
     // -- The example sessions --
 
     /// The example sessions of this repository that show what the built-in plugins do (the others name a plugin that has to be installed, or are somebody's saved sound).
-    const SOUND_EXAMPLES: [&str; 14] = ["supersaw.toml", "wind.toml", "bell.toml", "arp.toml", "pwm.toml", "epiano.toml", "sync-lead.toml", "sub-bass.toml", "fold.toml", "wobble.toml", "gate.toml", "melody.toml", "shared-reverb.toml", "shared-lfo.toml"];
+    const SOUND_EXAMPLES: [&str; 17] = [
+        "supersaw.toml",
+        "wind.toml",
+        "bell.toml",
+        "arp.toml",
+        "pwm.toml",
+        "epiano.toml",
+        "sync-lead.toml",
+        "sub-bass.toml",
+        "fold.toml",
+        "wobble.toml",
+        "gate.toml",
+        "melody.toml",
+        "shared-reverb.toml",
+        "shared-lfo.toml",
+        "ring-bell.toml",
+        "growl.toml",
+        "pump.toml",
+    ];
 
     fn example(name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(name);
@@ -1511,6 +1529,129 @@ mod tests {
         let worst = with.iter().zip(&still).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
         // (Measured: 0.43, against a loudest sample of 0.47; the test asks for 0.05.)
         assert!(worst > 0.05, "the LFO is heard: the largest difference is {worst}");
+    }
+
+    /// The size of the single bin of the Hann-windowed Fourier transform of `samples` at `hz`, in relative units (the window's scale cancels in a ratio of two of them).
+    fn level_at(samples: &[f32], hz: f32) -> f32 {
+        let omega = std::f32::consts::TAU * hz / 48_000.0;
+        let coefficient = 2.0 * omega.cos();
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        let n = samples.len() as f32;
+        for (i, &x) in samples.iter().enumerate() {
+            let window = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / (n - 1.0)).cos();
+            let s = x * window + coefficient * s1 - s2;
+            s2 = s1;
+            s1 = s;
+        }
+        let (real, imaginary) = (s1 - s2 * omega.cos(), s2 * omega.sin());
+        (real * real + imaginary * imaginary).sqrt()
+    }
+
+    #[test]
+    fn the_ring_bell_example_has_a_cable_into_each_input_of_its_math_effect() {
+        let run = crate::app::testutil::load(&example("ring-bell.toml"));
+        // The third lane holds the effects and no instrument: the math effect, and a reverb after it.
+        let lane = &run.model.instruments[2];
+        assert!(lane.instrument.is_none(), "the lane that holds the effects has no instrument");
+        assert_eq!(lane.effects.iter().map(|fx| fx.name.as_str()).collect::<Vec<_>>(), ["Math", "Reverb"]);
+        let math = lane.effects[0].node;
+        assert!(lane.effects[0].side.is_some(), "the math effect has a second input");
+        let ends: Vec<_> = run.model.cables.iter().map(|cable| (cable.from, cable.to)).collect();
+        assert_eq!(
+            ends,
+            [
+                (crate::plugin::chain::CableFrom::Instrument(run.model.instruments[0].node), crate::plugin::chain::CableTo::Effect(math)),
+                (crate::plugin::chain::CableFrom::Instrument(run.model.instruments[1].node), crate::plugin::chain::CableTo::EffectSide(math)),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_ring_bell_example_has_the_sum_and_the_difference_of_the_two_pitches_and_neither_of_them_and_the_effects_own_carrier_when_the_cable_to_b_is_out() {
+        // C3 on the first oscillator and F#3 (a tritone above) on the second: the product of two sines is a sine at the sum of their pitches and one at the difference, and none at their own.
+        let (c3, f_sharp3) = (440.0 * 2.0f32.powf(-21.0 / 12.0), 440.0 * 2.0f32.powf(-15.0 / 12.0));
+        let session = example("ring-bell.toml");
+        let window = |out: &[f32]| out[(0.05 * 48_000.0) as usize..(0.35 * 48_000.0) as usize].to_vec();
+        let both = window(&play(&session, &[48], 0.0, 1.0, 1.0));
+        let (sum, difference) = (level_at(&both, c3 + f_sharp3), level_at(&both, f_sharp3 - c3));
+        let (own, other) = (level_at(&both, c3), level_at(&both, f_sharp3));
+        // (Measured: the sum is 119 and the difference 114, against 0.15 and 0.03 at the two pitches themselves, 770 times as much; the test asks for 100.)
+        assert!(sum > 100.0 * own.max(other) && difference > 100.0 * own.max(other), "sum {sum} and difference {difference}, against {own} and {other} at the two pitches themselves");
+        // With the second cable taken out, nothing is patched to B, and B is the effect's own carrier: a sine of the Ring Bell's pitch, E4. What is heard is the first oscillator times that.
+        let e4 = 440.0 * 2.0f32.powf(-5.0 / 12.0);
+        let carrier = window(&play(&session[..session.rfind("\n[[cable]]\n").expect("the second cable") + 1], &[48], 0.0, 1.0, 1.0));
+        let (up, down) = (level_at(&carrier, e4 + c3), level_at(&carrier, e4 - c3));
+        // (Measured: 54 and 57, against 0.015 and 0.008 where the two oscillators' sum and difference were, and 0.07 and 0.03 at the pitches themselves.)
+        assert!(up > 100.0 * level_at(&carrier, c3 + f_sharp3) && down > 100.0 * level_at(&carrier, f_sharp3 - c3), "{up} and {down} at the carrier's sum and difference");
+        assert!(up > 100.0 * level_at(&carrier, c3) && down > 100.0 * level_at(&carrier, e4), "{up} and {down}, against the pitches themselves");
+    }
+
+    #[test]
+    fn the_growl_example_has_a_math_effect_in_its_chain_with_nothing_at_its_second_input_and_an_lfo_on_its_carrier() {
+        let run = crate::app::testutil::load(&example("growl.toml"));
+        let lane = &run.model.instruments[0];
+        assert_eq!(lane.effects.iter().map(|fx| fx.name.as_str()).collect::<Vec<_>>(), ["Math"]);
+        assert!(lane.effects[0].side.is_some());
+        assert!(run.model.cables.is_empty(), "nothing is patched to B: the effect's own carrier is");
+        let lfo = &run.model.free_modulators[0];
+        let aims: Vec<_> = lfo.targets.iter().map(|t| (t.aim, t.param_name.as_str(), t.depth)).collect();
+        assert!(matches!(aims[..], [(crate::app::model::Driven::Param { plugin, .. }, "pitch", depth)] if plugin == lane.effects[0].node && depth == 0.04), "{aims:?}");
+        // The preset is the Xor Growl's, with its bits turned down to four.
+        let value = |name: &str| lane.effects[0].params.iter().find(|p| p.name == name).unwrap().value;
+        assert_eq!((value("mode"), value("bits"), value("pitch")), (7.0, 3.0, 40.0));
+    }
+
+    #[test]
+    fn the_growl_example_is_another_sound_than_the_saw_it_is_made_of_and_the_lfo_on_its_carrier_is_heard() {
+        let session = example("growl.toml");
+        let heard = |session: &str| play(session, &[48], 0.0, 4.0, 4.0);
+        let growl = heard(&session);
+        // Without the Math effect: the saw alone (the effect's table and what is under it up to the LFO are taken out).
+        let from = session.find("[[instrument.effect]]").expect("the Math effect");
+        let to = session.find("[[modulator]]").expect("the LFO");
+        let saw = heard(&format!("{}{}", &session[..from], &session[to..session.find("[[modulator.target]]").unwrap()]));
+        let worst = growl.iter().zip(&saw).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        // (Measured: 0.52, against a loudest sample of 0.43 for the growl; the test asks for 0.05.)
+        assert!(worst > 0.05, "the Math is heard: the largest difference from the saw alone is {worst}");
+        // The LFO moves the carrier's pitch: with its table taken out the carrier stays at E2, and the sound is another.
+        let without_lfo = heard(&session[..to]);
+        let worst = growl.iter().zip(&without_lfo).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        // (Measured: 0.69; the test asks for 0.05.)
+        assert!(worst > 0.05, "the LFO is heard: the largest difference is {worst}");
+    }
+
+    #[test]
+    fn the_pump_example_has_the_kick_at_the_second_input_of_the_pads_math_effect() {
+        let run = crate::app::testutil::load(&example("pump.toml"));
+        let math = run.model.instruments[0].effects[0].node;
+        assert_eq!(run.model.instruments[0].effects[0].name, "Math");
+        assert_eq!(run.model.cables.len(), 1);
+        assert_eq!((run.model.cables[0].from, run.model.cables[0].to), (crate::plugin::chain::CableFrom::Instrument(run.model.instruments[1].node), crate::plugin::chain::CableTo::EffectSide(math)));
+    }
+
+    #[test]
+    fn the_pump_example_turns_the_pad_down_at_each_kick_and_lets_it_come_back_before_the_next_and_is_another_sound_with_the_cable_out() {
+        // Only the pad is heard: the kick has no way out of its own (`route = "none"`), and what it does is turn the pad down through its cable. A kick is on each beat, 0.5 s at 120 beats a minute,
+        // from the key: the third is at 1.0 s. What the Math does to the pad is told by the pad without it (the chord's voices beat against each other, so that its own level is never the same
+        // twice: the same pad is the yardstick), as the part of it that is left in a window of 50 ms.
+        let session = example("pump.toml");
+        assert!(session.contains("transpose = -24\nroute = \"none\"\n"), "the kick has no way out");
+        let chord = |session: &str| play(session, &[48, 52, 55], 0.0, 3.0, 2.0);
+        let without_cable = &session[..session.find("# B (`.side`)").expect("the cable's comment")];
+        let plain = chord(&without_cable.replace("[[instrument.effect]]\nplugin = \"builtin:math\"\npreset = \"Pump\"\nmix = 1.0\n", ""));
+        assert!(!without_cable.is_empty() && plain.len() == 96_000, "the pad alone is two seconds");
+        let left = |out: &[f32], from: f32| rms(&out[(from * 48_000.0) as usize..((from + 0.05) * 48_000.0) as usize]) / rms(&plain[(from * 48_000.0) as usize..((from + 0.05) * 48_000.0) as usize]);
+        let pumping = chord(&session);
+        let (ducked, back) = (left(&pumping, 1.03), left(&pumping, 1.40));
+        // (Measured: 0.09 of the pad is left just after a kick and 0.56 before the next, 6.2 times as much; the test asks for 3.)
+        assert!(back > 3.0 * ducked, "{ducked} of the pad is left just after a kick and {back} before the next one");
+        // With the cable out B is the effect's own carrier, a sine of the Pump preset's pitch (-36: a little over 1 Hz), which the follower follows too: the pad goes on pumping at the carrier's pace,
+        // and the sound is another than the kick's.
+        let steady = chord(without_cable);
+        let difference: Vec<f32> = pumping.iter().zip(&steady).map(|(a, b)| a - b).collect();
+        // (Measured: the difference is 0.66 of the pumping pad's own level; the test asks for 0.2.)
+        assert!(rms(&difference) > 0.2 * rms(&pumping), "the difference is {} against {}", rms(&difference), rms(&pumping));
+        assert!(rms(&steady) > 0.0 && steady.iter().all(|x| x.is_finite()));
     }
 
     #[test]

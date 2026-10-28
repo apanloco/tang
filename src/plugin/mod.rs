@@ -37,6 +37,14 @@ pub struct Preset {
     pub id: String,
 }
 
+/// What an effect that takes a second audio input calls its two inputs (P3g of `docs/patch-graph.md` §11.6: the small half of "the ports that plugins have"): the main one, which is
+/// what its chain and the cables that end at its first input give it, and the *side* one, which the cables that end at its second input bring. A page names the two handles by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SideInput {
+    pub main: &'static str,
+    pub side: &'static str,
+}
+
 /// A loaded plugin instance ready to process audio.
 pub trait Plugin: Send {
     fn name(&self) -> &str;
@@ -67,6 +75,26 @@ pub trait Plugin: Send {
     /// A plugin whose latency changes while it runs may say the new one: the host makes its plan again for it. The default is none.
     fn latency(&self) -> u32 {
         0
+    }
+
+    /// Whether the effect has a second audio input, and what its two inputs are called (the default is none: an effect has the one that the chain feeds, and a plugin of another format
+    /// that has a sidechain gets silence there, as it did). The host gives an effect that has one a second port in its plan, which cables can end at, and calls
+    /// [`Plugin::process_side`] for it.
+    fn side_input(&self) -> Option<SideInput> {
+        None
+    }
+
+    /// `process` for an effect that has a side input: `side` is the sound that the cables at its second input bring (a buffer for each channel, as `audio_in` has), or `None` while no
+    /// cable ends there, so that the plugin can have a sound of its own in its place. The default is a plugin that has no side input, and leaves it.
+    fn process_side(
+        &mut self,
+        midi_events: &[(u64, [u8; 3])],
+        audio_in: &[&[f32]],
+        side: Option<&[&[f32]]>,
+        audio_out: &mut [&mut [f32]],
+    ) -> anyhow::Result<()> {
+        let _ = side;
+        self.process(midi_events, audio_in, audio_out)
     }
 }
 

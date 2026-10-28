@@ -162,6 +162,10 @@ fn run() -> anyhow::Result<()> {
                 }
             );
             println!("  Audio outputs: {}", p.audio_output_count());
+            // An effect that has a second input says what it calls the two (a cable can end at either: see "An effect with a second input").
+            if let Some(inputs) = p.side_input() {
+                println!("  Audio inputs:  two: {} (what the chain feeds) and {} (cables only)", inputs.main, inputs.side);
+            }
             // (The sample rate that the plugin is loaded at above, which is what its latency is in frames of.)
             match p.latency() {
                 0 => println!("  Latency:       none"),

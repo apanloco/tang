@@ -21,9 +21,11 @@ export interface CableStart {
   node: NodeId;
 }
 
-/** Where a cable ends: an effect, the bus of a group or the mix. */
+/**
+ * Where a cable ends: an effect (its input, which the chain feeds too), the second input of an effect that has one (`effectSide`: only cables end at it), the bus of a group or the mix.
+ */
 export interface CableEnd {
-  kind: "effect" | "groupBus" | "master";
+  kind: "effect" | "effectSide" | "groupBus" | "master";
   node: NodeId;
 }
 
@@ -36,25 +38,29 @@ export interface Ends {
 const invalid = (message: string): { error: WireError } => ({ error: { code: "invalid", message } });
 
 /**
- * The ends that a cable from the port `from` to the port `to` has: an instrument's, an effect's or a group's `audioOut` to an effect's, a group's or the master's `audioIn`; or why it has
- * none, in the controller's words and its order: a port that is not that, the mix as a start, a node that is not there (not found), a modulator, a lane as an end (`SessionModel::cable_ends`).
+ * The ends that a cable from the port `from` to the port `to` has: an instrument's, an effect's or a group's `audioOut` to an effect's, a group's or the master's `audioIn`, or to the
+ * `audioInSide` of an effect that has a second input; or why it has none, in the controller's words and its order: a port that is not that, the mix as a start, a node that is not there (not
+ * found), a modulator, a lane as an end, a second input where there is none (`SessionModel::cable_ends`).
  */
 export function cableEnds(graph: Graph, from: Endpoint, to: Endpoint): Ends | { error: WireError } {
   if (from.port.type !== "audioOut") return invalid("an audio cable starts at an output of audio");
-  if (to.port.type !== "audioIn") return invalid("an audio cable ends at an input of audio");
+  if (to.port.type !== "audioIn" && to.port.type !== "audioInSide") return invalid("an audio cable ends at an input of audio");
   if (from.node === MASTER_ID) return invalid("the mix has no output of audio");
   const start = graph.nodes.find((n) => n.id === from.node && n.kind !== "master");
   if (!start) return { error: { code: "notFound", message: `there is no node ${String(from.node)}` } };
   if (start.kind === "modulator") return invalid("a modulator has no output of audio");
   if (start.kind === "source") return invalid("a source of notes has no output of audio: it has an output of events");
   const first: CableStart = { kind: start.kind === "instrument" ? "instrument" : start.kind === "group" ? "group" : "effect", node: start.id };
-  if (to.node === MASTER_ID) return { from: first, to: { kind: "master", node: MASTER_ID } };
+  const side = to.port.type === "audioInSide";
+  if (to.node === MASTER_ID) return side ? invalid("the mix has no second input") : { from: first, to: { kind: "master", node: MASTER_ID } };
   const end = graph.nodes.find((n) => n.id === to.node && n.kind !== "master");
   if (!end) return { error: { code: "notFound", message: `there is no node ${String(to.node)}` } };
   if (end.kind === "instrument") return invalid("a lane has no input of audio: a cable ends at an effect, a group or the mix");
   if (end.kind === "modulator") return invalid("a modulator has no input of audio");
   if (end.kind === "source") return invalid("a source of notes has no input of audio");
-  return { from: first, to: { kind: end.kind === "group" ? "groupBus" : "effect", node: end.id } };
+  if (end.kind === "group") return side ? invalid("a group has one input, its bus") : { from: first, to: { kind: "groupBus", node: end.id } };
+  if (!side) return { from: first, to: { kind: "effect", node: end.id } };
+  return end.kind === "effect" && end.side !== undefined ? { from: first, to: { kind: "effectSide", node: end.id } } : invalid("that effect has no second input");
 }
 
 /**
@@ -137,8 +143,8 @@ const MIX = "mix";
 /** The stage that a cable starts at: the head of a lane (after its volume), an effect, the tail of a group. */
 const startStage = (from: CableStart): string => (from.kind === "instrument" ? head(from.node) : from.kind === "effect" ? effect(from.node) : tail(from.node));
 
-/** The stage that a cable ends at: an effect, the head of a group, the mix. */
-const endStage = (to: CableEnd): string => (to.kind === "effect" ? effect(to.node) : to.kind === "groupBus" ? head(to.node) : MIX);
+/** The stage that a cable ends at: an effect (either of its inputs: the plan's node has both), the head of a group, the mix. */
+const endStage = (to: CableEnd): string => (to.kind === "effect" || to.kind === "effectSide" ? effect(to.node) : to.kind === "groupBus" ? head(to.node) : MIX);
 
 /** What `cable` (an edge of kind `cable`) joins, by the kinds of the nodes it is at; none if a node of it is not in the graph. */
 function endsOfEdge(nodes: ReadonlyMap<NodeId, Node>, cable: Edge): Ends | null {
@@ -148,7 +154,10 @@ function endsOfEdge(nodes: ReadonlyMap<NodeId, Node>, cable: Edge): Ends | null 
   if (cable.to.node === MASTER_ID) return { from, to: { kind: "master", node: MASTER_ID } };
   const end = nodes.get(cable.to.node);
   if (!end || (end.kind !== "effect" && end.kind !== "group")) return null;
-  return { from, to: { kind: end.kind === "group" ? "groupBus" : "effect", node: end.id } };
+  const side = cable.to.port.type === "audioInSide";
+  // (A second input is an effect's alone, and an effect that has one: the controller draws no other.)
+  if (end.kind === "group") return side ? null : { from, to: { kind: "groupBus", node: end.id } };
+  return side && end.side === undefined ? null : { from, to: { kind: side ? "effectSide" : "effect", node: end.id } };
 }
 
 /** The ends of every audio cable of the graph that has them (one with a node that is not there is left out, as the plan leaves it out), in the order of the graph. */
@@ -305,6 +314,10 @@ export function templateLinks(graph: Graph): TemplateLink[] {
   return links;
 }
 
+/** Whether the audio cable `cable` (an edge of kind `cable`) is between the two places `ends` says: the same nodes, and the same input of the effect at the end (`CableTo::Effect` is not `CableTo::EffectSide`). */
+export const cableIsBetween = (cable: Edge, ends: Ends): boolean =>
+  cable.from.node === ends.from.node && cable.to.node === ends.to.node && (cable.to.port.type === "audioInSide") === (ends.to.kind === "effectSide");
+
 /** Whether the link joins the two ends of a cable. */
 const joins = (link: TemplateLink, ends: Ends): boolean => link.from.kind === ends.from.kind && link.from.node === ends.from.node && link.to.kind === ends.to.kind && link.to.node === ends.to.node;
 
@@ -322,30 +335,44 @@ export function linkOrCable(graph: Graph, intent: Intent): Intent | { error: Wir
   if (intent.type !== "addCable" || (intent.gain !== null && intent.gain !== NEW_CABLE_GAIN)) return intent;
   const ends = cableEnds(graph, intent.from, intent.to);
   if ("error" in ends) return intent;
-  if (graph.edges.some((e) => isAudioCable(e) && e.from.node === ends.from.node && e.to.node === ends.to.node)) return intent;
+  if (graph.edges.some((e) => isAudioCable(e) && cableIsBetween(e, ends))) return intent;
   const link = templateLinks(graph).find((found) => joins(found, ends));
   if (link === undefined) return intent;
   if (link.present) return invalid("there is a cable between those two already");
   return link.of.kind === "wayOut" ? { type: "setRoute", node: link.of.node, route: "out" } : { type: "setFeed", node: link.of.node, feed: "chain" };
 }
 
+/** The nodes whose inputs take a cable: those whose (first) input does, and those effects whose second input does. */
+export interface Takers {
+  main: NodeId[];
+  side: NodeId[];
+}
+
 /**
- * The nodes that a cable from the output of `from` can be drawn to now: every effect, every group (its bus) and the mix that the controller would take a cable to from there, that is
- * an end it has, with no cable between the two already and no loop. A link of the audio path that joins the two is a cable that is drawn already while it is there, and is given back, where the audio
- * would not go round, while it is cut. For the canvas to say which inputs take the cable that is being dragged. A node that has no output of audio has none.
+ * The inputs that a cable from the output of `from` can be drawn to now, as `Takers` (`main`: the input of every effect, group (its bus) and the mix; `side`: the second input of every effect that has one) that the
+ * controller would take a cable to from there, that is an end it has, with no cable between the two already and no loop. A link of the audio path that joins the two is a cable that is drawn already while it
+ * is there, and is given back, where the audio would not go round, while it is cut (a second input has no link: only cables end at it). For the canvas to say which inputs take the cable that is being dragged,
+ * and for the menus. A node that has no output of audio has none.
  */
-export function cableTakers(graph: Graph, from: NodeId): NodeId[] {
+export function audioTakers(graph: Graph, from: NodeId): Takers {
   // (The wiring and the cables are the same for every end that is tried: a menu on every node asks this for each of them.)
   const wiring = wiringOf(graph);
   const cables = cablesOf(graph);
   const links = templateLinks(graph);
-  return graph.nodes.flatMap((node) => {
-    if (node.kind !== "effect" && node.kind !== "group" && node.kind !== "master") return [];
-    const ends = cableEnds(graph, { node: from, port: { type: "audioOut" } }, { node: node.id, port: { type: "audioIn" } });
-    if ("error" in ends) return [];
-    if (graph.edges.some((e) => isAudioCable(e) && e.from.node === from && e.to.node === node.id)) return [];
+  const takes = (node: NodeId, side: boolean): boolean => {
+    const ends = cableEnds(graph, { node: from, port: { type: "audioOut" } }, { node, port: { type: side ? "audioInSide" : "audioIn" } });
+    if ("error" in ends) return false;
+    if (graph.edges.some((e) => isAudioCable(e) && cableIsBetween(e, ends))) return false;
     const link = links.find((found) => joins(found, ends));
-    if (link !== undefined) return !link.present && !linkLoops(graph, link) ? [node.id] : [];
-    return goesRound(wiring, [...cables, ends]) ? [] : [node.id];
-  });
+    if (link !== undefined) return !link.present && !linkLoops(graph, link);
+    return !goesRound(wiring, [...cables, ends]);
+  };
+  const ends = graph.nodes.filter((node) => node.kind === "effect" || node.kind === "group" || node.kind === "master");
+  return {
+    main: ends.filter((node) => takes(node.id, false)).map((node) => node.id),
+    side: ends.filter((node) => node.kind === "effect" && node.side !== undefined && takes(node.id, true)).map((node) => node.id),
+  };
 }
+
+/** The nodes whose first input takes a cable from the output of `from` now (`audioTakers`' `main`). */
+export const cableTakers = (graph: Graph, from: NodeId): NodeId[] => audioTakers(graph, from).main;

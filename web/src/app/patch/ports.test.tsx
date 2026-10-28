@@ -154,6 +154,88 @@ describe("the audio ports of a node", () => {
   });
 });
 
+describe("the two audio inputs of an effect that has a second one", () => {
+  // A node with the two inputs, named as the Math's plugin names them, and its output; and a node with the one input that every other effect has.
+  const PAIR_TYPES: NodeTypes = {
+    pair: ({ data }: NodeProps) => (
+      <div>
+        <AudioPort node={data.node as number} direction="in" pair={{ side: false, label: "A" }} />
+        <AudioPort node={data.node as number} direction="in" pair={{ side: true, label: "B" }} />
+        <AudioPort node={data.node as number} direction="out" />
+      </div>
+    ),
+    single: ({ data }: NodeProps) => (
+      <div>
+        <AudioPort node={data.node as number} direction="in" />
+        <AudioPort node={data.node as number} direction="out" />
+      </div>
+    ),
+  };
+
+  async function pairPorts(connecting: ReadonlySet<string> | null) {
+    const { view } = await rig(
+      <ReactFlowProvider>
+        <ConnectingContext.Provider value={connecting}>
+          <div style={{ width: 800, height: 600 }}>
+            <ReactFlow
+              nodes={[
+                { id: "3", type: "pair", position: { x: 0, y: 0 }, data: { node: 3 } },
+                { id: "4", type: "single", position: { x: 300, y: 0 }, data: { node: 4 } },
+              ]}
+              edges={[]}
+              nodeTypes={PAIR_TYPES}
+            />
+          </div>
+        </ConnectingContext.Provider>
+      </ReactFlowProvider>,
+      { snapshot: fieldsFixture.snapshot },
+    );
+    await screen.findByTestId("rf__node-4");
+    const ports = Array.from(view.container.querySelectorAll(".react-flow__handle"));
+    const named = (node: number, handle: string) => ports.find((port) => port.getAttribute("data-nodeid") === String(node) && port.getAttribute("data-handleid") === handle);
+    return { ports, named, view };
+  }
+
+  test("are two inputs on the left edge, the first named as an input is and the second after it, each a place where a cable ends and none starts, one above the other by the stylesheet", async () => {
+    const { ports, named } = await pairPorts(null);
+    expect(ports.map((port) => `${port.getAttribute("data-nodeid") ?? "?"}:${port.getAttribute("data-handleid") ?? "?"}`)).toEqual(["3:audioIn", "3:audioInSide", "3:audioOut", "4:audioIn", "4:audioOut"]);
+    for (const handle of ["audioIn", "audioInSide"]) {
+      const input = named(3, handle);
+      expect([input?.getAttribute("data-handlepos"), input?.classList.contains("target"), input?.classList.contains("connectablestart"), input?.classList.contains("connectableend")], handle).toEqual(["left", true, false, true]);
+      expect(input?.classList.contains("tang-port--audio") && input.classList.contains("tang-port--in"), handle).toBe(true);
+    }
+    expect(named(3, "audioIn")?.classList.contains("tang-port--pair-main")).toBe(true);
+    expect(named(3, "audioIn")?.classList.contains("tang-port--pair-side")).toBe(false);
+    expect(named(3, "audioInSide")?.classList.contains("tang-port--pair-side")).toBe(true);
+    expect(named(3, "audioInSide")?.classList.contains("tang-port--pair-main")).toBe(false);
+    // (An effect that has one input has the place that it had, with no word beside it.)
+    expect(named(4, "audioIn")?.classList.contains("tang-port--pair-main")).toBe(false);
+    expect(named(4, "audioIn")?.classList.contains("tang-port--pair-side")).toBe(false);
+  });
+
+  test("have their names written beside them, for the eye and not for a screen reader (the handle is what has the cable), and the effect with one input has none", async () => {
+    const { view } = await pairPorts(null);
+    const labels = Array.from(view.container.querySelectorAll(".tang-port-label"));
+    expect(labels.map((label) => [label.textContent, label.classList.contains("tang-port-label--main"), label.classList.contains("tang-port-label--side"), label.getAttribute("aria-hidden")])).toEqual([
+      ["A", true, false, "true"],
+      ["B", false, true, "true"],
+    ]);
+  });
+
+  test("say which of them takes the cable that is dragged: the key of the node and of the handle, and the one input does not take what is for the other", async () => {
+    const second = await pairPorts(new Set(["3:audioInSide", "4:audioOut"]));
+    expect(second.ports.filter((port) => port.classList.contains("tang-port--takes")).map((port) => port.getAttribute("data-handleid"))).toEqual(["audioInSide"]);
+    cleanup();
+    const first = await pairPorts(new Set(["3:audioIn", "4:audioInSide"]));
+    expect(first.ports.filter((port) => port.classList.contains("tang-port--takes")).map((port) => `${port.getAttribute("data-nodeid") ?? "?"}:${port.getAttribute("data-handleid") ?? "?"}`)).toEqual(["3:audioIn"]);
+    cleanup();
+    const neither = await pairPorts(new Set(["4:audioIn", "30:audioInSide"]));
+    expect(neither.named(3, "audioIn")?.classList.contains("tang-port--takes")).toBe(false);
+    expect(neither.named(3, "audioInSide")?.classList.contains("tang-port--takes")).toBe(false);
+    expect(neither.named(4, "audioIn")?.classList.contains("tang-port--takes")).toBe(true);
+  });
+});
+
 describe("the notes ports of a node", () => {
   // Two nodes, each with the input and the output of events that a lane and a source of notes have between them (these read no values of the session).
   const NOTES_TYPES: NodeTypes = {

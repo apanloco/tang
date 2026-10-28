@@ -286,6 +286,7 @@ impl SessionModel {
                     group: lane.group,
                     effects: lane.effects.iter().map(|effect| effect.node).collect(),
                     cut: lane.effects.iter().filter(|effect| !effect.fed).map(|effect| effect.node).collect(),
+                    sides: lane.effects.iter().filter(|effect| effect.side.is_some()).map(|effect| effect.node).collect(),
                     route: lane.route,
                 })
                 .collect(),
@@ -295,6 +296,7 @@ impl SessionModel {
                     node: group.node,
                     effects: group.effects.iter().map(|effect| effect.node).collect(),
                     cut: group.effects.iter().filter(|effect| !effect.fed).map(|effect| effect.node).collect(),
+                    sides: group.effects.iter().filter(|effect| effect.side.is_some()).map(|effect| effect.node).collect(),
                     route: group.route,
                 })
                 .collect(),
@@ -522,7 +524,7 @@ impl SessionModel {
             CableFrom::Instrument(id) | CableFrom::Effect(id) | CableFrom::Group(id) => nodes.contains(&id),
         };
         let ends = |cable: &AudioCable| match cable.to {
-            CableTo::Effect(id) | CableTo::GroupBus(id) => nodes.contains(&id),
+            CableTo::Effect(id) | CableTo::EffectSide(id) | CableTo::GroupBus(id) => nodes.contains(&id),
             CableTo::Master => false,
         };
         self.cables.iter().filter(|cable| starts(cable) || ends(cable)).map(|cable| cable.id).collect()
@@ -551,7 +553,7 @@ impl SessionModel {
         if from.port != Port::AudioOut {
             return Err(invalid("an audio cable starts at an output of audio"));
         }
-        if to.port != Port::AudioIn {
+        if !matches!(to.port, Port::AudioIn | Port::AudioInSide) {
             return Err(invalid("an audio cable ends at an input of audio"));
         }
         let start = if from.node == NodeId::MASTER {
@@ -565,11 +567,23 @@ impl SessionModel {
                 NodePath::Source(_) => return Err(invalid("a source of notes has no output of audio: it has an output of events")),
             }
         };
+        let side = to.port == Port::AudioInSide;
         let end = if to.node == NodeId::MASTER {
+            if side {
+                return Err(invalid("the mix has no second input"));
+            }
             CableTo::Master
         } else {
             match self.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
+                NodePath::Effect { .. } | NodePath::GroupEffect { .. } if side => {
+                    if self.plugin_slot(to.node).is_some_and(|slot| slot.side.is_some()) {
+                        CableTo::EffectSide(to.node)
+                    } else {
+                        return Err(invalid("that effect has no second input"));
+                    }
+                }
                 NodePath::Effect { .. } | NodePath::GroupEffect { .. } => CableTo::Effect(to.node),
+                NodePath::Group(_) if side => return Err(invalid("a group has one input, its bus")),
                 NodePath::Group(_) => CableTo::GroupBus(to.node),
                 NodePath::Instrument(_) => return Err(invalid("a lane has no input of audio: a cable ends at an effect, a group or the mix")),
                 NodePath::Modulator { .. } => return Err(invalid("a modulator has no input of audio")),
@@ -1359,7 +1373,7 @@ pub const DEFAULT_EFFECT_MIX: f32 = 0.5;
 /// wet one, so a drive that is blended is in step.
 /// Blend effects (reverb) keep the half-wet default.
 pub fn default_effect_mix(id: &str) -> f32 {
-    if id == "builtin:filter" || id == "builtin:drive" {
+    if id == "builtin:filter" || id == "builtin:drive" || id == "builtin:math" {
         1.0
     } else {
         DEFAULT_EFFECT_MIX
@@ -1395,6 +1409,9 @@ pub struct PluginSlot {
     /// the effect is fed by the audio cables that end at it and by nothing else. Only meaningful for an effect or a bus effect; an instrument has nothing before it and leaves this `true`.
     /// A session file keeps it as `feed = "none"`; the engine has it by the effect's node (`GraphCommand::SetEffectFeed`), so it goes where its effect goes.
     pub fed: bool,
+    /// What the plugin calls its two audio inputs if it has a second one (`Plugin::side_input`): the effect's node then has a second port that cables can end at (step 95). Only meaningful
+    /// for an effect or a bus effect; a plugin has it from the moment it is loaded, and it goes where its effect goes.
+    pub side: Option<crate::plugin::SideInput>,
     /// The parameters (`ParamSlot::index`) a front-end shows as knobs on the plugin's node, in the order they were pinned; none pinned
     /// is the first few (`docs/web-ui.md` §4.4). The engine and the TUI do not use it; a session file keeps it as `pinned`, by name.
     pub pinned: Vec<u32>,
@@ -5797,6 +5814,7 @@ depth = 0.5
     fn filters_default_fully_wet_everything_else_half_wet() {
         assert_eq!(default_effect_mix("builtin:filter"), 1.0);
         assert_eq!(default_effect_mix("builtin:drive"), 1.0);
+        assert_eq!(default_effect_mix("builtin:math"), 1.0, "an insert, as the drive is: the sound that it makes is the point");
         assert_eq!(default_effect_mix("builtin:reverb"), DEFAULT_EFFECT_MIX);
         assert_eq!(default_effect_mix("lv2:http://calf.sourceforge.net/plugins/Reverb"), 0.5);
     }

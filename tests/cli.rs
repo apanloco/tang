@@ -27,6 +27,14 @@ fn describe_says_how_late_a_plugin_is() {
 }
 
 #[test]
+fn describe_says_which_effect_has_a_second_input_and_what_it_calls_the_two() {
+    let said = |plugin: &str| String::from_utf8_lossy(&tang(&["describe", plugin]).stdout).to_string();
+    assert!(said("builtin:math").contains("\n  Audio inputs:  two: A (what the chain feeds) and B (cables only)\n"), "{}", said("builtin:math"));
+    assert!(said("builtin:math").contains("[0] mode (ring|am|fold|warp|compare|min|max|xor|and|or|hold|follow, default=ring)"), "{}", said("builtin:math"));
+    assert!(!said("builtin:filter").contains("Audio inputs"), "{}", said("builtin:filter"));
+}
+
+#[test]
 fn a_command_that_fails_says_why_on_stderr_and_ends_with_status_1() {
     let output = tang(&["describe", "builtin:nope"]);
     assert_eq!(output.status.code(), Some(1));

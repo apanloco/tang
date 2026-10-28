@@ -12,6 +12,7 @@ describe("the plugins a person can choose an effect from", () => {
       { id: "builtin:delay", label: "Delay", group: "Built-in" },
       { id: "builtin:drive", label: "Drive", group: "Built-in" },
       { id: "builtin:filter", label: "Filter", group: "Built-in" },
+      { id: "builtin:math", label: "Math", group: "Built-in" },
       { id: "builtin:reverb", label: "Reverb", group: "Built-in" },
     ]);
     expect(effectItems([])).toEqual([]);

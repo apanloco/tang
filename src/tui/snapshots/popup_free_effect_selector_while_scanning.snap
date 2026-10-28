@@ -15,8 +15,8 @@ source: src/tui/golden_tests.rs
 │                 │Delay                                                      Built-in 6      7      │░░░░░░░░     0.00│
 │                 │Drive                                                      Built-in 4      4      │                 │
 │                 │Filter                                                     Built-in 4      0      │░░░░░░░░     0.15│
+│                 │Math                                                       Built-in 8      9      │░░░░░░░░     0.50│
 │                 │Reverb                                                     Built-in 10     5      │░░░░░░░░     0.50│
-│                 │                                                                                  │░░░░░░░░     0.50│
 │                 │                                                                                  │░░░░░░░░     0.00│
 │                 │                                                                                  │                 │
 │                 │                                                                                  │░░░░░░░░     0.00│

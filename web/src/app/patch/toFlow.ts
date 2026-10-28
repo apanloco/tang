@@ -22,7 +22,7 @@ import { cableWords, displayNames, endLabel } from "../../client/names";
 import { knobsOf } from "../../client/pinning";
 import { drivablesOf } from "../../client/reach";
 import type { Drivable } from "../../client/reach";
-import type { Edge, EdgeId, Graph, Node, NodeId, NodeUi, Plugin, Port, SourceInfo } from "../../protocol";
+import type { Edge, EdgeId, Graph, Node, NodeId, NodeUi, Plugin, Port, SideInfo, SourceInfo } from "../../protocol";
 
 /** The width of every node, so that the columns of the canvas are known without measuring anything. */
 export const NODE_WIDTH = 304;
@@ -91,6 +91,8 @@ export interface PatchNodeData extends Record<string, unknown> {
   source: SourceInfo | null;
   /** For an effect in a lane that only holds effects (the canvas draws no card for such a lane): which lane, and what the module has of the lane; nothing for the other nodes. */
   heldIn: HeldIn | null;
+  /** For an effect that has a second input of audio (a Math): what its plugin calls its two inputs, which the node has a port each for; nothing for the other nodes. */
+  side: SideInfo | null;
 }
 
 /** What the module of an effect has of the lane that holds it, a lane the canvas draws no card for (`holdersOf`). */
@@ -178,6 +180,7 @@ export const depthHandle = (edge: EdgeId): string => `depth-${String(edge)}`;
 export function handleOf(port: Port): string {
   switch (port.type) {
     case "audioIn":
+    case "audioInSide":
     case "audioOut":
     case "eventsIn":
     case "eventsOut":
@@ -759,6 +762,7 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
       scope: withScope.has(node.id),
       source: node.kind === "source" ? node.source : null,
       heldIn: heldIn(node),
+      side: node.kind === "effect" ? (node.side ?? null) : null,
     },
     draggable: true,
     deletable: false,
