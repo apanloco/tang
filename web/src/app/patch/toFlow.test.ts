@@ -264,9 +264,39 @@ describe("the height of a node", () => {
     // A group, and a modulator, have none (a group has three controls and no pattern).
     expect(nodeHeight(nodeOf(grouped, 10), 0)).toBe(nodeHeight(nodeOf(twoLanes, 2), 3));
   });
+
+  test("is without the pattern and without the keys for a lane whose instrument takes no notes (an audio input): its controls are the volume, the group and the mute and solo beside the knobs", () => {
+    const keyed = (knobs: number): Node => instrument(1, knobs);
+    const silent = (knobs: number): Node => instrumentOf(2, { ...plugin(knobs), takesNotes: false });
+    expect([0, 1, 3, 4].map((knobs) => [controlCount(keyed(knobs), knobs), controlCount(silent(knobs), knobs)])).toEqual([
+      [4, 3],
+      [5, 4],
+      [7, 6],
+      [8, 7],
+    ]);
+    // (Three knobs make two rows of four with the keys and without them: the lane is as tall as the other less its pattern. One knob makes five controls with the keys, which are two rows, and four without, which are one.)
+    const row = nodeHeight(keyed(1), 1) - nodeHeight(keyed(0), 0);
+    expect(row).toBeGreaterThan(0);
+    expect(nodeHeight(keyed(3), 3) - nodeHeight(silent(3), 3)).toBe(PATTERN_HEIGHT);
+    expect(nodeHeight(keyed(1), 1) - nodeHeight(silent(1), 1)).toBe(PATTERN_HEIGHT + row);
+    // A lane that has no instrument may be given one that plays notes, and is as tall as the lane of one; a plugin that says nothing of it takes notes (the wire leaves the word out).
+    expect(nodeHeight(instrumentOf(3, null), 0)).toBe(nodeHeight(keyed(0), 0));
+    expect(nodeHeight(instrumentOf(4, { ...plugin(2), takesNotes: true }), 2)).toBe(nodeHeight(keyed(2), 2));
+  });
 });
 
 describe("the nodes on the canvas", () => {
+  test("say whether a lane takes notes, which its card has the keys, the pattern and the input of events for: an audio input does not, and an effect, a group and the master have none to take", () => {
+    const microphone: Graph = {
+      nodes: [instrument(1), instrumentOf(2, { ...plugin(2), takesNotes: false }), instrumentOf(3, null), effect(4, 1), group(5), master],
+      edges: [audio(1, 4), audio(4, MASTER), audio(2, MASTER), audio(3, MASTER)],
+    };
+    const flow = toFlow(microphone);
+    expect([1, 2, 3, 4, 5, MASTER].map((id) => at(flow, id).data.notes)).toEqual([true, false, true, false, false, false]);
+    // (The height that the layout leaves for the card is the one that the node's own cells make.)
+    expect(at(flow, 2).data.knobs.length).toBe(2);
+  });
+
   test("are one for each node of the session, named by its id, of its kind, all the same width, which can be moved and not taken out", () => {
     const flow = toFlow(tracerSnapshot.graph);
     expect(flow.nodes.map((node) => [node.id, node.type])).toEqual([

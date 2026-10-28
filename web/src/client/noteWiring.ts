@@ -2,7 +2,7 @@
 // `SessionModel::event_cable_ends`), which lanes can still be given a cable from a source (`noteTakers`), the links that the graph derives for the lanes that no cable of notes ends at
 // (`withHears`, as `SessionModel::hears_edges`), and the rule for a device's name (`deviceName`, as `session::device_name`).
 import { DEVICE_NAME_LIMIT } from "../protocol";
-import type { Edge, Endpoint, Graph, NodeId, WireError } from "../protocol";
+import type { Edge, Endpoint, Graph, Node, NodeId, WireError } from "../protocol";
 import { isHears, isLink, isNotesCable } from "./cables";
 import { trimmed } from "./inputs";
 
@@ -16,6 +16,15 @@ export interface NotesEnds {
 }
 
 const invalid = (message: string): { error: WireError } => ({ error: { code: "invalid", message } });
+
+/**
+ * Whether the node is a lane that takes notes (`SessionModel::lane_takes_notes`, step 99c): its instrument says so (`Plugin::takes_notes`: the wire leaves the word out for a plugin that does, and says `false`
+ * for an audio input), and a lane that has no instrument, which may be given one that plays notes, does. A node that is no lane does not. A lane that takes none has no key range, no pattern and no input of events on
+ * its card, hears no source and is given no cable of notes.
+ */
+export function laneTakesNotes(node: Node): boolean {
+  return node.kind === "instrument" && node.plugin?.takesNotes !== false;
+}
 
 const notFound = (node: NodeId): { error: WireError } => ({ error: { code: "notFound", message: `there is no node ${String(node)}` } });
 
@@ -34,26 +43,27 @@ export function eventCableEnds(graph: Graph, from: Endpoint, to: Endpoint): Note
   const end = graph.nodes.find((n) => n.id === to.node);
   if (!end) return notFound(to.node);
   if (end.kind !== "instrument") return invalid("a cable of notes ends at a lane: it is the lanes that have an input of events");
+  if (!laneTakesNotes(end)) return invalid("that instrument takes no notes: an audio input has no input of events");
   return { source: start.id, lane: end.id };
 }
 
 /**
- * The lanes that a cable of notes from the source `from` can still be drawn to: every lane that has none from it already (a lane takes a cable from a source once). None for a node that is no
+ * The lanes that a cable of notes from the source `from` can still be drawn to: every lane that takes notes and has none from it already (a lane takes a cable from a source once). None for a node that is no
  * source. The controller's rule, `event_cable_ends` and the check for a cable that is there already, read from the graph, so that the canvas can show the ends that take the cable before it is dropped.
  */
 export function noteTakers(graph: Graph, from: NodeId): NodeId[] {
   if (!graph.nodes.some((n) => n.id === from && n.kind === "source")) return [];
-  return graph.nodes.filter((n) => n.kind === "instrument" && !graph.edges.some((e) => isNotesCable(e) && e.from.node === from && e.to.node === n.id)).map((n) => n.id);
+  return graph.nodes.filter((n) => laneTakesNotes(n) && !graph.edges.some((e) => isNotesCable(e) && e.from.node === from && e.to.node === n.id)).map((n) => n.id);
 }
 
 /**
- * The graph with the links that the controller derives from each source to each lane that no cable of notes ends at (a lane that has none hears every source): the sources in order and for each the
+ * The graph with the links that the controller derives from each source to each lane that takes notes and that no cable of notes ends at (a lane that has none hears every source): the sources in order and for each the
  * lanes in order, after the links of the audio path and before the cables that have been drawn (`SessionModel::graph`). Those that the graph had are left out first: a link is a fact of the cables.
  */
 export function withHears(graph: Graph): Graph {
   const kept = graph.edges.filter((e) => !isHears(e));
   const fed = new Set(kept.filter(isNotesCable).map((e) => e.to.node));
-  const lanes = graph.nodes.filter((n) => n.kind === "instrument" && !fed.has(n.id));
+  const lanes = graph.nodes.filter((n) => laneTakesNotes(n) && !fed.has(n.id));
   const links = graph.nodes.flatMap((source): Edge[] =>
     source.kind === "source" ? lanes.map((lane) => ({ from: { node: source.id, port: { type: "eventsOut" } }, to: { node: lane.id, port: { type: "eventsIn" } }, kind: "hears" })) : [],
   );

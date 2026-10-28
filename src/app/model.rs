@@ -484,9 +484,15 @@ impl SessionModel {
             return Err(invalid("the mix has no input of events"));
         }
         match self.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
+            NodePath::Instrument(inst) if !self.lane_takes_notes(inst) => Err(invalid("that instrument takes no notes: an audio input has no input of events")),
             NodePath::Instrument(_) => Ok((from.node, to.node)),
             _ => Err(invalid("a cable of notes ends at a lane: it is the lanes that have an input of events")),
         }
+    }
+
+    /// Whether lane `inst` takes notes: its instrument says (`PluginSlot::takes_notes`), and a lane that has none, which may be given one, does. A lane that is not there does.
+    pub fn lane_takes_notes(&self, inst: usize) -> bool {
+        self.instruments.get(inst).and_then(|lane| lane.instrument.as_ref()).is_none_or(|slot| slot.takes_notes)
     }
 
     /// The sources that lane `inst` hears (P4b of `docs/patch-graph.md` §11.6): every source if no event cable ends at it, and otherwise the sources of the nodes that the cables that end at it start at,
@@ -1334,6 +1340,9 @@ pub struct PluginSlot {
     /// What the plugin calls its two audio inputs if it has a second one (`Plugin::side_input`): the effect's node then has a second port that cables can end at (step 95). Only meaningful
     /// for an effect or a bus effect; a plugin has it from the moment it is loaded, and it goes where its effect goes.
     pub side: Option<crate::plugin::SideInput>,
+    /// Whether the plugin does anything with the notes it is given (`Plugin::takes_notes`, step 99c): `false` for an audio input, whose lane then has no key range, no pattern and no input of events
+    /// (the graph says so, and a cable of notes is refused at it). Read from the plugin when it is loaded; it goes where the plugin goes.
+    pub takes_notes: bool,
     /// The parameters (`ParamSlot::index`) a front-end shows as knobs on the plugin's node, in the order they were pinned; none pinned
     /// is the first few (`docs/web-ui.md` §4.4). The engine and the TUI do not use it; a session file keeps it as `pinned`, by name.
     pub pinned: Vec<u32>,

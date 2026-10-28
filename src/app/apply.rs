@@ -7015,6 +7015,25 @@ type = "midi"
     }
 
     #[test]
+    fn the_graph_says_of_an_audio_input_that_it_takes_no_notes_and_of_the_oscillator_that_it_does_and_the_wire_has_a_word_of_it_for_the_input_only() {
+        let (_engine, mut ctl) = controller_with_builtins();
+        add_instrument(&mut ctl, "builtin:input").unwrap();
+        add_instrument(&mut ctl, "builtin:osc").unwrap();
+        let graph = ctl.model.graph();
+        let plugin_of = |inst: usize| match &graph.nodes.iter().find(|node| node.id == ctl.model.instruments[inst].node).unwrap().kind {
+            NodeKind::Instrument { plugin: Some(plugin), .. } => plugin.clone(),
+            other => panic!("{other:?}"),
+        };
+        let (input, oscillator) = (plugin_of(2), plugin_of(3));
+        assert_eq!((input.id.as_str(), input.takes_notes, oscillator.id.as_str(), oscillator.takes_notes), ("builtin:input", false, "builtin:osc", true));
+        // On the wire the input says it, and a plugin that takes notes says nothing (a client reads an absent word as true, and the fixtures of every other plugin are as they were).
+        assert_eq!(serde_json::to_value(&input).unwrap()["takesNotes"], serde_json::json!(false));
+        assert!(serde_json::to_value(&oscillator).unwrap().get("takesNotes").is_none());
+        let read: crate::app::graph::Plugin = serde_json::from_value(serde_json::to_value(&oscillator).unwrap()).unwrap();
+        assert!(read.takes_notes, "and what is read without the word takes notes");
+    }
+
+    #[test]
     fn the_graph_after_adding_an_instrument_has_its_node_its_audio_path_to_the_master_and_its_meter() {
         use crate::app::graph::EdgeKind;
         use crate::app::layout::SlotKind;

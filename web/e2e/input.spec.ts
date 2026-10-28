@@ -47,6 +47,18 @@ mock("the audio input is added from the bar in a lane that has no way out: its n
   await expect(input.getByRole("slider", { name: "Volume", exact: true })).toHaveAttribute("aria-valuenow", "1");
   await expect(page.getByRole("button", { name: "Send audio from Audio Input", exact: true })).toBeVisible();
 
+  // Its instrument takes no notes (step 99c), so that its card has none of what a lane has for them: no key range, no pattern to record, no input of events and no menu that takes notes in. The cells that
+  // are not about notes are the lane's all the same: its group, its mute and its solo. (The tracer's lane, which plays notes, has its keys and its pattern: one of each on the canvas.)
+  await expect(page.getByLabel(/^Lowest key of /)).toHaveCount(1);
+  await expect(page.getByRole("group", { name: /^Pattern of / })).toHaveCount(1);
+  await expect(input.getByLabel(/^(Lowest|Highest) key of /)).toHaveCount(0);
+  await expect(input.getByRole("group", { name: "Pattern of Audio Input" })).toHaveCount(0);
+  await expect(input.getByRole("button", { name: "Record a pattern on Audio Input" })).toHaveCount(0);
+  await expect(input.getByRole("button", { name: "Take notes into Audio Input" })).toHaveCount(0);
+  await expect(input.locator('.react-flow__handle[data-handleid="eventsIn"]')).toHaveCount(0);
+  await expect(input.getByRole("combobox", { name: "Group of Audio Input", exact: true })).toBeVisible();
+  await expect(input.getByRole("button", { name: "Mute Audio Input", exact: true })).toBeVisible();
+
   // A cable drawn from its output to the master is the way out given back, a link like every lane's (it has no slider: it has no level), and the history says so.
   await drag(page, audioOut(input), audioIn(node(page, "Master")));
   await expect(links(page)).toHaveCount(3);
@@ -98,6 +110,10 @@ test("the audio input on the real program is silent until a cable is drawn from 
   // A cable from it to the master, and the tone is heard (a sine of 0.25 at a gain of 1: about -12 dB, which the lane's volume of 1 leaves as it is). The cable is the lane's way out given back:
   // it is a link, with no slider, and the file has no word of a way out for the lane and no cable of its own.
   const input = node(page, "Audio Input");
+  // (The program's graph says that the instrument takes no notes: the card has no keys, no pattern and no input of events, as the mock engine's has.)
+  await expect(input.getByLabel(/^(Lowest|Highest) key of /)).toHaveCount(0);
+  await expect(input.getByRole("group", { name: "Pattern of Audio Input" })).toHaveCount(0);
+  await expect(input.getByRole("button", { name: "Take notes into Audio Input" })).toHaveCount(0);
   await drag(page, audioOut(input), audioIn(node(page, "Master")));
   await expect(links(page)).toHaveCount(3);
   await expect(sends(page)).toHaveCount(0);

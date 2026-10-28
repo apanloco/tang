@@ -7,7 +7,7 @@ const node = (id: string, x: number, y: number, dragging?: boolean): PatchNode =
   id,
   type: "effect",
   position: { x, y },
-  data: { node: Number(id), name: `Node ${id}`, format: null, knobs: [], modulated: [], targets: [], drivenSettings: [], cables: [], scope: false, source: null, heldIn: null, side: null },
+  data: { node: Number(id), name: `Node ${id}`, format: null, knobs: [], modulated: [], targets: [], drivenSettings: [], cables: [], notes: false, scope: false, source: null, heldIn: null, side: null },
   ...(dragging === undefined ? {} : { dragging }),
 });
 

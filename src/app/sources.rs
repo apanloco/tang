@@ -332,6 +332,57 @@ mod tests {
         ctl.model.check_ids().unwrap();
     }
 
+    // -- an instrument that takes no notes (step 99c) --
+
+    const INPUT_AND_OSCILLATOR: &str = "[keys]\n\n[[instrument]]\nplugin = \"builtin:input\"\nroute = \"none\"\n\n[[instrument]]\nplugin = \"builtin:osc\"\n";
+
+    #[test]
+    fn a_lane_whose_instrument_takes_no_notes_has_no_link_by_which_it_hears_a_source_and_is_refused_a_cable_of_notes_with_nothing_changed_and_no_id_used() {
+        let (engine, mut ctl) = controller(INPUT_AND_OSCILLATOR);
+        let (keys, input, oscillator) = (ctl.model.sources[0].node, ctl.model.instruments[0].node, ctl.model.instruments[1].node);
+        assert!(!ctl.model.lane_takes_notes(0) && ctl.model.lane_takes_notes(1));
+        // The link by which a lane hears every source is drawn to the oscillator's lane, and not to the input's, which has no input of events.
+        let hears = |ctl: &Controller| -> Vec<(NodeId, NodeId)> { ctl.model.graph().edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::Hears)).map(|edge| (edge.from.node, edge.to.node)).collect() };
+        assert_eq!(hears(&ctl), [(keys, oscillator)]);
+        lane_sources_told(&engine);
+        // A cable to it is refused, in words, and the audio thread is told nothing.
+        let why = IntentError::Invalid("that instrument takes no notes: an audio input has no input of events".to_string());
+        assert_eq!(draw(&mut ctl, keys, input), Err(why));
+        assert_eq!((ctl.rev, ctl.dirty, ctl.model.event_cables.len()), (0, false, 0));
+        assert_eq!(lane_sources_told(&engine), Vec::<String>::new());
+        // No id was used by it: the first cable that is drawn has the first id, and with it the oscillator's lane hears the keys and no other source, as a lane with a cable does.
+        draw(&mut ctl, keys, oscillator).unwrap();
+        assert_eq!(ctl.model.event_cables, [EventCable { id: EdgeId(0), from: keys, to: oscillator }]);
+        assert_eq!(hears(&ctl), Vec::<(NodeId, NodeId)>::new(), "the oscillator has a cable now and the input has no link");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_lane_takes_notes_as_its_instrument_does_and_what_undo_gives_back_says_what_it_said() {
+        let (_engine, mut ctl) = controller(INPUT_AND_OSCILLATOR);
+        let input = ctl.model.instruments[0].node;
+        let takes = |ctl: &Controller| ctl.model.lane_takes_notes(0);
+        assert!(!takes(&ctl));
+        // A lane that has no instrument may be given one that takes notes, and has the link by which it hears the keys; the input that is put back is the input.
+        ctl.apply(Intent::ClearInstrument { node: input }).unwrap();
+        assert!(takes(&ctl), "an empty lane takes notes: it may be given an instrument that plays them");
+        ctl.apply(Intent::ReplaceInstrument { node: input, plugin: "builtin:input".to_string() }).unwrap();
+        assert!(!takes(&ctl));
+        ctl.apply(Intent::ReplaceInstrument { node: input, plugin: "builtin:osc".to_string() }).unwrap();
+        assert!(takes(&ctl), "the oscillator that replaces the input takes notes");
+        let hears = ctl.model.graph().edges.iter().filter(|edge| matches!(edge.kind, EdgeKind::Hears) && edge.to.node == input).count();
+        assert_eq!(hears, 1, "and the keys' link to its lane is drawn");
+        ctl.apply(Intent::Undo).unwrap();
+        assert!(!takes(&ctl), "the very input that was replaced is back, and says what it said");
+        ctl.apply(Intent::Undo).unwrap();
+        assert!(takes(&ctl), "the lane is empty again");
+        ctl.apply(Intent::Undo).unwrap();
+        assert!(!takes(&ctl), "and the input that was taken out is back");
+        ctl.apply(Intent::Redo).unwrap();
+        assert!(takes(&ctl));
+        ctl.model.check_ids().unwrap();
+    }
+
     #[test]
     fn a_second_cable_of_notes_adds_the_open_ports_of_the_device_it_starts_at_to_what_the_lane_hears() {
         let (engine, mut ctl) = controller(TWO_LANES);

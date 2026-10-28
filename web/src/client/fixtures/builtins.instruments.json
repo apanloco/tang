@@ -50,7 +50,8 @@
         }
       ],
       "pinned": [],
-      "presets": []
+      "presets": [],
+      "takesNotes": false
     },
     "range": null,
     "route": "none",

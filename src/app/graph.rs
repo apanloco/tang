@@ -179,6 +179,21 @@ pub struct Plugin {
     /// The `index` of the parameters a front-end shows as knobs on the node, in order; none is left to the front-end (the page shows the
     /// first few). Kept in the session; the engine does not use it.
     pub pinned: Vec<u32>,
+    /// Whether the plugin does anything with the notes it is given (`Plugin::takes_notes`, step 99c): an audio input does not, and its lane has no key range, no pattern and no input of events. Left out of the wire when it
+    /// does (every other plugin does), so that a front-end reads an absent one as true.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    #[cfg_attr(feature = "web", ts(as = "Option<bool>", optional))]
+    pub takes_notes: bool,
+}
+
+/// What a plugin that does not say that it takes no notes does (`Plugin::takes_notes`): the serde default of that field.
+fn yes() -> bool {
+    true
+}
+
+/// Whether `value` is true, for a field that is left out of the wire while it is (`Plugin::takes_notes`).
+fn is_yes(value: &bool) -> bool {
+    *value
 }
 
 /// A parameter of a plugin, with the value the user set (modulation is not in it:
@@ -489,11 +504,14 @@ impl SessionModel {
         Graph { nodes, edges }
     }
 
-    /// One edge from each source to each lane that no event cable ends at, which hears every source: the sources in order, and for each the lanes in order.
+    /// One edge from each source to each lane that no event cable ends at, which hears every source: the sources in order, and for each the lanes in order. A lane whose instrument takes no notes
+    /// (an audio input) has no input of events, and hears nothing that is drawn.
     fn hears_edges(&self, edges: &mut Vec<Edge>) {
         for source in &self.sources {
-            for lane in self.instruments.iter().filter(|lane| !self.event_cables.iter().any(|cable| cable.to == lane.node)) {
-                edges.push(Edge { from: Endpoint { node: source.node, port: Port::EventsOut }, to: Endpoint { node: lane.node, port: Port::EventsIn }, kind: EdgeKind::Hears });
+            for (inst, lane) in self.instruments.iter().enumerate() {
+                if self.lane_takes_notes(inst) && !self.event_cables.iter().any(|cable| cable.to == lane.node) {
+                    edges.push(Edge { from: Endpoint { node: source.node, port: Port::EventsOut }, to: Endpoint { node: lane.node, port: Port::EventsIn }, kind: EdgeKind::Hears });
+                }
             }
         }
     }
@@ -645,6 +663,7 @@ fn plugin(slot: &PluginSlot) -> Plugin {
         presets: slot.presets.iter().map(|p| Preset { id: p.id.clone(), name: p.name.clone() }).collect(),
         current_preset: slot.current_preset.clone(),
         pinned: slot.pinned.clone(),
+        takes_notes: slot.takes_notes,
     }
 }
 
@@ -1817,8 +1836,8 @@ depth = 0.2
     #[test]
     fn an_effect_that_has_a_second_input_says_what_it_calls_its_inputs_and_the_others_say_nothing_on_the_wire() {
         let (sided, plain) = (
-            NodeKind::Effect { plugin: Plugin { id: "builtin:math".to_string(), format: "Built-in".to_string(), is_instrument: false, params: vec![], presets: vec![], current_preset: None, pinned: vec![] }, mix: 1.0, feed: Feed::Chain, side: Some(SideInfo { main: "A".to_string(), side: "B".to_string() }) },
-            NodeKind::Effect { plugin: Plugin { id: "builtin:filter".to_string(), format: "Built-in".to_string(), is_instrument: false, params: vec![], presets: vec![], current_preset: None, pinned: vec![] }, mix: 1.0, feed: Feed::Chain, side: None },
+            NodeKind::Effect { plugin: Plugin { id: "builtin:math".to_string(), format: "Built-in".to_string(), is_instrument: false, params: vec![], presets: vec![], current_preset: None, pinned: vec![], takes_notes: true }, mix: 1.0, feed: Feed::Chain, side: Some(SideInfo { main: "A".to_string(), side: "B".to_string() }) },
+            NodeKind::Effect { plugin: Plugin { id: "builtin:filter".to_string(), format: "Built-in".to_string(), is_instrument: false, params: vec![], presets: vec![], current_preset: None, pinned: vec![], takes_notes: true }, mix: 1.0, feed: Feed::Chain, side: None },
         );
         assert_eq!(serde_json::to_value(&sided).unwrap()["side"], json!({"main": "A", "side": "B"}));
         assert!(serde_json::to_value(&plain).unwrap().get("side").is_none(), "an effect with one input has no key for it: the older nodes are the same JSON");
@@ -1871,6 +1890,7 @@ depth = 0.2
                     format: "Built-in".to_string(),
                     is_instrument: false,
                     pinned: vec![2],
+                    takes_notes: true,
                     params: vec![Param {
                         index: 2,
                         name: "decay".to_string(),

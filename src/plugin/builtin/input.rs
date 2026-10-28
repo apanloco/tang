@@ -629,6 +629,10 @@ impl Plugin for AudioInput {
         true
     }
 
+    fn takes_notes(&self) -> bool {
+        false
+    }
+
     fn process(&mut self, _midi_events: &[(u64, [u8; 3])], _audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
         let [left, right, ..] = audio_out else {
             return Ok(());
@@ -1076,6 +1080,15 @@ mod tests {
         assert!(!oscillator.starts_bare());
         let loaded = super::super::load(ID, 48000.0, 256).unwrap();
         assert!(loaded.starts_bare());
+    }
+
+    #[test]
+    fn an_audio_input_takes_no_notes_and_every_other_plugin_does() {
+        assert!(!AudioInput::new(48000.0).takes_notes());
+        assert!(!super::super::load(ID, 48000.0, 256).unwrap().takes_notes(), "as it is loaded from the registry");
+        for id in ["builtin:osc", "builtin:filter", "builtin:reverb", "builtin:delay", "builtin:drive", "builtin:math"] {
+            assert!(super::super::load(id, 48000.0, 256).unwrap().takes_notes(), "{id} takes notes");
+        }
     }
 
     #[test]

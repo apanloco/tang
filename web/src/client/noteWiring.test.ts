@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
 
 import { DEVICE_NAME_LIMIT } from "../protocol";
-import type { Edge, Endpoint, Graph, NodeId } from "../protocol";
+import type { Edge, Endpoint, Graph, Node, NodeId } from "../protocol";
 import { MASTER, sourcesFixture } from "./fixtures";
-import { deviceName, eventCableEnds, noteTakers, withHears } from "./noteWiring";
+import { deviceName, eventCableEnds, laneTakesNotes, noteTakers, withHears } from "./noteWiring";
 
 // The session of the fixture (`testutil::NOTES`): the keys (7) and a device (8) are the sources, then group 0 ("Pad", node 0, a reverb on its bus), lane 0 (node 2) in it with a filter and an LFO, a plain lane (5) and an empty one (6); a
 // cable of notes (1) from the keys to lane 1 (node 5) and an audio cable (2) from lane 1 to lane 0's filter.
@@ -184,5 +184,64 @@ describe("the name of a device", () => {
     expect(deviceName(`${"x".repeat(257)}\n`)).toEqual({ why: "is longer than 256 characters" });
     expect(deviceName(" \n ")).toEqual({ why: "is blank: a device is called by its name, or as much of it as tells it" });
     expect(deviceName(`${"x".repeat(256)}\u0001`)).toEqual({ why: "is longer than 256 characters" });
+  });
+});
+
+// A lane whose instrument takes no notes (an audio input, step 99c): the fixture's session with the instrument of its plain lane (node 5) saying so, as the controller's graph has it, which also draws no link by which that lane hears
+// the sources and no cable of notes to it (the cable of the fixture, from the keys to lane 1, is taken out with the lane that it was to).
+const microphone: Graph = {
+  nodes: graph.nodes.map((node) => (node.id === lane1 && node.kind === "instrument" && node.plugin !== null ? { ...node, plugin: { ...node.plugin, takesNotes: false } } : node)),
+  edges: graph.edges.filter((e) => !(e.to.node === lane1 && (e.kind === "events" || e.kind === "hears"))),
+};
+
+const nodeIn = (g: Graph, id: NodeId): Node => {
+  const found = g.nodes.find((n) => n.id === id);
+  if (!found) throw new Error(`the session has no node ${String(id)}`);
+  return found;
+};
+
+describe("a lane that takes notes", () => {
+  test("is a lane whose instrument does not say that it takes none, an empty lane too: the wire has the word only for a plugin that takes none", () => {
+    expect([lane0, lane1, lane2].map((id) => laneTakesNotes(nodeIn(graph, id)))).toEqual([true, true, true]);
+    expect([lane0, lane1, lane2].map((id) => laneTakesNotes(nodeIn(microphone, id)))).toEqual([true, false, true]);
+    // (An instrument that says that it does is one that does, and what is no lane takes none.)
+    const first = nodeIn(graph, lane0);
+    if (first.kind !== "instrument" || first.plugin === null) throw new Error("the first lane has an instrument");
+    expect(laneTakesNotes({ ...first, plugin: { ...first.plugin, takesNotes: true } })).toBe(true);
+    expect(laneTakesNotes({ ...first, plugin: null })).toBe(true);
+    expect([filter, keys, MASTER].map((id) => laneTakesNotes(nodeIn(graph, id)))).toEqual([false, false, false]);
+  });
+
+  test("is given no cable of notes if its instrument takes none, in the controller's words, after the checks that it makes of an end that is a lane", () => {
+    expect(words(eventCableEnds(microphone, out(keys), into(lane1)))).toBe("invalid: that instrument takes no notes: an audio input has no input of events");
+    expect(words(eventCableEnds(microphone, out(launchkey), into(lane1)))).toBe("invalid: that instrument takes no notes: an audio input has no input of events");
+    // (The lanes beside it take one as they did, and an end that is no lane is refused as it was, before the instrument is looked at.)
+    expect(eventCableEnds(microphone, out(keys), into(lane2))).toEqual({ source: keys, lane: lane2 });
+    expect(words(eventCableEnds(microphone, out(keys), into(filter)))).toBe("invalid: a cable of notes ends at a lane: it is the lanes that have an input of events");
+  });
+
+  test("is not among the lanes that a source can still be drawn a cable to", () => {
+    expect(noteTakers(microphone, launchkey)).toEqual([lane0, lane2]);
+    expect(noteTakers(microphone, keys)).toEqual([lane0, lane2]);
+  });
+
+  test("has no link by which it hears every source, and the others have theirs: a source is linked to each lane that takes notes and that no cable of notes ends at", () => {
+    const links = (g: Graph): [NodeId, NodeId][] => withHears(g).edges.filter((e) => e.kind === "hears").map((e) => [e.from.node, e.to.node]);
+    expect(links(microphone)).toEqual([
+      [keys, lane0],
+      [keys, lane2],
+      [launchkey, lane0],
+      [launchkey, lane2],
+    ]);
+    // (The same session with the lane's instrument saying nothing: it takes notes, and no cable of notes ends at it, so that it hears each source by a link.)
+    const takes: Graph = { nodes: graph.nodes, edges: microphone.edges };
+    expect(links(takes)).toEqual([
+      [keys, lane0],
+      [keys, lane1],
+      [keys, lane2],
+      [launchkey, lane0],
+      [launchkey, lane1],
+      [launchkey, lane2],
+    ]);
   });
 });

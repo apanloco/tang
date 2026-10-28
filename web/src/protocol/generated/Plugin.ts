@@ -22,4 +22,9 @@ currentPreset: string | null,
  * The `index` of the parameters a front-end shows as knobs on the node, in order; none is left to the front-end (the page shows the
  * first few). Kept in the session; the engine does not use it.
  */
-pinned: Array<number>, };
+pinned: Array<number>, 
+/**
+ * Whether the plugin does anything with the notes it is given (`Plugin::takes_notes`, step 99c): an audio input does not, and its lane has no key range, no pattern and no input of events. Left out of the wire when it
+ * does (every other plugin does), so that a front-end reads an absent one as true.
+ */
+takesNotes?: boolean, };

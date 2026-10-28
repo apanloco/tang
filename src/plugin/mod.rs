@@ -136,6 +136,12 @@ pub trait Plugin: Send {
         false
     }
 
+    /// Whether the plugin does anything with the notes that it is given (step 99c): an instrument does, and an audio input has none to play. A lane whose instrument says no has no key
+    /// range, no pattern and no input of events on the canvas, hears no source and takes no cable of notes. The default is a plugin that takes notes.
+    fn takes_notes(&self) -> bool {
+        true
+    }
+
     /// `process` for an effect that has a side input: `side` is the sound that the cables at its second input bring (a buffer for each channel, as `audio_in` has), or `None` while no
     /// cable ends there, so that the plugin can have a sound of its own in its place. The default is a plugin that has no side input, and leaves it.
     fn process_side(

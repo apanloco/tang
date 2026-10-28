@@ -20,6 +20,7 @@ import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
 import { holdersOf } from "../../client/holders";
 import { cableWords, displayNames, endLabel } from "../../client/names";
+import { laneTakesNotes } from "../../client/noteWiring";
 import { knobsOf } from "../../client/pinning";
 import { drivablesOf } from "../../client/reach";
 import type { Drivable } from "../../client/reach";
@@ -90,6 +91,8 @@ export interface PatchNodeData extends Record<string, unknown> {
   drivenSettings: readonly SettingHandle[];
   /** For a modulator: the cables that start at it, in the order of the graph, as its node lists them (`CableRow`); nothing for the other nodes. */
   cables: readonly CableRow[];
+  /** For a lane: whether it takes notes (`laneTakesNotes`), which its card has the keys, the pattern and the input of events for; an audio input does not. False for the other nodes. */
+  notes: boolean;
   /** Whether it shows a scope of what comes out of it (the viewer's own choice, `toFlow`'s `scopes`, for a node that has a signal: `canScope`), which it is taller by. */
   scope: boolean;
   /** For a source of notes: what it is (the keys, or a device by the name it stands for); nothing for the other nodes. */
@@ -237,7 +240,8 @@ function drivenSettings(graph: Graph): Map<NodeId, SettingHandle[]> {
 export function controlCount(node: Node, knobs: number, carriesLane = false): number {
   switch (node.kind) {
     case "instrument":
-      return knobs + 4;
+      // (Its gain, its keys, its group, its mute and solo: a lane that takes no notes has no keys.)
+      return knobs + (laneTakesNotes(node) ? 4 : 3);
     case "effect":
       return knobs + 1 + (carriesLane ? 1 : 0);
     case "group":
@@ -274,7 +278,7 @@ export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false,
       return SOURCE_HEIGHT;
     default: {
       const rows = Math.max(1, Math.ceil(controlCount(node, knobs, carriesLane) / CONTROLS_PER_ROW));
-      return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING + (node.kind === "instrument" ? PATTERN_HEIGHT : 0) + (scope ? NODE_SCOPE_HEIGHT : 0);
+      return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING + (laneTakesNotes(node) ? PATTERN_HEIGHT : 0) + (scope ? NODE_SCOPE_HEIGHT : 0);
     }
   }
 }
@@ -869,6 +873,7 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
       targets: node.kind === "modulator" ? drivablesOf(graph, node.id, names) : [],
       drivenSettings: node.kind === "modulator" ? (settingsDriven.get(node.id) ?? []) : [],
       cables: node.kind === "modulator" ? (listed.get(node.id) ?? []) : [],
+      notes: laneTakesNotes(node),
       scope: withScope.has(node.id),
       source: node.kind === "source" ? node.source : null,
       heldIn: heldIn(node),

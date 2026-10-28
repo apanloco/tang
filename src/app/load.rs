@@ -117,6 +117,7 @@ pub fn fresh_slot(plugin: &mut dyn plugin::Plugin, id: &str, node: NodeId) -> Pl
         1.0,
     );
     slot.side = plugin.side_input();
+    slot.takes_notes = plugin.takes_notes();
     slot
 }
 
@@ -165,6 +166,7 @@ fn plugin_slot(
         mix,
         fed: true,
         side: None,
+        takes_notes: true,
         pinned: Vec::new(),
     }
 }
@@ -382,6 +384,7 @@ pub fn load_session(
             };
 
             let name = instrument.name().to_string();
+            let takes_notes = instrument.takes_notes();
             let inst_buf = (0..instrument.audio_output_count())
                 .map(|_| Vec::new())
                 .collect();
@@ -433,6 +436,7 @@ pub fn load_session(
                 1.0,
             );
             slot.pin_names(&plug_config.pinned);
+            slot.takes_notes = takes_notes;
             Some(slot)
         } else {
             chain_params.push(Vec::new());
@@ -701,7 +705,13 @@ fn load_event_cable(i: usize, cable: &session::CableConfig, model: &mut SessionM
     .map(|source| source.node)
     .ok_or_else(|| anyhow::anyhow!("cable[{i}].from: {} is not in the session", cable.from))?;
     let to = match cable.to {
-        Place::Instrument(lane) => model.instruments.get(lane).map(|lane| lane.node).ok_or_else(|| anyhow::anyhow!("cable[{i}].to: {} is not in the session", cable.to))?,
+        Place::Instrument(lane) => {
+            let node = model.instruments.get(lane).map(|lane| lane.node).ok_or_else(|| anyhow::anyhow!("cable[{i}].to: {} is not in the session", cable.to))?;
+            if !model.lane_takes_notes(lane) {
+                anyhow::bail!("cable[{i}].to: {} takes no notes: an audio input has no input of events", cable.to);
+            }
+            node
+        }
         other => anyhow::bail!("cable[{i}].to: {other} has no input of notes: a cable of notes ends at a lane (instrument[0])"),
     };
     if model.event_cables.iter().any(|drawn| (drawn.from, drawn.to) == (from, to)) {
@@ -3430,6 +3440,20 @@ plugin = "builtin:osc"
         // A cable from the keys with no table for them makes the node, and one from a device that no table makes is refused.
         let error = try_load("[[instrument]]\nplugin = \"builtin:osc\"\n[[cable]]\nfrom = \"device[0]\"\nto = \"instrument[0]\"\n").unwrap_err().to_string();
         assert!(error.contains("cable[0].from: device[0] is not in the session"), "{error}");
+    }
+
+    #[test]
+    fn a_cable_of_notes_to_a_lane_whose_instrument_takes_no_notes_refuses_the_session_with_the_place_of_the_cable_and_the_lane_that_has_none_takes_one() {
+        // The audio input has no input of events (step 99c): a file that draws a cable of notes to it is refused as the intent is, and the same cable to the lane beside it is made.
+        let with = |lane: &str| format!("[keys]\n[[instrument]]\nplugin = \"builtin:input\"\nroute = \"none\"\n[[instrument]]\nplugin = \"builtin:osc\"\n[[cable]]\nfrom = \"keys\"\nto = \"{lane}\"\n");
+        let error = try_load(&with("instrument[0]")).unwrap_err().to_string();
+        assert!(error.contains("cable[0].to: instrument[0] takes no notes: an audio input has no input of events"), "{error}");
+        assert_eq!(load(&with("instrument[1]")).model.event_cables.len(), 1);
+        // The slot has what the plugin says, from the file as from the controller: the input takes none, the oscillator does, and a lane that has no instrument is one that may be given one.
+        let run = load("[[instrument]]\nplugin = \"builtin:input\"\nroute = \"none\"\n[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\n");
+        let says: Vec<bool> = (0..3).map(|lane| run.model.lane_takes_notes(lane)).collect();
+        assert_eq!(says, [false, true, true]);
+        assert!(run.model.lane_takes_notes(9), "a lane that is not there takes notes, as it will when it is");
     }
 
     #[test]

@@ -343,3 +343,58 @@ describe("the menu by which a lane takes notes", () => {
     });
   });
 });
+
+describe("the card of a lane whose instrument takes no notes (an audio input, step 99c)", () => {
+  // The session of the fixture with the instrument of lane 4 saying that it takes no notes, as the controller's graph has it: a graph that has such a lane has no cable of notes to it and no link by which it hears a source (the keys' cable and
+  // the device's link, which the fixture has for lane 4, are taken out with that).
+  const microphone: Snapshot = structuredClone(snapshot);
+  const lane = microphone.graph.nodes.find((node) => node.id === 4);
+  if (lane?.kind !== "instrument" || lane.plugin === null) throw new Error("the fixture has an instrument in lane 4");
+  lane.plugin.takesNotes = false;
+  microphone.graph.edges = microphone.graph.edges.filter((edge) => !((edge.kind === "events" || edge.kind === "hears") && edge.to.node === 4));
+
+  /** The cells of a lane's card that have a small label of their own, by it, in order: its keys, its group, its mute and solo. */
+  const cellsOf = (card: HTMLElement): (string | null)[] => Array.from(card.querySelectorAll(".tang-keys__label"), (label) => label.textContent);
+
+  test("has no keys, no pattern, no input of events and no menu that takes notes in, which the other lanes have", async () => {
+    const { view } = await rig(<PatchView />, { snapshot: microphone, inputs: INPUTS });
+    const card = await nodeOf(4);
+    await nodeOf(MASTER);
+    expect(nodesWith(view, "eventsIn")).toEqual([2, 5]);
+    // (The cell of the group has the style of the keys', which is why the cells are told by their labels: the lane has its group, its mute and solo, and no keys.)
+    expect(cellsOf(card)).toEqual(["Group", "Mute / Solo"]);
+    expect(card.querySelector(".tang-pattern")).toBeNull();
+    expect(within(card).queryByLabelText(/^(Lowest|Highest) key of /)).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Take notes into Oscillator 2" })).toBeNull();
+    for (const id of [2, 5]) {
+      const other = await nodeOf(id);
+      expect(cellsOf(other), `lane ${String(id)} has its keys`).toEqual(["Keys", "Group", "Mute / Solo"]);
+      expect(other.querySelector(".tang-pattern"), `lane ${String(id)} has its pattern`).not.toBeNull();
+    }
+    expect(within(await nodeOf(2)).getByRole("button", { name: "Take notes into Oscillator 1" })).toBeDefined();
+  });
+
+  test("keeps what a lane has that is not notes: its audio out and the menu that sends it, its volume, its group, its mute and its solo", async () => {
+    await rig(<PatchView />, { snapshot: microphone, inputs: INPUTS });
+    const card = await nodeOf(4);
+    expect(card.querySelector('.react-flow__handle[data-handleid="audioOut"]')).not.toBeNull();
+    expect(within(card).getByRole("button", { name: "Send audio from Oscillator 2" })).toBeDefined();
+    expect(within(card).getByRole("slider", { name: "Volume" })).toBeDefined();
+    expect(within(card).getByRole("combobox", { name: "Group of Oscillator 2" })).toBeDefined();
+    expect(within(card).getByRole("button", { name: "Mute Oscillator 2" })).toBeDefined();
+    expect(within(card).getByRole("button", { name: "Solo Oscillator 2" })).toBeDefined();
+  });
+
+  test("is not offered by the menu that sends the notes of a source: the device lists the lanes that take notes and have no cable from it", async () => {
+    await rig(<PatchView />, { snapshot: microphone, inputs: INPUTS });
+    fireEvent.click(within(await nodeOf(8)).getByRole("button", { name: "Send notes from Launchkey Mini MK4 37" }));
+    expect(within(screen.getByRole("menu")).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Oscillator 1", "(empty)"]);
+  });
+
+  test("hears no source by a link that is drawn: the links go to the lanes that take notes", async () => {
+    const { view } = await rig(<PatchView />, { snapshot: microphone, inputs: INPUTS });
+    await nodeOf(MASTER);
+    expect(cablesOf(view, "hears").map((path) => path.id).sort()).toEqual(["hears:7>2", "hears:7>5", "hears:8>2", "hears:8>5"]);
+    expect(cablesOf(view, "notes")).toHaveLength(0);
+  });
+});

@@ -423,7 +423,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const held = data.heldIn;
   return (
     <div className={`tang-node tang-node--${type}${unheard}`}>
-      {/* (An effect takes audio in, at two places if it has a second input, and a lane takes notes in, from the sources.) */}
+      {/* (An effect takes audio in, at two places if it has a second input, and a lane takes notes in, from the sources: but not a lane whose instrument takes no notes, an audio input.) */}
       {effect ? (
         data.side ? (
           <>
@@ -433,9 +433,9 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         ) : (
           <AudioPort node={data.node} direction="in" />
         )
-      ) : (
+      ) : data.notes ? (
         <NotesPort node={data.node} direction="in" />
-      )}
+      ) : null}
       <AudioPort node={data.node} direction="out" />
       <Header
         name={data.name}
@@ -443,7 +443,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         sub={
           <>
             {silent ? null : <SendMenu node={data.node} name={data.name} />}
-            {effect ? null : <NotesFromMenu node={data.node} name={data.name} />}
+            {data.notes ? <NotesFromMenu node={data.node} name={data.name} /> : null}
           </>
         }
       >
@@ -473,13 +473,13 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
           <ParamCell key={index} node={data.node} index={index} driven={data.modulated.includes(index)} />
         ))}
         <GainCell node={data.node} gain={effect ? "mix" : "volume"} />
-        <RangeCell node={data.node} name={data.name} />
+        {data.notes ? <RangeCell node={data.node} name={data.name} /> : null}
         <GroupCell node={data.node} name={data.name} />
         {/* (An effect that stands by itself has the cell of the lane that holds it, which has no card to have it on: the first of them does.) */}
         <MuteSoloCell node={held?.first ? held.lane : data.node} name={data.name} />
       </div>
-      {/* (A node that is no lane has no pattern: the cell draws nothing for it.) */}
-      <PatternCell node={data.node} name={data.name} />
+      {/* (A node that is no lane has no pattern: the cell draws nothing for it. Nor has a lane that takes no notes, which has no keys to record.) */}
+      {data.notes ? <PatternCell node={data.node} name={data.name} /> : null}
       {data.scope ? <NodeScope node={data.node} name={data.name} /> : null}
     </div>
   );
