@@ -164,6 +164,9 @@ pub struct SessionConfig {
     /// The tempo the session is at, in beats a minute (the top-level `bpm`); none for a file that has not one, which
     /// the loader gives the tempo of its first recorded pattern.
     pub bpm: Option<f32>,
+    /// What the file says of the output mix (the `[master]` table): none for a file that has no such table, which is the master as it is without one (unity volume, the limiter in the sound at
+    /// `DEFAULT_CEILING`).
+    pub master: Option<MasterConfig>,
     /// The cables (`[[cable]]`), in the order of the file: audio cables, which are sends from one place of the audio to another besides the way that a lane and a group are wired by
     /// themselves, and event cables, which carry the notes of a source to a lane.
     pub cables: Vec<CableConfig>,
@@ -175,6 +178,18 @@ pub struct SessionConfig {
     /// Each hears every note unless it says whose (`hears`), and its cables name the plugin they drive by its place in the session (`to = "instrument[0].effect[1]"`).
     /// `move_modulators_to_the_session` puts the modulators of the lanes and of the groups here too.
     pub free_modulators: Vec<ModulatorConfig>,
+}
+
+/// The `[master]` table (step 102): the output mix's volume, whether the limiter is in the sound and where its ceiling is. A key that is not there is what the master is without it: a volume of 1,
+/// the limiter on (the user's "limiter default on": a session that was written before the limiter has one), and a ceiling of -1 dB. The loader holds the numbers to their ranges.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MasterConfig {
+    /// The gain on the mix, 0 to 2 (`volume`).
+    pub volume: Option<f32>,
+    /// Whether the limiter is in the sound (`limiter`).
+    pub limiter: Option<bool>,
+    /// Where the limiter holds the sound under, in decibels below full scale, -24 to 0 (`ceiling`).
+    pub ceiling: Option<f32>,
 }
 
 /// The keys as a source of notes: the computer's keys, the page's piano and keys and every browser's (`[keys]`).
@@ -578,6 +593,19 @@ struct SessionRaw {
     ui: Option<toml::Table>,
     #[serde(default)]
     bpm: Option<f64>,
+    #[serde(default)]
+    master: Option<MasterRaw>,
+}
+
+/// The `[master]` table as the file has it.
+#[derive(Deserialize)]
+struct MasterRaw {
+    #[serde(default)]
+    volume: Option<f64>,
+    #[serde(default)]
+    limiter: Option<bool>,
+    #[serde(default)]
+    ceiling: Option<f64>,
 }
 
 /// A `[[cable]]` as the file has it: its two places as text, and a level.
@@ -942,7 +970,8 @@ pub fn parse_raw(content: &str) -> anyhow::Result<SessionConfig> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     let keys = raw.keys.map(|keys| KeysConfig { ui: keys.ui });
-    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), cables, keys, devices, free_modulators: raw.modulators })
+    let master = raw.master.map(|master| MasterConfig { volume: master.volume.map(|volume| volume as f32), limiter: master.limiter, ceiling: master.ceiling.map(|ceiling| ceiling as f32) });
+    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), master, cables, keys, devices, free_modulators: raw.modulators })
 }
 
 /// A place in a rack that no modulator is at: a cable that names it is left out by the loader, as one that names a modulator that is not there is.
@@ -1300,6 +1329,9 @@ pub struct SaveSources {
     pub devices: Vec<SaveDevice>,
     /// The modulators, in order: each cable names the plugin it drives by its place (`SaveModTarget::to`).
     pub modulators: Vec<SaveModulator>,
+    /// The `[master]` table, or none when the master is what it is without one (the model's `master_to_save`). It rides with the rest of what stands outside the lanes and the groups, so that
+    /// the writers that take the session in parts take no part more.
+    pub master: Option<MasterConfig>,
 }
 
 /// The keys as a source (`[keys]`).
@@ -1392,6 +1424,8 @@ pub struct SaveEffect {
 struct SessionOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     bpm: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    master: Option<MasterOut>,
     /// The sources of notes come first: they are what the lanes below them hear.
     #[serde(skip_serializing_if = "Option::is_none")]
     keys: Option<KeysOut>,
@@ -1410,6 +1444,17 @@ struct SessionOut {
     piano: Option<PianoOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ui: Option<UiOut>,
+}
+
+/// The `[master]` table in the output: only what is not what the master is without it.
+#[derive(Serialize)]
+struct MasterOut {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    volume: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limiter: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ceiling: Option<f64>,
 }
 
 /// The `[keys]` table in the output.
@@ -1862,6 +1907,7 @@ pub fn to_toml(
 ) -> anyhow::Result<String> {
     let session = SessionOut {
         bpm: bpm.map(clean_f64),
+        master: sources.master.map(|master| MasterOut { volume: master.volume.map(clean_f64), limiter: master.limiter, ceiling: master.ceiling.map(clean_f64) }),
         keys: sources.keys.as_ref().map(|keys| KeysOut { ui: keys.ui.map(NodeUiOut::from) }),
         devices: sources.devices.iter().map(|device| DeviceOut { name: device.name.clone(), ui: device.ui.map(NodeUiOut::from) }).collect(),
         cables: cables.iter().map(|cable| CableOut { from: cable.from.to_string(), to: cable.to.to_string(), gain: cable.gain }).collect(),
@@ -3525,6 +3571,50 @@ plugin = "builtin:osc"
         assert!(text.starts_with("bpm = 100.1\n"), "{text}");
     }
 
+    // -- the output mix (step 102) --
+
+    #[test]
+    fn a_master_table_is_read_key_by_key_and_a_file_that_has_none_says_nothing_of_it() {
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        assert_eq!(parse(osc).unwrap().master, None, "no table: the master is what it is without one");
+        assert_eq!(parse(&format!("[master]\n{osc}")).unwrap().master, Some(MasterConfig::default()), "an empty table says nothing either");
+        let all = parse(&format!("[master]\nvolume = 0.5\nlimiter = false\nceiling = -3.5\n{osc}")).unwrap().master;
+        assert_eq!(all, Some(MasterConfig { volume: Some(0.5), limiter: Some(false), ceiling: Some(-3.5) }));
+        let some = parse(&format!("{osc}[master]\nlimiter = true\n")).unwrap().master;
+        assert_eq!(some, Some(MasterConfig { volume: None, limiter: Some(true), ceiling: None }), "a key that is not there is not said");
+    }
+
+    #[test]
+    fn a_master_with_a_number_that_is_not_one_or_a_switch_that_is_not_one_refuses_the_session_with_its_place() {
+        let osc = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        for (table, place) in [("volume = nan", "master.volume"), ("ceiling = inf", "master.ceiling"), ("volume = 1e39", "master.volume"), ("ceiling = -inf", "master.ceiling")] {
+            let error = parse(&format!("[master]\n{table}\n{osc}")).err().expect("refused").to_string();
+            assert!(error.contains(place), "{error}");
+        }
+        for table in ["volume = \"loud\"", "limiter = 1", "limiter = \"on\"", "ceiling = true"] {
+            assert!(parse(&format!("[master]\n{table}\n{osc}")).is_err(), "{table}");
+        }
+    }
+
+    #[test]
+    fn a_master_is_written_with_the_keys_that_are_set_and_a_session_that_has_none_has_no_table() {
+        let master = |volume, limiter, ceiling| SaveSources { master: Some(MasterConfig { volume, limiter, ceiling }), ..Default::default() };
+        let text = to_toml(&one_lane(), &[], &[], &master(Some(0.8), Some(false), Some(-3.0)), None, None, None).unwrap();
+        assert!(text.contains("[master]\nvolume = 0.8\nlimiter = false\nceiling = -3.0\n"), "{text}");
+        let text = to_toml(&one_lane(), &[], &[], &master(None, Some(false), None), None, None, None).unwrap();
+        assert!(text.contains("[master]\nlimiter = false\n") && !text.contains("volume") && !text.contains("ceiling"), "{text}");
+        // (Written as it was typed: a volume of 0.7 is not 0.699999988079071.)
+        let text = to_toml(&one_lane(), &[], &[], &master(Some(0.7), None, Some(-1.1)), None, None, None).unwrap();
+        assert!(text.contains("volume = 0.7\n") && text.contains("ceiling = -1.1\n"), "{text}");
+        // None is no table, and the file is the file that there was.
+        let plain = to_toml(&one_lane(), &[], &[], &Default::default(), None, None, None).unwrap();
+        assert!(!plain.contains("master"), "{plain}");
+        // It comes before the tables of the nodes, and reads back as it was written.
+        let text = to_toml(&one_lane(), &[], &[], &master(Some(0.5), Some(false), Some(-6.0)), None, None, Some(100.0)).unwrap();
+        assert!(text.find("[master]").unwrap() < text.find("[[instrument]]").unwrap() && text.starts_with("bpm = 100.0\n"), "{text}");
+        assert_eq!(parse(&text).unwrap().master, Some(MasterConfig { volume: Some(0.5), limiter: Some(false), ceiling: Some(-6.0) }));
+    }
+
     // -- audio cables (P3c of docs/patch-graph.md §11.6) --
 
     const OSC: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n";
@@ -3752,7 +3842,7 @@ to = "instrument[1]"
     }
 
     fn sources(keys: Option<Option<NodeUi>>, devices: &[(&str, Option<NodeUi>)]) -> SaveSources {
-        SaveSources { keys: keys.map(|ui| SaveKeys { ui }), devices: devices.iter().map(|(name, ui)| SaveDevice { name: name.to_string(), ui: *ui }).collect(), modulators: Vec::new() }
+        SaveSources { keys: keys.map(|ui| SaveKeys { ui }), devices: devices.iter().map(|(name, ui)| SaveDevice { name: name.to_string(), ui: *ui }).collect(), modulators: Vec::new(), master: None }
     }
 
     #[test]

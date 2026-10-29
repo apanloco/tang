@@ -490,10 +490,13 @@ expression: tracer_json()
         }
       },
       {
+        "ceiling": -1.0,
         "id": 4294967295,
         "kind": "master",
+        "limiter": true,
         "name": "Master",
-        "parent": null
+        "parent": null,
+        "volume": 1.0
       }
     ]
   },
@@ -536,6 +539,14 @@ expression: tracer_json()
           "type": "audioIn"
         },
         "slot": 1
+      },
+      {
+        "kind": "reduction",
+        "node": 4294967295,
+        "port": {
+          "type": "audioIn"
+        },
+        "slot": 4095
       },
       {
         "kind": "peak",

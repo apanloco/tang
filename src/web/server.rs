@@ -732,10 +732,10 @@ mod tests {
             rig.telemetry.bump(MASTER.clips);
         }
         tell(&mut client, json!({"type": "telemetry", "channels": ["meters"]})).await;
-        // The master's meter: its peak, then the number of buffers that clipped.
+        // The master's meter: its peak, then the number of buffers that clipped, and how far its limiter has brought the sound down.
         match recv(&mut client).await {
             Some(ClientMessage::Binary(bytes)) => {
-                assert_eq!(&bytes[..4], [0, 0, 2, 0], "the meters, no flags, two values");
+                assert_eq!(&bytes[..4], [0, 0, 3, 0], "the meters, no flags, three values");
                 assert_eq!(f32::from_le_bytes(bytes[8..12].try_into().unwrap()), 0.5);
                 assert_eq!(f32::from_le_bytes(bytes[12..16].try_into().unwrap()), 3.0);
             }

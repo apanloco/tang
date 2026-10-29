@@ -5,7 +5,7 @@
 //! that describes it. The checks come first: an intent that fails changes
 //! nothing, and does not count as a revision.
 
-use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, key_command, macro_command, rate_command, steps_command, sync_command};
+use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, key_command, macro_command, master_command, rate_command, steps_command, sync_command};
 use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
@@ -95,6 +95,7 @@ impl Controller {
         let done = match intent {
             Intent::SetParam { node, param, value } => Done::Event(self.set_param(node, param, value)?),
             Intent::SetGain { node, gain, value } => Done::Event(self.set_gain(node, gain, value)?),
+            Intent::SetLimiter { on } => Done::Event(self.set_limiter(on)),
             Intent::LoadPreset { node, preset } => Done::Event(self.load_preset(node, &preset)?),
             Intent::SetModulatorField { node, field, value } => Done::Event(self.set_modulator_field(node, field, value)?),
             Intent::SetSteps { node, values } => Done::Event(self.set_steps(node, values)?),
@@ -213,6 +214,10 @@ impl Controller {
     }
 
     fn set_gain(&mut self, node: NodeId, gain: Gain, value: f32) -> Result<Event, IntentError> {
+        // (The output mix is a node of the graph and not of the model: `locate` has nothing for it.)
+        if node == NodeId::MASTER {
+            return self.set_master_gain(gain, value);
+        }
         let path = self.model.locate(node).ok_or(IntentError::NotFound(node))?;
         if !value.is_finite() {
             return Err(invalid(format!("{value} is not a value for {gain:?}")));
@@ -244,6 +249,34 @@ impl Controller {
         };
         let _ = self.cmd_tx.send(command);
         Ok(Event::GainSet { node, gain, value })
+    }
+
+    /// A gain of the output mix (step 102): its volume, or the ceiling of its limiter. Held to its range as every gain is, and the audio thread is told the whole of the master (`master_command`).
+    fn set_master_gain(&mut self, gain: Gain, value: f32) -> Result<Event, IntentError> {
+        if !value.is_finite() {
+            return Err(invalid(format!("{value} is not a value for {gain:?}")));
+        }
+        let (min, max) = gain.range();
+        let value = value.max(min).min(max);
+        match gain {
+            Gain::MasterVolume => self.model.master.volume = value,
+            Gain::LimiterCeiling => self.model.master.ceiling = value,
+            _ => return Err(invalid(format!("{gain:?} does not apply to that node"))),
+        }
+        self.tell_master();
+        Ok(Event::GainSet { node: NodeId::MASTER, gain, value })
+    }
+
+    /// Put the limiter on the output mix in the sound, or take it out (step 102).
+    fn set_limiter(&mut self, on: bool) -> Event {
+        self.model.master.limiter = on;
+        self.tell_master();
+        Event::LimiterSet { on }
+    }
+
+    /// Tell the audio thread what the output mix is: its volume, whether its limiter is in the sound and its ceiling, which it is told whole whichever of them changed.
+    pub(super) fn tell_master(&self) {
+        let _ = self.cmd_tx.send(master_command(&self.model.master, self.sample_rate));
     }
 
     /// Where a front-end draws a node: in the model only (the session file keeps it; the audio thread has no use for it). The
@@ -1142,7 +1175,7 @@ mod tests {
     }
 
     use crate::app::graph::{Graph, NodeKind};
-    use crate::app::model::Driven;
+    use crate::app::model::{Driven, MasterNode};
     use crate::app::testutil::{self, SENDS, SIDED, Sends, Sided, StubEngine, described, load};
     use crate::plugin::chain::{CableFrom, CableTo, ModTargetKind, ModulatorLocation};
     use crate::session::{Feed, NodeUi, Route};
@@ -1395,6 +1428,105 @@ plugin = "builtin:reverb"
         assert_eq!(Gain::Mix.range(), (0.0, 1.0));
         assert_eq!(Gain::GroupVolume.range(), (0.0, 4.0));
         assert_eq!(Gain::GroupPan.range(), (-1.0, 1.0));
+    }
+
+    /// What the audio thread was told of the output mix since the last look (the commands that `sent` leaves out).
+    fn master_sent(engine: &StubEngine) -> Vec<String> {
+        engine.cmd_rx.try_iter().filter(|command| matches!(command, GraphCommand::SetMaster { .. })).map(|command| testutil::describe(&command)).collect()
+    }
+
+    #[test]
+    fn the_masters_volume_and_ceiling_are_gains_of_the_master_and_tell_the_audio_thread_the_whole_of_it() {
+        let (engine, mut ctl) = controller();
+        let applied = gain(&mut ctl, NodeId::MASTER, Gain::MasterVolume, 0.5).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::GainSet { node: NodeId::MASTER, gain: Gain::MasterVolume, value: 0.5 }]));
+        let applied = gain(&mut ctl, NodeId::MASTER, Gain::LimiterCeiling, -6.0).unwrap();
+        assert_eq!(applied, Applied::of(2, vec![Event::GainSet { node: NodeId::MASTER, gain: Gain::LimiterCeiling, value: -6.0 }]));
+        assert_eq!(ctl.model.master, MasterNode { volume: 0.5, limiter: true, ceiling: -6.0 });
+        assert_eq!(master_sent(&engine), ["SetMaster volume=0.500 limiter=true ceiling=-1.0 rate=48000", "SetMaster volume=0.500 limiter=true ceiling=-6.0 rate=48000"]);
+        assert!(ctl.dirty);
+    }
+
+    #[test]
+    fn the_masters_gains_are_held_to_their_ranges_and_a_value_that_is_not_a_number_is_refused_with_nothing_changed() {
+        let (engine, mut ctl) = controller();
+        let cases = [
+            (Gain::MasterVolume, [(9.0, 2.0), (-1.0, 0.0), (2.0, 2.0), (0.0, 0.0)]),
+            (Gain::LimiterCeiling, [(5.0, 0.0), (-99.0, -24.0), (-24.0, -24.0), (0.0, 0.0)]),
+        ];
+        for (kind, values) in cases {
+            for (asked, got) in values {
+                let applied = gain(&mut ctl, NodeId::MASTER, kind, asked).unwrap();
+                assert_eq!(applied.events, [Event::GainSet { node: NodeId::MASTER, gain: kind, value: got }], "{kind:?} {asked}");
+            }
+        }
+        assert_eq!((Gain::MasterVolume.range(), Gain::LimiterCeiling.range()), ((0.0, 2.0), (-24.0, 0.0)));
+        master_sent(&engine);
+        let rev = ctl.rev;
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for kind in [Gain::MasterVolume, Gain::LimiterCeiling] {
+                assert!(matches!(gain(&mut ctl, NodeId::MASTER, kind, value), Err(IntentError::Invalid(_))), "{kind:?} {value}");
+            }
+        }
+        assert_eq!((ctl.rev, ctl.model.master), (rev, MasterNode { volume: 0.0, limiter: true, ceiling: 0.0 }), "nothing changed, and no revision");
+        assert!(master_sent(&engine).is_empty());
+    }
+
+    #[test]
+    fn a_gain_that_is_not_the_masters_is_refused_for_the_master_and_the_masters_for_every_other_node() {
+        let (engine, mut ctl) = controller();
+        let reverb = node(&ctl, NodePath::Effect { inst: 0, index: 0 });
+        let group = node(&ctl, NodePath::Group(0));
+        let lfo = node(&ctl, NodePath::Modulator { at: ModulatorLocation::Free, index: 0 });
+        let wrong = |g: Gain| IntentError::Invalid(format!("{g:?} does not apply to that node"));
+        let mut cases = vec![];
+        for kind in [Gain::Volume, Gain::Mix, Gain::GroupVolume, Gain::GroupPan] {
+            cases.push((NodeId::MASTER, kind));
+        }
+        for node in [lane(&ctl), reverb, group, lfo] {
+            for kind in [Gain::MasterVolume, Gain::LimiterCeiling] {
+                cases.push((node, kind));
+            }
+        }
+        let before = ctl.rev;
+        for (node, kind) in cases {
+            assert_eq!(gain(&mut ctl, node, kind, 0.5).unwrap_err(), wrong(kind), "{kind:?} of {node:?}");
+        }
+        assert_eq!(ctl.rev, before);
+        assert!(sent(&engine).is_empty() && master_sent(&engine).is_empty());
+        assert_eq!(ctl.model.master, MasterNode::default());
+    }
+
+    #[test]
+    fn the_limiter_is_put_in_the_sound_and_taken_out_by_an_intent_that_tells_the_audio_thread_the_whole_master() {
+        let (engine, mut ctl) = controller();
+        assert!(ctl.model.master.limiter, "it is in the sound unless a session says it is not");
+        let applied = ctl.apply(Intent::SetLimiter { on: false }).unwrap();
+        assert_eq!(applied, Applied::of(1, vec![Event::LimiterSet { on: false }]));
+        assert!(!ctl.model.master.limiter);
+        // What is as it is asked to be is told as it is, and the audio thread is told again.
+        let applied = ctl.apply(Intent::SetLimiter { on: false }).unwrap();
+        assert_eq!(applied.events, [Event::LimiterSet { on: false }]);
+        ctl.apply(Intent::SetLimiter { on: true }).unwrap();
+        assert!(ctl.model.master.limiter);
+        assert_eq!(
+            master_sent(&engine),
+            [
+                "SetMaster volume=1.000 limiter=false ceiling=-1.0 rate=48000",
+                "SetMaster volume=1.000 limiter=false ceiling=-1.0 rate=48000",
+                "SetMaster volume=1.000 limiter=true ceiling=-1.0 rate=48000",
+            ]
+        );
+        assert!(ctl.dirty);
+    }
+
+    #[test]
+    fn the_masters_values_are_told_at_the_sample_rate_that_the_controller_has() {
+        let (mut handles, engine) = testutil::stub_engine();
+        handles.sample_rate = 44_100.0;
+        let mut ctl = Controller::new(load(SESSION).model, handles, None);
+        ctl.apply(Intent::SetLimiter { on: false }).unwrap();
+        assert_eq!(master_sent(&engine), ["SetMaster volume=1.000 limiter=false ceiling=-1.0 rate=44100"]);
     }
 
     #[test]

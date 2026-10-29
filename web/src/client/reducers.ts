@@ -43,6 +43,7 @@ function pianoAfter(piano: PianoMeta, event: Extract<StampedEvent, { type: "scal
 
 /** The graph after the event, with only what it changed replaced; or the reason it cannot be. */
 function changeGraph(graph: Graph, event: Exclude<StampedEvent, { type: "saved" | "scaleSet" | "lockedSet" | "bpmSet" }>): Graph | string {
+  if (event.type === "limiterSet") return withLimiter(graph, event.on);
   if (event.type === "edgeDepthSet") return withDepth(graph, event.edge, event.depth);
   if (event.type === "cableGainSet") return withCableGain(graph, event.edge, event.gain);
   const node = graph.nodes.find((n) => n.id === event.node);
@@ -53,7 +54,7 @@ function changeGraph(graph: Graph, event: Exclude<StampedEvent, { type: "saved" 
 }
 
 /** The node the event is about, as it is after it; or the reason it cannot be. */
-function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthSet" | "cableGainSet" | "saved" | "scaleSet" | "lockedSet" | "bpmSet" }>): Node | string {
+function changeNode(node: Node, event: Exclude<StampedEvent, { type: "edgeDepthSet" | "cableGainSet" | "saved" | "scaleSet" | "lockedSet" | "bpmSet" | "limiterSet" }>): Node | string {
   switch (event.type) {
     case "paramSet": {
       const plugin = pluginOf(node);
@@ -131,7 +132,16 @@ function withValues(plugin: Plugin, values: readonly ParamValue[], baseline = fa
 }
 
 /** The node with its host-side gain set; null if that gain is not one this node has. */
+/** The graph with the limiter on the output mix in the sound or out of it (the master is the one node that has it). */
+function withLimiter(graph: Graph, on: boolean): Graph | string {
+  const master = graph.nodes.find((n) => n.kind === "master");
+  if (master?.kind !== "master") return "the output mix is not where it was";
+  return { ...graph, nodes: graph.nodes.map((n) => (n === master ? { ...master, limiter: on } : n)) };
+}
+
 function withGain(node: Node, gain: Gain, value: number): Node | null {
+  if (gain === "masterVolume" && node.kind === "master") return { ...node, volume: value };
+  if (gain === "limiterCeiling" && node.kind === "master") return { ...node, ceiling: value };
   if (gain === "volume" && node.kind === "instrument") return { ...node, volume: value };
   if (gain === "mix" && node.kind === "effect") return { ...node, mix: value };
   if (gain === "groupVolume" && node.kind === "group") return { ...node, volume: value };

@@ -2534,8 +2534,13 @@ fn on_a_narrow_terminal_the_clip_light_takes_the_right_end_of_the_tab_bar_like_t
 /// few buffers: the loudest sample it produced, and whether the status bar shows
 /// CLIP afterwards. (One oscillator peaks at a quarter of full scale at volume 1.)
 fn clip_light_after_playing(lane_volume: f32) -> (f32, bool) {
+    clip_light_with(lane_volume, "[master]\nlimiter = false\n")
+}
+
+/// `clip_light_after_playing`, with the `[master]` table that the session has (the limiter on the output is in the sound unless a session says it is not, and no mix that it holds under its ceiling clips).
+fn clip_light_with(lane_volume: f32, master: &str) -> (f32, bool) {
     let lane = format!("[[instrument]]\nplugin = \"builtin:osc\"\nvolume = {lane_volume}\n");
-    let config = session::parse(&format!("{lane}{lane}")).unwrap();
+    let config = session::parse(&format!("{master}{lane}{lane}")).unwrap();
     let (handles, engine) = stub_engine();
     let model = load_session(
         &config,
@@ -2575,6 +2580,127 @@ fn an_engine_that_clips_lights_the_clip_light_and_one_that_does_not_leaves_it_da
     let (loudest, lit) = clip_light_after_playing(0.5);
     assert!(loudest > 0.1 && loudest <= 1.0, "a note that is heard and within full scale: {loudest}");
     assert!(!lit);
+}
+
+#[test]
+fn a_session_whose_limiter_is_in_the_sound_does_not_clip_though_it_is_far_over_full_scale_and_the_light_stays_dark() {
+    // The same two oscillators at four times the volume, with no `[master]` table: the limiter is in the sound, as it is for a session that does not say.
+    let (loudest, lit) = clip_light_with(4.0, "");
+    let ceiling = 10f32.powf(-1.0 / 20.0);
+    assert!(loudest > ceiling * 0.5 && loudest <= ceiling, "the output is held under the ceiling of -1 dB: {loudest}");
+    assert!(!lit);
+}
+
+// ---------------------------------------------------------------------------
+// The master's limiter and volume (step 102)
+// ---------------------------------------------------------------------------
+
+/// What the TUI has told the audio thread of the output mix since the last call (`SetMaster`, which `commands` leaves out). The rest of what is in the channel is let go of.
+fn master_commands(h: &Harness) -> Vec<String> {
+    h.cmd_rx.try_iter().filter(crate::app::testutil::is_master).map(|command| crate::app::testutil::describe(&command)).collect()
+}
+
+#[test]
+fn l_puts_the_limiter_in_the_sound_and_takes_it_out_from_anywhere_in_the_chain_and_it_is_a_step_of_the_history() {
+    let mut h = Harness::new(scene_group());
+    master_commands(&h);
+    assert!(h.s.ctl.model.master.limiter, "the limiter is in the sound from the start");
+    h.press(KeyCode::Char('L'));
+    assert!(!h.s.ctl.model.master.limiter && h.s.ctl.dirty);
+    let told = master_commands(&h);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].starts_with("SetMaster volume=1.000 limiter=false ceiling=-1.0"), "{told:?}");
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("turn the limiter off"));
+    // The master's, whatever the cursor is on: an effect, a group.
+    h.goto(TreeAddress::Effect { inst: 2, index: 0 }).press(KeyCode::Char('L'));
+    assert!(h.s.ctl.model.master.limiter);
+    assert!(master_commands(&h)[0].contains("limiter=true"));
+    h.goto(TreeAddress::Group(0)).press(KeyCode::Char('L'));
+    assert!(!h.s.ctl.model.master.limiter);
+    master_commands(&h);
+    // Undo puts it back in the sound, and tells the audio thread.
+    h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!(h.s.ctl.model.master.limiter);
+    assert!(master_commands(&h)[0].contains("limiter=true"));
+    // (Not on the other tabs, where the key is something else or nothing.)
+    h.press(KeyCode::Char('2')).press(KeyCode::Char('L'));
+    assert!(h.s.ctl.model.master.limiter, "the Piano tab's keys are the piano's");
+}
+
+#[test]
+fn c_and_v_open_on_the_ceiling_and_the_master_volume_and_set_what_is_typed_held_to_its_range() {
+    let mut h = Harness::new(scene_group());
+    master_commands(&h);
+    let prefill = |h: &Harness| h.s.gain_editing.as_ref().map(|g| g.edit.input.value.clone());
+    h.press(KeyCode::Char('C'));
+    assert_eq!(prefill(&h).as_deref(), Some("-1.00"), "the ceiling that a session has without a word");
+    h.press(KeyCode::Esc).press(KeyCode::Char('V'));
+    assert_eq!(prefill(&h).as_deref(), Some("1.00"), "unity");
+    h.press(KeyCode::Esc);
+    assert!(master_commands(&h).is_empty(), "a popup that is left says nothing");
+    for (key, typed, volume, ceiling) in [('C', "-6", 1.0, -6.0), ('C', "-99", 1.0, -24.0), ('C', "3", 1.0, 0.0), ('V', "0.5", 0.5, 0.0), ('V', "9", 2.0, 0.0), ('V', "-1", 0.0, 0.0)] {
+        h.press(KeyCode::Char(key)).press_n(KeyCode::Backspace, 8).type_chars(typed).press(KeyCode::Enter);
+        let told = master_commands(&h);
+        assert_eq!(told.len(), 1, "{key} {typed}: {told:?}");
+        assert!(told[0].starts_with(&format!("SetMaster volume={volume:.3} limiter=true ceiling={ceiling:.1}")), "{key} {typed}: {told:?}");
+        let master = h.s.ctl.model.master;
+        assert_eq!((master.volume, master.ceiling), (volume, ceiling), "{key} {typed}");
+    }
+    assert!(h.s.ctl.dirty);
+    assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("set the master volume"));
+    // Text that is not a number changes nothing.
+    h.press(KeyCode::Char('C')).press_n(KeyCode::Backspace, 8).type_chars("loud").press(KeyCode::Enter);
+    assert!(master_commands(&h).is_empty());
+    assert_eq!(h.s.ctl.model.master.ceiling, 0.0);
+}
+
+#[test]
+fn the_status_bar_says_how_far_the_limiter_brings_the_sound_down_while_it_is_in_the_sound_and_works() {
+    use crate::telemetry::MASTER_REDUCTION;
+    let mut h = Harness::new(scene_split());
+    let t0 = Instant::now();
+    tick_at(&mut h.s, t0);
+    let first_row = |h: &mut Harness| h.dump().lines().nth(2).unwrap().to_string();
+    assert!(!h.dump().contains("LIM"), "dark while the limiter has nothing to do");
+    h.s.ctl.telemetry.store(MASTER_REDUCTION, 3.24);
+    let row = first_row(&mut h);
+    assert!(row.ends_with("LIM -3.2 dB  120 BPM"), "{row}");
+    // In yellow and bold, before the tempo.
+    let buffer = h.terminal.backend().buffer();
+    let line: String = (0..buffer.area.width).map(|x| buffer[(x, 0)].symbol()).collect();
+    let at = line.find("LIM").expect("the light is in the tab bar");
+    let cell = &buffer[(line[..at].chars().count() as u16, 0)];
+    assert_eq!((cell.fg, cell.modifier), (Color::Yellow, Modifier::BOLD));
+    // A reduction under a tenth of a decibel is none, and a tenth is not.
+    h.s.ctl.telemetry.store(MASTER_REDUCTION, 0.09);
+    assert!(!h.dump().contains("LIM"));
+    h.s.ctl.telemetry.store(MASTER_REDUCTION, 0.1);
+    assert!(first_row(&mut h).ends_with("LIM -0.1 dB  120 BPM"));
+    // Next to the clip light, which it leaves where it was.
+    h.s.ctl.telemetry.store(MASTER_REDUCTION, 12.0);
+    h.s.ctl.telemetry.bump(crate::telemetry::MASTER.clips);
+    tick_at(&mut h.s, t0 + Duration::from_millis(100));
+    assert!(first_row(&mut h).ends_with("LIM -12.0 dB  CLIP  120 BPM"));
+    // A limiter that is out of the sound says nothing, whatever the cell holds.
+    h.press(KeyCode::Char('L'));
+    assert!(!h.s.ctl.model.master.limiter);
+    assert!(!h.dump().contains("LIM"));
+}
+
+#[test]
+fn on_a_narrow_terminal_the_limiters_light_gives_way_to_the_clip_light_and_the_tempo() {
+    use crate::telemetry::{MASTER, MASTER_REDUCTION};
+    let mut h = Harness::new(scene_split());
+    h.s.ctl.telemetry.store(MASTER_REDUCTION, 3.24);
+    h.s.ctl.telemetry.bump(MASTER.clips);
+    tick_at(&mut h.s, Instant::now());
+    let first_row = |h: &mut Harness, width: u16| {
+        h.terminal = Terminal::new(TestBackend::new(width, HEIGHT)).unwrap();
+        h.dump().lines().nth(2).unwrap().to_string()
+    };
+    assert!(first_row(&mut h, 120).ends_with("LIM -3.2 dB  CLIP  120 BPM"));
+    let row = first_row(&mut h, 80);
+    assert!(row.ends_with("CLIP  120 BPM") && !row.contains("LIM"), "the limiter's light is the first to go: {row}");
 }
 
 // The ways the TUI makes a modulator or binds a target, pinned command for

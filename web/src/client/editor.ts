@@ -36,6 +36,7 @@ const LEARN_DEPTH = 1;
 const DOING: Record<Intent["type"], string> = {
   setParam: "set a parameter",
   setGain: "set a level",
+  setLimiter: "put the limiter in the sound or take it out",
   loadPreset: "load a preset",
   setModulatorField: "change a modulator's setting",
   setSteps: "change the steps of a step sequencer",
@@ -225,6 +226,13 @@ export class Editor {
   /** Mute or unmute the lane or group `node`: it is never heard while it is muted, whatever is soloed. True if it was done (the page says why if it was not). */
   setMute(node: NodeId, muted: boolean): Promise<boolean> {
     return this.#attempt(`${muted ? "mute" : "unmute"} ${this.#name(node)}`, { type: "setMute", node, muted });
+  }
+
+  /**
+   * Put the limiter on the output mix in the sound (`on`) or take it out: it holds the mix under its ceiling and does not let it clip. True if it was done (the page says why if it was not).
+   */
+  setLimiter(on: boolean): Promise<boolean> {
+    return this.#attempt(on ? "put the limiter in the sound" : "take the limiter out of the sound", { type: "setLimiter", on });
   }
 
   /** Solo or unsolo the lane or group `node`: while anything is soloed only what is soloed is heard. True if it was done (the page says why if it was not). */

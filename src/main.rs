@@ -307,6 +307,7 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
         groups: vec![],
         piano: None,
         master_ui: None,
+        master: None,
         bpm: None,
         cables: vec![],
         keys: None,

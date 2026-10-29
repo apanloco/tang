@@ -282,17 +282,49 @@ describe("a gain set", () => {
     expect(node?.kind === "group" && [node.volume, node.pan]).toEqual([2, -0.5]);
   });
 
+  test("sets the volume of the output mix and the ceiling of its limiter", () => {
+    const louder = applied(tracerSnapshot, { rev: 1, type: "gainSet", node: MASTER, gain: "masterVolume", value: 1.5 });
+    const lower = applied(louder, { rev: 2, type: "gainSet", node: MASTER, gain: "limiterCeiling", value: -6 });
+    const master = lower.graph.nodes.find((n) => n.id === MASTER);
+    expect(master?.kind === "master" && [master.volume, master.ceiling, master.limiter]).toEqual([1.5, -6, true]);
+  });
+
   test("is refused by a node that does not have that gain", () => {
     const refused = [
       { node: filter.id, gain: "volume" as const },
       { node: oscillator.id, gain: "mix" as const },
       { node: oscillator.id, gain: "groupVolume" as const },
       { node: MASTER, gain: "groupPan" as const },
+      { node: MASTER, gain: "volume" as const },
+      { node: oscillator.id, gain: "masterVolume" as const },
+      { node: filter.id, gain: "limiterCeiling" as const },
     ];
     for (const { node, gain } of refused) {
       const result = applyEvent(tracerSnapshot, { rev: 1, type: "gainSet", node, gain, value: 1 });
       expect(result.ok, `${gain} on ${node}`).toBe(false);
     }
+  });
+});
+
+describe("a limiter set", () => {
+  const master = (snapshot: Snapshot) => {
+    const node = snapshot.graph.nodes.find((n) => n.kind === "master");
+    if (node?.kind !== "master") throw new Error("no master");
+    return node;
+  };
+
+  test("puts the limiter on the output mix in the sound or takes it out, and changes nothing else of it", () => {
+    expect(master(tracerSnapshot).limiter).toBe(true);
+    const out = applied(tracerSnapshot, { rev: 1, type: "limiterSet", on: false });
+    expect(master(out)).toEqual({ ...master(tracerSnapshot), limiter: false });
+    expect(master(applied(out, { rev: 2, type: "limiterSet", on: true }))).toEqual(master(tracerSnapshot));
+    expect(out.graph.nodes.filter((n) => n.kind !== "master")).toEqual(tracerSnapshot.graph.nodes.filter((n) => n.kind !== "master"));
+    expect(out.meta.dirty).toBe(true);
+  });
+
+  test("is refused by a session that has no output mix", () => {
+    const without: Snapshot = { ...tracerSnapshot, graph: { ...tracerSnapshot.graph, nodes: tracerSnapshot.graph.nodes.filter((n) => n.kind !== "master") } };
+    expect(applyEvent(without, { rev: 1, type: "limiterSet", on: false }).ok).toBe(false);
   });
 });
 

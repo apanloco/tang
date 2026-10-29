@@ -93,6 +93,16 @@ describe("what a knob says", () => {
     expect(getByText("2", { selector: ".tang-knob__value" })).toBeTruthy();
   });
 
+  test("writes its label under it, or the caption it is given, which is not its name: that is the label, for a screen reader and for whoever looks for the slider", () => {
+    const { dial, container, getByText } = show({ label: "Master volume", caption: "Volume", value: 1, min: 0, max: 2 });
+    expect(dial.getAttribute("aria-label")).toBe("Master volume");
+    expect(container.querySelector(".tang-knob__label")?.textContent).toBe("Volume");
+    expect(() => getByText("Master volume")).toThrow();
+    cleanup();
+    const plain = show({ label: "Cutoff", value: 1, min: 0, max: 2 });
+    expect(plain.container.querySelector(".tang-knob__label")?.textContent).toBe("Cutoff");
+  });
+
   test("writes the value to three figures, or as it is told to", () => {
     expect(formatValue(0.707)).toBe("0.707");
     expect(formatValue(0.123456)).toBe("0.123");

@@ -7,7 +7,7 @@ export type TelemetryLayout = {
  */
 rev: number, 
 /**
- * The peaks and the clip counts, of the master, then each group, then each lane.
+ * The peaks and the clip counts, of the master (and how far its limiter has brought the sound down), then each group, then each lane.
  */
 meters: Array<LayoutEntry>, 
 /**

@@ -14,6 +14,7 @@ import type {
   Endpoint,
   Event,
   Feed,
+  Gain,
   Graph,
   Intent,
   LayoutEntry,
@@ -113,6 +114,14 @@ function invalid(message: string): Outcome {
 
 function noNode(id: NodeId): Outcome {
   return { error: { code: "notFound", message: `there is no node ${id}` } };
+}
+
+/** A gain of the output mix, its volume or the limiter's ceiling (`set_master_gain` of the controller): the number is judged first, and then the gain, and the value is held to the range. */
+function masterGainOutcome(gain: Gain, value: number): Outcome {
+  if (!holds(value)) return invalid(`${shown(value)} is not a value for ${variant(gain)}`);
+  if (gain !== "masterVolume" && gain !== "limiterCeiling") return invalid(`${variant(gain)} does not apply to that node`);
+  const [low, high] = GAIN_RANGES[gain];
+  return { event: { type: "gainSet", node: MASTER, gain, value: clamp(value, low, high) } };
 }
 
 /** The settings that a modulator of each kind has (`ModSourceSlot::setting`). */
@@ -1167,6 +1176,9 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "addCable" && (intent.from.port.type === "eventsOut" || intent.to.port.type === "eventsIn")) return addNotesCableOutcome(snapshot, intent.from, intent.to, intent.gain, counters);
   if (intent.type === "addCable") return addCableOutcome(snapshot, intent.from, intent.to, intent.gain, counters);
   if (intent.type === "setCableGain") return cableGainOutcome(snapshot, intent.edge, intent.gain);
+  // The limiter on the output mix, and the master's own gains: the master is the one node that the controller's `set_gain` looks for before it looks in the model.
+  if (intent.type === "setLimiter") return { event: { type: "limiterSet", on: intent.on } };
+  if (intent.type === "setGain" && intent.node === MASTER) return masterGainOutcome(intent.gain, intent.value);
   // (The master is a node of the graph and not of the model: the controller does not find it.)
   const node = snapshot.graph.nodes.find((n) => n.id === intent.node && n.kind !== "master");
   if (!node) return noNode(intent.node);
@@ -1291,6 +1303,9 @@ function scopeValues(notes: ReadonlySet<number>, seconds: number, sampleRate: nu
 
 /** How fast a meter's peak falls, as the engine's does: 40 dB a second. */
 const PEAK_FALL_DB_PER_SECOND = 40;
+
+/** What the published reduction of the limiter is held to 0 under, in decibels (`REDUCTION_FLOOR` of the engine). */
+const REDUCTION_FLOOR = 0.05;
 
 /** What an intent told the clients: the events it made, stamped, and whether it changed the structure (they are given the snapshot then). */
 export interface Told {
@@ -1859,6 +1874,10 @@ export class MockServer {
     const playing = this.heldNotes.size > 0 ? 0.35 : 0;
     // What a meter has an ear for, as the engine's are: a lane's after its own mute and solo (and what a cable sends it), a group's after the bus is let go of and with something to carry (a lane of
     // it that is heard and whose way out is not cut, or a cable that is heard from where it starts), and the master's after everything.
+    // What the output mix is: the mix turned by the master's volume, and held under the ceiling while the limiter is in the sound (`Master::run_node`). A meter at the master has an ear for what comes out.
+    const master = nodes.find((n) => n.kind === "master");
+    const beforeTheLimiter = (sounding ? playing : 0) * (master?.kind === "master" ? master.volume : 1);
+    const ceiling = master?.kind === "master" && master.limiter ? 10 ** (master.ceiling / 20) : Number.POSITIVE_INFINITY;
     const levelOf = (id: NodeId): number => {
       const node = nodes.find((n) => n.id === id);
       if (node?.kind === "instrument") return heard.get(id) === true ? playing : 0;
@@ -1866,7 +1885,7 @@ export class MockServer {
         const carried = fed.has(id) || nodes.some((n) => n.kind === "instrument" && n.parent === id && n.route === "out" && heard.get(n.id) === true);
         return heard.get(id) === true && carried ? playing : 0;
       }
-      return sounding ? playing : 0;
+      return Math.min(beforeTheLimiter, ceiling);
     };
     const value = (entry: LayoutEntry): number => {
       switch (entry.kind) {
@@ -1877,6 +1896,13 @@ export class MockServer {
         }
         case "clips":
           return 0;
+        // How far the limiter brings the mix down, in decibels, falling as the engine's does (40 a second); nothing while it is out of the sound.
+        case "reduction": {
+          const now = beforeTheLimiter > ceiling ? 20 * Math.log10(beforeTheLimiter / ceiling) : 0;
+          const reduction = Math.max(now, (peaks.get(entry.slot) ?? 0) - PEAK_FALL_DB_PER_SECOND * elapsed);
+          peaks.set(entry.slot, reduction);
+          return reduction < REDUCTION_FLOOR ? 0 : reduction;
+        }
         case "modOutput":
           return outputOf(entry.node);
         case "modPosition":

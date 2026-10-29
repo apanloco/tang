@@ -13,7 +13,7 @@ import { gainPorts } from "../../client/reach";
 import type { Drivable, GainPort } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { rateAt } from "../../client/tempo";
-import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, modulatorFieldOf, paramOf, paramUnusedBecause, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
+import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, limiterOf, modulatorFieldOf, paramOf, paramUnusedBecause, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
 import { CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, SYNC_DIVISIONS, SYNC_FREE, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
@@ -251,16 +251,27 @@ export const ParamRow = memo(function ParamRow({ node, index }: { node: NodeId; 
   );
 });
 
-/** What a host-side gain is called, and where a double click puts it; how far it goes is the controller's (`GAIN_RANGES`). */
-const GAINS: Record<Gain, { label: string; reset: number }> = {
+/** A number of decibels below full scale as a person writes it: `-1.0 dB`. */
+const decibelsBelowFull = (db: number): string => `${db.toFixed(1)} dB`;
+
+/**
+ * What a host-side gain is called, and where a double click puts it; how far it goes is the controller's (`GAIN_RANGES`). The master's have names of their own, so that the page has one
+ * "Volume" for each lane and group and the master's is not another of them.
+ */
+const GAINS: Record<Gain, { label: string; caption?: string; reset: number; format?: (value: number) => string }> = {
   volume: { label: "Volume", reset: 1 },
   mix: { label: "Mix", reset: 1 },
   groupVolume: { label: "Volume", reset: 1 },
   groupPan: { label: "Pan", reset: 0 },
+  masterVolume: { label: "Master volume", caption: "Volume", reset: 1 },
+  limiterCeiling: { label: "Ceiling", reset: -1, format: decibelsBelowFull },
 };
 
-/** The port that a cable from a modulator ends at to drive a host-side gain: the volume of a lane or a group, the mix of an effect, the pan of a group. */
-const GAIN_PORTS: Record<Gain, GainPort> = {
+/**
+ * The port that a cable from a modulator ends at to drive a host-side gain: the volume of a lane or a group, the mix of an effect, the pan of a group. The output mix's volume and the limiter's
+ * ceiling have none: a person sets them, and no modulator drives them.
+ */
+const GAIN_PORTS: Partial<Record<Gain, GainPort>> = {
   volume: { type: "volume" },
   mix: { type: "mix" },
   groupVolume: { type: "volume" },
@@ -278,20 +289,22 @@ export const GainControl = memo(function GainControl({ node, gain }: { node: Nod
   const stored = useClientState((state) => gainOf(state, node, gain));
   const pending = useSyncExternalStore(control.subscribe, control.getPending);
   const port = GAIN_PORTS[gain];
-  const modulations = useClientSelection((state) => (state.snapshot ? modulationsAt(state.snapshot.graph, node, port) : []), sameModulations);
-  const readEffective = useMemo(() => slotReader(client.telemetry, "modulation", node, port, "effective"), [client, node, port]);
+  const modulations = useClientSelection((state) => (port && state.snapshot ? modulationsAt(state.snapshot.graph, node, port) : []), sameModulations);
+  const readEffective = useMemo(() => (port ? slotReader(client.telemetry, "modulation", node, port, "effective") : undefined), [client, node, port]);
   const shown = pending ?? stored;
-  const { label, reset } = GAINS[gain];
+  const { label, caption, reset, format } = GAINS[gain];
   const [min, max] = GAIN_RANGES[gain];
   const ring = useMemo(() => (shown === undefined ? undefined : modulationExtent(shown, min, max, modulations)), [shown, min, max, modulations]);
   if (shown === undefined) return null;
   return (
     <Knob
       label={label}
+      {...(caption ? { caption } : {})}
       value={shown}
       min={min}
       max={max}
       defaultValue={reset}
+      {...(format ? { format } : {})}
       modulation={ring}
       onChange={(value) => {
         control.set(value);
@@ -299,7 +312,7 @@ export const GainControl = memo(function GainControl({ node, gain }: { node: Nod
       onCommit={() => {
         control.commit();
       }}
-      readEffective={readEffective}
+      {...(readEffective ? { readEffective } : {})}
       frames={frames}
     />
   );
@@ -801,14 +814,43 @@ function ParamModulateButton({ node, index }: { node: NodeId; index: number }) {
  */
 export const GainCell = memo(function GainCell({ node, gain }: { node: NodeId; gain: Gain }) {
   const port = GAIN_PORTS[gain];
-  const drivable = useClientState((state) => state.snapshot?.graph.nodes.some((n) => n.id === node && gainPorts(n).some((own) => own.type === port.type)) ?? false);
-  const driven = useClientState((state) => (state.snapshot ? modulationsAt(state.snapshot.graph, node, port).length > 0 : false));
-  const name = useClientState((state) => gainName(state.snapshot?.graph.nodes.find((n) => n.id === node), port));
+  const drivable = useClientState((state) => (port ? (state.snapshot?.graph.nodes.some((n) => n.id === node && gainPorts(n).some((own) => own.type === port.type)) ?? false) : false));
+  const driven = useClientState((state) => (port && state.snapshot ? modulationsAt(state.snapshot.graph, node, port).length > 0 : false));
+  const name = useClientState((state) => (port ? gainName(state.snapshot?.graph.nodes.find((n) => n.id === node), port) : ""));
   return (
     <div className="tang-cell">
-      {drivable ? <CablePort node={node} handle={handleOf(port)} driven={driven} /> : null}
+      {port && drivable ? <CablePort node={node} handle={handleOf(port)} driven={driven} /> : null}
       <GainControl node={node} gain={gain} />
-      {drivable ? <ModulateMenu node={node} port={port} name={name} className="tang-modulate--cell" /> : null}
+      {port && drivable ? <ModulateMenu node={node} port={port} name={name} className="tang-modulate--cell" /> : null}
+    </div>
+  );
+});
+
+/**
+ * The limiter on the output mix, as a button in a cell of the master's grid (step 102): pressed while the limiter is in the sound, which holds the mix under its ceiling and does not let it clip.
+ * A press puts it in or takes it out (`SetLimiter`); it shows what the session has, which is what was asked for unless the controller refused.
+ */
+export const LimiterCell = memo(function LimiterCell() {
+  const editor = useEditor();
+  const on = useClientState(limiterOf);
+  if (on === undefined) return null;
+  return (
+    <div className="tang-cell">
+      <div className="tang-keys">
+        <span className="tang-keys__label">Limiter</span>
+        <button
+          type="button"
+          className="tang-flag tang-flag--limiter"
+          aria-label="Limiter"
+          aria-pressed={on}
+          title={on ? "The limiter holds the output under its ceiling: press to take it out of the sound" : "The limiter is out of the sound, and the output can clip: press to put it in"}
+          onClick={() => {
+            void editor.setLimiter(!on);
+          }}
+        >
+          {on ? "On" : "Off"}
+        </button>
+      </div>
     </div>
   );
 });

@@ -133,10 +133,16 @@ impl Snapshot {
                     (Gain::Mix, NodeKind::Effect { mix, .. }) => mix,
                     (Gain::GroupVolume, NodeKind::Group { volume, .. }) => volume,
                     (Gain::GroupPan, NodeKind::Group { pan, .. }) => pan,
+                    (Gain::MasterVolume, NodeKind::Master { volume, .. }) => volume,
+                    (Gain::LimiterCeiling, NodeKind::Master { ceiling, .. }) => ceiling,
                     _ => return Err(DoesNotFit(format!("{gain:?} does not apply to node {}", node.0))),
                 };
                 *target = *value;
             }
+            Event::LimiterSet { on } => match &mut self.node_mut(NodeId::MASTER)?.kind {
+                NodeKind::Master { limiter, .. } => *limiter = *on,
+                _ => return Err(DoesNotFit("the output mix is not where it was".to_string())),
+            },
             Event::RangeSet { node, range } => {
                 let NodeKind::Instrument { range: keys, .. } = &mut self.node_mut(*node)?.kind else {
                     return Err(DoesNotFit(format!("node {} is not a lane", node.0)));
@@ -453,7 +459,7 @@ mod tests {
             })
         );
         assert_eq!(json["graph"]["nodes"].as_array().unwrap().len(), 2);
-        assert_eq!(json["telemetry"]["meters"].as_array().unwrap().len(), 4);
+        assert_eq!(json["telemetry"]["meters"].as_array().unwrap().len(), 5, "the master's peak, clips and reduction, and the lane's peak and clips");
         assert_eq!(serde_json::from_value::<Snapshot>(json).unwrap(), snapshot);
     }
     /// A group with a bus filter and an LFO that drives it, a member with a reverb (which
@@ -577,6 +583,11 @@ type = "envelope"
             Intent::SetGain { node: n.bus, gain: Gain::Mix, value: 0.75 },
             Intent::SetGain { node: n.group, gain: Gain::GroupVolume, value: 1.5 },
             Intent::SetGain { node: n.group, gain: Gain::GroupPan, value: -0.5 },
+            Intent::SetGain { node: NodeId::MASTER, gain: Gain::MasterVolume, value: 0.5 },
+            Intent::SetGain { node: NodeId::MASTER, gain: Gain::LimiterCeiling, value: -6.0 },
+            Intent::SetLimiter { on: false },
+            Intent::SetGain { node: NodeId::MASTER, gain: Gain::MasterVolume, value: 9.0 },
+            Intent::SetLimiter { on: true },
             Intent::LoadPreset { node: n.reverb, preset: "cathedral".to_string() },
             Intent::SetParam { node: n.reverb, param: size, value: 0.5 },
             Intent::SetModulatorField { node: n.lane_lfo, field: ModulatorField::Rate, value: 4.0 },
@@ -629,7 +640,7 @@ type = "envelope"
             assert_ne!(told, before, "{intent:?} changed something");
             assert_eq!(told, ctl.snapshot(), "after {intent:?}");
         }
-        assert_eq!(told.rev, 54);
+        assert_eq!(told.rev, 59);
     }
 
     #[test]
@@ -663,6 +674,9 @@ type = "envelope"
             Intent::SetParam { node: n.osc, param: detune, value: 3.0 },
             Intent::SetParam { node: n.bus, param: cutoff, value: 0.125 },
             Intent::SetGain { node: n.group, gain: Gain::GroupPan, value: -0.5 },
+            Intent::SetLimiter { on: false },
+            Intent::SetGain { node: NodeId::MASTER, gain: Gain::MasterVolume, value: 0.5 },
+            Intent::SetGain { node: NodeId::MASTER, gain: Gain::LimiterCeiling, value: -6.0 },
             Intent::SetModulatorField { node: n.lane_lfo, field: ModulatorField::Waveform, value: 2.0 },
             Intent::SetModulatorField { node: n.envelope, field: ModulatorField::Sustain, value: 0.25 },
             Intent::SetEdgeDepth { edge: cables(&told)[0], depth: -0.5 },
@@ -968,6 +982,10 @@ type = "envelope"
             (Event::GainSet { node: n.reverb, gain: Gain::Volume, value: 0.5 }, "does not apply"),
             (Event::GainSet { node: n.osc, gain: Gain::GroupPan, value: 0.5 }, "does not apply"),
             (Event::GainSet { node: n.group, gain: Gain::Mix, value: 0.5 }, "does not apply"),
+            (Event::GainSet { node: NodeId::MASTER, gain: Gain::Volume, value: 0.5 }, "does not apply"),
+            (Event::GainSet { node: NodeId::MASTER, gain: Gain::GroupPan, value: 0.5 }, "does not apply"),
+            (Event::GainSet { node: n.osc, gain: Gain::MasterVolume, value: 0.5 }, "does not apply"),
+            (Event::GainSet { node: n.group, gain: Gain::LimiterCeiling, value: -3.0 }, "does not apply"),
             (Event::PresetLoaded { node: n.empty, preset: "x".to_string(), values: vec![] }, "has no plugin"),
             (Event::ModulatorFieldSet { node: ghost, field: ModulatorField::Rate, value: 1.0 }, "there is no node 9999"),
             (Event::ModulatorFieldSet { node: n.osc, field: ModulatorField::Rate, value: 1.0 }, "is not a modulator"),

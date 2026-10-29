@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, audioCablesFixture, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { audibleAt, cableDepthOf, cableGainOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, stepsOf } from "./selectors";
+import { audibleAt, cableDepthOf, cableGainOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, limiterOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, stepsOf } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -51,6 +51,20 @@ describe("finding what a view shows", () => {
   test("a gain, of the node it belongs to", () => {
     expect(gainOf(state, oscillator.id, "volume")).toBeCloseTo(0.1, 6);
     expect(gainOf(state, filter.id, "mix")).toBe(1);
+  });
+
+  test("the volume of the output mix and the ceiling of its limiter, which the master has and nothing else does, and whether the limiter is in the sound", () => {
+    expect(gainOf(state, MASTER, "masterVolume")).toBe(1);
+    expect(gainOf(state, MASTER, "limiterCeiling")).toBe(-1);
+    expect(gainOf(state, oscillator.id, "masterVolume")).toBeUndefined();
+    expect(gainOf(state, filter.id, "limiterCeiling")).toBeUndefined();
+    expect(gainOf(state, MASTER, "volume")).toBeUndefined();
+    expect(limiterOf(state)).toBe(true);
+    const out = structuredClone(tracerSnapshot);
+    const master = out.graph.nodes.find((node) => node.kind === "master");
+    if (master?.kind === "master") master.limiter = false;
+    expect(limiterOf(stateOf(out))).toBe(false);
+    expect(limiterOf(stateOf(null))).toBeUndefined();
   });
 
   test("no gain that the node does not have", () => {

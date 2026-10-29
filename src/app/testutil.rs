@@ -38,6 +38,7 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::RemoveGroup { group, keep } => format!("RemoveGroup group={group}{}", if keep.is_some() { " keep" } else { "" }),
         C::InsertGroup { index, group, members } => format!("InsertGroup index={index} plugins={} members={members:?}", group.plugin_count()),
         C::SetGroupVolume { group, value } => format!("SetGroupVolume group={group} value={value:.3}"),
+        C::SetMaster { volume, limiter, ceiling, sample_rate } => format!("SetMaster volume={volume:.3} limiter={limiter} ceiling={ceiling:.1} rate={sample_rate}"),
         C::SetGroupPan { group, value } => format!("SetGroupPan group={group} value={value:.3}"),
         C::SetGroupMute { group, muted } => format!("SetGroupMute group={group} muted={muted}"),
         C::SetGroupRoute { group, route } => format!("SetGroupRoute group={group} route={}", route.name()),
@@ -177,6 +178,12 @@ pub fn describe(cmd: &GraphCommand) -> String {
     }
 }
 
+/// The command that tells the audio thread what the output mix is (step 102). A session is loaded with one whenever its limiter is in the sound, which is unless it says it is not, so that the lists of
+/// commands that the tests hold a load to leave it out: the master's own tests ask for it (`Run::master`, and the terminal's read the channel for it).
+pub fn is_master(cmd: &GraphCommand) -> bool {
+    matches!(cmd, GraphCommand::SetMaster { .. })
+}
+
 /// A command that only assigns a telemetry slot to a node a command before it
 /// created. They say nothing about the session, and a test that lists what was
 /// sent would have to repeat one after every modulator, so `described` leaves
@@ -189,9 +196,9 @@ fn is_telemetry(cmd: &GraphCommand) -> bool {
 }
 
 /// What `describe` says about each of `commands`, except those that only assign
-/// telemetry slots (see `is_telemetry`).
+/// telemetry slots (see `is_telemetry`) and those that tell the master (see `is_master`).
 pub fn described(commands: impl IntoIterator<Item = GraphCommand>) -> Vec<String> {
-    commands.into_iter().inspect(answer).filter(|c| !is_telemetry(c)).map(|c| describe(&c)).collect()
+    commands.into_iter().inspect(answer).filter(|c| !is_telemetry(c) && !is_master(c)).map(|c| describe(&c)).collect()
 }
 
 /// What the audio thread would do for a command that asks something of it, for a test that has none: a lane or a group that is taken out is handed to the channel that asks
@@ -217,6 +224,8 @@ pub struct Run {
     pub commands: Vec<String>,
     pub telemetry: Vec<String>,
     pub progress: Vec<String>,
+    /// The commands that told the audio thread what the output mix is (step 102), which `commands` leaves out.
+    pub master: Vec<String>,
 }
 
 /// Load `text` as the program does: a session that has modulators in its lanes and its groups (`[[instrument.modulator]]`, `[[group.modulator]]`, the old form of the file) has them
@@ -239,11 +248,13 @@ pub fn try_load(text: &str) -> anyhow::Result<Run> {
             })
         },
     )?;
-    let (slot_commands, others): (Vec<GraphCommand>, Vec<GraphCommand>) = rx.try_iter().partition(is_telemetry);
+    let (master, rest): (Vec<GraphCommand>, Vec<GraphCommand>) = rx.try_iter().partition(is_master);
+    let (slot_commands, others): (Vec<GraphCommand>, Vec<GraphCommand>) = rest.into_iter().partition(is_telemetry);
     let telemetry = slot_commands.iter().map(describe).collect();
     let commands = others.iter().map(describe).collect();
+    let master = master.iter().map(describe).collect();
     model.check_ids().map_err(|e| anyhow::anyhow!("the loader's node ids are wrong: {e}"))?;
-    Ok(Run { model, commands, telemetry, progress })
+    Ok(Run { model, commands, telemetry, progress, master })
 }
 
 /// Load `text` the way the program does, sending the commands down `cmd_tx`
@@ -276,7 +287,7 @@ impl StubEngine {
     /// Everything the controller has sent since the last call, as text: the
     /// commands, and, separately, the ones that only assign telemetry slots.
     pub fn drain(&self) -> (Vec<String>, Vec<String>) {
-        let (slot_commands, others): (Vec<GraphCommand>, Vec<GraphCommand>) = self.cmd_rx.try_iter().inspect(answer).partition(is_telemetry);
+        let (slot_commands, others): (Vec<GraphCommand>, Vec<GraphCommand>) = self.cmd_rx.try_iter().inspect(answer).filter(|c| !is_master(c)).partition(is_telemetry);
         (others.iter().map(describe).collect(), slot_commands.iter().map(describe).collect())
     }
 }
@@ -1666,6 +1677,11 @@ pub fn model_racks(model: &SessionModel) -> crate::plugin::chain::RackCables {
             (ModulatorLocation::Free, m, modulator.node, cables.collect())
         })
         .collect()
+}
+
+/// What the output mix is, as the model has it, in the terms of `AudioGraph::facts`: the volume, whether the limiter is in the sound and the ceiling as a level.
+pub fn model_master(model: &SessionModel) -> crate::plugin::chain::MasterFacts {
+    crate::plugin::chain::MasterFacts { volume: model.master.volume, limiter: model.master.limiter, ceiling: crate::plugin::chain::ceiling_level(model.master.ceiling) }
 }
 
 /// Whose notes each modulator of the session's own rack hears, as the model has it, in the terms and the order of `AudioGraph::ears`.

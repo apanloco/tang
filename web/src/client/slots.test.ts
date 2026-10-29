@@ -7,7 +7,8 @@ import { MockServer } from "./mock";
 // The slots of the telemetry that the mock engine hands out are the controller's (`Controller::add_modulator`, `add_target`): a slot is never given again, and every cable to a
 // parameter takes one, though the layout names a parameter once, by the first cable's slot.
 
-const slotsOf = (snapshot: Snapshot): number[] => [...snapshot.telemetry.meters, ...snapshot.telemetry.modulation].map((entry) => entry.slot);
+// (Not the limiter's reduction, the last cell of the telemetry, which is never handed out: `HANDED_OUT` of `src/telemetry.rs`.)
+const slotsOf = (snapshot: Snapshot): number[] => [...snapshot.telemetry.meters, ...snapshot.telemetry.modulation].filter((entry) => entry.kind !== "reduction").map((entry) => entry.slot);
 
 /** Do `intent`, and say which node it made. */
 function made(server: MockServer, intent: Intent): Node {

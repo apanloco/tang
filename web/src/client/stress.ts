@@ -103,7 +103,7 @@ export function stressSnapshot(size: StressSize = { lanes: LANES, lfosPerLane: L
       }
     }
   }
-  nodes.push(...modulators, { id: MASTER, parent: null, name: "Master", kind: "master" });
+  nodes.push(...modulators, { id: MASTER, parent: null, name: "Master", kind: "master", volume: 1, limiter: true, ceiling: -1 });
 
   return {
     rev: 0,

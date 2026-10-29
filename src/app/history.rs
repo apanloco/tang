@@ -403,6 +403,11 @@ impl Controller {
                 Some(old) => step(gain.label().to_string(), Intent::SetGain { node: *node, gain: *gain, value: old }, Some(Key::Gain(*node, *gain))),
                 None => Plan::Nothing,
             },
+            // (The limiter on the output mix: what is as it is asked to be changes nothing, and no step is kept for it.)
+            Intent::SetLimiter { on } if self.model.master.limiter != *on => {
+                step(format!("turn the limiter {}", if *on { "on" } else { "off" }), Intent::SetLimiter { on: !*on }, None)
+            }
+            Intent::SetLimiter { .. } => Plan::Nothing,
             Intent::SetModulatorField { node, field, .. } => match self.field_value(*node, *field) {
                 Some(old) => step(format!("set {}", field.label()), Intent::SetModulatorField { node: *node, field: *field, value: old }, Some(Key::Field(*node, *field))),
                 None => Plan::Nothing,
@@ -700,6 +705,14 @@ impl Controller {
 
     /// The host-side gain `gain` of `node`, if it has it.
     fn gain_value(&self, node: NodeId, gain: Gain) -> Option<f32> {
+        // (The output mix is a node of the graph and not of the model.)
+        if node == NodeId::MASTER {
+            return match gain {
+                Gain::MasterVolume => Some(self.model.master.volume),
+                Gain::LimiterCeiling => Some(self.model.master.ceiling),
+                _ => None,
+            };
+        }
         match (gain, self.model.locate(node)?) {
             (Gain::Volume, NodePath::Instrument(inst)) => Some(self.model.instruments[inst].volume),
             (Gain::Mix, NodePath::Effect { inst, index }) => self.model.instruments[inst].effects.get(index).map(|effect| effect.mix),
@@ -746,7 +759,7 @@ mod tests {
     use crate::app::controller::Controller;
     use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
     use crate::app::intent::{Applied, Event, IntentError, ModulatorKind, PatternField};
-    use crate::app::model::{Driven, EdgeId, Made, ModSourceSlot, NodePath, SessionModel, SourceKind, SourceNode};
+    use crate::app::model::{Driven, EdgeId, Made, MasterNode, ModSourceSlot, NodePath, SessionModel, SourceKind, SourceNode};
     use crate::app::testutil::{self, SENDS, Sends, StubEngine, described, load, wire};
     use crate::session::{Feed, Route};
     use crate::plugin::chain::{CableFrom, CableTo};
@@ -1488,6 +1501,61 @@ rate = 3.0
         let undone = ctl.undo().unwrap();
         assert!(undone.restructured, "the second of them did");
         assert_eq!(undone.events.len(), 1, "and the first did not");
+    }
+
+    #[test]
+    fn the_limiter_and_the_masters_gains_are_steps_in_the_words_of_what_they_do_and_undo_puts_them_back_in_the_model_and_the_engine() {
+        let (engine, mut ctl, clock) = controller();
+        let master = |engine: &StubEngine| -> Vec<String> {
+            engine.cmd_rx.try_iter().filter(|command| matches!(command, crate::plugin::chain::GraphCommand::SetMaster { .. })).map(|command| testutil::describe(&command)).collect()
+        };
+        let step = |ctl: &mut Controller, intent: Intent| {
+            clock.advance(Duration::from_secs(5));
+            ctl.apply(intent).unwrap();
+        };
+        step(&mut ctl, Intent::SetLimiter { on: false });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("turn the limiter off"));
+        step(&mut ctl, Intent::SetGain { node: NodeId::MASTER, gain: Gain::LimiterCeiling, value: -6.0 });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set the limiter's ceiling"));
+        step(&mut ctl, Intent::SetGain { node: NodeId::MASTER, gain: Gain::MasterVolume, value: 0.5 });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("set the master volume"));
+        step(&mut ctl, Intent::SetLimiter { on: true });
+        assert_eq!(undo_label(&ctl).as_deref(), Some("turn the limiter on"));
+        master(&engine);
+
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.master, MasterNode { volume: 0.5, limiter: false, ceiling: -6.0 });
+        assert_eq!(redo_label(&ctl).as_deref(), Some("turn the limiter on"));
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.master, MasterNode { volume: 1.0, limiter: true, ceiling: -1.0 }, "all of it is as it was");
+        assert_eq!(master(&engine).last().map(String::as_str), Some("SetMaster volume=1.000 limiter=true ceiling=-1.0 rate=48000"), "and so is the audio thread");
+        // Redo does it again, in order.
+        for _ in 0..4 {
+            ctl.redo().unwrap();
+        }
+        assert_eq!(ctl.model.master, MasterNode { volume: 0.5, limiter: true, ceiling: -6.0 });
+        assert!(ctl.undo().is_ok() && ctl.redo().is_ok());
+    }
+
+    #[test]
+    fn a_ceiling_that_is_dragged_is_one_step_and_a_limiter_that_is_as_it_is_asked_to_be_is_none() {
+        let (_engine, mut ctl, _clock) = controller();
+        for value in [-2.0, -3.0, -4.0, -5.0] {
+            ctl.apply(Intent::SetGain { node: NodeId::MASTER, gain: Gain::LimiterCeiling, value }).unwrap();
+        }
+        ctl.undo().unwrap();
+        assert_eq!(ctl.model.master.ceiling, -1.0, "a drag is one step");
+        assert!(ctl.undo().is_err(), "and there is nothing more to undo");
+        // (The limiter is in the sound already: nothing is kept for asking it to be, and a step that was not made is not put back.)
+        ctl.apply(Intent::SetLimiter { on: true }).unwrap();
+        assert!(ctl.undo().is_err());
+        ctl.apply(Intent::SetLimiter { on: false }).unwrap();
+        ctl.apply(Intent::SetLimiter { on: false }).unwrap();
+        ctl.undo().unwrap();
+        assert!(ctl.model.master.limiter, "one step for the two");
+        assert!(ctl.undo().is_err());
     }
 
     #[test]
@@ -6141,6 +6209,23 @@ size = 0.5
         gains_together.extend(n_of(6, undo));
         gains_together.extend(n_of(6, redo));
         scripts.push(("a gain is a step for each node and each kind of gain, and the same one again is the same step", gains_together));
+        let mut master = vec![
+            Op::Do(Intent::SetLimiter { on: false }),
+            gain(NodeId::MASTER, Gain::LimiterCeiling, -6.0),
+            gain(NodeId::MASTER, Gain::MasterVolume, 0.5),
+            // (The same gain again is the same step, and a volume is held to its range.)
+            gain(NodeId::MASTER, Gain::MasterVolume, 9.0),
+            // (A limiter that is as it is asked to be keeps no step.)
+            Op::Do(Intent::SetLimiter { on: false }),
+            Op::Do(Intent::SetLimiter { on: true }),
+            // (A gain that is not the master's is refused for it, and the master's for every other node.)
+            gain(NodeId::MASTER, Gain::Volume, 0.5),
+            gain(lane0, Gain::MasterVolume, 0.5),
+            gain(g0, Gain::LimiterCeiling, -3.0),
+        ];
+        master.extend(n_of(5, undo));
+        master.extend(n_of(5, redo));
+        scripts.push(("the limiter, the master's volume and the limiter's ceiling are steps in the words of what they do, and a gain that is not the master's is refused for it", master));
         let mut settings = vec![
             field(lfo, ModulatorField::Rate, 5.0),
             field(other_lfo, ModulatorField::Rate, 6.0),

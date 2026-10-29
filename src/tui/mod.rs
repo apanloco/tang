@@ -1516,8 +1516,8 @@ impl State {
                 intent::Event::RangeSet { .. } | intent::Event::MuteSet { .. } | intent::Event::SoloSet { .. } => self.rebuild_tree(),
                 // (The Piano tab reads the scale and the lock from the shared filter, on every frame.)
                 intent::Event::ScaleSet { .. } | intent::Event::LockedSet { .. } => {}
-                // (The status bar reads the tempo from the model, on every frame.)
-                intent::Event::BpmSet { .. } => {}
+                // (The status bar reads the tempo and the limiter from the model, on every frame.)
+                intent::Event::BpmSet { .. } | intent::Event::LimiterSet { .. } => {}
                 // The tree has the pattern of a lane, as a line of its own while it is recorded or has notes.
                 intent::Event::PatternSet { .. } => self.rebuild_tree(),
                 // (The TUI does not draw where a node is, nor which of its parameters are its knobs.)
@@ -1802,6 +1802,9 @@ fn tick_at(s: &mut State, now: Instant) {
     // (A node that a browser took out, or that the cursor is not on any more, is not listened to.)
     s.sync_strip();
 }
+
+/// How far the limiter has to have brought the sound down, in decibels, for the status bar to say so.
+const LIMIT_LIGHT_FROM: f32 = 0.1;
 
 /// How often the loop wakes by itself: to fold in what the audio thread and the
 /// catalog scan have reported, and to redraw what moves (the meters, the CLIP
@@ -2673,6 +2676,24 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             });
         }
 
+        // 'L' — put the limiter on the output mix in the sound, or take it out (the master's, whatever the cursor is on: step 102).
+        KeyCode::Char('L') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            let on = !s.ctl.model.master.limiter;
+            s.apply(Intent::SetLimiter { on });
+        }
+
+        // 'C' — set the limiter's ceiling, in decibels below full scale.
+        KeyCode::Char('C') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            let ceiling = s.ctl.model.master.ceiling;
+            s.gain_editing = Some(GainEditState::new(NodeId::MASTER, Gain::LimiterCeiling, ceiling, "limiter ceiling (dB below full scale, -24 to 0)"));
+        }
+
+        // 'V' — set the master volume, the gain on the output mix before the limiter.
+        KeyCode::Char('V') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            let volume = s.ctl.model.master.volume;
+            s.gain_editing = Some(GainEditState::new(NodeId::MASTER, Gain::MasterVolume, volume, "master volume (1.0 = unity)"));
+        }
+
         // 'x' — edit the dry/wet mix of the selected effect (host-side blend).
         KeyCode::Char('x') if s.active_tab == TAB_SESSION && !s.focus_params => {
             let effect = match s.selected_address().copied() {
@@ -3214,11 +3235,16 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
     // shortened, or left out, to keep clear of the tabs.
     let bpm_text = format!("{:.0} BPM", s.ctl.model.bpm);
     let clip_text = if s.clip.is_lit() { "CLIP  " } else { "" };
+    // The limiter says so while it works: how far it has brought the sound down lately (a reduction under a tenth of a decibel is none).
+    let reduction = s.ctl.telemetry.load(telemetry::MASTER_REDUCTION);
+    let limit_text = if s.ctl.model.master.limiter && reduction >= LIMIT_LIGHT_FROM { format!("LIM -{reduction:.1} dB  ") } else { String::new() };
     let tabs_width = tab_names.iter().map(|name| name.chars().count()).sum::<usize>() + 3 * (tab_names.len() - 1);
+    // (The limiter's light gives way, as the web label does, when it would touch the tabs: the light and the tempo are what a narrow terminal keeps.)
+    let limit_text = if (tab_area.width as usize) > tabs_width + 2 + 2 + limit_text.len() + clip_text.len() + bpm_text.len() { limit_text } else { String::new() };
     // (The tabs, a gap of two, the label, two blanks after it, the rest, and a blank at the edge.)
-    let room = (tab_area.width as usize).saturating_sub(tabs_width + 2 + 2 + clip_text.len() + bpm_text.len() + 1);
+    let room = (tab_area.width as usize).saturating_sub(tabs_width + 2 + 2 + limit_text.len() + clip_text.len() + bpm_text.len() + 1);
     let web_text = s.web.as_ref().and_then(|web| web.label(room)).map(|label| format!("{label}  ")).unwrap_or_default();
-    let status_width = (web_text.len() + clip_text.len() + bpm_text.len()) as u16;
+    let status_width = (web_text.len() + limit_text.len() + clip_text.len() + bpm_text.len()) as u16;
     if tab_area.width > status_width + 2 {
         let status_area = Rect {
             x: tab_area.right() - status_width - 1,
@@ -3227,9 +3253,11 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
             height: 1,
         };
         let clip_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+        let limit_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
         frame.render_widget(
             Paragraph::new(ratatui::text::Line::from(vec![
                 ratatui::text::Span::raw(web_text),
+                ratatui::text::Span::styled(limit_text, limit_style),
                 ratatui::text::Span::styled(clip_text, clip_style),
                 ratatui::text::Span::raw(bpm_text),
             ]))
@@ -4750,6 +4778,9 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  r          Record/stop pattern".into(),
         "  Ctrl+R     Clear pattern".into(),
         "  b          Set BPM".into(),
+        "  L          Put the limiter on the output in the sound, or take it out (it holds the mix under its ceiling and does not let it clip)".into(),
+        "  C          Set the limiter's ceiling (dB below full scale)".into(),
+        "  V          Set the master volume (before the limiter)".into(),
         "".into(),
         "Modulator (chain focus):".into(),
         "  t          Add modulation target".into(),

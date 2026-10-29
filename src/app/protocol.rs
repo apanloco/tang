@@ -435,7 +435,7 @@ mod typescript {
 
     /// Every gain, every modulator setting (`ModulatorField::ALL`) and every pattern setting, to write the range of each. (One left out
     /// is a key missing in the `Record` that is generated, which the web's typecheck refuses.)
-    const GAINS: [Gain; 4] = [Gain::Volume, Gain::Mix, Gain::GroupVolume, Gain::GroupPan];
+    const GAINS: [Gain; 6] = [Gain::Volume, Gain::Mix, Gain::GroupVolume, Gain::GroupPan, Gain::MasterVolume, Gain::LimiterCeiling];
     const PATTERN_FIELDS: [PatternField; 4] = [PatternField::Length, PatternField::Enabled, PatternField::Looping, PatternField::Transpose];
 
     /// The entries of a TypeScript object that says `[min, max]` for each of `all`, by the
@@ -699,7 +699,7 @@ mod typescript {
     fn the_range_of_a_gain_is_written_by_the_gains_wire_name() {
         assert_eq!(
             range_entries(&GAINS, Gain::range),
-            "  volume: [0, 4],\n  mix: [0, 1],\n  groupVolume: [0, 4],\n  groupPan: [-1, 1],\n"
+            "  volume: [0, 4],\n  mix: [0, 1],\n  groupVolume: [0, 4],\n  groupPan: [-1, 1],\n  masterVolume: [0, 2],\n  limiterCeiling: [-24, 0],\n"
         );
     }
 

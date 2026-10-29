@@ -131,6 +131,11 @@ pub struct EngineHandles {
     pub recovery_wait: Duration,
 }
 
+/// The command that tells the audio thread what the output mix is (step 102): its volume, whether its limiter is in the sound, the limiter's ceiling and the sample rate its look-ahead is made for.
+pub(super) fn master_command(master: &crate::app::model::MasterNode, sample_rate: f32) -> GraphCommand {
+    GraphCommand::SetMaster { volume: master.volume, limiter: master.limiter, ceiling: master.ceiling, sample_rate }
+}
+
 /// The command that gives the audio thread the rate of the LFO at `index` of the rack at `at`.
 pub(super) fn rate_command(at: ModulatorLocation, index: usize, rate: f32) -> GraphCommand {
     GraphCommand::SetModulatorRate { location: at, mod_index: index, rate }
@@ -3879,17 +3884,19 @@ plugin = "builtin:drive"
     #[test]
     fn a_step_sequencer_that_finds_one_slot_left_has_its_output_and_no_position() {
         let (engine, mut ctl) = controller_for(WITH_MODULATORS);
-        while ctl.model.slots.high_water() < crate::telemetry::CAPACITY - 1 {
+        // (The last cell is the engine's, the limiter's reduction: the last that is handed out is the one before it.)
+        let last = crate::telemetry::CAPACITY - 2;
+        while ctl.model.slots.high_water() < last {
             ctl.model.slots.alloc();
         }
         engine.drain();
         let before = ctl.model.free_modulators.len();
         ctl.add_modulator(ModulatorLocation::Free, ModSourceSlot::new_steps());
         let added = &ctl.model.free_modulators[before];
-        assert_eq!((added.output.map(|slot| slot.index()), added.position), (Some(crate::telemetry::CAPACITY - 1), None));
+        assert_eq!((added.output.map(|slot| slot.index()), added.position), (Some(last), None));
         let (commands, telemetry) = engine.drain();
         assert_eq!(commands.len(), 1, "the modulator is made all the same: {commands:?}");
-        assert_eq!(telemetry, [format!("SetModulatorOutput Free index={before} slot={}", crate::telemetry::CAPACITY - 1)]);
+        assert_eq!(telemetry, [format!("SetModulatorOutput Free index={before} slot={last}")]);
     }
 
     #[test]

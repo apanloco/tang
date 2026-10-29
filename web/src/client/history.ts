@@ -215,7 +215,14 @@ function drivenName(snapshot: Snapshot, to: Endpoint): string | undefined {
   }
 }
 
-const GAIN_LABELS: Record<Gain, string> = { volume: "set volume", mix: "set mix", groupVolume: "set the group's volume", groupPan: "set pan" };
+const GAIN_LABELS: Record<Gain, string> = {
+  volume: "set volume",
+  mix: "set mix",
+  groupVolume: "set the group's volume",
+  groupPan: "set pan",
+  masterVolume: "set the master volume",
+  limiterCeiling: "set the limiter's ceiling",
+};
 
 /** The host-side gain `gain` of `node`, if it has it. */
 function gainOf(node: Node, gain: Gain): number | undefined {
@@ -223,6 +230,8 @@ function gainOf(node: Node, gain: Gain): number | undefined {
   if (gain === "mix" && node.kind === "effect") return node.mix;
   if (gain === "groupVolume" && node.kind === "group") return node.volume;
   if (gain === "groupPan" && node.kind === "group") return node.pan;
+  if (gain === "masterVolume" && node.kind === "master") return node.volume;
+  if (gain === "limiterCeiling" && node.kind === "master") return node.ceiling;
   return undefined;
 }
 
@@ -308,6 +317,12 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       const old = node ? gainOf(node, intent.gain) : undefined;
       if (old === undefined) return "nothing";
       return step(GAIN_LABELS[intent.gain], { type: "setGain", node: intent.node, gain: intent.gain, value: old }, `gain:${String(intent.node)}:${intent.gain}`);
+    }
+    // (The limiter on the output mix: what is as it is asked to be changes nothing, and no step is kept for it.)
+    case "setLimiter": {
+      const master = snapshot.graph.nodes.find((n) => n.kind === "master");
+      if (master?.kind !== "master" || master.limiter === intent.on) return "nothing";
+      return step(`turn the limiter ${intent.on ? "on" : "off"}`, { type: "setLimiter", on: master.limiter }, null);
     }
     case "setModulatorField": {
       const node = nodeOf(intent.node);

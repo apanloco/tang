@@ -1221,6 +1221,132 @@ async fn a_browser_adds_the_audio_input_and_it_is_silent_until_a_cable_is_drawn_
     peak_until(&mut second, &again, at, SOON, "the tone that the file's gain makes", |peak| (peak - 0.5).abs() < 0.03).await;
 }
 
+/// Where in a meters frame the master's cell of this kind (`peak`, `clips` or `reduction`) is, from the layout of a snapshot.
+fn master_cell_at(snapshot: &Value, kind: &str) -> usize {
+    let meters = snapshot["snapshot"]["telemetry"]["meters"].as_array().expect("a meters list");
+    meters.iter().position(|e| e["node"] == MASTER && e["kind"] == kind).unwrap_or_else(|| panic!("the master has a {kind}"))
+}
+
+/// Read frames until the cells at `at` of a meters frame satisfy `done`, and return them. Fails, with what the server logged, when they have not within `within`.
+async fn cells_until(client: &mut Client, tang: &Tang, at: &[usize], within: Duration, what: &str, done: impl Fn(&[f32]) -> bool) -> Vec<f32> {
+    let deadline = Instant::now() + within;
+    let mut last = Vec::new();
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(500), client.next()).await {
+            Ok(Some(Ok(Message::Binary(frame)))) => {
+                assert_eq!(frame[0], 0, "a meters frame");
+                last = at.iter().map(|&cell| f32::from_le_bytes(frame[8 + 4 * cell..12 + 4 * cell].try_into().unwrap())).collect();
+                if done(&last) {
+                    return last;
+                }
+            }
+            Ok(Some(Ok(_))) | Err(_) => {}
+            Ok(Some(Err(_))) | Ok(None) => panic!("the connection ended while waiting for {what}\n{}", tang.log()),
+        }
+    }
+    panic!("{what}: the cells were {last:?} after {within:?}\n{}", tang.log());
+}
+
+/// The master as a snapshot's graph says it: its volume, whether its limiter is in the sound and its ceiling.
+fn master_of(snapshot: &Value) -> (f64, bool, f64) {
+    let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();
+    let master = nodes.iter().find(|n| n["kind"] == "master").expect("the master is a node");
+    (master["volume"].as_f64().unwrap(), master["limiter"].as_bool().unwrap(), master["ceiling"].as_f64().unwrap())
+}
+
+/// A sine through a lane at a volume of 4: one note of it is exactly full scale (the oscillator's own level is a quarter of it), and a chord of three is up to three times that, which clips unless something holds it.
+const HOT: &str = "[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 4.0\n\n[instrument.params]\nvolume = 1.0\n";
+
+#[tokio::test]
+async fn a_browser_turns_the_limiter_and_the_masters_volume_and_ceiling_and_a_hot_chord_is_held_under_the_ceiling_the_light_stays_dark_and_the_saved_file_has_the_master_and_a_program_started_on_it_has_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("hot.toml");
+    std::fs::write(&file, HOT).unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, peak, snapshot) = listening(&tang).await;
+    let (clips, reduction) = (master_cell_at(&snapshot, "clips"), master_cell_at(&snapshot, "reduction"));
+    let cells = [peak, clips, reduction];
+
+    // A session that says nothing of its master has the limiter in the sound, at a ceiling of -1 dB and a volume of 1.
+    assert_eq!(master_of(&snapshot), (1.0, true, -1.0), "{snapshot}");
+    let ceiling = 10f32.powf(-1.0 / 20.0);
+
+    // A chord that is up to three times full scale is held at the ceiling and never over it, the limiter says that it brings it down by a good deal, and nothing clips.
+    for note in [60, 64, 67] {
+        tell(&mut client, json!({"type": "noteOn", "note": note, "velocity": 100})).await;
+    }
+    let held = cells_until(&mut client, &tang, &cells, SOON, "the hot chord, held at the ceiling", |c| (c[0] - ceiling).abs() < 0.005 && c[2] > 3.0).await;
+    assert!(held[2] > 3.0, "the limiter brings the sound down: {held:?}");
+    let until = Instant::now() + Duration::from_millis(700);
+    while Instant::now() < until {
+        if let Ok(Some(Ok(Message::Binary(frame)))) = tokio::time::timeout(Duration::from_millis(200), client.next()).await {
+            let at = |cell: usize| f32::from_le_bytes(frame[8 + 4 * cell..12 + 4 * cell].try_into().unwrap());
+            assert!(at(peak) <= ceiling + 1e-4, "the output is over the ceiling: {} > {ceiling}", at(peak));
+            assert_eq!(at(clips), 0.0, "the limited sound clips");
+        }
+    }
+
+    // Taken out of the sound, the same chord is the mix as it is, over full scale, and it clips (the engine counts the buffers over full scale).
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "setLimiter", "on": false}})).await;
+    let answered = answer(&mut client, 1).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    cells_until(&mut client, &tang, &cells, SOON, "the hot chord, let through", |c| c[0] > 1.5 && c[1] > 0.0 && c[2] == 0.0).await;
+
+    // Put in the sound again with a ceiling of -12 dB (the intent holds it to -24 to 0): the chord is held there.
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "setLimiter", "on": true}})).await;
+    assert_eq!(answer(&mut client, 2).await["type"], "ack");
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "setGain", "node": MASTER, "gain": "limiterCeiling", "value": -12.0}})).await;
+    assert_eq!(answer(&mut client, 3).await["type"], "ack");
+    let low = 10f32.powf(-12.0 / 20.0);
+    cells_until(&mut client, &tang, &cells, SOON, "the hot chord, held at -12 dB", |c| (c[0] - low).abs() < 0.005).await;
+
+    // The volume is in front of the limiter: one note is full scale and, at a tenth of the volume, 0.1, which is under a ceiling of -6 dB (0.5012), so it is let through as it is and the limiter has nothing to do.
+    for note in [64, 67] {
+        tell(&mut client, json!({"type": "noteOff", "note": note})).await;
+    }
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "setGain", "node": MASTER, "gain": "limiterCeiling", "value": -6.0}})).await;
+    assert_eq!(answer(&mut client, 4).await["type"], "ack");
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "setGain", "node": MASTER, "gain": "masterVolume", "value": 0.1}})).await;
+    assert_eq!(answer(&mut client, 5).await["type"], "ack");
+    cells_until(&mut client, &tang, &cells, SOON, "the note at a tenth of the volume", |c| (c[0] - 0.1).abs() < 0.01 && c[2] == 0.0).await;
+
+    // What is out of range is held to it (a ceiling over full scale is full scale) and what is not a number is refused with nothing changed.
+    tell(&mut client, json!({"type": "request", "reqId": 6, "intent": {"type": "setGain", "node": MASTER, "gain": "masterVolume", "value": 9.0}})).await;
+    let held_to = answer(&mut client, 6).await;
+    assert_eq!(held_to["type"], "ack", "{held_to}");
+    tell(&mut client, json!({"type": "request", "reqId": 7, "intent": {"type": "setGain", "node": MASTER, "gain": "volume", "value": 0.5}})).await;
+    assert_eq!(answer(&mut client, 7).await["type"], "rejected", "a lane's volume is not the master's");
+    tell(&mut client, json!({"type": "request", "reqId": 8, "intent": {"type": "setGain", "node": MASTER, "gain": "masterVolume", "value": 0.1}})).await;
+    assert_eq!(answer(&mut client, 8).await["type"], "ack");
+
+    // The file has the master as it is, and nothing that is the default: the volume and the ceiling (the limiter is in the sound, which is no key).
+    tell(&mut client, json!({"type": "request", "reqId": 9, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 9).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("[master]\nvolume = 0.1\nceiling = -6.0\n") && !saved.contains("limiter"), "{saved}");
+    tell(&mut client, json!({"type": "noteOff", "note": 60})).await;
+
+    // A program started on that file has the master the file says, and the note is what the volume makes it: 0.1, under the ceiling.
+    let again = Tang::start_on(&file);
+    let (mut second, peak, snapshot) = listening(&again).await;
+    let (volume, limiter, ceiling) = master_of(&snapshot);
+    assert!((volume - 0.1).abs() < 1e-6 && limiter && (ceiling + 6.0).abs() < 1e-6, "{snapshot}");
+    tell(&mut second, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    peak_until(&mut second, &again, peak, SOON, "the note through the master that the file keeps", |p| (p - 0.1).abs() < 0.01).await;
+
+    // And a program started on a file that takes the limiter out of the sound lets the hot chord clip, as the audio thread was told when it loaded.
+    let unlimited = dir.path().join("unlimited.toml");
+    std::fs::write(&unlimited, format!("[master]\nlimiter = false\n\n{HOT}")).unwrap();
+    let third = Tang::start_on(&unlimited);
+    let (mut other, peak, snapshot) = listening(&third).await;
+    assert_eq!(master_of(&snapshot), (1.0, false, -1.0), "{snapshot}");
+    let clips = master_cell_at(&snapshot, "clips");
+    for note in [60, 64, 67] {
+        tell(&mut other, json!({"type": "noteOn", "note": note, "velocity": 100})).await;
+    }
+    cells_until(&mut other, &third, &[peak, clips], SOON, "the hot chord, with no limiter in the sound", |c| c[0] > 1.5 && c[1] > 0.0).await;
+}
+
 /// The edges of a snapshot message that carry notes: the cables of notes that were drawn, and what a lane that has none hears (`hears`).
 fn notes_edges_of(snapshot: &Value) -> Vec<Value> {
     snapshot["snapshot"]["graph"]["edges"].as_array().unwrap().iter().filter(|e| e["kind"] == "events" || e["kind"] == "hears").cloned().collect()

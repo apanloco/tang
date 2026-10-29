@@ -43,7 +43,7 @@ pub fn frame(channel: TelemetryChannel, layout: &TelemetryLayout, telemetry: &Te
         .iter()
         .map(|entry| match entry.kind {
             SlotKind::Clips => telemetry.count_index(entry.slot) as f32,
-            SlotKind::Peak | SlotKind::ModOutput | SlotKind::ModPosition | SlotKind::Effective => telemetry.load_index(entry.slot),
+            SlotKind::Peak | SlotKind::ModOutput | SlotKind::ModPosition | SlotKind::Effective | SlotKind::Reduction => telemetry.load_index(entry.slot),
         })
         .collect();
     telemetry_frame(channel, layout.rev, &values)

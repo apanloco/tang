@@ -22,7 +22,7 @@ import type { MenuItem } from "../../ui/MenuButton";
 import { Meter } from "../../ui/Meter";
 import { useClient, useClientSelection, useClientState, useEditor, useFrames } from "../ClientProvider";
 import { focusWhenPossible, keepFocus } from "../focus";
-import { AudioPort, DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettingCell, MuteSoloCell, NotesPort, ParamCell, RangeCell, StepsControl, SyncControl } from "./controls";
+import { AudioPort, DepthPort, DrivePicker, GainCell, GroupCell, LimiterCell, ModulatorSettingCell, MuteSoloCell, NotesPort, ParamCell, RangeCell, StepsControl, SyncControl } from "./controls";
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { HearsMenu } from "./HearsMenu";
 import { InspectorContext, paramsButtonId } from "./inspector";
@@ -31,6 +31,7 @@ import { ModulateMenu } from "./ModulateMenu";
 import { NodeScope, ScopeButton, ScopePanel } from "./NodeScope";
 import { NotesFromMenu, NotesToMenu } from "./NotesMenus";
 import { PatternCell } from "./PatternCell";
+import { ReductionMeter } from "./ReductionMeter";
 import { SendMenu } from "./SendMenu";
 import type { CableRow, PatchNode } from "./toFlow";
 
@@ -632,7 +633,10 @@ export function GroupNode({ data }: NodeProps<PatchNode>) {
   );
 }
 
-/** The master: where the audio of the session ends, with its level and a scope of what comes out (a wave, or a spectrum), which the server is asked for while the master is here. */
+/**
+ * The master: where the audio of the session ends, with its level and a scope of what comes out (a wave, or a spectrum), which the server is asked for while the master is here; its volume, the limiter
+ * that holds the output under a ceiling (a button that puts it in the sound or takes it out, the ceiling, and how far it has brought the sound down: step 102).
+ */
 export function MasterNode({ data }: NodeProps<PatchNode>) {
   const client = useClient();
   const frames = useFrames();
@@ -649,6 +653,12 @@ export function MasterNode({ data }: NodeProps<PatchNode>) {
         <Meter label="Master level" readPeak={readPeak} readClips={readClips} frames={frames} />
         <ScopePanel label="Output scope" read={readScope} readFrames={readScopeFrames} />
       </div>
+      <div className="tang-node__controls nodrag nopan nowheel">
+        <GainCell node={data.node} gain="masterVolume" />
+        <GainCell node={data.node} gain="limiterCeiling" />
+        <LimiterCell />
+      </div>
+      <ReductionMeter node={data.node} />
     </div>
   );
 }

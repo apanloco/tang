@@ -87,8 +87,8 @@ pub enum NodeKind {
     },
     /// A submix group: its volume and stereo balance, whether it is muted or soloed, and where its end goes (`route`: to the master, or nowhere but its audio cables).
     Group { volume: f32, pan: f32, muted: bool, solo: bool, route: Route },
-    /// The master mix.
-    Master,
+    /// The master mix: its volume, whether the limiter on it is in the sound (it holds the mix under its `ceiling`, in decibels below full scale, instead of letting it clip) and the ceiling.
+    Master { volume: f32, limiter: bool, ceiling: f32 },
     /// A source of notes that a person put in the session: the keys, or a MIDI device. Its output of events is where the event cables start.
     Source { source: SourceInfo },
 }
@@ -492,7 +492,7 @@ impl SessionModel {
         // The modulators belong to no lane and no group: they have no parent (what they hear is `hears`).
         nodes.extend(self.free_modulators.iter().map(|m| modulator_node(m, None, self.ear_of(m))));
 
-        nodes.push(Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master });
+        nodes.push(Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master { volume: self.master.volume, limiter: self.master.limiter, ceiling: self.master.ceiling } });
         // Where each of these nodes is drawn, if it has been placed (the table also has the places of nodes that have gone).
         for node in &mut nodes {
             node.ui = self.ui.get(&node.id).copied();
@@ -982,7 +982,11 @@ mod tests {
         let ids: Vec<NodeId> = graph.nodes.iter().map(|n| n.id).collect();
         assert_eq!(ids, [lane, NodeId::MASTER]);
         assert_eq!(graph.edges, [audio(out(lane), into(NodeId::MASTER))]);
-        assert_eq!(graph.nodes[1], Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master });
+        assert_eq!(
+            graph.nodes[1],
+            Node { id: NodeId::MASTER, parent: None, name: "Master".to_string(), ui: None, kind: NodeKind::Master { volume: 1.0, limiter: true, ceiling: -1.0 } },
+            "the output mix says its volume and its limiter, which is in the sound unless a session says it is not"
+        );
 
         let osc = &graph.nodes[0];
         assert_eq!((osc.parent, osc.name.as_str()), (None, "Oscillator"));
@@ -1722,7 +1726,7 @@ depth = 0.2
         for n in &graph.nodes {
             assert!(ids.insert(n.id), "{what}: {:?} twice", n.id);
         }
-        assert_eq!(graph.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Master)).count(), 1, "{what}: one master");
+        assert_eq!(graph.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Master { .. })).count(), 1, "{what}: one master");
         for n in &graph.nodes {
             if let Some(parent) = n.parent {
                 assert!(ids.contains(&parent), "{what}: the parent of {:?}", n.id);
@@ -1743,7 +1747,7 @@ depth = 0.2
                 let n = graph.nodes.iter().find(|n| n.id == end.node).unwrap_or_else(|| panic!("{what}: {e:?} has no node"));
                 match (end.port, &n.kind) {
                     (Port::AudioOut, NodeKind::Instrument { .. } | NodeKind::Effect { .. } | NodeKind::Group { .. }) => {}
-                    (Port::AudioIn, NodeKind::Effect { .. } | NodeKind::Group { .. } | NodeKind::Master) => {}
+                    (Port::AudioIn, NodeKind::Effect { .. } | NodeKind::Group { .. } | NodeKind::Master { .. }) => {}
                     (Port::AudioInSide, NodeKind::Effect { side: Some(_), .. }) => {}
                     (Port::ModOut, NodeKind::Modulator { .. }) => {}
                     (Port::EventsOut, NodeKind::Source { .. }) => {}
@@ -2029,7 +2033,10 @@ depth = 0.2
                 .unwrap(),
             json!({"kind": "instrument", "plugin": null, "range": {"low": 36, "high": 83}, "transpose": -12, "volume": 0.5, "muted": true, "solo": false, "route": "none", "pattern": null})
         );
-        assert_eq!(serde_json::to_value(NodeKind::Master).unwrap(), json!({"kind": "master"}));
+        assert_eq!(
+            serde_json::to_value(NodeKind::Master { volume: 0.5, limiter: false, ceiling: -3.0 }).unwrap(),
+            json!({"kind": "master", "volume": 0.5, "limiter": false, "ceiling": -3.0})
+        );
         assert_eq!(
             serde_json::to_value(NodeKind::Group { volume: 1.0, pan: 0.0, muted: false, solo: true, route: Route::Out }).unwrap(),
             json!({"kind": "group", "volume": 1.0, "pan": 0.0, "muted": false, "solo": true, "route": "out"})

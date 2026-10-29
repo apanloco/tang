@@ -677,6 +677,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -3616,6 +3617,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -3722,6 +3724,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -3828,6 +3831,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -3871,6 +3875,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "6 5 audioOut peak",
@@ -3908,6 +3913,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -3947,6 +3953,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -3991,6 +3998,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -4030,6 +4038,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "4 2 audioOut peak",
           "5 2 audioOut clips",
           "6 5 audioOut peak",
@@ -4071,6 +4080,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -4117,6 +4127,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -4175,6 +4186,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -4231,6 +4243,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -4279,6 +4292,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -4368,6 +4382,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -4421,6 +4436,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -4472,6 +4488,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "9 7 audioOut peak",
@@ -4525,6 +4542,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -4575,6 +4593,7 @@
         "meters": [
           "0 4294967295 audioIn peak",
           "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
           "2 0 audioOut peak",
           "3 0 audioOut clips",
           "4 2 audioOut peak",
@@ -6043,10 +6062,13 @@
           }
         },
         {
+          "ceiling": -1.0,
           "id": 4294967295,
           "kind": "master",
+          "limiter": true,
           "name": "Master",
-          "parent": null
+          "parent": null,
+          "volume": 1.0
         }
       ]
     },
@@ -6089,6 +6111,14 @@
             "type": "audioIn"
           },
           "slot": 1
+        },
+        {
+          "kind": "reduction",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 4095
         },
         {
           "kind": "peak",

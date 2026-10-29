@@ -14,10 +14,13 @@
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-/// How many slots a session gets. A modulator takes one, each of its targets one,
+/// How many slots a session gets (the last, `MASTER_REDUCTION`, is the engine's). A modulator takes one, each of its targets one,
 /// a meter two: a session with hundreds of nodes is far below this, and 16 KiB is
 /// nothing.
 pub const CAPACITY: u32 = 4096;
+
+/// The slots that can be handed out are below this: the one after them is the engine's.
+const HANDED_OUT: u32 = CAPACITY - 1;
 
 /// One cell of the `Telemetry`, handed out by a `SlotAllocator` (or reserved).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -52,6 +55,10 @@ pub struct MeterSlots {
 
 /// The meter of the output mix, the first two slots.
 pub const MASTER: MeterSlots = MeterSlots { peak: Slot(0), clips: Slot(1) };
+
+/// How far the limiter on the output mix has brought the sound down lately, in decibels (0 for none, 3 for a gain of -3 dB): the last slot, which the allocator never hands out, so that no other
+/// slot is where it was before the limiter (the oracle holds the cells to the bit) and a slot that is 0 says that the limiter is doing nothing, which is what it did when there was none.
+pub const MASTER_REDUCTION: Slot = Slot(CAPACITY - 1);
 
 /// Slots before this are reserved for what exists once per engine (`MASTER`).
 const RESERVED: u32 = 2;
@@ -283,7 +290,7 @@ impl Default for SlotAllocator {
 impl SlotAllocator {
     /// A slot nobody has, or `None` when they are all taken.
     pub fn alloc(&mut self) -> Option<Slot> {
-        if self.next >= CAPACITY {
+        if self.next >= HANDED_OUT {
             log::warn!("out of telemetry slots; what is added from now on has none");
             return None;
         }
@@ -294,7 +301,7 @@ impl SlotAllocator {
 
     /// The two slots of a meter, both or neither.
     pub fn meter(&mut self) -> Option<MeterSlots> {
-        if self.next + 1 >= CAPACITY {
+        if self.next + 1 >= HANDED_OUT {
             // Not enough left for a pair: leave the last one rather than half a meter.
             log::warn!("out of telemetry slots; what is added from now on has none");
             return None;
@@ -370,6 +377,23 @@ mod tests {
         let mut slots = SlotAllocator::default();
         let first = slots.alloc().unwrap();
         assert!(first.index() > MASTER.peak.index() && first.index() > MASTER.clips.index());
+        assert_ne!(MASTER_REDUCTION, MASTER.peak);
+        assert_ne!(MASTER_REDUCTION, MASTER.clips);
+    }
+
+    #[test]
+    fn the_limiters_reduction_is_the_last_cell_and_is_never_handed_out_so_that_no_other_slot_is_where_it_was_before_it() {
+        assert_eq!(MASTER_REDUCTION.index(), CAPACITY - 1);
+        let mut slots = SlotAllocator::default();
+        let mut last = None;
+        while let Some(slot) = slots.alloc() {
+            last = Some(slot);
+        }
+        assert_eq!(last.map(Slot::index), Some(CAPACITY - 2), "the one before it is the last that anyone has");
+        let t = Telemetry::new();
+        t.store(MASTER_REDUCTION, 3.5);
+        assert_eq!(t.load(MASTER_REDUCTION), 3.5);
+        assert_eq!(t.load_index(MASTER_REDUCTION.index()), 3.5, "a layout names it by its number");
     }
 
     #[test]
@@ -378,9 +402,10 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         while let Some(slot) = slots.alloc() {
             assert!(seen.insert(slot), "{slot:?} was handed out twice");
-            assert!(slot.index() < CAPACITY);
+            assert!(slot.index() < HANDED_OUT);
         }
-        assert_eq!(seen.len() as u32, CAPACITY - RESERVED);
+        assert_eq!(seen.len() as u32, HANDED_OUT - RESERVED);
+        assert!(!seen.contains(&MASTER_REDUCTION), "the engine's own cell is not handed out");
         assert!(slots.alloc().is_none(), "and stays out");
         assert!(slots.meter().is_none());
     }
@@ -396,7 +421,7 @@ mod tests {
 
         // With one slot left there is no meter, and that slot is still there.
         let mut slots = SlotAllocator::default();
-        while slots.high_water() < CAPACITY - 1 {
+        while slots.high_water() < HANDED_OUT - 1 {
             slots.alloc().unwrap();
         }
         assert!(slots.meter().is_none(), "one slot is not a meter");

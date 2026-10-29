@@ -10,12 +10,21 @@ describe("the ids and the slots that the mock engine hands out", () => {
   const fresh = (): Counters => new Counters(snapshot);
   const lastNode = Math.max(...snapshot.graph.nodes.filter((n) => n.kind !== "master").map((n) => n.id));
   const lastEdge = Math.max(...snapshot.graph.edges.flatMap((e) => (e.kind === "modulation" ? [e.id] : [])));
-  const lastSlot = Math.max(...[...snapshot.telemetry.meters, ...snapshot.telemetry.modulation].map((entry) => entry.slot));
+  // (The limiter's reduction is the last cell of the telemetry and is never handed out, so it is not a slot in use: `HANDED_OUT` of `src/telemetry.rs`.)
+  const lastSlot = Math.max(...[...snapshot.telemetry.meters, ...snapshot.telemetry.modulation].filter((entry) => entry.kind !== "reduction").map((entry) => entry.slot));
 
   test("go on from what the session has, the master (which is no node of the model) left out", () => {
     const counters = fresh();
     expect([counters.node(), counters.edge(), counters.slot()]).toEqual([lastNode + 1, lastEdge + 1, lastSlot + 1]);
     expect([counters.node(), counters.edge(), counters.slot()]).toEqual([lastNode + 2, lastEdge + 2, lastSlot + 2]);
+  });
+
+  test("leave the limiter's reduction out of the slots in use: it is the last cell of the telemetry (4095), which is never handed out, so that the slots go on from the others", () => {
+    expect(snapshot.telemetry.meters.filter((entry) => entry.kind === "reduction").map((entry) => entry.slot)).toEqual([4095]);
+    const counters = fresh();
+    const first = counters.slot();
+    expect(first).toBe(lastSlot + 1);
+    expect(first).toBeLessThan(4095);
   });
 
   test("put back come first, in the order they were said, and new ones go on where they were", () => {

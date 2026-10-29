@@ -1054,7 +1054,8 @@ mod tests {
         // run: nothing is played.
         let mut rig = null_rig(256);
         let lane = "[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 4.0\n";
-        load_onto(&lane.repeat(3), &rig.cmd_tx);
+        // (The limiter on the output is in the sound unless a session says it is not, and keeps a mix under its ceiling: this session says it is not, to have a mix that clips.)
+        load_onto(&format!("[master]\nlimiter = false\n{}", lane.repeat(3)), &rig.cmd_tx);
         rig.engine.play().unwrap();
         rig.midi_tx.send(NOTE_ON_A4).unwrap();
         wait_for("a clip to be counted", || rig.telemetry.count(telemetry::MASTER.clips) > 0);

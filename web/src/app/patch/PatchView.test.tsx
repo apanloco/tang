@@ -1529,7 +1529,8 @@ describe("the patch", () => {
       await rig(<PatchView />);
       const master = await nodeOf(4294967295);
       expect(within(master).getByRole("meter", { name: "Output scope" }).getAttribute("data-view")).toBe("wave");
-      expect(controlsIn(master)).toEqual(["View", "Time"]);
+      // (The scope's two choices, and the volume and the limiter's ceiling, which are knobs: step 102.)
+      expect(controlsIn(master)).toEqual(["View", "Time", "Master volume", "Ceiling"]);
       expect(optionsOf(within(master).getByRole("combobox", { name: "View" }))).toEqual(["Wave", "Spectrum"]);
       expect(optionsOf(within(master).getByRole("combobox", { name: "Time" }))).toEqual(["5 ms", "11 ms", "21 ms", "43 ms"]);
       expect(within(master).getByRole<HTMLSelectElement>("combobox", { name: "Time" }).value).toBe("2");
@@ -1552,10 +1553,10 @@ describe("the patch", () => {
       const scope = () => within(master).getByRole("meter", { name: "Output scope" });
       fireEvent.change(within(master).getByRole("combobox", { name: "View" }), { target: { value: "1" } });
       expect(scope().getAttribute("data-view")).toBe("spectrum");
-      expect(controlsIn(master)).toEqual(["View"]);
+      expect(controlsIn(master)).toEqual(["View", "Master volume", "Ceiling"]);
       fireEvent.change(within(master).getByRole("combobox", { name: "View" }), { target: { value: "0" } });
       expect(scope().getAttribute("data-view")).toBe("wave");
-      expect(controlsIn(master)).toEqual(["View", "Time"]);
+      expect(controlsIn(master)).toEqual(["View", "Time", "Master volume", "Ceiling"]);
     });
 
     test("keeps the time that was chosen when the view goes to the spectrum and back", async () => {

@@ -26,7 +26,7 @@ const lane = (id: NodeId, over: Partial<Extract<Node, { kind: "instrument" }>> =
 
 const effect = (id: NodeId, parent: NodeId, name = `Effect ${String(id)}`): Node => ({ id, parent, name, kind: "effect", plugin: plugin("builtin:filter", false), mix: 1, feed: "chain" });
 const group = (id: NodeId): Node => ({ id, parent: null, name: "Pad", kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" });
-const master: Node = { id: MASTER, parent: null, name: "Master", kind: "master" };
+const master: Node = { id: MASTER, parent: null, name: "Master", kind: "master", volume: 1, limiter: true, ceiling: -1 };
 const keys = (id: NodeId): Node => ({ id, parent: null, name: "Keys", kind: "source", source: { type: "keys" } });
 const modulator = (id: NodeId, parent: NodeId): Node => ({
   id,

@@ -91,7 +91,7 @@ const control = (id: NodeId, parent: NodeId): Node => ({ id, parent, name: "CC 7
 
 const group = (id: NodeId): Node => ({ id, parent: null, name: `Group ${String(id)}`, kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" });
 
-const master: Node = { id: MASTER, parent: null, name: "Master", kind: "master" };
+const master: Node = { id: MASTER, parent: null, name: "Master", kind: "master", volume: 1, limiter: true, ceiling: -1 };
 
 const keysSource = (id: NodeId): Node => ({ id, parent: null, name: "Keys", kind: "source", source: { type: "keys" } });
 const deviceSource = (id: NodeId, name: string): Node => ({ id, parent: null, name, kind: "source", source: { type: "device", name } });
@@ -399,9 +399,9 @@ describe("the nodes on the canvas", () => {
     expect(ENVELOPE_NODE_HEIGHT).toBeGreaterThanOrEqual(315);
     expect(ENVELOPE_NODE_HEIGHT).toBeLessThanOrEqual(325);
     expect(nodeHeight(master, 0)).toBe(MASTER_HEIGHT);
-    // (Measured in a browser: 223 for the master's, with its scope and the choices of the view under its meter.)
-    expect(MASTER_HEIGHT).toBeGreaterThanOrEqual(223);
-    expect(MASTER_HEIGHT).toBeLessThanOrEqual(235);
+    // (Measured in a browser: 373 for the master's, with its scope and the choices of the view under its meter, the row of the volume, the ceiling and the limiter, and the reduction.)
+    expect(MASTER_HEIGHT).toBeGreaterThanOrEqual(373);
+    expect(MASTER_HEIGHT).toBeLessThanOrEqual(385);
   });
 
   test("leave room above a strip for the tallest of its modulators, and no more", () => {
@@ -922,9 +922,10 @@ describe("where the nodes are", () => {
 
   test("a node the session has placed is drawn there, and one it has not is where the layout puts it", () => {
     const auto = toFlow(twoLanes);
-    const flow = toFlow(placed(twoLanes, { 3: { x: 1234, y: -567.5 }, [MASTER]: { x: 9, y: 8 } }));
+    // (The master is put above the rows: its card is 378 tall since step 102, and one that was put at the top of them would be on the first lane's, which the layout would then move clear of it.)
+    const flow = toFlow(placed(twoLanes, { 3: { x: 1234, y: -567.5 }, [MASTER]: { x: 9, y: -400 } }));
     expect(at(flow, 3).position).toEqual({ x: 1234, y: -567.5 });
-    expect(at(flow, MASTER).position).toEqual({ x: 9, y: 8 });
+    expect(at(flow, MASTER).position).toEqual({ x: 9, y: -400 });
     for (const id of [1, 2, 4, 5, 6]) expect(at(flow, id).position, `node ${String(id)}`).toEqual(at(auto, id).position);
   });
 
@@ -2192,7 +2193,7 @@ describe("whether two graphs are laid out the same", () => {
 
   test("they are not when a node is of another kind, the rest being the same", () => {
     const left: Graph = { nodes: [group(5)], edges: [] };
-    const right: Graph = { nodes: [{ id: 5, parent: null, name: "Group 5", kind: "master" }], edges: [] };
+    const right: Graph = { nodes: [{ id: 5, parent: null, name: "Group 5", kind: "master", volume: 1, limiter: true, ceiling: -1 }], edges: [] };
     expect(sameStructure(left, right)).toBe(false);
     expect(sameStructure(right, left)).toBe(false);
   });
@@ -2837,11 +2838,12 @@ describe("the nodes arranged for short cables", () => {
     const places = new Map(before.places);
     const second = places.get(2);
     if (!second) throw new Error("the layout has not placed the effect");
-    places.set(2, { ...second, x: second.x + 100, y: second.y + 50 });
+    // (Below the master, which is 378 tall since step 102 and stays where it was: a node that is kept on it is moved clear of it.)
+    places.set(2, { ...second, x: second.x + 100, y: second.y + 400 });
     const longer: Graph = { nodes: [instrument(1), effect(2, 1), effect(3, 1), master], edges: [audio(1, 2), audio(2, 3), audio(3, MASTER)] };
     const after = toFlow(longer, places);
-    expect(at(after, 3).position).toEqual({ x: at(before, 2).position.x + 100 + COLUMN, y: at(before, 2).position.y + 50 });
-    expect(at(after, 2).position).toEqual({ x: at(before, 2).position.x + 100, y: at(before, 2).position.y + 50 });
+    expect(at(after, 3).position).toEqual({ x: at(before, 2).position.x + 100 + COLUMN, y: at(before, 2).position.y + 400 });
+    expect(at(after, 2).position).toEqual({ x: at(before, 2).position.x + 100, y: at(before, 2).position.y + 400 });
   });
 
   test("is not asked of a session in which a person has placed a node: that node is a pin that the arrangement would have to keep, and the layout is the rows'", () => {

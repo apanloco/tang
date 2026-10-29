@@ -231,7 +231,15 @@ export function gainOf(state: ClientState, id: NodeId, gain: Gain): number | und
   if (gain === "mix" && node?.kind === "effect") return node.mix;
   if (gain === "groupVolume" && node?.kind === "group") return node.volume;
   if (gain === "groupPan" && node?.kind === "group") return node.pan;
+  if (gain === "masterVolume" && node?.kind === "master") return node.volume;
+  if (gain === "limiterCeiling" && node?.kind === "master") return node.ceiling;
   return undefined;
+}
+
+/** Whether the limiter on the output mix is in the sound (step 102); undefined while there is no session. */
+export function limiterOf(state: ClientState): boolean | undefined {
+  const master = state.snapshot?.graph.nodes.find((node) => node.kind === "master");
+  return master?.kind === "master" ? master.limiter : undefined;
 }
 
 /**

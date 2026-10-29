@@ -37,7 +37,8 @@ export class Counters {
     this.#node = 1 + Math.max(-1, ...graph.nodes.filter((n) => n.kind !== "master").map((n) => n.id));
     // (A cable of modulation, an audio cable and a cable of notes have ids of one series.)
     this.#edge = 1 + Math.max(-1, ...graph.edges.flatMap((e) => (e.kind === "modulation" || e.kind === "cable" || e.kind === "events" ? [e.id] : [])));
-    this.#slot = 1 + Math.max(-1, ...[...telemetry.meters, ...telemetry.modulation].map((entry) => entry.slot));
+    // (The limiter's reduction is the last cell of the telemetry and is never handed out: slots go on from the others, `HANDED_OUT` of `src/telemetry.rs`.)
+    this.#slot = 1 + Math.max(-1, ...[...telemetry.meters, ...telemetry.modulation].filter((entry) => entry.kind !== "reduction").map((entry) => entry.slot));
   }
 
   node(): NodeId {

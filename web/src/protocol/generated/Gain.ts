@@ -3,4 +3,4 @@
 /**
  * A host-side gain, outside the plugin's own parameter list.
  */
-export type Gain = "volume" | "mix" | "groupVolume" | "groupPan";
+export type Gain = "volume" | "mix" | "groupVolume" | "groupPan" | "masterVolume" | "limiterCeiling";

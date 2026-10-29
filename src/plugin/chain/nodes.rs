@@ -26,6 +26,7 @@
 use anyhow::Result;
 use kernel::{DelayLine, Io, NodeSpec, Nodes, Patch, Plan, Pool, Port, PortSpec};
 
+use super::limiter::Limiter;
 use super::*;
 
 /// What every node is told of the block besides its buffers.
@@ -58,31 +59,151 @@ pub(super) enum Stage {
     Master,
 }
 
-/// The output mix: what is added up from the lanes that have no group and the groups is copied to the output and measured.
+/// The output mix: what is added up from the lanes that have no group and the groups is turned by the master volume, put through the limiter if that is in the sound, copied to the output and
+/// measured (step 102). A mix that has a volume of 1 and no limiter is copied as it always was, bit for bit.
 pub(super) struct Master {
     /// Measures the output; publishes into `telemetry::MASTER`.
     pub(super) meter: Meter,
+    /// The volume that the user set, and where the gain was when the last block ended: a change is gone to over the block, as a mute is, so that it does not zipper.
+    volume: f32,
+    volume_at: f32,
+    /// Whether the limiter is in the sound, and how far it was when the last block ended (0 is the mix as it is and 1 is the limited sound: a switch is a crossfade over the block, since the
+    /// limited sound is a look-ahead later). The limiter runs on the mix whether or not it is heard, so that it is where it should be when it is.
+    limited: bool,
+    wet_at: f32,
+    /// The limiter's ceiling, a linear level.
+    ceiling: f32,
+    limiter: Limiter,
+    /// How far the limiter brought the sound down lately, in decibels: the most of the last blocks, falling (`telemetry::MASTER_REDUCTION`).
+    reduction: f32,
+}
+
+/// What the published reduction is held to 0 under, in decibels.
+const REDUCTION_FLOOR: f32 = 0.05;
+
+/// The highest master volume the engine takes.
+const MASTER_VOLUME_MAX: f32 = 4.0;
+
+/// The level that a ceiling of `db` decibels below full scale is, held to 60 under it and to full scale (a ceiling over it would be no limit): what the engine limits to, and what a test
+/// says the model's ceiling comes to.
+pub(crate) fn ceiling_level(db: f32) -> f32 {
+    10f32.powf(db.clamp(-60.0, 0.0) / 20.0)
 }
 
 impl Master {
     pub(super) fn new() -> Self {
-        Master { meter: Meter::new(telemetry::MASTER) }
+        Master {
+            meter: Meter::new(telemetry::MASTER),
+            volume: 1.0,
+            volume_at: 1.0,
+            limited: false,
+            wet_at: 0.0,
+            ceiling: ceiling_level(DEFAULT_CEILING),
+            limiter: Limiter::new(),
+            reduction: 0.0,
+        }
+    }
+
+    /// What `GraphCommand::SetMaster` says: the volume, whether the limiter is in the sound, its ceiling in decibels and the rate that its look-ahead is made for. A volume or a ceiling that is not a
+    /// number is left as it was.
+    pub(super) fn configure(&mut self, volume: f32, limiter: bool, ceiling: f32, sample_rate: f32) {
+        if volume.is_finite() {
+            self.volume = volume.clamp(0.0, MASTER_VOLUME_MAX);
+        }
+        self.limited = limiter;
+        if ceiling.is_finite() {
+            self.ceiling = ceiling_level(ceiling);
+        }
+        self.limiter.configure(sample_rate);
+    }
+
+    /// What the master is, for a test to compare with the model's.
+    #[cfg(test)]
+    pub(super) fn facts(&self) -> MasterFacts {
+        MasterFacts { volume: self.volume, limiter: self.limited, ceiling: self.ceiling }
     }
 
     fn run_node(&mut self, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         let mix = &io.inputs()[0];
-        for (ch, out) in cx.audio_out.iter_mut().enumerate() {
-            if ch < mix.len() {
-                let copy_len = out.len().min(mix[ch].len());
-                out[..copy_len].copy_from_slice(&mix[ch][..copy_len]);
+        let wet_goal = if self.limited { 1.0 } else { 0.0 };
+        let plain = self.volume == 1.0 && self.volume_at == 1.0 && wet_goal == 0.0 && self.wet_at == 0.0;
+        let least = if plain {
+            for (ch, out) in cx.audio_out.iter_mut().enumerate() {
+                if ch < mix.len() {
+                    let copy_len = out.len().min(mix[ch].len());
+                    out[..copy_len].copy_from_slice(&mix[ch][..copy_len]);
+                }
             }
-        }
+            // (The limiter goes on with the mix all the same, and is not heard.)
+            self.keep_limiter_with(mix)
+        } else {
+            let least = self.shape(mix, cx.audio_out, wet_goal);
+            self.volume_at = self.volume;
+            self.wet_at = wet_goal;
+            least
+        };
         // What reaches the output, measured and kept for a scope.
         if let (Some(telemetry), Some(fall)) = (cx.telemetry, cx.fall) {
-            self.meter.update(telemetry, mix, fall);
-            telemetry.scope.push(mix);
+            let reaches: &[Vec<f32>] = if plain { mix } else { &cx.audio_out[..mix.len().min(cx.audio_out.len())] };
+            self.meter.update(telemetry, reaches, fall);
+            telemetry.scope.push(reaches);
+            // How far the limiter has brought the sound down: what it did in this block, or what it did a moment ago less how far the meter falls (the same 40 decibels a second).
+            let now = if self.limited { -20.0 * least.max(1e-6).log10() } else { 0.0 };
+            self.reduction = now.max(self.reduction + 20.0 * fall.log10());
+            if self.reduction < REDUCTION_FLOOR {
+                self.reduction = 0.0;
+            }
+            telemetry.store(telemetry::MASTER_REDUCTION, self.reduction);
         }
         Ok(())
+    }
+
+    /// Put the mix through the volume and the limiter and write it to `out`: the volume goes from where it was to where it is over the block, and so does the share of the limited sound in what
+    /// is written (the rest is the mix as it is). Gives the least gain that the limiter had in the block.
+    fn shape(&mut self, mix: &[Vec<f32>], out: &mut [Vec<f32>], wet_goal: f32) -> f32 {
+        let channels = mix.len().min(out.len()).min(CHAIN_CHANNELS);
+        let frames = (0..channels).map(|ch| mix[ch].len().min(out[ch].len())).min().unwrap_or(0);
+        let (volume_step, wet_step) = (self.volume - self.volume_at, wet_goal - self.wet_at);
+        let mut least = 1.0f32;
+        for i in 0..frames {
+            let ahead = (i + 1) as f32 / frames as f32;
+            let (volume, wet) = (self.volume_at + volume_step * ahead, (self.wet_at + wet_step * ahead).clamp(0.0, 1.0));
+            let mut dry = [0.0; CHAIN_CHANNELS];
+            for ch in 0..channels {
+                dry[ch] = mix[ch][i] * volume;
+            }
+            let (limited, gain) = self.limiter.step(dry, self.ceiling);
+            least = least.min(gain);
+            for ch in 0..channels {
+                out[ch][i] = if wet >= 1.0 {
+                    limited[ch]
+                } else if wet <= 0.0 {
+                    dry[ch]
+                } else {
+                    dry[ch] + (limited[ch] - dry[ch]) * wet
+                };
+            }
+        }
+        // (A channel that the limiter has no room for, which a chain of stereo does not have, is the mix as it is.)
+        for (ch, out) in out.iter_mut().enumerate().skip(CHAIN_CHANNELS) {
+            if let Some(mix) = mix.get(ch) {
+                let copy_len = out.len().min(mix.len());
+                out[..copy_len].copy_from_slice(&mix[..copy_len]);
+            }
+        }
+        least
+    }
+
+    /// Let the limiter see `mix` and say nothing: what it does while it is not in the sound. Gives the least gain that it had.
+    fn keep_limiter_with(&mut self, mix: &[Vec<f32>]) -> f32 {
+        let channels = mix.len().min(CHAIN_CHANNELS);
+        let frames = mix[..channels].iter().map(Vec::len).min().unwrap_or(0);
+        (0..frames)
+            .map(|i| {
+                let frame: [f32; CHAIN_CHANNELS] = std::array::from_fn(|ch| if ch < channels { mix[ch][i] } else { 0.0 });
+                self.limiter.step(frame, self.ceiling).1
+            })
+            .fold(1.0f32, f32::min)
     }
 }
 
@@ -2845,5 +2966,282 @@ mod tests {
         let mut sided = Shape::default();
         sided.read(&lanes, &groups, &[], 2, true);
         assert!(sided.list.contains(&SIDE) && sided != plain);
+    }
+
+    // -- The master: its volume and its limiter (step 102) --
+
+    /// `frames` frames of a stereo sine at `hz` that is `amplitude` loud on the left and half as loud on the right.
+    fn sine_mix(frames: usize, hz: f32, amplitude: f32) -> Vec<Vec<f32>> {
+        let wave = |n: usize| (2.0 * std::f32::consts::PI * hz * n as f32 / 48_000.0).sin() * amplitude;
+        vec![(0..frames).map(wave).collect(), (0..frames).map(|n| wave(n) * 0.5).collect()]
+    }
+
+    /// The mix cut into blocks of `size` frames (the last may be shorter).
+    fn blocks_of(mix: &[Vec<f32>], size: usize) -> Vec<Vec<Vec<f32>>> {
+        let frames = mix[0].len();
+        (0..frames).step_by(size).map(|from| mix.iter().map(|channel| channel[from..(from + size).min(frames)].to_vec()).collect()).collect()
+    }
+
+    /// One block through the master node, with what it writes (the output starts as 7, so that a frame that is not written is seen).
+    fn through(master: &mut Master, mix: &[Vec<f32>], telemetry: Option<&Telemetry>) -> Vec<Vec<f32>> {
+        let frames = mix[0].len();
+        let mut io = Io::from_buffers(frames, vec![mix.to_vec()], vec![]);
+        let mut out = vec![vec![7.0f32; frames]; mix.len()];
+        let fall = telemetry.map(|_| telemetry::peak_fall(frames as f32 / 48_000.0));
+        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry, fall };
+        master.run_node(&mut io, &mut cx).unwrap();
+        out
+    }
+
+    #[test]
+    fn a_mix_with_a_volume_of_1_and_no_limiter_is_copied_as_it_was_whatever_the_limiter_has_seen() {
+        let mut master = Master::new();
+        master.configure(1.0, false, -1.0, 48_000.0);
+        // (A sample over full scale, a negative zero and a number that is not one all go through as they are.)
+        let mut mix = sine_mix(64, 440.0, 3.0);
+        mix[0][3] = -0.0;
+        mix[1][5] = f32::NAN;
+        for _ in 0..3 {
+            let out = through(&mut master, &mix, None);
+            for (got, want) in out.iter().flatten().zip(mix.iter().flatten()) {
+                assert_eq!(got.to_bits(), want.to_bits());
+            }
+        }
+        // The same of a master that was never told anything.
+        let out = through(&mut Master::new(), &mix, None);
+        assert!(out.iter().flatten().zip(mix.iter().flatten()).all(|(got, want)| got.to_bits() == want.to_bits()));
+    }
+
+    #[test]
+    fn the_volume_is_gone_to_over_the_block_and_is_what_it_is_after_it() {
+        let mut master = Master::new();
+        let mix = vec![vec![1.0f32; 100]; 2];
+        master.configure(0.5, false, -1.0, 48_000.0);
+        let first = through(&mut master, &mix, None);
+        assert!((first[0][0] - 0.995).abs() < 1e-6 && (first[0][99] - 0.5).abs() < 1e-6, "from 1 to 0.5 in equal steps: {} to {}", first[0][0], first[0][99]);
+        assert!(first[0].windows(2).all(|pair| pair[1] < pair[0]) && first[1] == first[0]);
+        let second = through(&mut master, &mix, None);
+        assert!(second.iter().flatten().all(|&sample| sample == 0.5), "and it stays there");
+        master.configure(0.0, false, -1.0, 48_000.0);
+        let down = through(&mut master, &mix, None);
+        assert_eq!(down[0][99], 0.0);
+        assert!(through(&mut master, &mix, None).iter().flatten().all(|&sample| sample == 0.0), "a volume of 0 is silence");
+        master.configure(2.0, false, -1.0, 48_000.0);
+        through(&mut master, &mix, None);
+        assert!(through(&mut master, &mix, None).iter().flatten().all(|&sample| sample == 2.0), "and a volume of 2 is twice the mix");
+        // A volume that is not a number is not one: the master keeps the one it had. And the engine holds it to 0 to 4.
+        master.configure(f32::NAN, false, -1.0, 48_000.0);
+        assert_eq!(master.volume, 2.0);
+        master.configure(100.0, false, -1.0, 48_000.0);
+        assert_eq!(master.volume, MASTER_VOLUME_MAX);
+        master.configure(-3.0, false, -1.0, 48_000.0);
+        assert_eq!(master.volume, 0.0);
+    }
+
+    #[test]
+    fn a_limiter_in_the_sound_keeps_a_loud_mix_under_its_ceiling_and_is_what_the_limiter_alone_makes_of_it() {
+        let mut master = Master::new();
+        master.configure(1.0, true, -6.0, 48_000.0);
+        let ceiling = 10f32.powf(-6.0 / 20.0);
+        let mix = sine_mix(256 * 12, 220.0, 2.0);
+        let mut reference = Limiter::new();
+        let want: Vec<[f32; 2]> = mix[0].iter().zip(&mix[1]).map(|(&left, &right)| reference.step([left, right], ceiling).0).collect();
+        let mut at = 0;
+        for (number, block) in blocks_of(&mix, 256).iter().enumerate() {
+            let out = through(&mut master, block, None);
+            for n in 0..256 {
+                if number > 0 {
+                    assert_eq!([out[0][n], out[1][n]], want[at + n], "block {number}, frame {n}: what the limiter makes of it, after the first block, which is the crossfade to it");
+                    assert!(out[0][n].abs() <= ceiling && out[1][n].abs() <= ceiling);
+                }
+            }
+            at += 256;
+        }
+    }
+
+    #[test]
+    fn turning_the_limiter_on_and_off_is_a_crossfade_over_a_block_and_not_a_jump() {
+        let mut master = Master::new();
+        master.configure(1.0, false, -1.0, 48_000.0);
+        // A quiet sine, which the limiter does not touch: the limited sound is the same sine a look-ahead late, which is not where the mix is (0.8 of its height, at this pitch).
+        let mix = sine_mix(256 * 6, 150.0, 0.5);
+        let (own_step, mut heard) = (mix[0].windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0f32, f32::max), Vec::new());
+        for (number, block) in blocks_of(&mix, 256).iter().enumerate() {
+            match number {
+                2 => master.configure(1.0, true, -1.0, 48_000.0),
+                5 => master.configure(1.0, false, -1.0, 48_000.0),
+                _ => {}
+            }
+            heard.extend(through(&mut master, block, None).swap_remove(0));
+        }
+        let jump = heard.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0f32, f32::max);
+        assert!(jump < own_step * 1.5, "the biggest step is {jump} where the sine's own is {own_step}: a switch that is a jump would be 0.8");
+        assert_eq!(heard[256 * 2 - 1], mix[0][256 * 2 - 1], "before the switch it is the mix");
+        assert_eq!(heard[256 * 4], mix[0][256 * 4 - 95], "after the first block it is the limited sound, which is the mix a look-ahead later");
+        assert_eq!(heard[256 * 6 - 1], mix[0][256 * 6 - 1], "and after it is turned off again, the mix");
+    }
+
+    #[test]
+    fn the_reduction_is_published_while_the_limiter_works_and_falls_when_it_does_not() {
+        let telemetry = Telemetry::new();
+        let mut master = Master::new();
+        master.configure(1.0, true, -1.0, 48_000.0);
+        let loud = sine_mix(256, 100.0, 4.0);
+        assert_eq!(telemetry.load(telemetry::MASTER_REDUCTION), 0.0, "nothing before the first block");
+        for _ in 0..40 {
+            through(&mut master, &loud, Some(&telemetry));
+        }
+        // 4 against a ceiling of -1 dB is 13 dB.
+        let reduction = telemetry.load(telemetry::MASTER_REDUCTION);
+        assert!((12.5..14.5).contains(&reduction), "{reduction}");
+        // Let the limiter go and it falls by the meter's 40 decibels a second, 0.213 dB a block of 256 frames at 48 kHz, to nothing.
+        master.configure(1.0, false, -1.0, 48_000.0);
+        let mut last = reduction;
+        let mut blocks = 0;
+        while last > 0.0 {
+            through(&mut master, &loud, Some(&telemetry));
+            let now = telemetry.load(telemetry::MASTER_REDUCTION);
+            assert!(now < last && (last - now) < 0.25 || now == 0.0, "{last} to {now}");
+            last = now;
+            blocks += 1;
+            assert!(blocks < 100);
+        }
+        assert!((55..70).contains(&blocks), "{blocks} blocks");
+    }
+
+    /// What the master costs a block of 256 frames with the limiter in the sound and a mix that is over its ceiling all the time (the gain moves every frame: the dearest it is): the share of the time that a
+    /// block has at 48 kHz.
+    #[test]
+    #[ignore = "a benchmark: cargo test --release the_master_with_a_limiter_against_its_deadline -- --ignored --nocapture"]
+    fn the_master_with_a_limiter_against_its_deadline() {
+        let mut master = Master::new();
+        master.configure(0.8, true, -1.0, 48_000.0);
+        let mix = sine_mix(256, 220.0, 3.0);
+        let mut out = vec![vec![0.0f32; 256]; 2];
+        // (The crossfade of the first block and the warming of the rings are not what is timed.)
+        for _ in 0..50 {
+            master.shape(&mix, &mut out, 1.0);
+        }
+        master.wet_at = 1.0;
+        let blocks = 20_000;
+        let started = std::time::Instant::now();
+        for _ in 0..blocks {
+            std::hint::black_box(master.shape(std::hint::black_box(&mix), &mut out, 1.0));
+        }
+        let per_block = started.elapsed().as_secs_f64() / f64::from(blocks);
+        let available = 256.0 / 48_000.0;
+        println!("the master with the limiter in the sound: {:.2} us a block of 256 frames, {:.3}% of the {:.2} ms that a block has", per_block * 1e6, 100.0 * per_block / available, available * 1e3);
+        assert!(per_block < available * 0.05, "the limiter costs more than a twentieth of the time a block has");
+    }
+
+    #[test]
+    fn a_volume_that_goes_back_to_1_goes_there_over_the_block_and_the_block_after_is_a_copy_of_the_mix() {
+        let mut master = Master::new();
+        let mix = vec![vec![1.0f32; 100]; 2];
+        master.configure(0.5, false, -1.0, 48_000.0);
+        through(&mut master, &mix, None);
+        through(&mut master, &mix, None);
+        master.configure(1.0, false, -1.0, 48_000.0);
+        let back = through(&mut master, &mix, None);
+        assert!((back[0][0] - 0.505).abs() < 1e-6 && (back[0][99] - 1.0).abs() < 1e-6, "from 0.5 to 1 in equal steps: {} to {}", back[0][0], back[0][99]);
+        assert!(back[0].windows(2).all(|pair| pair[1] > pair[0]) && back[1] == back[0]);
+        assert!(through(&mut master, &mix, None).iter().flatten().all(|&sample| sample == 1.0), "and then it is the mix");
+    }
+
+    #[test]
+    fn the_reduction_is_the_most_that_the_limiter_brought_the_sound_down_in_the_block_and_not_what_it_does_at_the_end_of_it() {
+        let telemetry = Telemetry::new();
+        let mut master = Master::new();
+        master.configure(1.0, true, -6.0, 48_000.0);
+        let ceiling = 10f32.powf(-6.0 / 20.0);
+        // Quiet blocks, so that the crossfade is over, and then a block with one frame at four times the ceiling early in it, which comes out 95 frames later, well before the end of the block.
+        let quiet = vec![vec![0.01f32; 256]; 2];
+        for _ in 0..4 {
+            through(&mut master, &quiet, Some(&telemetry));
+        }
+        let mut block = quiet.clone();
+        block[0][20] = ceiling * 4.0;
+        through(&mut master, &block, Some(&telemetry));
+        // A quarter, 12.04 dB, which is the gain at the peak; and not the 11 dB of where the release has brought it by the end of the block.
+        let reduction = telemetry.load(telemetry::MASTER_REDUCTION);
+        assert!((reduction - 12.04).abs() < 0.1, "{reduction}");
+    }
+
+    #[test]
+    fn a_reduction_of_less_than_a_twentieth_of_a_decibel_is_published_as_none_and_a_bigger_one_as_it_is() {
+        let ceiling = 10f32.powf(-1.0 / 20.0);
+        let over_by = |db: f32| {
+            let telemetry = Telemetry::new();
+            let mut master = Master::new();
+            master.configure(1.0, true, -1.0, 48_000.0);
+            let mix = sine_mix(256, 100.0, ceiling * 10f32.powf(db / 20.0));
+            for _ in 0..80 {
+                through(&mut master, &mix, Some(&telemetry));
+            }
+            telemetry.load(telemetry::MASTER_REDUCTION)
+        };
+        assert_eq!(over_by(0.03), 0.0, "under the floor it is no reduction at all");
+        let reduction = over_by(0.2);
+        assert!((reduction - 0.2).abs() < 0.03, "{reduction}");
+    }
+
+    #[test]
+    fn the_meter_and_the_scope_read_what_reaches_the_output_the_limited_sound_and_not_the_mix() {
+        let telemetry = Telemetry::new();
+        let mut master = Master::new();
+        master.configure(1.0, true, -3.0, 48_000.0);
+        let ceiling = 10f32.powf(-3.0 / 20.0);
+        let loud = sine_mix(256, 100.0, 3.0);
+        through(&mut master, &loud, Some(&telemetry));
+        let clips_in_the_crossfade = telemetry.count(telemetry::MASTER.clips);
+        assert!(clips_in_the_crossfade > 0, "the first block is the mix in part, which is over full scale");
+        for _ in 0..8 {
+            through(&mut master, &loud, Some(&telemetry));
+        }
+        assert_eq!(telemetry.count(telemetry::MASTER.clips), clips_in_the_crossfade, "no more once it is the limited sound");
+        assert!(telemetry.load(telemetry::MASTER.peak) <= 3.0 && telemetry.load(telemetry::MASTER.peak) > ceiling * 0.5);
+        let (mut left, mut right) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+        assert_eq!(telemetry.scope.latest(&mut left, &mut right), 256 * 9);
+        assert!(left.iter().chain(&right).all(|sample| sample.abs() <= ceiling), "the scope has the output too");
+        // With no limiter it is the mix, which is over full scale, as it was.
+        let telemetry = Telemetry::new();
+        let mut plain = Master::new();
+        through(&mut plain, &loud, Some(&telemetry));
+        assert_eq!((telemetry.count(telemetry::MASTER.clips), telemetry.load(telemetry::MASTER.peak)), (1, 3.0));
+    }
+
+    #[test]
+    fn a_master_that_shapes_the_sound_asks_the_allocator_for_nothing() {
+        let mut master = Master::new();
+        master.configure(0.5, true, -1.0, 48_000.0);
+        let mix = sine_mix(256, 100.0, 3.0);
+        let mut io = Io::from_buffers(256, vec![mix], vec![]);
+        let mut out = vec![vec![0.0f32; 256]; 2];
+        let telemetry = Telemetry::new();
+        let fall = telemetry::peak_fall(256.0 / 48_000.0);
+        for _ in 0..3 {
+            let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: Some(&telemetry), fall: Some(fall) };
+            let (result, asked) = allocations_in(|| master.run_node(&mut io, &mut cx));
+            result.unwrap();
+            assert_eq!(asked, 0);
+        }
+        master.configure(1.0, false, -1.0, 44_100.0);
+        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: Some(&telemetry), fall: Some(fall) };
+        let (result, asked) = allocations_in(|| master.run_node(&mut io, &mut cx));
+        result.unwrap();
+        assert_eq!(asked, 0, "not even when the rate is told again (the lines are made for the longest look-ahead)");
+    }
+
+    #[test]
+    fn a_ceiling_that_is_not_a_number_is_left_as_it_was_and_one_that_is_over_full_scale_is_held_to_it() {
+        let mut master = Master::new();
+        master.configure(1.0, true, -6.0, 48_000.0);
+        let six = master.ceiling;
+        master.configure(1.0, true, f32::NAN, 48_000.0);
+        assert_eq!(master.ceiling, six);
+        master.configure(1.0, true, 12.0, 48_000.0);
+        assert_eq!(master.ceiling, 1.0, "no ceiling is over full scale");
+        master.configure(1.0, true, -500.0, 48_000.0);
+        assert!((master.ceiling - 0.001).abs() < 1e-6, "{}", master.ceiling);
     }
 }

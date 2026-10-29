@@ -13,7 +13,8 @@ use crossbeam_channel::Sender;
 
 use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
-    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, Driven, EdgeId, EventCable, FREE, GroupNode, InstrumentNode, ModGain, ModSourceSlot, ModTargetSlot, ModulatorSlot, NEW_CABLE_GAIN, NodeId, NodeIds,
+    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, CEILING_MAX, CEILING_MIN, Driven, EdgeId, EventCable, FREE, GroupNode, InstrumentNode, MASTER_VOLUME_MAX, MasterNode, ModGain, ModSourceSlot,
+    ModTargetSlot, ModulatorSlot, NEW_CABLE_GAIN, NodeId, NodeIds,
     ParamKind, ParamSlot, PatternState, PluginSlot, SYNC_DIVISIONS, SessionModel, SourceKind, SourceNode, format_from_id, mod_source_slot_to_graph, modulator_slot_commands,
     setting_of, sync_from_name, sync_name, tempo_of_patterns,
 };
@@ -640,11 +641,29 @@ pub fn load_session(
     if config.bpm.is_some() || instruments.iter().any(|lane| lane.pattern.is_some()) {
         let _ = cmd_tx.send(plugin::chain::GraphCommand::SetGlobalBpm { bpm });
     }
-    let mut model = SessionModel { instruments, groups, ids, slots, ui, bpm, cables: Vec::new(), sources: Vec::new(), event_cables: Vec::new(), free_modulators };
+    // The output mix: what a `[master]` table says, held to the ranges (a file can say what the intents refuse), and what it is without one. The audio thread starts with a volume of 1, no limiter
+    // and the default ceiling, and is told only if the session has something else.
+    let master = master_of(config.master);
+    if master != (MasterNode { limiter: false, ..MasterNode::default() }) {
+        let _ = cmd_tx.send(crate::app::controller::master_command(&master, sample_rate));
+    }
+    let mut model = SessionModel { instruments, groups, ids, slots, ui, bpm, master, cables: Vec::new(), sources: Vec::new(), event_cables: Vec::new(), free_modulators };
     // The sources of notes, and then the cables: every lane, group, effect and source that one of them is at is there by now.
     load_sources(config, &mut model);
     load_cables(&config.cables, &mut model, cmd_tx)?;
     Ok(model)
+}
+
+/// The output mix that a session has: what its `[master]` table says, and for each key that is not there what the master is without it (a volume of 1, the limiter in the sound, a ceiling of
+/// `DEFAULT_CEILING`). A number is held to the range of the intent that sets it.
+fn master_of(config: Option<session::MasterConfig>) -> MasterNode {
+    let config = config.unwrap_or_default();
+    let default = MasterNode::default();
+    MasterNode {
+        volume: config.volume.map_or(default.volume, |volume| volume.clamp(0.0, MASTER_VOLUME_MAX)),
+        limiter: config.limiter.unwrap_or(default.limiter),
+        ceiling: config.ceiling.map_or(default.ceiling, |ceiling| ceiling.clamp(CEILING_MIN, CEILING_MAX)),
+    }
 }
 
 /// Put the session's sources of notes in the model, as nodes: the keys first (if the file has a `[keys]` table, or a cable that starts at `keys`, which then makes the node), and then the devices
@@ -3475,6 +3494,71 @@ plugin = "builtin:osc"
     /// Every `SetGlobalBpm` that a session sent the audio thread, as the tempo it says.
     fn tempo_commands(run: &Run) -> Vec<String> {
         run.commands.iter().filter(|command| command.starts_with("SetGlobalBpm")).cloned().collect()
+    }
+
+    // -- the output mix (step 102) --
+
+    const OSC_LANE: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n";
+
+    fn file_of(model: &SessionModel) -> String {
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(model);
+        session::to_toml(&instruments, &groups, &cables, &sources, None, model.master_ui(), model.bpm_to_save()).unwrap()
+    }
+
+    #[test]
+    fn a_session_that_says_nothing_of_its_master_has_the_limiter_in_the_sound_and_the_audio_thread_is_told_so_once() {
+        let run = load(OSC_LANE);
+        assert_eq!(run.model.master, MasterNode { volume: 1.0, limiter: true, ceiling: -1.0 });
+        assert_eq!(run.master, ["SetMaster volume=1.000 limiter=true ceiling=-1.0 rate=48000"]);
+        assert!(run.commands.iter().all(|command| !command.contains("SetMaster")), "(it is not among the commands the other tests hold a load to)");
+        // The same for an empty session, and for one that has a `[master]` table that says only what is already so.
+        assert_eq!(load("").master, ["SetMaster volume=1.000 limiter=true ceiling=-1.0 rate=48000"]);
+        assert_eq!(load(&format!("[master]\nlimiter = true\nvolume = 1.0\nceiling = -1.0\n{OSC_LANE}")).master.len(), 1);
+    }
+
+    #[test]
+    fn a_master_table_is_what_the_session_has_and_is_told_whole_to_the_audio_thread() {
+        let run = load(&format!("[master]\nvolume = 0.5\nceiling = -6.0\n{OSC_LANE}"));
+        assert_eq!(run.model.master, MasterNode { volume: 0.5, limiter: true, ceiling: -6.0 }, "a key that is not there is what the master is without it");
+        assert_eq!(run.master, ["SetMaster volume=0.500 limiter=true ceiling=-6.0 rate=48000"]);
+        let run = load(&format!("[master]\nlimiter = false\nvolume = 1.5\n{OSC_LANE}"));
+        assert_eq!(run.model.master, MasterNode { volume: 1.5, limiter: false, ceiling: -1.0 });
+        assert_eq!(run.master, ["SetMaster volume=1.500 limiter=false ceiling=-1.0 rate=48000"]);
+    }
+
+    #[test]
+    fn a_session_whose_master_is_what_the_audio_thread_starts_with_tells_it_nothing_of_it() {
+        // (The engine starts with a volume of 1, no limiter and the default ceiling: it is told only what is another thing.)
+        let run = load(&format!("[master]\nlimiter = false\n{OSC_LANE}"));
+        assert!(!run.model.master.limiter);
+        assert!(run.master.is_empty(), "{:?}", run.master);
+        // A ceiling that is not the default is another thing, though the limiter is out of the sound: it is the one that it has when it is put in.
+        let run = load(&format!("[master]\nlimiter = false\nceiling = -9.0\n{OSC_LANE}"));
+        assert_eq!(run.master, ["SetMaster volume=1.000 limiter=false ceiling=-9.0 rate=48000"]);
+    }
+
+    #[test]
+    fn a_master_that_a_file_says_over_what_the_intents_allow_is_held_to_it() {
+        let run = load(&format!("[master]\nvolume = 9.0\nceiling = 5.0\n{OSC_LANE}"));
+        assert_eq!((run.model.master.volume, run.model.master.ceiling), (MASTER_VOLUME_MAX, CEILING_MAX));
+        let run = load(&format!("[master]\nvolume = -1.0\nceiling = -99.0\n{OSC_LANE}"));
+        assert_eq!((run.model.master.volume, run.model.master.ceiling), (0.0, CEILING_MIN));
+    }
+
+    #[test]
+    fn a_master_is_saved_as_the_keys_that_are_not_what_it_is_without_them_and_loads_the_same() {
+        // Nothing of it is written for a master that is as it is without a table, so that the file of a session that never touched it is the file it was.
+        assert!(!file_of(&load(OSC_LANE).model).contains("master"));
+        assert!(!file_of(&load(&format!("[master]\nlimiter = true\n{OSC_LANE}")).model).contains("master"), "(what the file said that is the default is not kept)");
+        let model = load(&format!("[master]\nvolume = 0.75\nlimiter = false\nceiling = -4.5\n{OSC_LANE}")).model;
+        let text = file_of(&model);
+        assert!(text.contains("[master]\nvolume = 0.75\nlimiter = false\nceiling = -4.5\n"), "{text}");
+        let again = load(&text).model;
+        assert_eq!(again.master, model.master);
+        assert_eq!(file_of(&again), text, "and the file is the same");
+        // Only the key that is not the default is written.
+        let text = file_of(&load(&format!("[master]\nceiling = -2.0\n{OSC_LANE}")).model);
+        assert!(text.contains("[master]\nceiling = -2.0\n") && !text.contains("limiter") && !text.contains("volume = "), "{text}");
     }
 
     #[test]

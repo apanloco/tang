@@ -7,6 +7,8 @@ use crossbeam_channel::{Receiver, Sender};
 use super::Plugin;
 use nodes::{BlockCx, Cable, Master, Schedule};
 pub(crate) use nodes::{cable_problem, wiring_loop, CableProblem, GroupWiring, LaneWiring};
+#[cfg(test)]
+pub(crate) use nodes::ceiling_level;
 use crate::ids::{Driven, EdgeId, ModGain, ModSetting, NodeId};
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
@@ -14,11 +16,15 @@ use crate::session::{self, RemapTarget, Route};
 use crate::source::{Events, MAX_SOURCES, Source, SourceSet};
 use crate::telemetry::{self, Meter, MeterSlots, Slot, Telemetry};
 
+mod limiter;
 mod nodes;
 
 /// How many audio channels every chain carries: stereo (CLAUDE.md, "Signal chain"). An effect has to have
 /// as many outputs; an instrument may have more, which are cut down to this many.
 pub const CHAIN_CHANNELS: usize = 2;
+
+/// Where the limiter on the output mix holds the sound under when a session does not say, in decibels below full scale: the engine starts with it, and the model's `DEFAULT_CEILING` is it.
+pub const DEFAULT_CEILING: f32 = -1.0;
 
 /// Maximum number of audio channels supported (for stack-allocated reference arrays).
 const MAX_CHANNELS: usize = 16;
@@ -413,6 +419,17 @@ pub struct Facts {
     pub bases: Vec<(ModulatorLocation, usize, EdgeId, Driven, f32)>,
     /// Whose notes each modulator of the session's own rack hears (`AudioGraph::ears`): the modulator's node and the node of its ear.
     pub ears: Vec<(NodeId, Option<NodeId>)>,
+    /// What the output mix is (step 102): its volume, whether its limiter is in the sound and its ceiling as a level.
+    pub master: MasterFacts,
+}
+
+/// What the output mix is, for a test to compare with the model's.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub struct MasterFacts {
+    pub volume: f32,
+    pub limiter: bool,
+    pub ceiling: f32,
 }
 
 /// What a group is, for a test to compare with the model's: the node it is, the names and the nodes of its bus effects, its volume and its pan, and whether it is muted or soloed.
@@ -1922,6 +1939,14 @@ pub enum GraphCommand {
     /// Set the global BPM (applied to all pattern players, and what the modulators that follow the tempo go by).
     SetGlobalBpm {
         bpm: f32,
+    },
+    /// Set the output mix (step 102): its `volume` (a gain that is gone to over the buffer), whether the limiter is in the sound and its `ceiling` in decibels below full scale (0 or less), and the
+    /// `sample_rate` that the limiter's look-ahead and release are made for. The engine starts with a volume of 1 and no limiter, so that a graph that is not told is the mix as it was.
+    SetMaster {
+        volume: f32,
+        limiter: bool,
+        ceiling: f32,
+        sample_rate: f32,
     },
     /// Set pattern length in beats.
     SetPatternLength {
@@ -3570,7 +3595,7 @@ impl AudioGraph {
     /// What the engine has of the model's nodes and cables.
     #[cfg(test)]
     pub fn facts(&self) -> Facts {
-        Facts { lanes: self.lanes(), groups: self.groups(), cables: self.audio_cables(), racks: self.cables(), bases: self.cable_bases(), ears: self.ears() }
+        Facts { lanes: self.lanes(), groups: self.groups(), cables: self.audio_cables(), racks: self.cables(), bases: self.cable_bases(), ears: self.ears(), master: self.master.facts() }
     }
 
     /// The names of the effects of each lane, in the order of its chain, for a test to compare with the model's.
@@ -4391,6 +4416,7 @@ impl AudioGraph {
                         lane.pattern.active_voices.clear();
                     }
                 }
+                GraphCommand::SetMaster { volume, limiter, ceiling, sample_rate } => self.master.configure(volume, limiter, ceiling, sample_rate),
                 GraphCommand::SetGlobalBpm { bpm } => {
                     // (A tempo that is no number, or none, is not one for a modulator to follow: it goes on at the one it had.)
                     if bpm.is_finite() && bpm > 0.0 {

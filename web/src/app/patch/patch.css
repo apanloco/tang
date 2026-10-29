@@ -339,6 +339,42 @@
   outline-offset: 1px;
 }
 
+/* The limiter on the output mix, in the master's grid (step 102): one button over the width of the cell, in the colour of what is safe while it is pressed. */
+.tang-flag--limiter {
+  width: 100%;
+  flex: none;
+}
+
+.tang-flag--limiter[aria-pressed="true"] {
+  border-color: var(--tang-ok);
+  background: var(--tang-ok);
+}
+
+/* How far the limiter has brought the sound down, under the master's controls: a label, a bar that fills from the left, and the number. */
+.tang-reduction {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+  padding: 0 var(--tang-space-3) var(--tang-space-3);
+}
+
+.tang-reduction__label {
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-reduction .tang-livebar {
+  flex: 1;
+  --bar: var(--tang-warn);
+}
+
+.tang-reduction__value {
+  min-width: 52px;
+  text-align: right;
+  font: 11px / 1.4 var(--tang-mono);
+  color: var(--tang-text-muted);
+}
+
 /* The mute and the solo of a lane or a group, in a cell like the keys': two small buttons side by side, a pressed one in the colour of what it does. */
 .tang-flags {
   display: flex;

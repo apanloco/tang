@@ -80,6 +80,7 @@ fn sources_to_save(model: &SessionModel) -> SaveSources {
             })
             .collect(),
         modulators: modulators_to_save(model, ModulatorLocation::Free),
+        master: model.master_to_save(),
     }
 }
 

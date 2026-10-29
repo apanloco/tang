@@ -35,6 +35,10 @@ pub enum Intent {
     /// has to be one it applies to. The controller clamps `value` to the gain's
     /// range.
     SetGain { node: NodeId, gain: Gain, value: f32 },
+    /// Put the limiter on the output mix in the sound, or take it out (step 102). The limiter is a look-ahead peak limiter that holds the mix under its ceiling (`Gain::LimiterCeiling` of the master)
+    /// instead of letting it clip; it is on in a session unless the file says it is not. What is as it is asked to be changes nothing. A step of the history ("turn the limiter off"), never merged
+    /// with another; told as `LimiterSet`.
+    SetLimiter { on: bool },
     /// Load one of the plugin's presets, by its id, into an instrument or an
     /// effect node. The parameters take the preset's values.
     LoadPreset { node: NodeId, preset: String },
@@ -496,6 +500,10 @@ pub enum Gain {
     GroupVolume,
     /// A group's stereo balance: -1 (left) to 1 (right).
     GroupPan,
+    /// The output mix's volume, set on `NodeId::MASTER` (step 102): 0 to 2, 1 is unity. It comes before the limiter.
+    MasterVolume,
+    /// Where the limiter on the output mix holds the sound under, set on `NodeId::MASTER`: -24 to 0 decibels below full scale.
+    LimiterCeiling,
 }
 
 impl Gain {
@@ -505,6 +513,8 @@ impl Gain {
             Gain::Volume | Gain::GroupVolume => (0.0, 4.0),
             Gain::Mix => (0.0, 1.0),
             Gain::GroupPan => (-1.0, 1.0),
+            Gain::MasterVolume => (0.0, crate::app::model::MASTER_VOLUME_MAX),
+            Gain::LimiterCeiling => (crate::app::model::CEILING_MIN, crate::app::model::CEILING_MAX),
         }
     }
 
@@ -515,6 +525,8 @@ impl Gain {
             Gain::Mix => "set mix",
             Gain::GroupVolume => "set the group's volume",
             Gain::GroupPan => "set pan",
+            Gain::MasterVolume => "set the master volume",
+            Gain::LimiterCeiling => "set the limiter's ceiling",
         }
     }
 }
@@ -537,6 +549,8 @@ pub enum Event {
     MuteSet { node: NodeId, muted: bool },
     /// A lane or a group is now soloed, or is not.
     SoloSet { node: NodeId, solo: bool },
+    /// The limiter on the output mix is now in the sound, or is not.
+    LimiterSet { on: bool },
     /// The piano's scale is now this: `scale` as the session file says it (`F# dorian`), and what a client
     /// needs to draw it without knowing any scale: its `root` (a pitch class, 0 C to 11 B), the short name of
     /// its `kind` (`dorian`, `harm minor`) and the pitch classes of its `notes`, lowest first.
@@ -777,6 +791,15 @@ mod tests {
                 json!({"type": "setGain", "node": 4, "gain": "groupPan", "value": -0.25}),
             ),
             (
+                Intent::SetGain { node: NodeId::MASTER, gain: Gain::LimiterCeiling, value: -6.0 },
+                json!({"type": "setGain", "node": 4_294_967_295u32, "gain": "limiterCeiling", "value": -6.0}),
+            ),
+            (
+                Intent::SetGain { node: NodeId::MASTER, gain: Gain::MasterVolume, value: 0.5 },
+                json!({"type": "setGain", "node": 4_294_967_295u32, "gain": "masterVolume", "value": 0.5}),
+            ),
+            (Intent::SetLimiter { on: false }, json!({"type": "setLimiter", "on": false})),
+            (
                 Intent::LoadPreset { node: NodeId(5), preset: "cathedral".to_string() },
                 json!({"type": "loadPreset", "node": 5, "preset": "cathedral"}),
             ),
@@ -911,6 +934,7 @@ mod tests {
             ),
             (Event::LockedSet { locked: false }, json!({"type": "lockedSet", "locked": false})),
             (Event::BpmSet { bpm: 96.5 }, json!({"type": "bpmSet", "bpm": 96.5})),
+            (Event::LimiterSet { on: true }, json!({"type": "limiterSet", "on": true})),
             (
                 Event::PatternSet {
                     node: NodeId(2),

@@ -71,6 +71,10 @@ pub enum Edit {
     /// A preset of the plugin at `slot` of a lane, by its place among the plugin's.
     Preset { lane: usize, slot: usize, preset: usize },
     Bpm { bpm: f32 },
+    /// The limiter on the output mix put in the sound or taken out (step 102).
+    Limiter { on: bool },
+    /// The master's volume or the limiter's ceiling (`Gain::MasterVolume`, `Gain::LimiterCeiling`) set (step 102).
+    Master { gain: Gain, value: f32 },
     /// An audio cable at `gain`, from a place among the outputs of the session (each lane's instrument and effects, then each group and its bus effects) to a place among its
     /// inputs (each lane's effects, each group's bus and its bus effects, and the mix last), both wrapped round the ones there are.
     AddCable { from: usize, to: usize, gain: f32 },
@@ -298,6 +302,8 @@ impl Edit {
                 Intent::LoadPreset { node: plugin.node, preset: plugin.presets[preset % plugin.presets.len()].id.clone() }
             }
             Edit::Bpm { bpm } => Intent::SetBpm { bpm: *bpm },
+            Edit::Limiter { on } => Intent::SetLimiter { on: *on },
+            Edit::Master { gain, value } => Intent::SetGain { node: NodeId::MASTER, gain: *gain, value: *value },
             Edit::AddCable { from, to, gain } => {
                 let (starts, ends) = (cable_starts(model), cable_ends(model));
                 Intent::AddCable { from: starts[from % starts.len()], to: ends[to % ends.len()], gain: Some(*gain) }
@@ -692,6 +698,9 @@ plugin = "builtin:osc"
         expect(Edit::ClearInstrument { lane: 1 }, Intent::ClearInstrument { node: lane1 });
         expect(Edit::RemoveGroup { group: 0 }, Intent::RemoveNode { node: bus });
         expect(Edit::Bpm { bpm: 99.0 }, Intent::SetBpm { bpm: 99.0 });
+        expect(Edit::Limiter { on: false }, Intent::SetLimiter { on: false });
+        expect(Edit::Master { gain: Gain::LimiterCeiling, value: -6.0 }, Intent::SetGain { node: NodeId::MASTER, gain: Gain::LimiterCeiling, value: -6.0 });
+        expect(Edit::Master { gain: Gain::MasterVolume, value: 0.5 }, Intent::SetGain { node: NodeId::MASTER, gain: Gain::MasterVolume, value: 0.5 });
         expect(Edit::Undo, Intent::Undo);
         expect(Edit::Redo, Intent::Redo);
         let reverb_presets = &ctl.model.instruments[0].effects[0].presets;

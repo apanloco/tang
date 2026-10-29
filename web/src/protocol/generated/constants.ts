@@ -16,6 +16,8 @@ export const GAIN_RANGES: Record<Gain, readonly [number, number]> = {
   mix: [0, 1],
   groupVolume: [0, 4],
   groupPan: [-1, 1],
+  masterVolume: [0, 2],
+  limiterCeiling: [-24, 0],
 };
 
 /** The same for each setting of a modulator (`ModulatorField::range`). */

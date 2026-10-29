@@ -33,7 +33,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::alloc_guard::allocations_in;
 use crate::app::controller::Controller;
-use crate::app::intent::ModulatorKind;
+use crate::app::intent::{Gain, ModulatorKind};
 use crate::app::load::load_session;
 use crate::app::testutil;
 use crate::audio::{Engine, MidiEvent, Renderer};
@@ -178,9 +178,15 @@ impl Scenario {
             || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddEffect { plugin, .. } | Edit::AddBusEffect { plugin, .. } if *plugin == "builtin:drive"))
     }
 
-    /// Whether the loop that the plan replaced can run it: it has no audio cables, no way out that is cut, no link of a chain that is cut and no modulator, which that loop is from before.
+    /// Whether it has a `[master]` table in its file or sets the master's volume, the limiter or its ceiling by its edits (step 102): the loop that the plan replaced copies the mix as it is, and
+    /// has no volume or limiter on it.
+    pub fn has_master(&self) -> bool {
+        self.session.contains("[master]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::Limiter { .. } | Edit::Master { .. }))
+    }
+
+    /// Whether the loop that the plan replaced can run it: it has no audio cables, no way out that is cut, no link of a chain that is cut, no modulator and no master that is set, which that loop is from before.
     pub fn is_in_the_old_loop(&self) -> bool {
-        !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds() && !self.has_free_modulators()
+        !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds() && !self.has_free_modulators() && !self.has_master()
     }
 }
 
@@ -550,6 +556,26 @@ const INPUT_EDITS: [(u64, Edit); 14] = [
     (45_000, Edit::Undo),
 ];
 
+/// What is done to the output mix in `CABLED` while it plays (step 102; the oracle loads it with the limiter out of the sound, as a session that has no `[master]` table is loaded here): the limiter is put in, its
+/// ceiling is brought down to -12 dB and the master volume up to 2 (the chord is then far over the ceiling), the limiter is taken out and put in again (the sound goes from the mix to the limited sound and back
+/// over a block), the ceiling is moved to -3 dB and the volume down to 0.5, and Undo and Redo go back and forward through it, with a last switch of the limiter that Undo takes back. Each is made.
+const MASTER_EDITS: [(u64, Edit); 14] = [
+    (6_000, Edit::Limiter { on: true }),
+    (9_000, Edit::Master { gain: Gain::LimiterCeiling, value: -12.0 }),
+    (12_000, Edit::Master { gain: Gain::MasterVolume, value: 2.0 }),
+    (18_000, Edit::Limiter { on: false }),
+    (21_000, Edit::Limiter { on: true }),
+    (24_000, Edit::Master { gain: Gain::LimiterCeiling, value: -3.0 }),
+    (27_000, Edit::Master { gain: Gain::MasterVolume, value: 0.5 }),
+    (30_000, Edit::Undo),
+    (31_500, Edit::Undo),
+    (33_000, Edit::Redo),
+    (34_500, Edit::Redo),
+    (36_000, Edit::Limiter { on: false }),
+    (39_000, Edit::Undo),
+    (42_000, Edit::Master { gain: Gain::MasterVolume, value: 1.0 }),
+];
+
 /// What the keys play into `edited:sources`: `performance`, and a key (E4) that is hit and let go of after the pedal is up, which a lane that has been given the keys again plays.
 fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     let mut events = performance();
@@ -571,7 +597,7 @@ pub fn edited() -> Vec<Scenario> {
         edits: edits.to_vec(),
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS), scenario("gains", &GAIN_EDITS), scenario("input", &INPUT_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS), scenario("gains", &GAIN_EDITS), scenario("input", &INPUT_EDITS), scenario("master", &MASTER_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -673,7 +699,10 @@ impl Rig {
         let (learn_tx, learn_rx) = crossbeam_channel::bounded(64);
         handles.pattern_rx = pattern_rx;
         handles.learn_rx = learn_rx;
-        let config = session::parse(&scenario.session).unwrap_or_else(|e| panic!("{}: the session does not parse: {e:#}", scenario.id));
+        let mut config = session::parse(&scenario.session).unwrap_or_else(|e| panic!("{}: the session does not parse: {e:#}", scenario.id));
+        // The corpus is rendered with the limiter on the output out of the sound, as every file in it was written before there was one (a session without a `[master]` table has it in, as the program
+        // loads it): what the engine renders is held to the bit, and a limiter is a look-ahead late and holds the sound under a ceiling. A scenario that has a `[master]` table has what it says.
+        config.master.get_or_insert(session::MasterConfig { limiter: Some(false), ..Default::default() });
         let model = load_session(&config, Path::new("."), scenario.rate, scenario.block, &Runtime::default(), &handles.cmd_tx, &mut |_| {})
             .unwrap_or_else(|e| panic!("{}: the session does not load: {e:#}", scenario.id));
         let telemetry = handles.telemetry.clone();
@@ -748,6 +777,8 @@ impl Rig {
             assert_eq!(without_depths(&facts.racks), without_depths(&model_racks), "{what}: the modulation cables of the engine are not those of the model");
             // And whose notes the modulators of the session's own rack hear.
             assert_eq!(facts.ears, testutil::model_ears(&self.ctl.model), "{what}: the ears of the engine's modulators are not the model's");
+            // And what the output mix is: its volume, its limiter and its ceiling.
+            assert_eq!(facts.master, testutil::model_master(&self.ctl.model), "{what}: the output mix of the engine is not the model's");
             // And their depths, but for those that another cable drives (the engine's is the one that cable has made of it this block, and the model's what the user set).
             for ((at, modulator, _, engine), (_, _, _, model)) in facts.racks.iter().zip(&model_racks) {
                 for (place, ((edge, _, engine), (_, _, model))) in engine.iter().zip(model).enumerate() {

@@ -18,6 +18,8 @@ export const formatValue = (value: number): string => String(Number(value.toPrec
 
 export interface KnobProps {
   label: string;
+  /** What is written under the knob, if it is not the label (which is its name to a screen reader): the master's `Master volume` is written `Volume`, which is what fits under it. */
+  caption?: string;
   /**
    * What the parameter is set to (not what modulation makes of it). The knob is controlled:
    * it draws this and asks for changes with `onChange`, and whoever holds the value decides
@@ -50,6 +52,7 @@ export interface KnobProps {
 
 export function Knob({
   label,
+  caption = label,
   value,
   min,
   max,
@@ -181,7 +184,7 @@ export function Knob({
           <circle ref={dot} className="tang-knob__dot" r="2.6" cx={CENTRE} cy={CENTRE} visibility="hidden" />
         </svg>
       </div>
-      <span className="tang-knob__label">{label}</span>
+      <span className="tang-knob__label">{caption}</span>
       <span className="tang-knob__value">{format(value)}</span>
     </div>
   );

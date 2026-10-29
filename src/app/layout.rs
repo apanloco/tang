@@ -33,7 +33,7 @@ use crate::telemetry::{self, MeterSlots, Slot};
 pub struct TelemetryLayout {
     /// A fingerprint of the entries: it differs when they do.
     pub rev: u32,
-    /// The peaks and the clip counts, of the master, then each group, then each lane.
+    /// The peaks and the clip counts, of the master (and how far its limiter has brought the sound down), then each group, then each lane.
     pub meters: Vec<LayoutEntry>,
     /// What each modulator puts out, then what each modulated parameter is set to.
     pub modulation: Vec<LayoutEntry>,
@@ -62,6 +62,8 @@ pub enum SlotKind {
     ModOutput,
     /// The value a parameter was set to this buffer, modulation included.
     Effective,
+    /// How far the limiter on the output mix has brought the sound down lately, in decibels (0 for none): the master's, at its input.
+    Reduction,
     /// Where a step sequencer is: the whole part of the number is the step it is at, the fraction how far into it.
     ModPosition,
 }
@@ -80,14 +82,18 @@ impl SessionModel {
     /// The meaning of every telemetry slot the model has handed out and that still
     /// has something to publish.
     pub fn telemetry_layout(&self) -> TelemetryLayout {
-        let mut meters = Vec::new();
+        // The master's: its peak and its clips, and how far its limiter has brought the sound down (step 102).
+        let mut meters = vec![
+            entry(telemetry::MASTER.peak, NodeId::MASTER, Port::AudioIn, SlotKind::Peak),
+            entry(telemetry::MASTER.clips, NodeId::MASTER, Port::AudioIn, SlotKind::Clips),
+            entry(telemetry::MASTER_REDUCTION, NodeId::MASTER, Port::AudioIn, SlotKind::Reduction),
+        ];
         let mut meter = |slots: Option<MeterSlots>, node: NodeId, port: Port| {
             if let Some(slots) = slots {
                 meters.push(entry(slots.peak, node, port, SlotKind::Peak));
                 meters.push(entry(slots.clips, node, port, SlotKind::Clips));
             }
         };
-        meter(Some(telemetry::MASTER), NodeId::MASTER, Port::AudioIn);
         for group in &self.groups {
             meter(group.meter, group.node, Port::AudioOut);
         }
@@ -142,13 +148,14 @@ mod tests {
     }
 
     #[test]
-    fn a_session_with_nothing_in_it_has_the_masters_meter() {
+    fn a_session_with_nothing_in_it_has_the_masters_meter_and_how_far_its_limiter_brings_the_sound_down() {
         let layout = SessionModel::default().telemetry_layout();
         assert_eq!(
             entries(&layout.meters),
             [
                 (0, NodeId::MASTER, Port::AudioIn, SlotKind::Peak),
                 (1, NodeId::MASTER, Port::AudioIn, SlotKind::Clips),
+                (telemetry::CAPACITY - 1, NodeId::MASTER, Port::AudioIn, SlotKind::Reduction),
             ]
         );
         assert!(layout.modulation.is_empty());
@@ -161,6 +168,7 @@ mod tests {
         let mut expected = vec![
             (0, NodeId::MASTER, Port::AudioIn, SlotKind::Peak),
             (1, NodeId::MASTER, Port::AudioIn, SlotKind::Clips),
+            (telemetry::CAPACITY - 1, NodeId::MASTER, Port::AudioIn, SlotKind::Reduction),
         ];
         let meter = |slots: Option<MeterSlots>, node: NodeId| {
             let slots = slots.unwrap();
@@ -174,7 +182,7 @@ mod tests {
             expected.extend(meter(lane.meter, lane.node));
         }
         assert_eq!(entries(&layout.meters), expected);
-        assert_eq!(expected.len(), 2 + 2 + 3 * 2, "the master, one group and three lanes");
+        assert_eq!(expected.len(), 3 + 2 + 3 * 2, "the master (which has the reduction too), one group and three lanes");
     }
 
     #[test]
@@ -183,7 +191,7 @@ mod tests {
         model.groups[0].meter = None;
         model.instruments[1].meter = None;
         let layout = model.telemetry_layout();
-        assert_eq!(layout.meters.len(), 2 + 2 * 2);
+        assert_eq!(layout.meters.len(), 3 + 2 * 2);
         let nodes: Vec<NodeId> = layout.meters.iter().map(|e| e.node).collect();
         assert!(!nodes.contains(&model.groups[0].node) && !nodes.contains(&model.instruments[1].node));
     }

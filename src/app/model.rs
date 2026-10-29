@@ -146,6 +146,31 @@ pub const DEFAULT_BPM: f32 = crate::plugin::chain::DEFAULT_BPM;
 pub const BPM_MIN: f32 = 20.0;
 pub const BPM_MAX: f32 = 300.0;
 
+/// The master's volume goes from nothing to twice the mix (unity is 1), and the limiter's ceiling from 24 decibels below full scale to full scale (step 102).
+pub const MASTER_VOLUME_MAX: f32 = 2.0;
+pub const CEILING_MIN: f32 = -24.0;
+pub const CEILING_MAX: f32 = 0.0;
+/// What the master is when a session does not say: unity, with the limiter in the sound a decibel under full scale (the ceiling that the audio thread starts with, too).
+pub const DEFAULT_CEILING: f32 = crate::plugin::chain::DEFAULT_CEILING;
+
+/// The output mix, whose settings the session keeps (step 102): its volume, whether the limiter is in the sound and where its ceiling is. The mix itself is a node of the graph and not of the
+/// model (`NodeId::MASTER`: `locate` has nothing for it), and these are what a `[master]` table of the file says and the intents `SetGain` (`MasterVolume`, `LimiterCeiling`) and `SetLimiter` set.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MasterNode {
+    /// The gain on the mix, 0 to `MASTER_VOLUME_MAX`: 1 leaves it as it is.
+    pub volume: f32,
+    /// Whether the limiter is in the sound. It is, unless a file says it is not (`limiter = false`): the user's "limiter default on".
+    pub limiter: bool,
+    /// The level that the limiter holds the sound under, in decibels below full scale (`CEILING_MIN` to `CEILING_MAX`).
+    pub ceiling: f32,
+}
+
+impl Default for MasterNode {
+    fn default() -> Self {
+        MasterNode { volume: 1.0, limiter: true, ceiling: DEFAULT_CEILING }
+    }
+}
+
 /// What a front-end edits: the instrument lanes and the submix groups.
 #[derive(Debug)]
 pub struct SessionModel {
@@ -162,6 +187,8 @@ pub struct SessionModel {
     /// The tempo that patterns are recorded at, in beats a minute: that of the first recorded pattern of a session that is loaded
     /// (`DEFAULT_BPM` if it has none).
     pub bpm: f32,
+    /// The output mix: its volume and its limiter.
+    pub master: MasterNode,
     /// The audio cables that have been drawn (P3c of `docs/patch-graph.md` §11.6), in the order of their ids: sends from one place of the audio to another, besides the
     /// way that a lane and a group are wired by themselves.
     pub cables: Vec<AudioCable>,
@@ -184,6 +211,7 @@ impl Default for SessionModel {
             slots: SlotAllocator::default(),
             ui: BTreeMap::new(),
             bpm: DEFAULT_BPM,
+            master: MasterNode::default(),
             cables: Vec::new(),
             sources: Vec::new(),
             event_cables: Vec::new(),
@@ -603,6 +631,18 @@ impl SessionModel {
     /// set one are as they were.
     pub fn bpm_to_save(&self) -> Option<f32> {
         (self.bpm != tempo_of_patterns(&self.instruments)).then_some(self.bpm)
+    }
+
+    /// The `[master]` table that a save writes: none when the master is what it is without one (a volume of 1, the limiter on, a ceiling of -1 dB), and else only the keys that are not, so that a
+    /// session that never touched it is the file it was.
+    pub fn master_to_save(&self) -> Option<crate::session::MasterConfig> {
+        let master = self.master;
+        let config = crate::session::MasterConfig {
+            volume: (master.volume != 1.0).then_some(master.volume),
+            limiter: (!master.limiter).then_some(false),
+            ceiling: (master.ceiling != DEFAULT_CEILING).then_some(master.ceiling),
+        };
+        (config != crate::session::MasterConfig::default()).then_some(config)
     }
 
     /// Where the master mix is drawn, if it has been placed.

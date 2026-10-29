@@ -457,22 +457,28 @@ describe("a request", () => {
       ["a number beyond 32 bits for a parameter", new MockServer(), { type: "setParam", node: filter.id, param: 0, value: 1e39 }, "inf is not a value for cutoff"],
       ["a number beyond 32 bits, the other way, for a gain", new MockServer(), { type: "setGain", node: oscillator.id, gain: "volume", value: -1e39 }, "-inf is not a value for Volume"],
       ["a number beyond 32 bits for a gain the node has not", new MockServer(), { type: "setGain", node: oscillator.id, gain: "mix", value: 1e39 }, "inf is not a value for Mix"],
+      ["a number beyond 32 bits for the volume of the output mix", new MockServer(), { type: "setGain", node: MASTER, gain: "masterVolume", value: 1e39 }, "inf is not a value for MasterVolume"],
+      ["a number beyond 32 bits, the other way, for the ceiling of its limiter", new MockServer(), { type: "setGain", node: MASTER, gain: "limiterCeiling", value: -1e39 }, "-inf is not a value for LimiterCeiling"],
       ["a number beyond 32 bits for a setting", new MockServer(), { type: "setModulatorField", node: lfo.id, field: "rate", value: 1e39 }, "inf is not a value for Rate"],
       ["a number beyond 32 bits for the depth of a cable", new MockServer(), { type: "setEdgeDepth", edge: 0, depth: -1e39 }, "-inf is not a value for the depth of a cable"],
     ];
     for (const [what, server, intent, message] of refused) expect(refusal(server, intent), what).toBe(message);
   });
 
-  test("that names the master is for a node that is not there (the master is not a node of the model), as the controller has it", async () => {
+  test("that names the master is for a node that is not there (the master is not a node of the model), as the controller has it, but for the gains that are the master's own", async () => {
     const server = new MockServer();
     const client = await open(server);
     for (const intent of [
       { type: "setParam", node: MASTER, param: 0, value: 1 },
-      { type: "setGain", node: MASTER, gain: "volume", value: 1 },
       { type: "setModulatorField", node: MASTER, field: "rate", value: 1 },
     ] as const) {
       const failure = (await client.request(intent).catch((e: unknown) => e)) as RequestError;
       expect([failure.code, failure.message], intent.type).toEqual(["notFound", `there is no node ${String(MASTER)}`]);
+    }
+    // The master's volume and the limiter's ceiling are looked for before the model's nodes (step 102): any other gain is refused for the master, in the controller's words.
+    for (const gain of ["volume", "mix", "groupVolume", "groupPan"] as const) {
+      const failure = (await client.request({ type: "setGain", node: MASTER, gain, value: 1 }).catch((e: unknown) => e)) as RequestError;
+      expect([failure.code, failure.message], gain).toEqual(["invalid", `${gain.charAt(0).toUpperCase()}${gain.slice(1)} does not apply to that node`]);
     }
   });
 
@@ -1232,7 +1238,8 @@ describe("drawing a cable to a setting of another modulator", () => {
   });
 
   /** Every slot a layout has, meters and values. */
-  const slotsOf = (layout: TelemetryLayout): number[] => [...layout.meters, ...layout.modulation].map((entry) => entry.slot);
+  // (Not the limiter's reduction, which is the last cell of the telemetry and is never handed out: `HANDED_OUT` of `src/telemetry.rs`.)
+  const slotsOf = (layout: TelemetryLayout): number[] => [...layout.meters, ...layout.modulation].filter((entry) => entry.kind !== "reduction").map((entry) => entry.slot);
   /** The values of the layout that are of a setting of a modulator, or of the depth of a cable. */
   const ofSettings = (layout: TelemetryLayout | undefined) => (layout?.modulation ?? []).filter((entry) => entry.kind === "effective" && entry.port.type !== "param");
 
@@ -1842,7 +1849,7 @@ describe("adding an instrument", () => {
   const audioPath = (snapshot: Snapshot | null) => (snapshot?.graph.edges ?? []).filter((e) => e.kind !== "modulation").map((e) => `${e.kind} ${String(e.from.node)}→${String(e.to.node)}`);
   const strip = (snapshot: Snapshot | null) => (snapshot?.graph.nodes ?? []).map((n) => `${String(n.id)} ${n.name}`);
   const add = (plugin: string): Intent => ({ type: "addInstrument", plugin });
-  const nextSlot = (snapshot: Snapshot) => 1 + Math.max(...[...snapshot.telemetry.meters, ...snapshot.telemetry.modulation].map((entry) => entry.slot));
+  const nextSlot = (snapshot: Snapshot) => 1 + Math.max(...[...snapshot.telemetry.meters, ...snapshot.telemetry.modulation].filter((entry) => entry.kind !== "reduction").map((entry) => entry.slot));
   const reach = reachFixture.snapshot;
 
   test("puts a lane after the lanes there are and before the master, with the controller's own node, its link to the master after the others and no group", async () => {
@@ -2360,6 +2367,63 @@ describe("the meters and the scope of the mock for a lane or a group that is mut
   test("read the level of a note that is held in every lane, every group and the master while nothing is muted or soloed", async () => {
     const { server } = await playing();
     near(peaks(server), { [MASTER]: LEVEL, [GROUP_A]: LEVEL, [GROUP_B]: LEVEL, [LANE_1]: LEVEL, [LANE_2]: LEVEL, [LANE_3]: LEVEL, [LANE_4]: LEVEL });
+  });
+
+  test("read what the output mix is: the volume turns it, and the limiter holds it under its ceiling and says how far it brought it down, as the engine's master does", async () => {
+    const { server, client } = await playing();
+    const cells = (): { peak: number; reduction: number } => {
+      const frame = decodeFrame(server.frame("meters", 1, new Map(), 0))?.values ?? new Float32Array(0);
+      const at = (kind: string): number => frame[server.snapshot.telemetry.meters.findIndex((entry) => entry.node === MASTER && entry.kind === kind)] ?? Number.NaN;
+      return { peak: at("peak"), reduction: at("reduction") };
+    };
+    const ceiling = (db: number): number => 10 ** (db / 20);
+    // The limiter is in the sound at -1 dB, and the note is far under it: it reads what it is, and nothing is brought down.
+    expect(cells().peak).toBeCloseTo(LEVEL, 5);
+    expect(cells().reduction).toBe(0);
+    // The volume turns the mix.
+    await flag(client, { type: "setGain", node: MASTER, gain: "masterVolume", value: 0.5 });
+    expect(cells().peak).toBeCloseTo(LEVEL * 0.5, 5);
+    await flag(client, { type: "setGain", node: MASTER, gain: "masterVolume", value: 2 });
+    expect(cells().peak).toBeCloseTo(LEVEL * 2, 5);
+    // A ceiling of -24 dB holds the mix there, and the reduction says how far it was brought down (the volume is before the limiter).
+    await flag(client, { type: "setGain", node: MASTER, gain: "limiterCeiling", value: -24 });
+    expect(cells().peak).toBeCloseTo(ceiling(-24), 5);
+    expect(cells().reduction).toBeCloseTo(20 * Math.log10((LEVEL * 2) / ceiling(-24)), 3);
+    // Out of the sound, the mix is what it is and nothing is brought down.
+    await flag(client, { type: "setLimiter", on: false });
+    expect(cells().peak).toBeCloseTo(LEVEL * 2, 5);
+    expect(cells().reduction).toBe(0);
+    // And in again at a ceiling over the mix: it is let through, and nothing is brought down.
+    await flag(client, { type: "setLimiter", on: true });
+    await flag(client, { type: "setGain", node: MASTER, gain: "limiterCeiling", value: 0 });
+    expect(cells().peak).toBeCloseTo(LEVEL * 2, 5);
+    expect(cells().reduction).toBe(0);
+  });
+
+  test("say how far the limiter has brought the sound down as the engine does: it falls by the meter's 40 decibels a second when the limiter lets go, and what is under a twentieth of a decibel is none", async () => {
+    const { server, client } = await playing();
+    const peaks = new Map<number, number>();
+    const reduction = (elapsed: number): number => {
+      const frame = decodeFrame(server.frame("meters", 1, peaks, elapsed))?.values ?? new Float32Array(0);
+      return frame[server.snapshot.telemetry.meters.findIndex((entry) => entry.node === MASTER && entry.kind === "reduction")] ?? Number.NaN;
+    };
+    await flag(client, { type: "setGain", node: MASTER, gain: "limiterCeiling", value: -24 });
+    const worked = reduction(0);
+    expect(worked).toBeCloseTo(20 * Math.log10(LEVEL / 10 ** (-24 / 20)), 3);
+    // The limiter is taken out of the sound: what it said falls, 40 decibels a second, and is not nothing at once.
+    await flag(client, { type: "setLimiter", on: false });
+    expect(reduction(0.1)).toBeCloseTo(worked - 4, 3);
+    expect(reduction(0.1)).toBeCloseTo(worked - 8, 3);
+    // Under a twentieth of a decibel is none: the mix is a hundredth of a decibel over a ceiling of -10 dB, and then a fifth of one.
+    await flag(client, { type: "setLimiter", on: true });
+    await flag(client, { type: "setGain", node: MASTER, gain: "limiterCeiling", value: -10 });
+    const over = (db: number): number => (10 ** (-10 / 20) * 10 ** (db / 20)) / LEVEL;
+    await flag(client, { type: "setGain", node: MASTER, gain: "masterVolume", value: over(0.03) });
+    peaks.clear();
+    expect(reduction(0)).toBe(0);
+    await flag(client, { type: "setGain", node: MASTER, gain: "masterVolume", value: over(0.2) });
+    peaks.clear();
+    expect(reduction(0)).toBeCloseTo(0.2, 3);
   });
 
   test("a muted lane reads nothing and the others read as they did", async () => {
