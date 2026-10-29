@@ -5,11 +5,13 @@
 //! that describes it. The checks come first: an intent that fails changes
 //! nothing, and does not count as a revision.
 
-use crate::app::controller::{ChainAt, Controller, FileMode, NewTarget, depth_command, envelope_command, key_command, macro_command, master_command, outputs_fit_the_chain, rate_command, steps_command, sync_command};
+use crate::app::controller::{
+    ChainAt, Controller, FileMode, NewTarget, depth_command, envelope_command, has_audio_output, key_command, macro_command, master_command, outputs_fit_the_chain, rate_command, steps_command, sync_command,
+};
 use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
-use crate::app::module::{self, Module};
+use crate::app::module::{self, Module, ModuleOutput};
 use crate::app::model::{
     BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, LinkOf, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NEW_CABLE_GAIN, NodeId, NodePath, ParamKind, ParamSlot,
     PatternState, PluginSlot, STEP_MAX, STEP_MIN, sync_beats,
@@ -20,6 +22,9 @@ use crate::scale::ScaleSetting;
 use crate::session::NodeUi;
 use crate::session::{Feed, Route};
 use crate::{plugin, session};
+
+/// The plugins that a lane of a module is made of once they are loaded: its instrument, if it has one, and its effects in order (`load_module`).
+type LoadedLane = (Option<Box<dyn plugin::Plugin>>, Vec<Box<dyn plugin::Plugin>>);
 
 /// What an intent did, for `apply` to tell.
 pub(super) enum Done {
@@ -46,6 +51,7 @@ impl Controller {
             Intent::SaveAs { name } => return self.save_as_intent(&name),
             // (A module that is saved is nothing of the session: it is not marked, and the history is as it was.)
             Intent::SaveModule { node, name } => return self.save_module_intent(node, &name),
+            Intent::SaveSelectionAsModule { nodes, name } => return self.save_selection_intent(&nodes, &name),
             // (What they do is carried out as any intent is, and is no step of the history.)
             Intent::Undo => return self.undo(),
             Intent::Redo => return self.redo(),
@@ -134,7 +140,7 @@ impl Controller {
             Intent::AddInstrument { plugin } => self.add_instrument_intent(&plugin)?,
             Intent::ReplaceInstrument { node, plugin } => self.replace_instrument_intent(node, &plugin)?,
             Intent::ClearInstrument { node } => self.clear_instrument_intent(node)?,
-            Intent::Save | Intent::SaveAs { .. } | Intent::SaveModule { .. } | Intent::Undo | Intent::Redo => unreachable!("done above"),
+            Intent::Save | Intent::SaveAs { .. } | Intent::SaveModule { .. } | Intent::SaveSelectionAsModule { .. } | Intent::Undo | Intent::Redo => unreachable!("done above"),
         };
         Ok(self.conclude(done))
     }
@@ -969,7 +975,24 @@ impl Controller {
         self.model.locate(node).ok_or(IntentError::NotFound(node))?;
         let name = module::clean_name(name).map_err(invalid)?;
         let text = module::to_text(&self.model, node).map_err(invalid)?;
-        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(module::path_in(&dir, &name), text)).map_err(|error| IntentError::Io(error.to_string()))?;
+        self.write_module(&dir, name, &text)
+    }
+
+    /// Write the plugins in `nodes` as a module of the library under `name` (`Intent::SaveSelectionAsModule`, step 105), as `save_module_intent` writes a chain: the nodes are looked for first (the first that is not there is not found),
+    /// then the name, then what they make; nothing is written, and no revision used, for a refusal.
+    fn save_selection_intent(&mut self, nodes: &[NodeId], name: &str) -> Result<Applied, IntentError> {
+        let Some(dir) = self.modules_dir.clone() else { return Err(IntentError::Io("this program keeps no library of modules".to_string())) };
+        for node in nodes {
+            self.model.locate(*node).ok_or(IntentError::NotFound(*node))?;
+        }
+        let name = module::clean_name(name).map_err(invalid)?;
+        let text = module::to_text_of(&self.model, nodes).map_err(invalid)?;
+        self.write_module(&dir, name, &text)
+    }
+
+    /// Put the text of a module in the library `dir` as `name`, have the catalog list it and tell the clients (`ModuleSaved`): a revision of the session's stream, and nothing of the session.
+    fn write_module(&mut self, dir: &std::path::Path, name: String, text: &str) -> Result<Applied, IntentError> {
+        std::fs::create_dir_all(dir).and_then(|()| std::fs::write(module::path_in(dir, &name), text)).map_err(|error| IntentError::Io(error.to_string()))?;
         self.refresh_modules();
         self.rev += 1;
         let applied = Applied::of(self.rev, vec![Event::ModuleSaved { name }]);
@@ -977,46 +1000,75 @@ impl Controller {
         Ok(applied)
     }
 
-    /// Add the module called `name` of the library as a lane of its own that has no instrument, bare as every effect that stands by itself is, with the module's effects in its chain in their order:
-    /// each with the preset that the file says (by its name), the values that it says over it, its mix, the knobs pinned to its node and whether the stage before it feeds it, and the audio cables that the file
-    /// has between them. The lane's node is made first and the effects' after it, in order, and then the cables, so that a redo gives all of them back under the ids they had. Every plugin is
-    /// loaded before anything is made: a module that has one that is not installed, or does not load, leaves no lane and uses no id. What the file says of a preset or a value that the plugin has not is
-    /// logged and left out, as the loader leaves it out of a session; a cable that cannot be drawn (it would make the audio go round) is too.
+    /// Add the module called `name` of the library: a lane of its own for each of the module's, at the end, each bare as every effect that stands by itself is (its way out cut), with the instrument
+    /// the module's lane has, if it has one, and the module's effects in its chain in their order, each with the preset that the file says (by its name), the values that it says over it, its mix or its volume, the knobs pinned to
+    /// its node and whether the stage before it feeds it, and then the audio cables that the file has between them. The lanes are made in order, each lane's node first and its effects' after it, and then the cables, so
+    /// that a redo gives all of them back under the ids they had. Every plugin is loaded before anything is made: a module that has one that is not installed, or does not load, leaves no lane and uses no id. What the
+    /// file says of a preset or a value that the plugin has not is logged and left out, as the loader leaves it out of a session; a cable that cannot be drawn (it would make the audio go round) is too.
     fn load_module(&mut self, name: &str) -> Result<(), IntentError> {
         let Some(dir) = self.modules_dir.clone() else { return Err(invalid("this program keeps no library of modules")) };
         let text = std::fs::read_to_string(module::path_in(&dir, name)).map_err(|_| invalid(format!("there is no module called {name} in the library")))?;
         let module = module::parse(&text).map_err(|why| invalid(format!("{name} is not a module: {why}")))?;
-        let mut plugins = Vec::new();
-        for effect in &module.effects {
-            let loaded = self.load_effect(&effect.plugin).map_err(|error| match error {
-                IntentError::Invalid(why) => invalid(format!("the module {name} cannot be added: {why}")),
-                other => other,
-            })?;
-            outputs_fit_the_chain(loaded.name(), loaded.audio_output_count())?;
-            plugins.push(loaded);
+        let refused = |error: IntentError| match error {
+            IntentError::Invalid(why) => invalid(format!("the module {name} cannot be added: {why}")),
+            other => other,
+        };
+        let mut loaded = Vec::new();
+        for lane in &module.lanes {
+            let instrument = match &lane.instrument {
+                Some(config) => {
+                    let plugin = self.load_instrument(&config.plugin).map_err(refused)?;
+                    has_audio_output(plugin.as_ref())?;
+                    Some(plugin)
+                }
+                None => None,
+            };
+            let mut effects = Vec::new();
+            for effect in &lane.effects {
+                let plugin = self.load_effect(&effect.plugin).map_err(refused)?;
+                outputs_fit_the_chain(plugin.name(), plugin.audio_output_count())?;
+                effects.push(plugin);
+            }
+            loaded.push((instrument, effects));
         }
         // (What the intent takes out is written down when it is carried out and has nothing here to put back: a preset loaded for the module is part of what it is made of.)
         let journal = self.journal.take();
-        let made = self.make_module(&module, plugins);
+        let made = self.make_module(&module, loaded);
         self.journal = journal;
         made
     }
 
-    /// The lane and the effects of `module`, made from the plugins that were loaded for them in the order of its effects (`load_module`).
-    fn make_module(&mut self, module: &Module, plugins: Vec<Box<dyn plugin::Plugin>>) -> Result<(), IntentError> {
-        let mut plugins = plugins.into_iter().zip(&module.effects);
-        let (first, effect) = plugins.next().ok_or_else(|| invalid("a module has at least one effect"))?;
-        let mut nodes = vec![self.add_free_effect_loaded(first, &effect.plugin)?];
-        let inst = self.model.instruments.len() - 1;
-        for (loaded, effect) in plugins {
-            nodes.push(self.insert_effect(ChainAt::Lane(inst), loaded, &effect.plugin)?);
+    /// The lanes, the plugins and the cables of `module`, made from the plugins that were loaded for them in the order of its lanes (`load_module`): for each lane its instrument, if it has one, and its effects.
+    fn make_module(&mut self, module: &Module, loaded: Vec<LoadedLane>) -> Result<(), IntentError> {
+        // (The nodes of each lane: its own, which is its instrument's, and its effects', in the order of the file.)
+        let mut made: Vec<(NodeId, Vec<NodeId>)> = Vec::new();
+        for ((instrument, effects), lane) in loaded.into_iter().zip(&module.lanes) {
+            let instrument = match (instrument, &lane.instrument) {
+                (Some(plugin), Some(config)) => Some((plugin, config.plugin.as_str())),
+                _ => None,
+            };
+            let inst = self.add_bare_lane(instrument);
+            let mut nodes = Vec::new();
+            for (plugin, effect) in effects.into_iter().zip(&lane.effects) {
+                nodes.push(self.insert_effect(ChainAt::Lane(inst), plugin, &effect.plugin)?);
+            }
+            made.push((self.model.instruments[inst].node, nodes));
         }
-        for (node, effect) in nodes.iter().zip(&module.effects) {
-            self.settings_of_a_module_effect(*node, effect);
+        for ((node, effects), lane) in made.iter().zip(&module.lanes) {
+            if let Some(config) = &lane.instrument {
+                self.settings_of_a_module_instrument(*node, config);
+            }
+            for (effect_node, effect) in effects.iter().zip(&lane.effects) {
+                self.settings_of_a_module_effect(*effect_node, effect);
+            }
         }
         for cable in &module.cables {
-            let from = Endpoint { node: nodes[cable.from], port: Port::AudioOut };
-            let to = Endpoint { node: nodes[cable.to], port: if cable.side { Port::AudioInSide } else { Port::AudioIn } };
+            let start = match cable.from {
+                ModuleOutput::Instrument { lane } => made[lane].0,
+                ModuleOutput::Effect { lane, effect } => made[lane].1[effect],
+            };
+            let from = Endpoint { node: start, port: Port::AudioOut };
+            let to = Endpoint { node: made[cable.to.lane].1[cable.to.effect], port: if cable.to.side { Port::AudioInSide } else { Port::AudioIn } };
             if let Err(error) = self.add_cable_intent(from, to, Some(cable.gain)) {
                 log::warn!("a cable of the module is left out: {error}");
             }
@@ -1024,34 +1076,41 @@ impl Controller {
         Ok(())
     }
 
-    /// Give the effect in `node`, which has just been made from a module, what the module's file says of it, in the order that the loader gives a session's plugin what its file says: the preset, the values
-    /// over it, then what the host keeps (the mix, the knobs pinned to its node, and whether the stage before it feeds it).
-    fn settings_of_a_module_effect(&mut self, node: NodeId, effect: &session::EffectConfig) {
+    /// Give the plugin in `node`, which has just been made from a module, the preset that the module names (found by its name) and the values that it says over it (by the name of the parameter): the order in which the loader
+    /// gives a session's plugin what its file says. What the module says of a preset or a parameter that the plugin has not is logged and left out.
+    fn give_a_module_plugin_its_values(&mut self, node: NodeId, preset: Option<&String>, params: &std::collections::HashMap<String, f64>) {
         let Ok(at) = self.locate_plugin(node) else { return };
-        if let Some(wanted) = &effect.preset {
+        if let Some(wanted) = preset {
             let id = self.plugin_at(&at).and_then(|slot| slot.presets.iter().find(|preset| preset.name == *wanted).map(|preset| preset.id.clone()));
             match id {
                 Some(id) => {
                     if let Err(error) = self.load_preset(node, &id) {
-                        log::warn!("the preset {wanted} of the module's effect could not be loaded: {error}");
+                        log::warn!("the preset {wanted} of the module's plugin could not be loaded: {error}");
                     }
                 }
-                None => log::warn!("the module's effect has no preset {wanted}"),
+                None => log::warn!("the module's plugin has no preset {wanted}"),
             }
         }
-        let mut names: Vec<&String> = effect.params.keys().collect();
+        let mut names: Vec<&String> = params.keys().collect();
         names.sort();
         for name in names {
             let index = self.plugin_at(&at).and_then(|slot| slot.params.iter().find(|row| row.name == *name).map(|row| row.index));
             match index {
                 Some(index) => {
-                    if let Err(error) = self.set_param(node, index, effect.params[name] as f32) {
+                    if let Err(error) = self.set_param(node, index, params[name] as f32) {
                         log::warn!("the module's value of {name} was not set: {error}");
                     }
                 }
-                None => log::warn!("the module's effect has no parameter {name}"),
+                None => log::warn!("the module's plugin has no parameter {name}"),
             }
         }
+    }
+
+    /// Give the effect in `node`, which has just been made from a module, what the module's file says of it, in the order that the loader gives a session's plugin what its file says: the preset, the values
+    /// over it, then what the host keeps (the mix, the knobs pinned to its node, and whether the stage before it feeds it).
+    fn settings_of_a_module_effect(&mut self, node: NodeId, effect: &session::EffectConfig) {
+        self.give_a_module_plugin_its_values(node, effect.preset.as_ref(), &effect.params);
+        let Ok(at) = self.locate_plugin(node) else { return };
         if let Err(error) = self.set_gain(node, Gain::Mix, effect.mix as f32) {
             log::warn!("the module's mix was not set: {error}");
         }
@@ -1062,6 +1121,18 @@ impl Controller {
             if let Err(error) = self.set_feed_intent(node, Feed::None) {
                 log::warn!("the module's cut feed was not set: {error}");
             }
+        }
+    }
+
+    /// Give the instrument in the lane `node`, which has just been made from a module, what the module's file says of it: the preset, the values over it, the lane's volume and the knobs pinned to its node.
+    fn settings_of_a_module_instrument(&mut self, node: NodeId, instrument: &session::PluginConfig) {
+        self.give_a_module_plugin_its_values(node, instrument.preset.as_ref(), &instrument.params);
+        let Ok(at) = self.locate_plugin(node) else { return };
+        if let Err(error) = self.set_gain(node, Gain::Volume, instrument.volume as f32) {
+            log::warn!("the module's volume was not set: {error}");
+        }
+        if let Some(slot) = self.plugin_at(&at) {
+            slot.pin_names(&instrument.pinned);
         }
     }
 
@@ -7122,12 +7193,15 @@ type = "midi"
         assert_eq!((ctl.rev, ctl.dirty, ctl.history_state()), (rev + 1, false, history), "nothing of the session changed: it is not marked and the history is as it was");
         assert!(ctl.catalog.rev() > catalog_rev, "the clients are told the catalog again");
         let text = std::fs::read_to_string(dir.path().join("Space.toml")).unwrap();
-        assert!(text.starts_with("# A chain of effects, saved by Tang as a module"), "{text}");
+        assert!(text.starts_with("# A module saved by Tang"), "{text}");
         let module = module::parse(&text).unwrap();
-        assert_eq!(module.effects.iter().map(|effect| effect.plugin.as_str()).collect::<Vec<_>>(), ["builtin:filter", "builtin:reverb"]);
-        assert_eq!(module.effects[1].mix, 0.4, "written as it is typed, not as the 32-bit number it is held in");
-        assert_eq!(module.effects[1].feed, Feed::None);
-        assert_eq!(module.cables, [module::ModuleCable { from: 0, to: 1, side: false, gain: 0.5 }]);
+        assert_eq!(module.lanes.len(), 1);
+        let effects = &module.lanes[0].effects;
+        assert_eq!(effects.iter().map(|effect| effect.plugin.as_str()).collect::<Vec<_>>(), ["builtin:filter", "builtin:reverb"]);
+        assert_eq!(effects[1].mix, 0.4, "written as it is typed, not as the 32-bit number it is held in");
+        assert_eq!(effects[1].feed, Feed::None);
+        let (from, to) = (module::ModuleOutput::Effect { lane: 0, effect: 0 }, module::ModuleInput { lane: 0, effect: 1, side: false });
+        assert_eq!(module.cables, [module::ModuleCable { from, to, gain: 0.5 }]);
         // Listed with the plugins, by name, as a module, which is no plugin that is loaded.
         let listed: Vec<_> = ctl.catalog.entries().into_iter().filter(|entry| entry.format == "Module").map(|entry| (entry.id, entry.name, entry.params, entry.is_instrument)).collect();
         assert_eq!(listed, [("module:Space".to_string(), "Space".to_string(), 2, false)]);
@@ -7292,6 +7366,339 @@ type = "midi"
         assert_eq!(reverb.pinned, reverb.params.iter().filter(|row| row.name == "size").map(|row| row.index).collect::<Vec<_>>(), "a knob that it has not is not pinned, and the one it has is");
         assert_eq!(lane.effects[1].mix, 1.0, "a file that says no mix is fully wet, as a session's is");
         ctl.model.check_ids().unwrap();
+    }
+
+    // -- a graph of plugins as a module (step 105: the plugins that are chosen, and the cables between them) --
+
+    /// A session of two lanes that hold plugins and a third that is empty: lane 0 is an oscillator (a volume of 0.8, a detune of 3 that is pinned) with a chain of a filter (at a mix of 0.9), a delay and a reverb (a
+    /// preset, a mix of 0.4); lane 1 has no instrument and no way out, and holds a math effect (a mode of 4) and a drive. The cables: the oscillator into the math (0.3), the filter into the math's second input
+    /// (0.7), the math into the reverb, and the drive to the mix. It has a group with a bus effect, the keys as a source of notes and a modulator (what a module does not take).
+    const A_GRAPH_TO_KEEP: &str = r#"
+[keys]
+
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.8
+pinned = ["detune"]
+[instrument.params]
+detune = 3.0
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 0.9
+
+[[instrument.effect]]
+plugin = "builtin:delay"
+
+[[instrument.effect]]
+plugin = "builtin:reverb"
+preset = "Cathedral"
+mix = 0.4
+
+[[instrument]]
+route = "none"
+
+[[instrument.effect]]
+plugin = "builtin:math"
+[instrument.effect.params]
+mode = 4
+
+[[instrument.effect]]
+plugin = "builtin:drive"
+
+[[instrument]]
+
+[[modulator]]
+type = "lfo"
+
+[[cable]]
+from = "instrument[0]"
+to = "instrument[1].effect[0]"
+gain = 0.3
+
+[[cable]]
+from = "instrument[0].effect[0]"
+to = "instrument[1].effect[0].side"
+gain = 0.7
+
+[[cable]]
+from = "instrument[1].effect[0]"
+to = "instrument[0].effect[2]"
+
+[[cable]]
+from = "instrument[1].effect[1]"
+to = "master"
+"#;
+
+    /// A controller over `A_GRAPH_TO_KEEP` with the built-in plugins and a library of modules in `dir`.
+    fn a_graph(dir: &std::path::Path) -> (StubEngine, Controller) {
+        let (handles, engine) = testutil::stub_engine_of(4_096);
+        let mut ctl = Controller::new(load(A_GRAPH_TO_KEEP).model, handles, None);
+        ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        ctl.modules_dir = Some(dir.to_path_buf());
+        (engine, ctl)
+    }
+
+    fn save_selection(ctl: &mut Controller, nodes: &[NodeId], name: &str) -> Result<Applied, IntentError> {
+        ctl.apply(Intent::SaveSelectionAsModule { nodes: nodes.to_vec(), name: name.to_string() })
+    }
+
+    /// The module that a save wrote: what its file says.
+    fn module_in(dir: &std::path::Path, name: &str) -> Module {
+        let text = std::fs::read_to_string(dir.join(format!("{name}.toml"))).unwrap();
+        module::parse(&text).unwrap_or_else(|why| panic!("{name} is not a module: {why}\n{text}"))
+    }
+
+    #[test]
+    fn effects_chosen_from_two_lanes_are_saved_with_the_cable_between_them_and_added_as_a_lane_for_each_with_one_step_of_the_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, mut ctl) = a_graph(dir.path());
+        let (filter, math) = (ctl.model.instruments[0].effects[0].node, ctl.model.instruments[1].effects[0].node);
+        ctl.dirty = false;
+        let (rev, catalog_rev, history) = (ctl.rev, ctl.catalog.rev(), ctl.history_state());
+        // (The order of the list is not the order of the module: its lanes are the session's, in its order.)
+        let applied = save_selection(&mut ctl, &[math, filter], "  Pair  ").unwrap();
+        assert_eq!(applied, Applied::of(rev + 1, vec![Event::ModuleSaved { name: "Pair".to_string() }]));
+        assert_eq!((ctl.rev, ctl.dirty, ctl.history_state()), (rev + 1, false, history), "nothing of the session changed: it is not marked and the history is as it was");
+        assert!(ctl.catalog.rev() > catalog_rev, "the clients are told the catalog again");
+        let module = module_in(dir.path(), "Pair");
+        assert_eq!(module.lanes.len(), 2, "a lane for each lane that has something chosen");
+        assert!(module.lanes.iter().all(|lane| lane.instrument.is_none()));
+        let plugins: Vec<Vec<&str>> = module.lanes.iter().map(|lane| lane.effects.iter().map(|effect| effect.plugin.as_str()).collect()).collect();
+        assert_eq!(plugins, [vec!["builtin:filter"], vec!["builtin:math"]]);
+        assert_eq!(module.lanes[0].effects[0].mix, 0.9);
+        assert_eq!(module.lanes[1].effects[0].params.get("mode"), Some(&4.0));
+        // Of the four cables of the session, the one that has both its ends among what was chosen: the filter into the math's second input. The oscillator's goes into it, but the oscillator was not chosen; the
+        // math's goes into the reverb, and the drive's to the mix.
+        let (from, to) = (module::ModuleOutput::Effect { lane: 0, effect: 0 }, module::ModuleInput { lane: 1, effect: 0, side: true });
+        assert_eq!(module.cables, [module::ModuleCable { from, to, gain: 0.7 }]);
+        let listed: Vec<_> = ctl.catalog.entries().into_iter().filter(|entry| entry.format == "Module").map(|entry| (entry.name, entry.params, entry.is_instrument)).collect();
+        assert_eq!(listed, [("Pair".to_string(), 2, false)], "listed with as many plugins as it has");
+
+        // Added: a bare lane for each, in order, the lane's node and its effects' and then the next lane's, and then the cable.
+        let cables_before = ctl.model.cables.len();
+        sent(&engine);
+        let applied = add_free_effect(&mut ctl, "module:Pair").unwrap();
+        assert_eq!(applied, Applied::restructured(ctl.rev));
+        assert_eq!(ctl.model.instruments.len(), 5, "a lane at the end for each of the module's");
+        let (first, second) = (&ctl.model.instruments[3], &ctl.model.instruments[4]);
+        assert!([first, second].iter().all(|lane| lane.instrument.is_none() && (lane.range, lane.group, lane.route) == (None, None, Route::None)), "bare, as every module that stands by itself is");
+        let names = |lane: &crate::app::model::InstrumentNode| lane.effects.iter().map(|effect| effect.name.clone()).collect::<Vec<_>>();
+        assert_eq!((names(first), names(second)), (vec!["Filter".to_string()], vec!["Math".to_string()]));
+        assert_eq!(first.effects[0].mix, 0.9);
+        let (new_filter, new_math) = (first.effects[0].node, second.effects[0].node);
+        assert_eq!(ctl.last_made().nodes, [first.node, new_filter, second.node, new_math], "the ids come in the order of the file: a lane and its plugins, and the next lane");
+        assert_eq!(param(&ctl, NodePath::Effect { inst: 4, index: 0 }, "mode").1, 4.0);
+        assert_eq!(ctl.model.cables.len(), cables_before + 1, "one cable, the one that was between the two");
+        assert!(ctl.model.cables.iter().any(|cable| (cable.from, cable.to, cable.gain) == (CableFrom::Effect(new_filter), CableTo::EffectSide(new_math), 0.7)), "the cable, at the second input and at its level");
+        ctl.model.check_ids().unwrap();
+        let told = sent(&engine);
+        let starts: Vec<&str> = told.iter().filter(|command| command.starts_with("AddInstrument") || command.starts_with("SetLaneRoute") || command.starts_with("InsertEffect")).map(|command| command.split(' ').take(2).collect::<Vec<_>>().join(" ").leak() as &str).collect();
+        assert_eq!(starts, ["AddInstrument range=None", "SetLaneRoute inst=3", "InsertEffect inst=3", "AddInstrument range=None", "SetLaneRoute inst=4", "InsertEffect inst=4"], "{told:?}");
+        assert!(told.last().is_some_and(|command| command.starts_with("AddCable")), "the cable is the last: {told:?}");
+
+        // One step, in the words of the button that adds an effect: undo takes both lanes out with their effects and the cable, and redo makes them again under the ids that they had.
+        assert_eq!(ctl.history_state().undo.as_deref(), Some("add Pair"));
+        let ids = (first.node, new_filter, second.node, new_math, ctl.model.cables.last().map(|cable| cable.id));
+        ctl.apply(Intent::Undo).unwrap();
+        assert_eq!((ctl.model.instruments.len(), ctl.model.cables.len()), (3, cables_before), "both lanes are gone, with their effects and the cable between them");
+        ctl.model.check_ids().unwrap();
+        ctl.apply(Intent::Redo).unwrap();
+        assert_eq!(ctl.model.instruments.len(), 5);
+        let (first, second) = (&ctl.model.instruments[3], &ctl.model.instruments[4]);
+        assert_eq!((first.node, first.effects[0].node, second.node, second.effects[0].node, ctl.model.cables.last().map(|cable| cable.id)), ids);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_instrument_is_saved_with_its_values_and_the_cables_that_start_at_it_and_added_in_a_bare_lane_that_has_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, mut ctl) = a_graph(dir.path());
+        let (osc, filter, math) = (ctl.model.instruments[0].node, ctl.model.instruments[0].effects[0].node, ctl.model.instruments[1].effects[0].node);
+        save_selection(&mut ctl, &[osc, filter, math], "Voice").unwrap();
+        let module = module_in(dir.path(), "Voice");
+        let instrument = module.lanes[0].instrument.as_ref().expect("the oscillator is in the module");
+        assert_eq!((instrument.plugin.as_str(), instrument.volume, instrument.params.get("detune"), instrument.pinned.as_slice()), ("builtin:osc", 0.8, Some(&3.0), ["detune".to_string()].as_slice()));
+        assert_eq!((module.lanes[0].effects.len(), module.lanes[1].effects.len(), module.lanes[1].instrument.is_none(), module.plugin_count()), (1, 1, true, 3));
+        // Both cables are in it now: the oscillator's into the math, which starts at the instrument, and the filter's into the second input.
+        assert_eq!(
+            module.cables,
+            [
+                module::ModuleCable { from: module::ModuleOutput::Instrument { lane: 0 }, to: module::ModuleInput { lane: 1, effect: 0, side: false }, gain: 0.3 },
+                module::ModuleCable { from: module::ModuleOutput::Effect { lane: 0, effect: 0 }, to: module::ModuleInput { lane: 1, effect: 0, side: true }, gain: 0.7 },
+            ]
+        );
+        sent(&engine);
+        let cables_before = ctl.model.cables.len();
+        add_free_effect(&mut ctl, "module:Voice").unwrap();
+        let told = sent(&engine);
+        assert_eq!(told[..3], ["AddInstrument range=None", "SetLaneRoute inst=3 route=none", "SwapInstrument inst=3 plugin=Oscillator bufs=2 remap=false"], "the way out is cut before the instrument is in: {told:?}");
+        let lane = &ctl.model.instruments[3];
+        let plugin = lane.instrument.as_ref().expect("the lane has the oscillator");
+        assert_eq!((plugin.name.as_str(), lane.volume, lane.route, lane.range, lane.group), ("Oscillator", 0.8, Route::None, None, None));
+        assert_eq!(plugin.params.iter().find(|row| row.name == "detune").map(|row| row.value), Some(3.0));
+        assert_eq!(plugin.pinned_names(), ["detune".to_string()]);
+        assert_eq!(plugin.node, lane.node, "an instrument sits in its lane's node");
+        let (new_osc, new_filter, new_math) = (lane.node, lane.effects[0].node, ctl.model.instruments[4].effects[0].node);
+        assert_eq!(ctl.last_made().nodes, [new_osc, new_filter, ctl.model.instruments[4].node, new_math], "an instrument has the lane's node, and no node of its own");
+        let kept: Vec<_> = ctl.model.cables[cables_before..].iter().map(|cable| (cable.from, cable.to, cable.gain)).collect();
+        assert_eq!(kept, [(CableFrom::Instrument(new_osc), CableTo::Effect(new_math), 0.3), (CableFrom::Effect(new_filter), CableTo::EffectSide(new_math), 0.7)]);
+        ctl.model.check_ids().unwrap();
+        // What was added and saved again is the same file: nothing of a module is lost between a session and the next.
+        let copy = [new_osc, new_filter, new_math];
+        save_selection(&mut ctl, &copy, "Copy").unwrap();
+        let (voice, copied) = (std::fs::read_to_string(dir.path().join("Voice.toml")).unwrap(), std::fs::read_to_string(dir.path().join("Copy.toml")).unwrap());
+        assert_eq!(voice, copied);
+        // Undo takes the three lanes' worth out: the oscillator's lane and the math's.
+        ctl.apply(Intent::Undo).unwrap();
+        assert_eq!(ctl.model.instruments.len(), 3);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_instrument_alone_is_a_module_and_a_lane_that_has_one_and_no_effect_is_what_it_makes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = a_graph(dir.path());
+        let osc = ctl.model.instruments[0].node;
+        save_selection(&mut ctl, &[osc], "Tone").unwrap();
+        let module = module_in(dir.path(), "Tone");
+        assert_eq!((module.lanes.len(), module.plugin_count(), module.lanes[0].effects.len(), module.cables.len()), (1, 1, 0, 0));
+        add_free_effect(&mut ctl, "module:Tone").unwrap();
+        assert_eq!(ctl.model.instruments.len(), 4);
+        let lane = &ctl.model.instruments[3];
+        assert!(lane.instrument.is_some() && lane.effects.is_empty());
+        assert_eq!(ctl.last_made().nodes, [lane.node]);
+        ctl.apply(Intent::Undo).unwrap();
+        assert_eq!(ctl.model.instruments.len(), 3, "the lane is taken out");
+        ctl.apply(Intent::Redo).unwrap();
+        assert_eq!(ctl.model.instruments.len(), 4);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_effect_is_fed_by_the_chain_in_a_module_only_where_the_stage_before_it_was_chosen_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = a_graph(dir.path());
+        let osc = ctl.model.instruments[0].node;
+        let [filter, delay, reverb] = [0, 1, 2].map(|index| ctl.model.instruments[0].effects[index].node);
+        // The chain is osc, filter, delay, reverb, and every link is there. What a module has of a link is whether its two ends are in it.
+        let fed = |ctl: &mut Controller, nodes: &[NodeId]| -> Vec<Vec<Feed>> {
+            save_selection(ctl, nodes, "Feeds").unwrap();
+            module_in(dir.path(), "Feeds").lanes.iter().map(|lane| lane.effects.iter().map(|effect| effect.feed).collect()).collect()
+        };
+        // The whole chain, with or without the instrument: every link is inside, but the first effect's of a lane that has no instrument has nothing before it either way and is as it was.
+        assert_eq!(fed(&mut ctl, &[osc, filter, delay, reverb]), [[Feed::Chain; 3]]);
+        assert_eq!(fed(&mut ctl, &[filter, delay, reverb]), [[Feed::Chain; 3]]);
+        // The effect after one that was left out is not fed by the chain: filter and reverb, with the delay between them left out.
+        assert_eq!(fed(&mut ctl, &[filter, reverb]), [[Feed::Chain, Feed::None]]);
+        assert_eq!(fed(&mut ctl, &[osc, filter, reverb]), [[Feed::Chain, Feed::None]]);
+        // With the instrument chosen, the first effect that is chosen is fed by the instrument only if it is the lane's first.
+        assert_eq!(fed(&mut ctl, &[osc, delay, reverb]), [[Feed::None, Feed::Chain]]);
+        assert_eq!(fed(&mut ctl, &[osc, reverb]), [[Feed::None]]);
+        assert_eq!(fed(&mut ctl, &[osc, filter]), [[Feed::Chain]]);
+        // Without the instrument the first of a lane has nothing before it, and keeps what it has.
+        assert_eq!(fed(&mut ctl, &[delay, reverb]), [[Feed::Chain, Feed::Chain]]);
+        assert_eq!(fed(&mut ctl, &[delay]), [[Feed::Chain]]);
+        // A link that was cut stays cut whatever is chosen.
+        ctl.apply(Intent::SetFeed { node: delay, feed: Feed::None }).unwrap();
+        assert_eq!(fed(&mut ctl, &[osc, filter, delay, reverb]), [[Feed::Chain, Feed::None, Feed::Chain]]);
+        assert_eq!(fed(&mut ctl, &[delay]), [[Feed::None]]);
+    }
+
+    #[test]
+    fn a_cable_to_the_mix_or_to_or_from_what_is_not_chosen_is_the_sessions_and_not_the_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = a_graph(dir.path());
+        let (osc, filter, reverb) = (ctl.model.instruments[0].node, ctl.model.instruments[0].effects[0].node, ctl.model.instruments[0].effects[2].node);
+        let (math, drive) = (ctl.model.instruments[1].effects[0].node, ctl.model.instruments[1].effects[1].node);
+        // The math and the drive: the cables that go into the math are from the oscillator and the filter, which are not chosen, and the one that goes out of it is to the reverb, which is not chosen either; the drive's goes to the mix.
+        save_selection(&mut ctl, &[math, drive], "Holder").unwrap();
+        let text = std::fs::read_to_string(dir.path().join("Holder.toml")).unwrap();
+        assert!(!text.contains("[[cable]]") && !text.contains("master"), "no cable of the session is the module's: {text}");
+        let module = module_in(dir.path(), "Holder");
+        assert_eq!((module.lanes.len(), module.plugin_count(), module.cables.len()), (1, 2, 0));
+        // Everything that there is: the three cables among the plugins are in, and the one to the mix is not (a module has no end that is the mix: it would not be read).
+        save_selection(&mut ctl, &[osc, filter, reverb, math, drive], "All").unwrap();
+        let text = std::fs::read_to_string(dir.path().join("All.toml")).unwrap();
+        assert!(!text.contains("master"), "{text}");
+        let module = module_in(dir.path(), "All");
+        assert_eq!(module.cables.len(), 3, "the oscillator into the math, the filter into its second input, and the math into the reverb");
+        let to = |cable: &module::ModuleCable| (cable.to.lane, cable.to.effect, cable.to.side);
+        assert_eq!(module.cables.iter().map(to).collect::<Vec<_>>(), [(1, 0, false), (1, 0, true), (0, 1, false)], "in the order of the cables' ids; the reverb is the second of the first lane's, since the delay was left out");
+        // The text says the way out of each lane is cut, as a module is added: a module's lane has no way out of its own.
+        assert_eq!(text.matches("route = \"none\"").count(), 2, "{text}");
+    }
+
+    #[test]
+    fn what_is_chosen_for_a_module_that_cannot_be_one_is_refused_and_nothing_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = a_graph(dir.path());
+        let rev = ctl.rev;
+        let (filter, math) = (ctl.model.instruments[0].effects[0].node, ctl.model.instruments[1].effects[0].node);
+        let empty_lane = ctl.model.instruments[2].node;
+        let holder = ctl.model.instruments[1].node;
+        let (group, bus_effect) = (ctl.model.groups[0].node, ctl.model.groups[0].effects[0].node);
+        let modulator = ctl.model.free_modulators[0].node;
+        let keys = ctl.model.sources[0].node;
+        let invalid_because = |ctl: &mut Controller, nodes: &[NodeId], name: &str| match save_selection(ctl, nodes, name) {
+            Err(IntentError::Invalid(why)) => why,
+            other => panic!("{nodes:?} as {name:?}: {other:?}"),
+        };
+        // A node that is not there: the first of them, the master which the model does not have too, and whatever the name is.
+        assert!(matches!(save_selection(&mut ctl, &[filter, NodeId(9_999), NodeId(9_998)], "Room"), Err(IntentError::NotFound(NodeId(9_999)))));
+        assert!(matches!(save_selection(&mut ctl, &[NodeId::MASTER], "Room"), Err(IntentError::NotFound(NodeId::MASTER))));
+        assert!(matches!(save_selection(&mut ctl, &[NodeId(9_999)], ""), Err(IntentError::NotFound(NodeId(9_999)))), "the nodes are looked at before the name");
+        // A name that is none, before what is chosen is looked at.
+        for bad in ["", "   ", "a/b", "a:b", "con", ".toml", "a.toml.toml"] {
+            assert!(matches!(save_selection(&mut ctl, &[filter], bad), Err(IntentError::Invalid(_))), "{bad:?}");
+        }
+        assert!(invalid_because(&mut ctl, &[group], "").contains("file name"), "the name before the node's kind: a group");
+        // Nothing, and what a module has none of.
+        assert!(invalid_because(&mut ctl, &[], "Room").contains("nothing is chosen"));
+        assert!(invalid_because(&mut ctl, &[holder], "Room").contains("has none to save"), "a lane that has no instrument: it is its effects that are chosen");
+        assert!(invalid_because(&mut ctl, &[empty_lane], "Room").contains("has none to save"));
+        assert!(invalid_because(&mut ctl, &[filter, group], "Room").contains("a group's bus is not saved"));
+        assert!(invalid_because(&mut ctl, &[bus_effect, math], "Room").contains("a group's bus is not saved"));
+        assert!(invalid_because(&mut ctl, &[filter, modulator], "Room").contains("a modulator is not part of a module"));
+        assert!(invalid_because(&mut ctl, &[keys], "Room").contains("a source of notes is not part of a module"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing was written");
+        assert_eq!(ctl.rev, rev, "and no revision was used");
+        // No library: nowhere to write.
+        ctl.modules_dir = None;
+        assert!(matches!(save_selection(&mut ctl, &[filter], "Room"), Err(IntentError::Io(_))));
+    }
+
+    #[test]
+    fn a_module_whose_plugins_cannot_be_loaded_leaves_no_lane_and_uses_no_id_whatever_lane_the_fault_is_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, mut ctl) = a_graph(dir.path());
+        let other_dir = tempfile::tempdir().unwrap();
+        let (_other_engine, untouched) = a_graph(other_dir.path());
+        let lane = |plugin: &str| format!("[[instrument]]\n[[instrument.effect]]\nplugin = \"{plugin}\"\n");
+        let files = [
+            // The second lane's second plugin is not installed: the first lane is not made.
+            ("Late", format!("{}[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument.effect]]\nplugin = \"clap:com.example.nothing\"\n", lane("builtin:reverb"))),
+            // An instrument slot that names an effect, and an effect slot that names an instrument, and an instrument that is not installed.
+            ("Wrong", "[[instrument]]\nplugin = \"builtin:filter\"\n".to_string()),
+            ("Backwards", format!("{}[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:osc\"\n", lane("builtin:reverb"))),
+            ("Missing", "[[instrument]]\nplugin = \"clap:com.example.nothing\"\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\n".to_string()),
+        ];
+        for (name, text) in &files {
+            std::fs::write(dir.path().join(format!("{name}.toml")), text).unwrap();
+        }
+        sent(&engine);
+        let refused = |ctl: &mut Controller, name: &str| add_free_effect(ctl, &format!("module:{name}")).expect_err("refused").to_string();
+        assert_eq!(refused(&mut ctl, "Late"), "the module Late cannot be added: clap:com.example.nothing is not a plugin that is installed");
+        assert_eq!(refused(&mut ctl, "Wrong"), "the module Wrong cannot be added: Filter is an effect, not an instrument");
+        assert_eq!(refused(&mut ctl, "Backwards"), "the module Backwards cannot be added: Oscillator is an instrument, not an effect");
+        assert_eq!(refused(&mut ctl, "Missing"), "the module Missing cannot be added: clap:com.example.nothing is not a plugin that is installed");
+        assert!(sent(&engine).is_empty(), "no lane was made, on the audio thread or in the model");
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched.model);
+        assert_eq!(ctl.history_state(), untouched.history_state());
     }
 
     /// A lane that has an oscillator and a chain of three effects set as a module keeps what it keeps (a filter with a value over its own, its mix and two knobs pinned; a reverb with a preset, a value over it, a mix, a knob pinned and the link
@@ -7488,6 +7895,173 @@ type = 2.6
         assert!(
             committed == fresh,
             "{} is not what a module comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
+    /// A module file as a person might write one by hand that has an instrument, with what a plugin cannot take in it: a volume beyond its range, a preset that the plugin has not, a value beyond its range, a choice that
+    /// is not a whole number, a parameter that it has not, and knobs to pin that are named twice or name nothing, and a second lane whose cable starts at the instrument (the fixture test below adds it to a session, and the page's mock
+    /// engine is held to what comes of it).
+    const ODD_VOICE: &str = r#"
+[[instrument]]
+plugin = "builtin:osc"
+volume = 7.5
+preset = "No such preset"
+pinned = ["no such parameter", "detune", "detune"]
+[instrument.params]
+detune = 99.0
+waveform = 1.6
+"no such parameter" = 1.0
+
+[[instrument]]
+[[instrument.effect]]
+plugin = "builtin:filter"
+
+[[cable]]
+from = "instrument[0]"
+to = "instrument[1].effect[0]"
+gain = 3.0
+"#;
+
+    /// `A_GRAPH_TO_KEEP` and what the controller makes of saving a selection of its plugins as a module, adding it, undoing that and redoing it, saving what came of it again and adding that, and of what it refuses, and of adding a module that a hand wrote
+    /// (`ODD_VOICE`), as the web client's tests read it (`web/src/client/fixtures/moduleGraphs.json`): they pin the mock engine's library to the controller's, step by step, as `modules.json` does for a chain. `TANG_UPDATE_TYPES=1 cargo test
+    /// the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_graph_module_comes_to_is_current() {
+        let library = tempfile::tempdir().unwrap();
+        let fresh = |library: &std::path::Path| {
+            let (handles, engine) = testutil::stub_engine_of(4_096);
+            let mut ctl = Controller::new(load(A_GRAPH_TO_KEEP).model, handles, None);
+            ctl.catalog.add(plugin::builtin::enumerate_plugins());
+            ctl.modules_dir = Some(library.to_path_buf());
+            ctl.subscribe(Box::new(|_: &Applied| {}));
+            (engine, ctl)
+        };
+        let normalized = |mut layout: serde_json::Value| {
+            layout["rev"] = serde_json::json!(1);
+            layout
+        };
+        let (engine, mut ctl) = fresh(library.path());
+        let before = ctl.snapshot();
+        let mut snapshot = testutil::wire(&before);
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let osc = ctl.model.instruments[0].node;
+        let [filter, delay, reverb] = [0, 1, 2].map(|index| ctl.model.instruments[0].effects[index].node);
+        let [math, drive] = [0, 1].map(|index| ctl.model.instruments[1].effects[index].node);
+        let (holder, empty_lane) = (ctl.model.instruments[1].node, ctl.model.instruments[2].node);
+        let (group, bus_effect) = (ctl.model.groups[0].node, ctl.model.groups[0].effects[0].node);
+        let (modulator, keys) = (ctl.model.free_modulators[0].node, ctl.model.sources[0].node);
+
+        let mut steps = Vec::new();
+        let mut take = |ctl: &mut Controller, intent: Intent| {
+            let applied = ctl.apply(intent.clone()).unwrap_or_else(|error| panic!("{intent:?}: {error}"));
+            engine.drain();
+            let state = ctl.snapshot();
+            let history = ctl.history_state();
+            let modules: Vec<serde_json::Value> =
+                ctl.catalog.entries().into_iter().filter(|entry| entry.format == "Module").map(|entry| serde_json::json!({ "id": entry.id, "name": entry.name, "params": entry.params })).collect();
+            steps.push(serde_json::json!({
+                "intent": testutil::wire(&intent),
+                "events": testutil::wire(&applied.stamped()),
+                "restructured": applied.restructured,
+                "history": { "undo": history.undo, "redo": history.redo },
+                "modules": modules,
+                "graph": testutil::wire(&state.graph),
+                "telemetry": normalized(testutil::wire(&state.telemetry)),
+            }));
+        };
+        let save = |nodes: &[NodeId], name: &str| Intent::SaveSelectionAsModule { nodes: nodes.to_vec(), name: name.to_string() };
+        let add = |name: &str| Intent::AddFreeEffect { plugin: format!("module:{name}") };
+        take(&mut ctl, save(&[math, filter], "  Pair  "));
+        take(&mut ctl, save(&[osc, filter, math], "Voice.toml"));
+        // (The same module again, as it is: no news for the catalog. And an effect of another lane than the one that has the instrument, the instrument alone and a chain that leaves one out.)
+        take(&mut ctl, save(&[math, filter], "Pair"));
+        take(&mut ctl, save(&[osc], "Tone"));
+        take(&mut ctl, save(&[osc, filter, reverb], "Gap"));
+        take(&mut ctl, add("Pair"));
+        take(&mut ctl, Intent::Undo);
+        take(&mut ctl, Intent::Redo);
+        take(&mut ctl, add("Voice"));
+        take(&mut ctl, Intent::Undo);
+        take(&mut ctl, Intent::Redo);
+        take(&mut ctl, add("Tone"));
+        take(&mut ctl, add("Gap"));
+        // (The lanes of what "Voice" added, which are the sixth and the seventh: "Pair" made the fourth and the fifth. Saved again, the module is the same file under another name, as the controller's own test says; here it is a step to hold the mock to.)
+        let copied_osc = ctl.model.instruments[5].node;
+        let (copied_filter, copied_math) = (ctl.model.instruments[5].effects[0].node, ctl.model.instruments[6].effects[0].node);
+        take(&mut ctl, save(&[copied_osc, copied_filter, copied_math], "Copy"));
+        take(&mut ctl, add("Copy"));
+
+        // What is refused: a fresh controller for each, with a library that has no module in it.
+        let ghost = NodeId(9_999);
+        let long = "x".repeat(300);
+        let intents = vec![
+            save(&[ghost], "Room"),
+            save(&[NodeId::MASTER], "Room"),
+            save(&[filter, ghost], "Room"),
+            save(&[filter, NodeId(9_998), ghost], "Room"),
+            save(&[ghost], ""),
+            save(&[], "Room"),
+            save(&[], ""),
+            save(&[holder], "Room"),
+            save(&[empty_lane], "Room"),
+            save(&[osc, empty_lane], "Room"),
+            save(&[group], "Room"),
+            save(&[bus_effect], "Room"),
+            save(&[filter, bus_effect, math], "Room"),
+            save(&[filter, modulator], "Room"),
+            save(&[keys], "Room"),
+            save(&[group], ""),
+            save(&[filter], ""),
+            save(&[filter], "   "),
+            save(&[filter], "a/b"),
+            save(&[filter], "a:b"),
+            save(&[filter], "con"),
+            save(&[filter], ".toml"),
+            save(&[filter], "a.toml.toml"),
+            save(&[filter], &long),
+            save(&[delay, drive], "Room.toml.toml"),
+        ];
+        let refusals: Vec<serde_json::Value> = intents
+            .into_iter()
+            .map(|intent| {
+                let empty = tempfile::tempdir().unwrap();
+                let (_engine, mut ctl) = fresh(empty.path());
+                let error = ctl.apply(intent.clone()).expect_err("refused").to_string();
+                serde_json::json!({ "intent": testutil::wire(&intent), "error": error })
+            })
+            .collect();
+        // What a module that a hand wrote comes to: a library with the one file, listed, and the module added to the same session.
+        let by_hand = tempfile::tempdir().unwrap();
+        std::fs::write(by_hand.path().join("OddVoice.toml"), ODD_VOICE).unwrap();
+        let (_odd_engine, mut odd_ctl) = fresh(by_hand.path());
+        assert!(odd_ctl.refresh_modules(), "the library has a module that the catalog did not list");
+        let odd_intent = add("OddVoice");
+        let odd_applied = odd_ctl.apply(odd_intent.clone()).unwrap();
+        let (odd_state, odd_history) = (odd_ctl.snapshot(), odd_ctl.history_state());
+        let odd = serde_json::json!({
+            "file": ODD_VOICE,
+            "step": {
+                "intent": testutil::wire(&odd_intent),
+                "events": testutil::wire(&odd_applied.stamped()),
+                "restructured": odd_applied.restructured,
+                "history": { "undo": odd_history.undo, "redo": odd_history.redo },
+                "graph": testutil::wire(&odd_state.graph),
+                "telemetry": normalized(testutil::wire(&odd_state.telemetry)),
+            },
+        });
+        let fixture = serde_json::json!({ "snapshot": snapshot, "steps": steps, "refusals": refusals, "odd": odd });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/moduleGraphs.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what a graph module comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
             path.display()
         );
     }

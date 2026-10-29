@@ -1,9 +1,11 @@
-// "Save as a module" (step 104): the button in the cell of a lane, beside its mute and its solo, that saves the chain of effects of the lane as a module of the library: all of it, as it is (the plugins in order, each
-// with its preset, its values, its mix, its pinned knobs and whether the stage before it feeds it, and the cables between them), to be added to this session or to another from the bar's "+ Effect". It opens a small
-// field for the name under the button; Enter or Save asks the server (`Editor.saveModule`: the server says what a name may be, a module that has the name is written over), Escape and Cancel leave. A name that
-// the server refuses is said among the notices and the field stays, with the name selected, to be tried again; when it is saved the notices say so. The field is drawn in the page and not in the node (the canvas moves
-// and the node is in front of the next), so it closes when the page is pressed anywhere else, scrolled or sized.
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+// "Save as a module" (steps 104 and 105): the button that saves plugins as a module of the library: all of what is asked for, as it is (the plugins in order, each with its preset, its values, its mix or its volume, its pinned
+// knobs and whether the stage before it feeds it, and the cables between them), to be added to this session or to another from the bar's "+ Effect". There are two of them: the one in the cell of a lane, beside its mute and its solo,
+// which saves the chain of effects of the lane (step 104), and the one on the canvas's bar of choosing, which saves the nodes that were chosen (step 105). Either opens a small field for the name under the button; Enter or Save asks
+// the server (`Editor.saveModule`, `saveSelectionAsModule`: the server says what a name may be, a module that has the name is written over), Escape and Cancel leave. A name that the server refuses is said among the notices and the
+// field stays, with the name selected, to be tried again; when it is saved the notices say so. The field is drawn in the page and not in the node (the canvas moves and the node is in front of the next), so it closes when the page is
+// pressed anywhere else, scrolled or sized.
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { NodeId } from "../../protocol";
@@ -13,8 +15,21 @@ import "./SaveModule.css";
 /** About how wide the field is, to keep it in the window when the button is near its right edge. */
 const PANEL_WIDTH = 300;
 
-export const SaveModuleButton = memo(function SaveModuleButton({ node, name }: { node: NodeId; name: string }) {
-  const editor = useEditor();
+interface ModuleNameButtonProps {
+  /** What the button is called, and the field that it opens (a dialog of that name). */
+  label: string;
+  /** The class of the button. */
+  className: string;
+  /** What is on the button. */
+  children: ReactNode;
+  /** Whether it can be pressed: nothing is asked of the server for a button that cannot. */
+  disabled?: boolean;
+  /** Asks the server to save under the name as it was typed (the page says why if it was refused); true if it was saved. */
+  save: (name: string) => Promise<boolean>;
+}
+
+/** The button and the field for the name that opens under it, whatever it is that is saved. */
+function ModuleNameButton({ label, className, children, disabled = false, save }: ModuleNameButtonProps) {
   const [place, setPlace] = useState<{ left: number; top: number } | null>(null);
   const [text, setText] = useState("");
   const [asking, setAsking] = useState(false);
@@ -23,7 +38,6 @@ export const SaveModuleButton = memo(function SaveModuleButton({ node, name }: {
   const panel = useRef<HTMLFormElement>(null);
   const field = useRef<HTMLInputElement>(null);
   const open = place !== null;
-  const label = `Save the chain of ${name} as a module`;
 
   const close = (refocus: boolean): void => {
     setPlace(null);
@@ -69,7 +83,7 @@ export const SaveModuleButton = memo(function SaveModuleButton({ node, name }: {
     busy.current = true;
     setAsking(true);
     // (If it is refused the page says so: `Editor` puts the reason among the notices.)
-    void editor.saveModule(node, text).then((done) => {
+    void save(text).then((done) => {
       busy.current = false;
       setAsking(false);
       if (done) {
@@ -86,7 +100,8 @@ export const SaveModuleButton = memo(function SaveModuleButton({ node, name }: {
       <button
         ref={trigger}
         type="button"
-        className="tang-flag tang-flag--module nodrag nopan"
+        className={className}
+        disabled={disabled}
         aria-label={label}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -96,7 +111,7 @@ export const SaveModuleButton = memo(function SaveModuleButton({ node, name }: {
           else show();
         }}
       >
-        ⤓
+        {children}
       </button>
       {place
         ? createPortal(
@@ -150,4 +165,26 @@ export const SaveModuleButton = memo(function SaveModuleButton({ node, name }: {
         : null}
     </>
   );
+}
+
+/** The button in the cell of a lane that saves the chain of effects of the lane (`node` is the lane: the server finds the chain), whose name the nodes call it by is `name`. */
+export const SaveModuleButton = memo(function SaveModuleButton({ node, name }: { node: NodeId; name: string }) {
+  const editor = useEditor();
+  const save = useCallback((text: string) => editor.saveModule(node, text), [editor, node]);
+  return (
+    <ModuleNameButton label={`Save the chain of ${name} as a module`} className="tang-flag tang-flag--module nodrag nopan" save={save}>
+      ⤓
+    </ModuleNameButton>
+  );
 });
+
+/** The button on the canvas's bar of choosing that saves the nodes that were chosen (`nodes`: the plugins that a module can hold, which `modulePluginsOf` picks out of what is chosen). It cannot be pressed with none. */
+export function SaveSelectionButton({ nodes }: { nodes: readonly NodeId[] }) {
+  const editor = useEditor();
+  const save = useCallback((text: string) => editor.saveSelectionAsModule(nodes, text), [editor, nodes]);
+  return (
+    <ModuleNameButton label="Save the chosen nodes as a module" className="tang-patch__arrange" disabled={nodes.length === 0} save={save}>
+      Save as module…
+    </ModuleNameButton>
+  );
+}

@@ -1,0 +1,146 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, test } from "vitest";
+
+import { nodeNamed, tracerSnapshot } from "../../client/fixtures";
+import type { Intent } from "../../protocol";
+import { NoticeBoard } from "../../ui/NoticeBoard";
+import { useNotices } from "../ClientProvider";
+import { rig } from "../testing";
+import { PatchView } from "./PatchView";
+
+afterEach(cleanup);
+
+// Choosing nodes to make a module of (step 105): the button that turns choosing on, a click that chooses a node, what the bar says of what is chosen, the button that saves it and what it asks of the server.
+
+const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+
+function Board() {
+  return <NoticeBoard notices={useNotices()} />;
+}
+
+async function rigged() {
+  return rig(
+    <>
+      <PatchView />
+      <Board />
+    </>,
+    { snapshot: tracerSnapshot },
+  );
+}
+
+const asked = (requests: () => { intent: unknown }[]): Intent[] => requests().map((request) => request.intent as Intent);
+const noticeTexts = (): string[] => Array.from(document.querySelectorAll(".tang-notice__text")).map((text) => text.textContent);
+const chooseButton = (): Promise<HTMLElement> => screen.findByRole("button", { name: "Choose nodes to save as a module" });
+
+/** The form that an element of the field for a name is in (the field is drawn in the page, in a form of its own). */
+function formOf(element: HTMLElement): HTMLFormElement {
+  const form = element.closest("form");
+  if (!form) throw new Error("the field is in no form");
+  return form;
+}
+
+/** The node on the canvas that has this name in its header, as the element React Flow puts it in. */
+async function nodeOnCanvas(name: string): Promise<HTMLElement> {
+  const names = await screen.findAllByText(name, { selector: ".tang-node__name" });
+  const found = names[0]?.closest<HTMLElement>(".react-flow__node");
+  if (!found) throw new Error(`no node called ${name}`);
+  return found;
+}
+
+describe("choosing nodes on the canvas", () => {
+  test("is off until the button turns it on: a click on a node chooses nothing, and the bar has no field for what is chosen", async () => {
+    await rigged();
+    const button = await chooseButton();
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(await nodeOnCanvas("Oscillator"));
+    expect(document.querySelectorAll(".react-flow__node.selected")).toHaveLength(0);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save the chosen nodes as a module" })).toBeNull();
+  });
+
+  test("is on while the button is pressed: the bar says what to do, and the button that saves cannot be pressed with nothing chosen", async () => {
+    await rigged();
+    const button = await chooseButton();
+    fireEvent.click(button);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("status").textContent).toBe("Drag a box round the nodes to keep");
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save the chosen nodes as a module" }).disabled).toBe(true);
+    // (The button is its own off switch.)
+    fireEvent.click(button);
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  test("chooses a node by a click, says how many are chosen, and saves them as a module under the name that was typed, asking for the plugins and for nothing else", async () => {
+    const { requests } = await rigged();
+    fireEvent.click(await chooseButton());
+    fireEvent.click(await nodeOnCanvas("Oscillator"));
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("1 chosen");
+    });
+    expect(document.querySelectorAll(".react-flow__node.selected")).toHaveLength(1);
+    const save = screen.getByRole<HTMLButtonElement>("button", { name: "Save the chosen nodes as a module" });
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    const dialog = await screen.findByRole("dialog", { name: "Save the chosen nodes as a module" });
+    const field = within(dialog).getByRole("textbox", { name: "Module name" });
+    fireEvent.change(field, { target: { value: " Voice " } });
+    fireEvent.submit(formOf(field));
+    await waitFor(() => {
+      expect(noticeTexts()).toEqual(['Saved the module "Voice": + Effect adds it']);
+    });
+    expect(asked(requests)).toEqual([{ type: "saveSelectionAsModule", nodes: [oscillator.id], name: " Voice " }]);
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    // (What is chosen stays so: another name is a click away.)
+    expect(screen.getByRole("status").textContent).toBe("1 chosen");
+  });
+
+  test("leaves out of what it asks the nodes that a module cannot hold, and says how many: a modulator that is chosen with the plugins is none of them", async () => {
+    const { requests } = await rigged();
+    fireEvent.click(await chooseButton());
+    const modulator = tracerSnapshot.graph.nodes.find((node) => node.kind === "modulator");
+    if (!modulator) throw new Error("the tracer has a modulator");
+    fireEvent.click(await nodeOnCanvas("Oscillator"));
+    // (A second node is added to the ones that are chosen while the key for it is held: React Flow reads that from the keys, not from the click.)
+    for (const key of ["Control", "Meta"]) fireEvent.keyDown(document.body, { key, code: `${key}Left` });
+    fireEvent.click(await nodeOnCanvas(modulator.name), { ctrlKey: true, metaKey: true });
+    for (const key of ["Control", "Meta"]) fireEvent.keyUp(document.body, { key, code: `${key}Left` });
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("1 chosen, 1 that a module cannot hold left out");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save the chosen nodes as a module" }));
+    const field = await screen.findByRole("textbox", { name: "Module name" });
+    fireEvent.change(field, { target: { value: "Voice" } });
+    fireEvent.submit(formOf(field));
+    await waitFor(() => {
+      expect(asked(requests)).toEqual([{ type: "saveSelectionAsModule", nodes: [oscillator.id], name: "Voice" }]);
+    });
+  });
+
+  test("forgets what is chosen when it is turned off, and Escape turns it off", async () => {
+    await rigged();
+    const button = await chooseButton();
+    fireEvent.click(button);
+    fireEvent.click(await nodeOnCanvas("Oscillator"));
+    await waitFor(() => {
+      expect(document.querySelectorAll(".react-flow__node.selected")).toHaveLength(1);
+    });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(document.querySelectorAll(".react-flow__node.selected")).toHaveLength(0);
+    });
+    fireEvent.click(button);
+    fireEvent.click(await nodeOnCanvas("Oscillator"));
+    await waitFor(() => {
+      expect(document.querySelectorAll(".react-flow__node.selected")).toHaveLength(1);
+    });
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => {
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+    });
+    expect(document.querySelectorAll(".react-flow__node.selected")).toHaveLength(0);
+  });
+});

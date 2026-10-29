@@ -21,6 +21,7 @@ import audioCables from "./fixtures/audioCables.json";
 import sideCables from "./fixtures/sideCables.json";
 import uses from "./fixtures/uses.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
+import moduleGraphs from "./fixtures/moduleGraphs.json";
 import modules from "./fixtures/modules.json";
 import moves from "./fixtures/moves.json";
 import noise from "./fixtures/noise.json";
@@ -101,7 +102,10 @@ export const pinsFixture = pins as unknown as {
  * events it was answered with, whether it changed the structure, what Undo and Redo would do after it, the modules that the catalog lists, and the nodes and cables and the layout of the telemetry that the session has then. The
  * refusals are the controller's words for what it turned away, each on a session that had no module. Written by the controller (`the_web_clients_fixture_of_what_a_module_comes_to_is_current`).
  */
-export const modulesFixture = modules as unknown as {
+export const modulesFixture = modules as unknown as ModulesFixture;
+
+/** What the controller wrote of a script of saving and adding modules: see `modulesFixture`. */
+export interface ModulesFixture {
   snapshot: Snapshot;
   steps: {
     intent: Intent;
@@ -118,7 +122,14 @@ export const modulesFixture = modules as unknown as {
     file: string;
     step: { intent: Intent; events: StampedEvent[]; restructured: boolean; history: { undo: string | null; redo: string | null }; graph: Graph; telemetry: TelemetryLayout };
   };
-};
+}
+
+/**
+ * A session with an oscillator in a lane with a chain of three effects, a lane that holds a math effect and a drive with cables between the lanes, an empty lane, a group, a modulator and the keys, and what the controller
+ * makes of a script of saving a selection of its plugins as a module (`SaveSelectionAsModule`), adding it, undoing that and redoing it, and of what it refuses: as `modulesFixture` is for a chain. Written by the controller
+ * (`the_web_clients_fixture_of_what_a_graph_module_comes_to_is_current`).
+ */
+export const moduleGraphsFixture = moduleGraphs as unknown as ModulesFixture;
 
 /**
  * A session with a group (a bus effect and an LFO in it), a member of it with a reverb and an LFO of its own, a lane with a pattern that was recorded at 90 beats a minute and a

@@ -5,13 +5,13 @@
 //! touches the disk or the terminal, so any front-end (and a test) can serialize
 //! a session.
 
-use crate::app::model::{EdgeId, ModSourceSlot, ModulatorSlot, NodeId, ParamSlot, PluginSlot, SessionModel, SourceKind, sync_name};
+use crate::app::model::{EdgeId, InstrumentNode, ModSourceSlot, ModulatorSlot, NodeId, ParamSlot, PluginSlot, SessionModel, SourceKind, sync_name};
 use crate::plugin::chain::{CableFrom, CableTo, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::{
     CablePlace, Feed, NodeUi, SaveCable, SaveDevice, SaveEffect, SaveGroup, SaveInstrument, SaveInstrumentSlot, SaveKeys, SaveModSource, SaveModTarget, SaveModulator,
     SavePattern, SaveSources,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// The lanes and groups of a session as `session::save` writes them, with where each node is drawn, its cables (the audio cables and the cables of notes) and its sources of notes. The piano
 /// scale is not part of the model; it goes to `save` separately, and the master's place is `SessionModel::master_ui`.
@@ -151,6 +151,12 @@ fn overrides(params: &[ParamSlot]) -> Vec<(String, f32)> {
         .filter(|p| (p.value - p.default).abs() > f32::EPSILON)
         .map(|p| (p.name.clone(), p.value))
         .collect()
+}
+
+/// The instrument of a lane as a module keeps it (step 105): the plugin with its preset, the values that are not its own and the knobs pinned to its node, and the lane's volume. What is the lane's note remap, and
+/// the bend range that goes with it, is of the keyboard that plays it and not of the sound: a module has the defaults.
+pub(super) fn instrument_to_save(lane: &InstrumentNode, plugin: &PluginSlot) -> SaveInstrument {
+    SaveInstrument { plugin: plugin.id.clone(), volume: lane.volume, preset: plugin.current_preset.clone(), params: overrides(&plugin.params), pinned: plugin.pinned_names(), pitch_bend_range: 2.0, remap: HashMap::new() }
 }
 
 pub(super) fn effect_to_save(fx: &PluginSlot, ui: &BTreeMap<NodeId, NodeUi>) -> SaveEffect {

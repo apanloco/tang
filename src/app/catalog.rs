@@ -24,7 +24,7 @@ pub struct CatalogEntry {
     /// What the plugin is loaded by: `builtin:osc`, a CLAP id, an LV2 URI, a VST3 name.
     pub id: String,
     pub name: String,
-    /// `Built-in`, `LV2`, `CLAP`, `VST3` or `Module` (a chain of effects that the library has, which is added as an effect that stands by itself and not loaded as a plugin).
+    /// `Built-in`, `LV2`, `CLAP`, `VST3` or `Module` (effects and instruments with the cables between them, that the library has, which is added as an effect that stands by itself and not loaded as a plugin).
     pub format: String,
     pub is_instrument: bool,
     /// How many parameters it has.
@@ -37,7 +37,7 @@ pub struct CatalogEntry {
 pub struct Catalog {
     /// Everything found so far, sorted by name without regard to case.
     plugins: Vec<PluginInfo>,
-    /// The modules of the library (`app::module`): chains of effects that are saved in files, as `module:<name>`, sorted by name without regard to case. They are listed with the plugins to
+    /// The modules of the library (`app::module`): effects and instruments with the cables between them, that are saved in files, as `module:<name>`, sorted by name without regard to case. They are listed with the plugins to
     /// a client (`entries`) and are not among `plugins`, which is what a plugin is loaded from and what tells whether a scan has been made.
     modules: Vec<PluginInfo>,
     /// Where the scan thread delivers its batches; `None` when no scan is
@@ -91,7 +91,7 @@ impl Catalog {
     }
 
     /// What the terminal's selectors list: the modules of the library, and then the plugins, each by name; a row of a selector names what it is by its place in this list. (Only the selector of an
-    /// effect that stands by itself shows the modules: a chain of effects goes in a lane of its own, whole.)
+    /// effect that stands by itself shows the modules: a module goes in lanes of its own, whole.)
     pub fn listed(&self) -> Vec<&PluginInfo> {
         self.modules.iter().chain(&self.plugins).collect()
     }
@@ -300,9 +300,9 @@ mod tests {
         assert_eq!(catalog.rev(), 1);
         assert!(!catalog.set_modules(vec![module("Space", 2)]), "the same module is not news");
         assert_eq!(catalog.rev(), 1);
-        // A module that is saved again with another number of effects is the same name and another module; one that is taken away or put in is one more.
+        // A module that is saved again with another number of plugins is the same name and another module; one that is taken away or put in is one more.
         assert!(catalog.set_modules(vec![module("Space", 3)]));
-        assert!(catalog.set_modules(vec![module("Hall", 3)]), "another module with as many effects is another listing");
+        assert!(catalog.set_modules(vec![module("Hall", 3)]), "another module with as many plugins is another listing");
         assert!(catalog.set_modules(vec![module("Hall", 3), module("Space", 3)]));
         assert!(catalog.set_modules(vec![]));
         assert_eq!(catalog.rev(), 5);

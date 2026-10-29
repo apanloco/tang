@@ -75,6 +75,7 @@ const DOING: Record<Intent["type"], string> = {
   save: "save the session",
   saveAs: "save the session under another name",
   saveModule: "save a chain of effects as a module",
+  saveSelectionAsModule: "save the chosen nodes as a module",
   undo: "undo",
   redo: "redo",
 };
@@ -464,6 +465,19 @@ export class Editor {
    */
   async saveModule(node: NodeId, name: string): Promise<boolean> {
     const done = await this.#attempt(`save the chain of ${this.#name(node)} as the module ${quoted(name.trim())}`, { type: "saveModule", node, name });
+    if (done) this.#notices.say(`Saved the module ${quoted(name.trim())}: + Effect adds it`);
+    return done;
+  }
+
+  /**
+   * Save the plugins in `nodes` as a module of the library under `name` (step 105: what is chosen on the canvas, the instruments and the effects of any lanes): each lane that has one of them is a lane of the module, with the instrument
+   * if it was chosen and the effects that were, each as it is now, and the audio cables that are between them. What joins them to what is not chosen is left out, as are the cables that go in and out. The server says what a name may be,
+   * and a module that has the name is written over. The catalog that the server tells has the module from then on, and the bar's "+ Effect" adds it. True if it was saved, and the page says so; if it was not it says why (a name that is no
+   * name, a node that a module has none of, nothing chosen, a program that keeps no library). The session is not changed by it: nothing is unsaved because of it, and there is nothing to undo.
+   */
+  async saveSelectionAsModule(nodes: readonly NodeId[], name: string): Promise<boolean> {
+    const what = `save ${nodes.map((node) => this.#name(node)).join(", ")} as the module ${quoted(name.trim())}`;
+    const done = await this.#attempt(what, { type: "saveSelectionAsModule", nodes: [...nodes], name });
     if (done) this.#notices.say(`Saved the module ${quoted(name.trim())}: + Effect adds it`);
     return done;
   }

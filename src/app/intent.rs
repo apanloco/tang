@@ -275,6 +275,15 @@ pub enum Intent {
     /// (`module:<name>`), which the clients are told again. It is no change of the session: no revision of it, no step of the history, and the session is not marked. Refused, with
     /// nothing written, for a node that is not a lane or an effect of one, a lane that has no effect, a name that is not one, and a program that has no library (`Io` for a write that fails).
     SaveModule { node: NodeId, name: String },
+    /// Save the plugins in `nodes` as a module in the library (step 105: "save the graph of fx or instruments ... into its own module"): the instrument of a lane (the lane's node) or an effect, any of
+    /// them, from any lanes. The module is each lane that has one of them, with its instrument if that was chosen and the effects that were, in the order of their chains, each as it is now (presets,
+    /// values, mixes, volumes, knobs, feeds), and the audio cables that have both ends among them, with their levels. What is not chosen is left out, and so is what joins the chosen to it: the cables that
+    /// go in and out, the lane's way out, a link from a stage that was not chosen (the effect after it is not fed by the chain: it is fed by the cables that are drawn). `name` is as in `SaveModule`, and the
+    /// module is replaced if it is there; it is added by `AddFreeEffect` with its id from the catalog, as a chain is, in a lane of its own for each of the module's, with the cables between them.
+    /// Like `SaveModule` it is no change of the session: no step of the history, the session is not marked, and a revision is used. Refused, with nothing written, for a node that is not there (the first, if
+    /// more than one: `NotFound`), a name that is not one, a node that is a group, a group's bus effect, a modulator or a source (a module has none of those yet), a lane that has no instrument, none at all,
+    /// and a program that has no library (`Io` for a write that fails).
+    SaveSelectionAsModule { nodes: Vec<NodeId>, name: String },
     /// Put back what the last step that can be undone did: a parameter, a gain, a modulator's setting, a cable's depth, the keys
     /// of a lane, the place of a node, the knobs a node shows, a group's name, the scale or the lock of the piano, the place of
     /// an effect. A change that goes on (a knob that is dragged) is one step. What it does is told as the intents it is made of
@@ -842,6 +851,10 @@ mod tests {
             (Intent::Save, json!({"type": "save"})),
             (Intent::SaveAs { name: "copy".to_string() }, json!({"type": "saveAs", "name": "copy"})),
             (Intent::SaveModule { node: NodeId(4), name: "Space".to_string() }, json!({"type": "saveModule", "node": 4, "name": "Space"})),
+            (
+                Intent::SaveSelectionAsModule { nodes: vec![NodeId(4), NodeId(7)], name: "Space".to_string() },
+                json!({"type": "saveSelectionAsModule", "nodes": [4, 7], "name": "Space"}),
+            ),
             (Intent::Undo, json!({"type": "undo"})),
             (Intent::Redo, json!({"type": "redo"})),
             (

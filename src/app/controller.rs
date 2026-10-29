@@ -632,16 +632,33 @@ impl Controller {
     /// neither a lane nor a gap in the ids (`insert_effect` looks again: the check is the same).
     pub(super) fn add_free_effect_loaded(&mut self, loaded: Box<dyn Plugin>, source: &str) -> Result<NodeId, IntentError> {
         outputs_fit_the_chain(loaded.name(), loaded.audio_output_count())?;
+        let inst = self.add_bare_lane(None);
+        self.insert_effect(ChainAt::Lane(inst), loaded, source)
+    }
+
+    /// Add a lane at the end whose way out is cut, with `instrument` (the plugin, loaded, and the id it was loaded from) in it if there is one: a lane that stands by itself, as a module's are
+    /// (`load_module`). The way out is cut before anything is in the lane, as the loader cuts what a file cuts, before the cables: a way out that was there for a moment would be one that is heard.
+    /// Returns the lane's place; the caller has checked what the instrument needs (`has_audio_output`).
+    pub(super) fn add_bare_lane(&mut self, instrument: Option<(Box<dyn Plugin>, &str)>) -> usize {
         let inst = self.add_lane();
-        // (Cut before the effect is in, as the loader cuts what a file cuts, before the cables: a way out that was there for a moment would be one that is heard.)
         self.model.instruments[inst].route = Route::None;
         let _ = self.cmd_tx.send(GraphCommand::SetLaneRoute { inst, route: Route::None });
-        self.insert_effect(ChainAt::Lane(inst), loaded, source)
+        if let Some((mut loaded, source)) = instrument {
+            let node = self.model.instruments[inst].node;
+            let slot = fresh_slot(loaded.as_mut(), source, node);
+            self.install_instrument(inst, loaded, slot);
+        }
+        inst
     }
 
     /// The plugin `source` loaded to be an effect. The catalog has to name it and it must not be an instrument.
     pub(super) fn load_effect(&mut self, source: &str) -> Result<Box<dyn Plugin>, IntentError> {
         self.load_from_catalog(source, false)
+    }
+
+    /// The plugin `source` loaded to be an instrument. The catalog has to name it and it must be one.
+    pub(super) fn load_instrument(&mut self, source: &str) -> Result<Box<dyn Plugin>, IntentError> {
+        self.load_from_catalog(source, true)
     }
 
     /// The plugin `source`, loaded, if the catalog names it and it is an instrument or not as `instrument` says. (Why it did

@@ -273,7 +273,7 @@ describe("the field for the name of a module", () => {
 });
 
 describe("the modules that were saved, in the bar's + Effect", () => {
-  const space = { effects: [{ plugin: "builtin:filter", preset: null, params: { cutoff: 0.25 }, mix: 0.8, pinned: ["cutoff"], fed: true }, { plugin: "builtin:reverb", preset: null, params: {}, mix: 0.4, pinned: [], fed: true }], cables: [] };
+  const space = { lanes: [{ instrument: null, effects: [{ plugin: "builtin:filter", preset: null, params: { cutoff: 0.25 }, mix: 0.8, pinned: ["cutoff"], fed: true }, { plugin: "builtin:reverb", preset: null, params: {}, mix: 0.4, pinned: [], fed: true }] }], cables: [] };
 
   test("are listed first, each under the heading Module, and add the chain in a lane of its own: the effects it was saved with, in order, as modules on the canvas", async () => {
     const { server, requests } = await rig(

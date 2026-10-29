@@ -169,7 +169,7 @@ describe("the mock engine's sources of notes and cables of notes", () => {
     const cable = server.snapshot.graph.edges.find((e) => e.kind === "events" && e.to.node === empty.id);
     if (cable?.kind !== "events") throw new Error("the cable that was drawn");
     const draw: Intent = { type: "addCable", from: cable.from, to: cable.to, gain: null };
-    expect(takesOut(server.snapshot, draw, { nodes: [], edges: [cable.id] })).toEqual({ type: "removeEdge", edge: cable.id });
+    expect(takesOut(server.snapshot, draw, { nodes: [], edges: [cable.id] })).toEqual([{ type: "removeEdge", edge: cable.id }]);
     // (A cable that is not there, and a cable that made a node as well, are not taken out by it.)
     expect(takesOut(server.snapshot, draw, { nodes: [], edges: [9_999] })).toBeNull();
     expect(takesOut(server.snapshot, draw, { nodes: [3], edges: [cable.id] })).toBeNull();
@@ -178,6 +178,6 @@ describe("the mock engine's sources of notes and cables of notes", () => {
     server.apply(add);
     const added = server.snapshot.graph.nodes.findLast((n) => n.kind === "source");
     if (!added) throw new Error("the source that was added");
-    expect(takesOut(server.snapshot, add, { nodes: [added.id], edges: [] })).toEqual({ type: "removeNode", node: added.id });
+    expect(takesOut(server.snapshot, add, { nodes: [added.id], edges: [] })).toEqual([{ type: "removeNode", node: added.id }]);
   });
 });

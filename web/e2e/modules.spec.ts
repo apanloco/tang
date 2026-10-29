@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, test as mock } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-import { audioIn, audioOut, drag, node, open, showAll } from "./canvas";
+import { audioIn, audioOut, centre, drag, node, nodeBoxes, open, showAll, still } from "./canvas";
 import { test } from "./own";
 import { heardAt, silentAt } from "./sound";
 
@@ -118,4 +118,152 @@ test("a chain of effects is saved as a file of the library of the real program, 
   await second.getByRole("button", { name: "Add an effect", exact: true }).click();
   await expect(second.getByRole("menuitem", { name: "Tracer filter", exact: true })).toBeVisible();
   await second.close();
+});
+
+/** The button that turns choosing on, and the one that saves what is chosen. */
+const choose = (page: Page) => page.getByRole("button", { name: "Choose nodes to save as a module" });
+
+/** Add the effect called `plugin` from the bar's "+ Effect", and wait for its node (`name`) once the canvas has stopped moving. */
+async function addFree(page: Page, plugin: string, name: string): Promise<void> {
+  await addEffect(page).click();
+  await page.getByRole("menuitem", { name: plugin, exact: true }).click();
+  await expect(node(page, name)).toBeVisible();
+  await still(node(page, name));
+}
+
+/** Draw a box on the canvas round the nodes called `names`, from a place above and to the left of them to one below and to the right, which has no other node in it (choosing is on). */
+async function boxRound(page: Page, names: string[]): Promise<void> {
+  const boxes = (await nodeBoxes(page)).filter((box) => names.includes(box.name));
+  expect(boxes).toHaveLength(names.length);
+  const left = Math.min(...boxes.map((box) => box.left)) - 12;
+  const top = Math.min(...boxes.map((box) => box.top)) - 12;
+  const right = Math.max(...boxes.map((box) => box.left + box.width)) + 12;
+  const bottom = Math.max(...boxes.map((box) => box.top + box.height)) + 12;
+  await page.mouse.move(left, top);
+  await page.mouse.down();
+  await page.mouse.move((left + right) / 2, (top + bottom) / 2, { steps: 6 });
+  await page.mouse.move(right, bottom, { steps: 6 });
+  await page.mouse.up();
+}
+
+/** Save what is chosen as `name` from the field that the bar's button opens. */
+async function saveChosen(page: Page, name: string): Promise<void> {
+  await page.getByRole("button", { name: "Save the chosen nodes as a module" }).click();
+  const dialog = page.getByRole("dialog", { name: "Save the chosen nodes as a module" });
+  await expect(dialog.getByRole("textbox", { name: "Module name" })).toBeFocused();
+  await dialog.getByRole("textbox", { name: "Module name" }).fill(name);
+  await dialog.getByRole("textbox", { name: "Module name" }).press("Enter");
+  await expect(page.getByText(`Saved the module "${name}": + Effect adds it`)).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+}
+
+mock("effects that stand by themselves, joined by cables, are chosen with a box and saved as one module, which + Effect adds as the same effects with the cables between them: one step that Undo takes out and Redo gives back", async ({ page }) => {
+  await open(page);
+  // Three effects, each in a lane of its own, and a cable from the first to the second and from the second to the third: what a person builds on the canvas.
+  await addFree(page, "Drive", "Drive");
+  await addFree(page, "Reverb", "Reverb");
+  await addFree(page, "Delay", "Delay");
+  await showAll(page);
+  await drag(page, audioOut(node(page, "Drive")), audioIn(node(page, "Reverb")));
+  await drag(page, audioOut(node(page, "Reverb")), audioIn(node(page, "Delay")));
+  await expect(page.locator(".tang-cable--send")).toHaveCount(2);
+
+  // Nothing is chosen until choosing is on, and then a box round the three effects chooses them and nothing else.
+  await expect(choose(page)).toHaveAttribute("aria-pressed", "false");
+  await choose(page).click();
+  await expect(page.getByRole("status").filter({ hasText: "Drag a box round the nodes to keep" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save the chosen nodes as a module" })).toBeDisabled();
+  await boxRound(page, ["Drive", "Reverb", "Delay"]);
+  await expect(page.getByRole("status").filter({ hasText: "3 chosen" })).toBeVisible();
+  await expect(page.locator(".react-flow__node.selected")).toHaveCount(3);
+
+  // A name that is refused is said, and the field stays; then it is saved, and the page says so.
+  await page.getByRole("button", { name: "Save the chosen nodes as a module" }).click();
+  await page.getByRole("textbox", { name: "Module name" }).fill("a/b");
+  await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText(/Could not save .* as the module "a\/b": a file name has no folder in it/)).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await saveChosen(page, "Dub chain");
+
+  // Choosing is turned off, and the effects are added as a module: three lanes of their own, with the two cables between them, in one step.
+  await choose(page).click();
+  await expect(page.locator(".react-flow__node.selected")).toHaveCount(0);
+  const before = await page.locator(".tang-node__name").allTextContents();
+  await addEffect(page).click();
+  await expect(page.getByRole("menu", { name: "Add an effect" }).getByRole("group", { name: "Module" }).getByRole("menuitem")).toHaveText(["Dub chain"]);
+  await page.getByRole("menuitem", { name: "Dub chain", exact: true }).click();
+  await expect.poll(async () => (await page.locator(".tang-node__name").allTextContents()).length).toBe(before.length + 3);
+  await expect(page.getByRole("button", { name: "Undo add Dub chain" })).toBeVisible();
+  await showAll(page);
+  await expect(page.locator(".tang-cable--send")).toHaveCount(4);
+  await page.getByRole("button", { name: "Undo add Dub chain" }).click();
+  await expect.poll(async () => (await page.locator(".tang-node__name").allTextContents()).length).toBe(before.length);
+  await expect(page.locator(".tang-cable--send")).toHaveCount(2);
+  await page.getByRole("button", { name: "Redo add Dub chain" }).click();
+  await expect.poll(async () => (await page.locator(".tang-node__name").allTextContents()).length).toBe(before.length + 3);
+  await expect(page.locator(".tang-cable--send")).toHaveCount(4);
+});
+
+mock("a node that a module cannot hold is left out of what is saved and said so, a node is chosen by a click, and Escape turns choosing off", async ({ page }) => {
+  await open(page);
+  await choose(page).click();
+  // The oscillator's card is chosen by a click; the LFO is not a plugin, and a module is not made of it: it is left out and counted.
+  await node(page, "Oscillator").locator(".tang-node__header").click();
+  await expect(page.getByRole("status").filter({ hasText: "1 chosen" })).toBeVisible();
+  await page.keyboard.down("Shift");
+  await node(page, "LFO").locator(".tang-node__header").click();
+  await page.keyboard.up("Shift");
+  await expect(page.getByRole("status").filter({ hasText: "1 chosen, 1 that a module cannot hold left out" })).toBeVisible();
+  await saveChosen(page, "Tone");
+  await addEffect(page).click();
+  await expect(page.getByRole("menuitem", { name: "Tone", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  // (A click did not move the node: nodes are not moved while choosing is on.)
+  const where = await centre(node(page, "Oscillator"));
+  await page.mouse.move(where.x, where.y);
+  await page.keyboard.press("Escape");
+  await expect(choose(page)).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".react-flow__node.selected")).toHaveCount(0);
+});
+
+test("effects joined by a cable are saved as one file of the real program's library with the cable in it, and added from it as lanes of their own with the cable between them, which the session's file then keeps", async ({ page, own }) => {
+  test.slow();
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  await addFree(page, "Drive", "Drive");
+  await addFree(page, "Reverb", "Reverb");
+  await showAll(page);
+  await drag(page, audioOut(node(page, "Drive")), audioIn(node(page, "Reverb")));
+  await expect(page.locator(".tang-cable--send")).toHaveCount(1);
+
+  await choose(page).click();
+  await boxRound(page, ["Drive", "Reverb"]);
+  await expect(page.getByRole("status").filter({ hasText: "2 chosen" })).toBeVisible();
+  await saveChosen(page, "Dub pair");
+  // The file is in the library: a lane for each effect, no instrument, and the cable between them.
+  const module = readFileSync(join(own.library, "Dub pair.toml"), "utf8");
+  expect(module.split("[[instrument]]")).toHaveLength(3);
+  expect(module).toContain('plugin = "builtin:drive"');
+  expect(module).toContain('plugin = "builtin:reverb"');
+  expect(module).not.toContain("builtin:osc");
+  expect(module).toContain('from = "instrument[0].effect[0]"');
+  expect(module).toContain('to = "instrument[1].effect[0]"');
+  await choose(page).click();
+
+  // Added: two lanes more and the cable between them (the session has the two that it was made from and their cable, and the two that the module made).
+  await addEffect(page).click();
+  await page.getByRole("menuitem", { name: "Dub pair", exact: true }).click();
+  await expect(node(page, "Drive 2")).toBeVisible();
+  await expect(node(page, "Reverb 2")).toBeVisible();
+  await showAll(page);
+  await expect(page.locator(".tang-cable--send")).toHaveCount(2);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+  const saved = readFileSync(own.file, "utf8");
+  expect(saved.split("[[instrument]]")).toHaveLength(6);
+  expect(saved.split("[[cable]]")).toHaveLength(3);
+  // The cable that the module made is between two lanes that the module made: the fourth and the fifth.
+  expect(saved).toContain('from = "instrument[3].effect[0]"');
+  expect(saved).toContain('to = "instrument[4].effect[0]"');
 });

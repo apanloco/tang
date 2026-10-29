@@ -65,6 +65,11 @@ export function stepOf(label: string, undo: Intent, redo: Intent, key: Key | nul
   return { label, undo: [undo], redo: [redo], key, last: at, undoMade: noneMade(), redoMade: noneMade(), taken: null };
 }
 
+/** A step of an add: `redo` is the intent, which made `made` the first time, and `undo` takes it out (the intents that do, in the order they are applied). */
+export function addedStep(label: string, undo: readonly Intent[], redo: Intent, made: Made, at: number): Step {
+  return { label, undo: [...undo], redo: [redo], key: null, last: at, undoMade: noneMade(), redoMade: made, taken: null };
+}
+
 /** A step of a removal: `redo` is the intent that took something out, and `taken` is the session as it was, which undo puts back. */
 export function removedStep(label: string, redo: Intent, taken: Taken, at: number): Step {
   return { label, undo: [], redo: [redo], key: null, last: at, undoMade: noneMade(), redoMade: noneMade(), taken };
@@ -159,10 +164,21 @@ export interface Removed {
 export type Plan = { step: Step } | { added: Added } | { removed: Removed } | "barrier" | "nothing";
 
 /**
- * The intent that takes out what `added`, an add that was carried out, made: the one node, or the one cable (an effect that stands by itself: its lane), as it is in `snapshot`; or null if it
- * made something that cannot be named, or what it made is not there. As `takes_out` of the controller.
+ * The intents that take out what `added`, an add that was carried out, made: the one node, or the one cable (an effect that stands by itself: its lane), or the lanes of a module, the last that was made first, as they are in
+ * `snapshot`; or null if it made something that cannot be named, or what it made is not there. As `takes_out` of the controller.
  */
-export function takesOut(snapshot: Snapshot, added: Intent, made: Made): Intent | null {
+export function takesOut(snapshot: Snapshot, added: Intent, made: Made): Intent[] | null {
+  // A module made a lane for each of its own, and the plugins in them, and the cables between the plugins: each lane is taken out, with all that is in it and the cables at it, the last made first.
+  if (added.type === "addFreeEffect" && moduleNameOf(added.plugin) !== null) {
+    const lanes = made.nodes.filter((id) => snapshot.graph.nodes.some((n) => n.id === id && n.kind === "instrument"));
+    return lanes.length === 0 ? null : lanes.reverse().map((node): Intent => ({ type: "removeNode", node }));
+  }
+  const one = takesOutOne(snapshot, added, made);
+  return one === null ? null : [one];
+}
+
+/** The intent that takes out what `added`, an add that was carried out, made when it made one thing (a node, a cable, or a lane with its effect). */
+function takesOutOne(snapshot: Snapshot, added: Intent, made: Made): Intent | null {
   // An audio cable and a cable of notes are one cable and no node.
   if (added.type === "addCable") {
     const [edge, ...more] = made.edges;
@@ -174,12 +190,10 @@ export function takesOut(snapshot: Snapshot, added: Intent, made: Made): Intent 
     if (edge === undefined || more.length > 0 || made.nodes.length > 0) return null;
     return snapshot.graph.edges.some((e) => e.kind === "modulation" && e.id === edge) ? { type: "removeEdge", edge } : null;
   }
-  // An effect that stands by itself makes the lane that holds it, and then the effect, and no cable: it is the lane that is taken out, with the effect in it. A module makes the lane, the effects of its chain and the
-  // cables that it has between them: the lane is taken out with all of it, when there is an effect at least.
+  // An effect that stands by itself makes the lane that holds it, and then the effect, and no cable: it is the lane that is taken out, with the effect in it.
   if (added.type === "addFreeEffect") {
     const [lane, effect, ...rest] = made.nodes;
-    if (lane === undefined || effect === undefined) return null;
-    if (moduleNameOf(added.plugin) === null && (rest.length > 0 || made.edges.length > 0)) return null;
+    if (lane === undefined || effect === undefined || rest.length > 0 || made.edges.length > 0) return null;
     return snapshot.graph.nodes.some((n) => n.id === lane && n.kind === "instrument") ? { type: "removeNode", node: lane } : null;
   }
   const [node, ...more] = made.nodes;
@@ -294,6 +308,7 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
     case "save":
     case "saveAs":
     case "saveModule":
+    case "saveSelectionAsModule":
     case "undo":
     case "redo":
       return "nothing";

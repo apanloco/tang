@@ -193,7 +193,7 @@ describe("the mock engine's audio cables", () => {
   test("take out, for a draw, the one cable it made and no more: not what made two, none, a node besides, or a cable that is not there", () => {
     const { snapshot } = audioCablesFixture;
     const draw: Intent = { type: "addCable", from: { node: 9, port: { type: "audioOut" } }, to: { node: MASTER, port: { type: "audioIn" } }, gain: null };
-    expect(takesOut(snapshot, draw, { nodes: [], edges: [3] })).toEqual({ type: "removeEdge", edge: 3 });
+    expect(takesOut(snapshot, draw, { nodes: [], edges: [3] })).toEqual([{ type: "removeEdge", edge: 3 }]);
     expect(takesOut(snapshot, draw, { nodes: [], edges: [] })).toBeNull();
     expect(takesOut(snapshot, draw, { nodes: [], edges: [3, 4] })).toBeNull();
     expect(takesOut(snapshot, draw, { nodes: [4], edges: [3] })).toBeNull();

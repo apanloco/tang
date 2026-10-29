@@ -6,9 +6,9 @@
 // control): where it is put down goes to the server, which keeps it with the session (§4.4), and
 // every browser draws the node there. The nodes that are not moved are where the layout puts them, and stay there when the session
 // changes round them (a cable drawn, a node added or taken out: `toFlow` is given where it put them last) until the person asks for
-// the nodes to be arranged again.
+// the nodes to be arranged again. (Step 105: a button turns choosing on, and what is chosen, the plugins in it, is saved as a module: see `selection.ts`.)
 import { Background, Controls, Panel, ReactFlow, useReactFlow, useStore } from "@xyflow/react";
-import type { Connection, Edge, EdgeTypes, NodeTypes, OnConnectStart } from "@xyflow/react";
+import type { Connection, Edge, EdgeTypes, NodeChange, NodeTypes, OnConnectStart } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Graph, NodeId, NodeUi } from "../../protocol";
@@ -21,11 +21,13 @@ import { InspectorContext, paramsButtonId } from "./inspector";
 import type { Inspector } from "./inspector";
 import { GroupNode, MasterNode, ModulatorNode, PluginNode, SourceNode } from "./nodes";
 import { ParamPanel } from "./ParamPanel";
+import { SaveSelectionButton } from "./SaveModule";
+import { modulePluginsOf } from "./selection";
 import { ScopesContext } from "./scopes";
 import type { Scopes } from "./scopes";
 import { StructureContext } from "./structure";
 import { sameGraphStructure } from "./toFlow";
-import type { Flow } from "./toFlow";
+import type { Flow, PatchNode } from "./toFlow";
 import { useLayout } from "./useLayout";
 import { useStuckDragGuard } from "./stuckDrag";
 import { useMovableNodes } from "./useMovableNodes";
@@ -43,6 +45,9 @@ const NODE_TYPES: NodeTypes = {
   master: MasterNode,
   source: SourceNode,
 };
+
+/** The keys that add a node to the ones that are chosen when it is clicked (step 105): Shift, which a person who has a box to draw round nodes expects it of, and the keys that React Flow has for it, Control and Command. */
+const MULTI_SELECTION_KEYS = ["Shift", "Meta", "Control"];
 
 const EDGE_TYPES: EdgeTypes = { audio: AudioEdge, modulation: ModulationEdge, send: SendEdge, notes: NotesEdge, hears: HearsEdge };
 
@@ -181,6 +186,33 @@ export function PatchView() {
   // The nodes as they are on the canvas: the layout's, but where a person is dragging one it is where the pointer has taken it.
   const moveNode = useCallback((node: NodeId, ui: NodeUi) => editor.moveNode(node, ui), [editor]);
   const { nodes, onNodesChange, onNodeDragStart, onNodeDragStop } = useMovableNodes(flow.nodes, moveNode);
+  // Choosing nodes to make a module of (step 105). While it is on a node is chosen by a click and a box drawn on the canvas chooses the nodes in it, and nodes are not moved; the cables are none of what is chosen.
+  const [choosing, setChoosing] = useState(false);
+  const chosen = useMemo(() => nodes.filter((node) => node.selected === true).map((node) => node.data.node), [nodes]);
+  const held = useMemo(() => modulePluginsOf(graph, chosen), [graph, chosen]);
+  const forgetChosen = useCallback(() => {
+    const changes = nodes.filter((node) => node.selected === true).map((node): NodeChange<PatchNode> => ({ id: node.id, type: "select", selected: false }));
+    if (changes.length > 0) onNodesChange(changes);
+  }, [nodes, onNodesChange]);
+  const toggleChoosing = useCallback(() => {
+    if (choosing) forgetChosen();
+    setChoosing(!choosing);
+  }, [choosing, forgetChosen]);
+  // (Escape leaves it, unless something that is open took the key: a menu closes with it.)
+  useEffect(() => {
+    if (!choosing) return;
+    const leave = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      forgetChosen();
+      setChoosing(false);
+    };
+    window.addEventListener("keydown", leave);
+    return () => {
+      window.removeEventListener("keydown", leave);
+    };
+  }, [choosing, forgetChosen]);
+  // (A cable is not chosen, and a click on one is as it was: it is none of what a module is made of.)
+  const edges = useMemo(() => flow.edges.map((edge) => ({ ...edge, selectable: false })), [flow.edges]);
   // (A card that stays in hand when the release of the mouse was lost is let go of.)
   useStuckDragGuard();
   // The ports that take the cable being dragged, for them to say so.
@@ -232,7 +264,7 @@ export function PatchView() {
               <ConnectingContext.Provider value={connecting?.takers ?? null}>
                 <ReactFlow
                   nodes={nodes}
-                  edges={flow.edges}
+                  edges={edges}
                   onNodesChange={onNodesChange}
                   onNodeDragStart={onNodeDragStart}
                   onNodeDragStop={onNodeDragStop}
@@ -250,12 +282,37 @@ export function PatchView() {
                   onConnectEnd={onConnectEnd}
                   onConnect={onConnect}
                   edgesFocusable={false}
-                  elementsSelectable={false}
+                  elementsSelectable={choosing}
+                  selectionOnDrag={choosing}
+                  selectNodesOnDrag={false}
+                  multiSelectionKeyCode={MULTI_SELECTION_KEYS}
+                  nodesDraggable={!choosing}
+                  panOnDrag={choosing ? [1, 2] : true}
                   deleteKeyCode={null}
                 >
                   <Background gap={24} />
                   <Controls showInteractive={false} />
-                  <Panel position="top-right">
+                  <Panel position="top-right" className="tang-patch__tools">
+                    {choosing ? (
+                      <>
+                        <span className="tang-patch__chosen" role="status">
+                          {chosen.length === 0
+                            ? "Drag a box round the nodes to keep"
+                            : `${String(held.nodes.length)} chosen${held.left > 0 ? `, ${String(held.left)} that a module cannot hold left out` : ""}`}
+                        </span>
+                        <SaveSelectionButton nodes={held.nodes} />
+                      </>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="tang-patch__arrange"
+                      title="Choose nodes, with a box drawn round them or a click, to save them as a module with the cables that are between them"
+                      aria-label="Choose nodes to save as a module"
+                      aria-pressed={choosing}
+                      onClick={toggleChoosing}
+                    >
+                      Select
+                    </button>
                     <button
                       type="button"
                       className="tang-patch__arrange"

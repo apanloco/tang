@@ -8411,6 +8411,39 @@ mod modules {
     }
 
     #[test]
+    fn n_adds_a_module_that_is_a_graph_as_a_lane_for_each_of_its_own_with_the_instrument_and_the_cable_in_one_step_that_ctrl_z_takes_out_whole() {
+        let (dir, mut h) = harness();
+        // A module of two lanes, as a person saves what is chosen on the page: an oscillator with a filter, a lane of a reverb alone, and a cable from the filter into the reverb.
+        let file = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\n[[cable]]\nfrom = \"instrument[0].effect[0]\"\nto = \"instrument[1].effect[0]\"\n";
+        std::fs::write(dir.path().join("Voice.toml"), file).unwrap();
+        assert!(h.s.ctl.refresh_modules());
+        let (lanes, cables) = (h.s.ctl.model.instruments.len(), h.s.ctl.model.cables.len());
+        h.commands();
+        h.press(KeyCode::Char('N'));
+        let selector = h.s.selector.as_ref().expect("the selector is open");
+        assert_eq!(selector.items.first().map(|item| item.cells.clone()), Some(vec!["Voice".to_string(), "Module".to_string(), "3".to_string(), "0".to_string()]), "as many plugins as parameters: the instrument and the two effects");
+        h.press(KeyCode::Enter);
+        assert!(h.s.selector.is_none());
+        let told = h.commands();
+        assert_eq!(told.iter().filter(|command| command.starts_with("InsertEffect")).count(), 2, "{told:?}");
+        assert_eq!(told.iter().filter(|command| command.starts_with("SwapInstrument")).count(), 1, "the oscillator: {told:?}");
+        assert_eq!((h.s.ctl.model.instruments.len(), h.s.ctl.model.cables.len()), (lanes + 2, cables + 1), "a lane for each of the module's, and the cable between them");
+        let [first, second] = [&h.s.ctl.model.instruments[lanes], &h.s.ctl.model.instruments[lanes + 1]];
+        assert_eq!((first.instrument.as_ref().map(|plugin| plugin.name.as_str()), first.route), (Some("Oscillator"), crate::session::Route::None), "bare, as every module is");
+        assert!(second.instrument.is_none() && second.route == crate::session::Route::None);
+        let tree = h.tree();
+        let oscillator = tree.iter().rposition(|line| line.contains("Oscillator")).expect("the module's oscillator is in the tree");
+        assert!(tree[oscillator].contains("[no out]") && tree[oscillator + 1].contains("fx Filter"), "{tree:#?}");
+        let empty = tree.iter().position(|line| line.contains("(empty)")).expect("and its lane of a reverb");
+        assert!(tree[empty].contains("[no out]") && tree[empty + 1].contains("fx Reverb"), "{tree:#?}");
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add Voice"));
+        h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!((h.s.ctl.model.instruments.len(), h.s.ctl.model.cables.len()), (lanes, cables), "one undo takes both lanes out, with the cable");
+        h.press_with(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert_eq!((h.s.ctl.model.instruments.len(), h.s.ctl.model.cables.len()), (lanes + 2, cables + 1), "and one redo puts them back");
+    }
+
+    #[test]
     fn a_name_that_is_refused_stays_in_the_popup_with_the_reason_and_what_is_typed_clears_it() {
         let (dir, mut h) = harness();
         h.press(KeyCode::Char('K')).type_chars("a/b").press(KeyCode::Enter);

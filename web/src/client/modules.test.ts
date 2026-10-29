@@ -1,16 +1,21 @@
 import { describe, expect, test } from "vitest";
 
 import type { CatalogEntry, Intent, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
-import { builtinCatalog, modulesFixture, tracerSnapshot } from "./fixtures";
+import { builtinCatalog, moduleGraphsFixture, modulesFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
-import { cleanModuleName, moduleEntry, moduleId, moduleNameOf, moduleOf, withModules } from "./modules";
-import type { Module } from "./modules";
+import { chainOf, cleanModuleName, moduleEntry, moduleId, moduleNameOf, moduleOf, moduleOfNodes, pluginCount, withModules } from "./modules";
+import type { Module, ModuleEffect } from "./modules";
 
 // Chains of effects saved as modules (`Intent::SaveModule`), against the mock engine: what the controller does (`save_module_intent`, `load_module`), with a library that is kept in memory.
 // `fixtures/modules.json` is what the controller made of a script on a session of its own, step by step; the mock is held to it here.
 
 /** The layout of the telemetry with the same fingerprint, which the controller's comes from a hasher and the mock's from a counter. */
 const layoutOf = (layout: TelemetryLayout): TelemetryLayout => ({ ...layout, rev: 0 });
+
+/** A module of one lane that has no instrument and these effects, and no cables: the chain that a module was before it was a graph. */
+const chain = (...effects: ModuleEffect[]): Module => ({ lanes: [{ instrument: null, effects }], cables: [] });
+
+const plain = (plugin: string): ModuleEffect => ({ plugin, preset: null, params: {}, mix: 1, pinned: [], fed: true });
 
 const quiet = (ms = 40): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -39,10 +44,7 @@ describe("the mock engine's library of modules", () => {
 
   test("adds a module that a hand wrote as the controller adds it: a preset that the plugin has not, a parameter it has not, a value beyond its range, a choice that is not a whole number, a mix beyond 1, and knobs that are named twice or name nothing", () => {
     // (This is what the file `modulesFixture.odd.file` says, as the library of the mock keeps a module.)
-    const odd: Module = {
-      effects: [{ plugin: "builtin:filter", preset: "No such preset", params: { cutoff: 7, type: 2.6, "no such parameter": 1 }, mix: 1.5, pinned: ["resonance", "no such parameter", "resonance", "drive"], fed: true }],
-      cables: [],
-    };
+    const odd = chain({ plugin: "builtin:filter", preset: "No such preset", params: { cutoff: 7, type: 2.6, "no such parameter": 1 }, mix: 1.5, pinned: ["resonance", "no such parameter", "resonance", "drive"], fed: true });
     const server = new MockServer({ snapshot: modulesFixture.snapshot, modules: { Odd: odd } });
     const { step } = modulesFixture.odd;
     const told = server.apply(step.intent);
@@ -128,8 +130,8 @@ describe("the mock engine's library of modules", () => {
 
   test("is nothing a refusal uses: a module that cannot be added leaves no lane and uses no id, whatever the reason", () => {
     const library: Record<string, Module> = {
-      Needs: { effects: [{ plugin: "builtin:filter", preset: null, params: {}, mix: 1, pinned: [], fed: true }, { plugin: "clap:com.example.nothing", preset: null, params: {}, mix: 1, pinned: [], fed: true }], cables: [] },
-      Plays: { effects: [{ plugin: "builtin:osc", preset: null, params: {}, mix: 1, pinned: [], fed: true }], cables: [] },
+      Needs: chain(plain("builtin:filter"), plain("clap:com.example.nothing")),
+      Plays: chain(plain("builtin:osc")),
     };
     const server = new MockServer({ snapshot: tracerSnapshot, modules: library });
     const nodes = server.snapshot.graph.nodes.length;
@@ -166,7 +168,7 @@ describe("the names and the entries of modules", () => {
   });
 
   test("a module's entry is no instrument, has as many effects as parameters and no presets", () => {
-    const module: Module = { effects: [{ plugin: "builtin:filter", preset: null, params: {}, mix: 1, pinned: [], fed: true }], cables: [] };
+    const module = chain(plain("builtin:filter"));
     expect(moduleEntry("Space", module)).toEqual({ id: "module:Space", name: "Space", format: "Module", isInstrument: false, params: 1, presets: 0 });
   });
 
@@ -176,7 +178,7 @@ describe("the names and the entries of modules", () => {
       { id: "builtin:space", name: "Space", format: "Built-in", isInstrument: false, params: 1, presets: 0 },
     ];
     const copy = [...plugins];
-    const one: Module = { effects: [{ plugin: "builtin:filter", preset: null, params: {}, mix: 1, pinned: [], fed: true }], cables: [] };
+    const one = chain(plain("builtin:filter"));
     const listed = withModules(plugins, new Map([["hall", one], ["Space", one]]));
     expect(listed.map((entry) => entry.id)).toEqual(["module:hall", "builtin:space", "module:Space", "clap:zeta"]);
     expect(plugins).toEqual(copy);
@@ -194,15 +196,18 @@ describe("the chain that a module is made of", () => {
     if (!lane) throw new Error("the fixture has a lane");
     const module = moduleOf(snapshot, lane);
     if (typeof module === "string") throw new Error(module);
-    expect(module.effects.map((effect) => effect.plugin)).toEqual(["builtin:filter", "builtin:reverb", "builtin:math"]);
-    expect(module.effects[0]).toEqual({ plugin: "builtin:filter", preset: null, params: { cutoff: 0.25 }, mix: 0.8, pinned: ["resonance", "cutoff"], fed: true });
-    expect(module.effects[1]).toMatchObject({ plugin: "builtin:reverb", preset: "Cathedral", mix: 0.4, pinned: ["size"], fed: false });
-    expect(module.effects[1]?.params.size).toBe(0.9);
-    expect(module.effects[2]?.params).toEqual({ mode: 4 });
+    expect(module.lanes).toHaveLength(1);
+    const effects = module.lanes[0]?.effects ?? [];
+    expect(module.lanes[0]?.instrument).toBeNull();
+    expect(effects.map((effect) => effect.plugin)).toEqual(["builtin:filter", "builtin:reverb", "builtin:math"]);
+    expect(effects[0]).toEqual({ plugin: "builtin:filter", preset: null, params: { cutoff: 0.25 }, mix: 0.8, pinned: ["resonance", "cutoff"], fed: true });
+    expect(effects[1]).toMatchObject({ plugin: "builtin:reverb", preset: "Cathedral", mix: 0.4, pinned: ["size"], fed: false });
+    expect(effects[1]?.params.size).toBe(0.9);
+    expect(effects[2]?.params).toEqual({ mode: 4 });
     // (Two cables between the effects, one beside a link that is cut and one at the second input of the math; the cable from the instrument is the session's.)
     expect(module.cables).toEqual([
-      { from: 0, to: 1, side: false, gain: 0.5 },
-      { from: 0, to: 2, side: true, gain: 0.7 },
+      { from: { lane: 0, effect: 0 }, to: { lane: 0, effect: 1, side: false }, gain: 0.5 },
+      { from: { lane: 0, effect: 0 }, to: { lane: 0, effect: 2, side: true }, gain: 0.7 },
     ]);
   });
 
@@ -222,5 +227,217 @@ describe("the chain that a module is made of", () => {
     expect(moduleOf(snapshot, master)).toBe("a module is made of the chain of a lane");
     expect(moduleOf(snapshot, empty)).toBe("a lane that has no effect has no chain to save");
     expect(named("nothing")).toBeUndefined();
+  });
+});
+
+describe("the mock engine's library of graph modules", () => {
+  const fixture = moduleGraphsFixture;
+
+  test("is what the controller makes of plugins that are chosen and saved, added, undone and done again, step by step: the events, the nodes, the cables, the layout of the telemetry, what Undo and Redo would do, and the modules the catalog lists", () => {
+    const server = new MockServer({ snapshot: fixture.snapshot });
+    for (const [i, step] of fixture.steps.entries()) {
+      const told = server.apply(step.intent);
+      const what = `step ${String(i + 1)}: ${JSON.stringify(step.intent)}`;
+      expect(told.events, what).toEqual(step.events);
+      expect(told.restructured, what).toBe(step.restructured);
+      expect(server.history, what).toEqual(step.history);
+      expect(server.snapshot.graph, what).toEqual(step.graph);
+      expect(layoutOf(server.snapshot.telemetry), what).toEqual(layoutOf(step.telemetry));
+    }
+  });
+
+  test("lists as the controller lists them: by how many plugins each has, the instruments and the effects", async () => {
+    const server = new MockServer({ snapshot: fixture.snapshot });
+    const heard: ServerMessage[] = [];
+    const transport = server.transport();
+    transport.connect({
+      open: () => undefined,
+      text: (data) => {
+        heard.push(JSON.parse(data) as ServerMessage);
+      },
+      binary: () => undefined,
+      close: () => undefined,
+    });
+    transport.send(JSON.stringify({ type: "subscribe" }));
+    await quiet();
+    for (const step of fixture.steps) {
+      server.apply(step.intent);
+      await quiet(5);
+      // (The catalog is told again when what it lists changes, so the last that was told is what it lists now.)
+      const catalog = heard.findLast((message): message is Extract<ServerMessage, { type: "catalog" }> => message.type === "catalog");
+      const listed = catalog?.entries.filter((entry) => entry.format === "Module").map((entry) => ({ id: entry.id, name: entry.name, params: entry.params }));
+      expect(listed, JSON.stringify(step.intent)).toEqual(step.modules);
+    }
+    transport.close();
+  });
+
+  test("turns away what the controller turns away when plugins are chosen, in its words, and changes nothing", () => {
+    expect(fixture.refusals.length).toBeGreaterThan(20);
+    const wrong: string[] = [];
+    for (const row of fixture.refusals) {
+      const server = new MockServer({ snapshot: fixture.snapshot });
+      const got = refusedWith(server, row.intent);
+      if (got !== row.error) wrong.push(`${JSON.stringify(row.intent)}: ${got}, and the controller says ${row.error}`);
+      expect(server.snapshot, JSON.stringify(row.intent)).toBe(fixture.snapshot);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  test("adds a module that a hand wrote that has an instrument as the controller adds it: a volume beyond its range, a preset that the plugin has not, a value beyond its range, a choice that is not a whole number, knobs named twice or that name nothing, and a cable beyond the level a cable has", () => {
+    // (This is what the file `fixture.odd.file` says, as the library of the mock keeps a module.)
+    const odd: Module = {
+      lanes: [
+        { instrument: { plugin: "builtin:osc", preset: "No such preset", params: { detune: 99, waveform: 1.6, "no such parameter": 1 }, volume: 7.5, pinned: ["no such parameter", "detune", "detune"] }, effects: [] },
+        { instrument: null, effects: [plain("builtin:filter")] },
+      ],
+      cables: [{ from: { lane: 0, effect: null }, to: { lane: 1, effect: 0, side: false }, gain: 3 }],
+    };
+    const server = new MockServer({ snapshot: fixture.snapshot, modules: { OddVoice: odd } });
+    const { step } = fixture.odd;
+    const told = server.apply(step.intent);
+    expect(told.events).toEqual(step.events);
+    expect(server.history).toEqual(step.history);
+    expect(server.snapshot.graph).toEqual(step.graph);
+    expect(layoutOf(server.snapshot.telemetry)).toEqual(layoutOf(step.telemetry));
+    // In words as well, so that a fixture that is written again cannot take the rules away unseen: the volume is held to 4, the value to its range, the choice is a whole number, the preset that is not there is no preset, the
+    // knobs are the plugin's own and once each, the cable's level is held to 2, and the lane is bare.
+    const lane = server.snapshot.graph.nodes.findLast((node) => node.kind === "instrument" && node.plugin !== null);
+    if (lane?.kind !== "instrument" || !lane.plugin) throw new Error("the module has an instrument");
+    const value = (name: string): number | undefined => lane.plugin?.params.find((p) => p.name === name)?.value;
+    expect([lane.volume, value("detune"), value("waveform"), lane.route]).toEqual([4, 24, 2, "none"]);
+    expect(lane.plugin.pinned).toEqual([lane.plugin.params.find((p) => p.name === "detune")?.index]);
+    expect(lane.plugin.currentPreset).toBeNull();
+    const cable = server.snapshot.graph.edges.findLast((edge) => edge.kind === "cable");
+    expect(cable?.kind === "cable" ? cable.gain : null).toBe(2);
+  });
+
+  test("tells the catalog again when a module is saved that was not there or that has another number of plugins, and not for one that is saved again as it was", async () => {
+    const server = new MockServer({ snapshot: fixture.snapshot });
+    const heard: ServerMessage[] = [];
+    const transport = server.transport();
+    transport.connect({
+      open: () => undefined,
+      text: (data) => {
+        heard.push(JSON.parse(data) as ServerMessage);
+      },
+      binary: () => undefined,
+      close: () => undefined,
+    });
+    transport.send(JSON.stringify({ type: "subscribe" }));
+    await quiet();
+    const catalogs = (): number => heard.filter((message) => message.type === "catalog").length;
+    const [pair, , again, tone] = fixture.steps.map((step) => step.intent);
+    if (!pair || !again || !tone) throw new Error("the fixture saves a pair, the same again and a tone");
+    const before = catalogs();
+    server.apply(pair);
+    await quiet();
+    expect(catalogs()).toBe(before + 1);
+    // (The same plugins under the same name, as they are: the same entry, which is no news.)
+    server.apply(again);
+    await quiet();
+    expect(catalogs()).toBe(before + 1);
+    // Another module is news, and so is the same name with another number of plugins.
+    server.apply(tone);
+    await quiet();
+    expect(catalogs()).toBe(before + 2);
+    const nodes = fixture.snapshot.graph.nodes;
+    const osc = nodes.find((node) => node.kind === "instrument" && node.plugin !== null);
+    const filter = nodes.find((node) => node.kind === "effect" && node.name === "Filter" && node.parent === osc?.id);
+    const math = nodes.find((node) => node.kind === "effect" && node.name === "Math");
+    if (!filter || !osc || !math) throw new Error("the session has a filter, an oscillator and a math effect");
+    // (Two other plugins under the name that has two is not news either: the entry says how many, and not which.)
+    server.apply({ type: "saveSelectionAsModule", nodes: [filter.id, osc.id], name: "Pair" });
+    await quiet();
+    expect(catalogs()).toBe(before + 2);
+    server.apply({ type: "saveSelectionAsModule", nodes: [filter.id, osc.id, math.id], name: "Pair" });
+    await quiet();
+    expect(catalogs()).toBe(before + 3);
+    transport.close();
+  });
+});
+
+describe("the plugins that a module is made of", () => {
+  const snapshot: Snapshot = moduleGraphsFixture.snapshot;
+  const nodeOf = (name: string, kind: "instrument" | "effect", parent?: number) => {
+    const found = snapshot.graph.nodes.find((node) => node.kind === kind && node.name === name && (parent === undefined || node.parent === parent));
+    if (!found) throw new Error(`the fixture has no ${name}`);
+    return found;
+  };
+  const osc = nodeOf("Oscillator", "instrument");
+  const filter = nodeOf("Filter", "effect", osc.id);
+  const delay = nodeOf("Delay", "effect", osc.id);
+  const reverb = nodeOf("Reverb", "effect", osc.id);
+  const math = nodeOf("Math", "effect");
+  const feeds = (module: ReturnType<typeof moduleOfNodes>): boolean[][] => (typeof module === "string" ? [] : module.lanes.map((lane) => lane.effects.map((effect) => effect.fed)));
+
+  test("are the plugins that are chosen, lane by lane in the session's order whatever the order they are given in, each with what a file says of it, and the cables that have both ends among them", () => {
+    const module = moduleOfNodes(snapshot, [math, filter]);
+    if (typeof module === "string") throw new Error(module);
+    expect(module.lanes.map((lane) => [lane.instrument, lane.effects.map((effect) => effect.plugin)])).toEqual([[null, ["builtin:filter"]], [null, ["builtin:math"]]]);
+    expect(module.lanes[0]?.effects[0]?.mix).toBe(0.9);
+    expect(module.lanes[1]?.effects[0]?.params).toEqual({ mode: 4 });
+    expect(pluginCount(module)).toBe(2);
+    // (Of four cables, the one that has both ends among what is chosen: the filter into the math's second input.)
+    expect(module.cables).toEqual([{ from: { lane: 0, effect: 0 }, to: { lane: 1, effect: 0, side: true }, gain: 0.7 }]);
+    const voice = moduleOfNodes(snapshot, [osc, filter, math]);
+    if (typeof voice === "string") throw new Error(voice);
+    expect(voice.lanes[0]?.instrument).toEqual({ plugin: "builtin:osc", preset: null, params: { detune: 3 }, volume: 0.8, pinned: ["detune"] });
+    expect(voice.cables).toEqual([
+      { from: { lane: 0, effect: null }, to: { lane: 1, effect: 0, side: false }, gain: 0.3 },
+      { from: { lane: 0, effect: 0 }, to: { lane: 1, effect: 0, side: true }, gain: 0.7 },
+    ]);
+    expect(moduleOfNodes(snapshot, [math, filter, osc])).toEqual(voice);
+  });
+
+  test("have an effect fed by the chain only where the stage before it was chosen too, and the first effect of a lane that has no instrument as it was", () => {
+    expect(feeds(moduleOfNodes(snapshot, [osc, filter, delay, reverb]))).toEqual([[true, true, true]]);
+    expect(feeds(moduleOfNodes(snapshot, [filter, delay, reverb]))).toEqual([[true, true, true]]);
+    expect(feeds(moduleOfNodes(snapshot, [filter, reverb]))).toEqual([[true, false]]);
+    expect(feeds(moduleOfNodes(snapshot, [osc, filter, reverb]))).toEqual([[true, false]]);
+    expect(feeds(moduleOfNodes(snapshot, [osc, delay, reverb]))).toEqual([[false, true]]);
+    expect(feeds(moduleOfNodes(snapshot, [osc, reverb]))).toEqual([[false]]);
+    expect(feeds(moduleOfNodes(snapshot, [osc, filter]))).toEqual([[true]]);
+    expect(feeds(moduleOfNodes(snapshot, [delay, reverb]))).toEqual([[true, true]]);
+    expect(feeds(moduleOfNodes(snapshot, [delay]))).toEqual([[true]]);
+    // A link that was cut stays cut whatever is chosen.
+    const cut = { ...snapshot, graph: { ...snapshot.graph, nodes: snapshot.graph.nodes.map((node) => (node.id === delay.id && node.kind === "effect" ? { ...node, feed: "none" as const } : node)) } };
+    expect(feeds(moduleOfNodes(cut, [osc, filter, delay, reverb]))).toEqual([[true, false, true]]);
+    expect(feeds(moduleOfNodes(cut, [delay]))).toEqual([[false]]);
+  });
+
+  test("are refused, in the controller's words, for what a module has none of: a group's bus, a modulator, a source, a lane that has no instrument, and nothing", () => {
+    const group = snapshot.graph.nodes.find((node) => node.kind === "group");
+    const bus = snapshot.graph.nodes.find((node) => node.kind === "effect" && node.parent === group?.id);
+    const modulator = snapshot.graph.nodes.find((node) => node.kind === "modulator");
+    const source = snapshot.graph.nodes.find((node) => node.kind === "source");
+    const holder = snapshot.graph.nodes.find((node) => node.id === math.parent);
+    if (!group || !bus || !modulator || !source || !holder) throw new Error("the fixture has a group with a bus effect, a modulator, a source and a holder");
+    expect(moduleOfNodes(snapshot, [])).toBe("nothing is chosen: a module is made of the effects and instruments that are");
+    expect(moduleOfNodes(snapshot, [filter, group])).toBe("a module is made of effects and instruments: a group's bus is not saved");
+    expect(moduleOfNodes(snapshot, [bus, math])).toBe("a module is made of effects and instruments: a group's bus is not saved");
+    expect(moduleOfNodes(snapshot, [filter, modulator])).toBe("a modulator is not part of a module yet: a module is made of effects and instruments");
+    expect(moduleOfNodes(snapshot, [source])).toBe("a source of notes is not part of a module: a module is made of effects and instruments");
+    expect(moduleOfNodes(snapshot, [holder])).toBe("a lane that has no instrument has none to save: choose its effects");
+  });
+
+  test("are a chain's when the chosen are the effects of one lane, and the chain's refusals are the chain's own", () => {
+    const chain = chainOf(snapshot, filter);
+    if (typeof chain === "string") throw new Error(chain);
+    expect(chain.map((node) => node.id)).toEqual([filter.id, delay.id, reverb.id]);
+    expect(moduleOfNodes(snapshot, chain)).toEqual(moduleOf(snapshot, filter));
+    const empty = snapshot.graph.nodes.find((node) => node.kind === "instrument" && node.plugin === null && !snapshot.graph.nodes.some((n) => n.parent === node.id));
+    if (!empty) throw new Error("the fixture has an empty lane");
+    expect(chainOf(snapshot, empty)).toBe("a lane that has no effect has no chain to save");
+    const group = snapshot.graph.nodes.find((node) => node.kind === "group");
+    if (!group) throw new Error("the fixture has a group");
+    expect(chainOf(snapshot, group)).toBe("a module is the chain of a lane: a group's bus is not saved");
+  });
+
+  test("are counted by the plugins in a module, and the catalog's entry has that many parameters", () => {
+    const module = moduleOfNodes(snapshot, [osc, filter, delay, reverb, math]);
+    if (typeof module === "string") throw new Error(module);
+    expect(pluginCount(module)).toBe(5);
+    expect(pluginCount({ lanes: [], cables: [] })).toBe(0);
+    expect(moduleEntry("Voice", module).params).toBe(5);
   });
 });

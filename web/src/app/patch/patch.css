@@ -1080,3 +1080,31 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* The bar at the corner of the canvas: what is chosen to make a module of (step 105), the button that saves it, the one that turns choosing on, and Arrange. */
+.tang-patch__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+}
+
+.tang-patch__chosen {
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-patch__arrange[aria-pressed="true"] {
+  border-color: var(--tang-scale);
+  color: var(--tang-scale);
+}
+
+/* A node that is chosen is outlined, and the box that is drawn to choose is in the colour of a note of the scale. */
+.react-flow__node.selected .tang-node {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 2px;
+}
+
+.tang-patch .react-flow__selection {
+  border: 1px solid var(--tang-scale);
+  background: rgb(110 195 215 / 0.1);
+}

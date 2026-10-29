@@ -11,7 +11,7 @@ export type CatalogEntry = {
  */
 id: string, name: string, 
 /**
- * `Built-in`, `LV2`, `CLAP`, `VST3` or `Module` (a chain of effects that the library has, which is added as an effect that stands by itself and not loaded as a plugin).
+ * `Built-in`, `LV2`, `CLAP`, `VST3` or `Module` (effects and instruments with the cables between them, that the library has, which is added as an effect that stands by itself and not loaded as a plugin).
  */
 format: string, isInstrument: boolean, 
 /**

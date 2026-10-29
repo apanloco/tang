@@ -93,9 +93,9 @@ impl Step {
         Step { label: label.into(), undo: vec![undo], redo: vec![redo], key, last: at, undo_made: Made::default(), redo_made: Made::default(), taken: Taken::No }
     }
 
-    /// A step of an add: `redo` is the intent, which made `made` the first time, and `undo` takes it out.
-    fn added(label: impl Into<String>, undo: Intent, redo: Intent, made: Made, at: Instant) -> Step {
-        Step { redo_made: made, ..Step::new(label, undo, redo, None, at) }
+    /// A step of an add: `redo` is the intent, which made `made` the first time, and `undo` takes it out (the intents that do, in the order they are applied).
+    fn added(label: impl Into<String>, undo: Vec<Intent>, redo: Intent, made: Made, at: Instant) -> Step {
+        Step { label: label.into(), undo, redo: vec![redo], key: None, last: at, undo_made: Made::default(), redo_made: made, taken: Taken::No }
     }
 
     /// A step of a removal: `redo` is the intent that took `taken` out, and undo puts it back.
@@ -393,7 +393,7 @@ impl Controller {
         let added = |label: String| Plan::Added { label, intent: intent.clone(), at: now };
         match intent {
             // (Done before `plan_history` is asked, by `apply`: they are no steps of the history.)
-            Intent::Save | Intent::SaveAs { .. } | Intent::SaveModule { .. } | Intent::Undo | Intent::Redo => Plan::Nothing,
+            Intent::Save | Intent::SaveAs { .. } | Intent::SaveModule { .. } | Intent::SaveSelectionAsModule { .. } | Intent::Undo | Intent::Redo => Plan::Nothing,
             // A pattern is not put back by undo (what a recording took and what a clear took are not kept): these are no steps, and take nothing from the ones there are.
             Intent::SetRecording { .. } | Intent::ClearPattern { .. } | Intent::SetPatternField { .. } => Plan::Nothing,
             Intent::SetParam { node, param, .. } => match self.param_row(*node, *param) {
@@ -657,8 +657,20 @@ impl Controller {
         }
     }
 
-    /// The intent that takes out what `added`, an add that is carried out, made: the one node, or the one cable (a free effect: its lane).
-    fn takes_out(&self, added: &Intent, made: &Made) -> Option<Intent> {
+    /// The intents that take out what `added`, an add that is carried out, made: the one node, or the one cable (a free effect: its lane), or the lanes of a module, the last that was made first.
+    fn takes_out(&self, added: &Intent, made: &Made) -> Option<Vec<Intent>> {
+        // (A module made a lane for each of its own, and the plugins in them, and the cables between the plugins: each lane is taken out, with all that is in it and the cables at it.)
+        if let Intent::AddFreeEffect { plugin } = added {
+            if module::name_of(plugin).is_some() {
+                let lanes: Vec<NodeId> = made.nodes.iter().copied().filter(|node| self.lane_place(*node).is_some()).collect();
+                return (!lanes.is_empty()).then(|| lanes.into_iter().rev().map(|node| Intent::RemoveNode { node }).collect());
+            }
+        }
+        self.takes_out_one(added, made).map(|intent| vec![intent])
+    }
+
+    /// The intent that takes out what `added`, an add that is carried out, made, when it made one thing (a node, a cable, or a lane with its effect).
+    fn takes_out_one(&self, added: &Intent, made: &Made) -> Option<Intent> {
         match (added, made.nodes.as_slice(), made.edges.as_slice()) {
             (Intent::AddModEdge { .. }, [], [edge]) if self.model.locate_edge(*edge).is_some() => Some(Intent::RemoveEdge { edge: *edge }),
             (Intent::AddModEdge { .. }, ..) => None,
@@ -669,8 +681,6 @@ impl Controller {
             (Intent::Modulate { .. }, ..) => None,
             // (The lane is taken out with the effect in it: the two nodes that were made, the lane's first, and no cable.)
             (Intent::AddFreeEffect { plugin }, [lane, _], []) if module::name_of(plugin).is_none() && self.lane_place(*lane).is_some() => Some(Intent::RemoveNode { node: *lane }),
-            // (A module made the lane, the effects of its chain in order, and the cables that it has between them: the lane is taken out, with all of it.)
-            (Intent::AddFreeEffect { plugin }, [lane, _, ..], _) if module::name_of(plugin).is_some() && self.lane_place(*lane).is_some() => Some(Intent::RemoveNode { node: *lane }),
             (Intent::AddFreeEffect { .. }, ..) => None,
             (_, [node], []) if self.model.locate(*node).is_some() => Some(Intent::RemoveNode { node: *node }),
             _ => None,
@@ -2793,13 +2803,13 @@ rate = 3.0
         let add_cable = Intent::AddModEdge { modulator: lfo, to: Endpoint { node: lane0, port: Port::Param { index: 1 } } };
         let nodes = |nodes: &[NodeId]| Made { nodes: nodes.to_vec(), edges: vec![] };
         // One node that is there is taken out; none, two, and one that is not there are not.
-        assert_eq!(ctl.takes_out(&add_effect, &nodes(&[lfo])), Some(Intent::RemoveNode { node: lfo }));
+        assert_eq!(ctl.takes_out(&add_effect, &nodes(&[lfo])), Some(vec![Intent::RemoveNode { node: lfo }]));
         assert_eq!(ctl.takes_out(&add_effect, &nodes(&[])), None);
         assert_eq!(ctl.takes_out(&add_effect, &nodes(&[lfo, lane0])), None);
         assert_eq!(ctl.takes_out(&add_effect, &nodes(&[NodeId(9_999)])), None);
         // A cable is taken out by its id, and only a cable that is there, and only when it is all that was made.
         let cable = |edges: &[EdgeId]| Made { nodes: vec![], edges: edges.to_vec() };
-        assert_eq!(ctl.takes_out(&add_cable, &cable(&[edge])), Some(Intent::RemoveEdge { edge }));
+        assert_eq!(ctl.takes_out(&add_cable, &cable(&[edge])), Some(vec![Intent::RemoveEdge { edge }]));
         assert_eq!(ctl.takes_out(&add_cable, &cable(&[])), None);
         assert_eq!(ctl.takes_out(&add_cable, &cable(&[edge, edge])), None);
         assert_eq!(ctl.takes_out(&add_cable, &cable(&[EdgeId(9_999)])), None);
@@ -2810,7 +2820,7 @@ rate = 3.0
         assert_eq!(ctl.takes_out(&add_effect, &Made { nodes: vec![lfo], edges: vec![edge] }), None);
         // An effect that stands by itself made a lane and the effect in it, and it is the lane that is taken out: the first of the two nodes, when that is a lane that is there.
         let add_free = Intent::AddFreeEffect { plugin: "builtin:reverb".to_string() };
-        assert_eq!(ctl.takes_out(&add_free, &nodes(&[lane0, lfo])), Some(Intent::RemoveNode { node: lane0 }));
+        assert_eq!(ctl.takes_out(&add_free, &nodes(&[lane0, lfo])), Some(vec![Intent::RemoveNode { node: lane0 }]));
         // Not one node (the one node that is there is what an effect that goes in a chain makes, and this made two), not three, not a first that is no lane (a modulator is a node that is there) and not one that
         // is not there, and not when a cable was made as well.
         assert_eq!(ctl.takes_out(&add_free, &nodes(&[lane0])), None);
@@ -2818,15 +2828,21 @@ rate = 3.0
         assert_eq!(ctl.takes_out(&add_free, &nodes(&[lfo, lane0])), None);
         assert_eq!(ctl.takes_out(&add_free, &nodes(&[NodeId(9_999), lfo])), None);
         assert_eq!(ctl.takes_out(&add_free, &Made { nodes: vec![lane0, lfo], edges: vec![edge] }), None);
-        // A module made the lane, one effect or more, and the cables between them: it is the lane that is taken out, with all of it, when the first node is a lane that is there and there is an effect at least.
+        // A module made a lane for each of its own (an instrument or an effect or more in each), and the cables between the plugins: every lane that it made is taken out, with all that is in it and the cables at it, the last
+        // that was made first. A module with one lane is the one lane.
         let add_module = Intent::AddFreeEffect { plugin: "module:Space".to_string() };
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, lfo])), Some(Intent::RemoveNode { node: lane0 }));
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, lfo, lfo, lfo])), Some(Intent::RemoveNode { node: lane0 }));
-        assert_eq!(ctl.takes_out(&add_module, &Made { nodes: vec![lane0, lfo, lfo], edges: vec![edge] }), Some(Intent::RemoveNode { node: lane0 }), "its cables go with the lane");
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0])), None, "a lane with no effect in it is not what a module makes");
+        let remove = |node: NodeId| Intent::RemoveNode { node };
+        let lane1 = ctl.model.instruments[1].node;
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, lfo])), Some(vec![remove(lane0)]));
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, lfo, lfo, lfo])), Some(vec![remove(lane0)]));
+        assert_eq!(ctl.takes_out(&add_module, &Made { nodes: vec![lane0, lfo, lfo], edges: vec![edge] }), Some(vec![remove(lane0)]), "its cables go with the lane");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0])), Some(vec![remove(lane0)]), "a module may be an instrument alone, which is a lane and nothing in its chain");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, lfo, lane1, lfo, lfo])), Some(vec![remove(lane1), remove(lane0)]), "the lanes, the last first");
+        assert_eq!(ctl.takes_out(&add_module, &Made { nodes: vec![lane0, lane1], edges: vec![edge, edge] }), Some(vec![remove(lane1), remove(lane0)]), "with the cables between its lanes");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lfo, lane0, lfo])), Some(vec![remove(lane0)]), "a lane wherever it is among what was made");
         assert_eq!(ctl.takes_out(&add_module, &nodes(&[])), None);
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lfo, lane0, lfo])), None, "the first node is a lane");
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[NodeId(9_999), lfo])), None, "and is there");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lfo, lfo])), None, "no lane was made: nothing that a module makes");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[NodeId(9_999), lfo])), None, "a node that is not there is no lane");
     }
 
     #[test]

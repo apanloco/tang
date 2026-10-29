@@ -44,12 +44,12 @@ import { sessionFileName } from "./filenames";
 import { audibleOf, fedOf, heardOf } from "./audible";
 import { cablesThatGo, isAudioCable, isLink, isModulation, isNotesCable } from "./cables";
 import { Counters } from "./counters";
-import { History, planOf, removedStep, stepOf, takesOut } from "./history";
+import { History, addedStep, planOf, removedStep, takesOut } from "./history";
 import type { HistoryState, Made, Plan } from "./history";
 import { noise } from "./noise";
 import { deviceName, eventCableEnds, withHears } from "./noteWiring";
-import { cleanModuleName, moduleNameOf, moduleOf, withModules } from "./modules";
-import type { Module, ModuleEffect } from "./modules";
+import { cleanModuleName, moduleNameOf, moduleOf, moduleOfNodes, pluginCount, withModules } from "./modules";
+import type { Module, ModuleEffect, ModuleInstrument } from "./modules";
 import { noteName } from "./notes";
 import { fieldsOf, gainPorts, isGainPort, samePort } from "./reach";
 import { applyEvent, withValues } from "./reducers";
@@ -751,12 +751,12 @@ function addFreeEffectOutcome(snapshot: Snapshot, plugin: string, counters: Coun
 type BuiltEffect = (typeof builtinEffects)[string];
 
 /**
- * The node that an effect of a module makes (`settings_of_a_module_effect`): the built-in as it is when it is new, with the preset that the module names (found by its name, and the values that it sets are the plugin's
- * own from then on, as a preset's are), the values that the module says over it (by the name of the parameter, held to its range, an enum rounded), the mix, the knobs pinned to its node and whether the stage
- * before it feeds it. What the module says of a preset or a parameter that the plugin has not is left out, as the controller leaves it out.
+ * A plugin of a module as it is once the module has been given it (`give_a_module_plugin_its_values`): the built-in as it is when it is new, with the preset that the module names (found by its name, and the values that it sets
+ * are the plugin's own from then on, as a preset's are), the values that the module says over it (by the name of the parameter, held to its range, an enum rounded) and the knobs pinned to its node. What the module says of a
+ * preset or a parameter that the plugin has not is left out, as the controller leaves it out.
  */
-function moduleEffectNode(built: BuiltEffect, saved: ModuleEffect, id: NodeId, parent: NodeId): Node {
-  let plugin: Plugin = built.plugin;
+function moduleWorkedPlugin(built: Plugin, saved: { readonly preset: string | null; readonly params: Readonly<Record<string, number>>; readonly pinned: readonly string[] }): Plugin {
+  let plugin: Plugin = built;
   const preset = saved.preset === null ? undefined : plugin.presets.find((p) => p.name === saved.preset);
   if (preset) plugin = withValues({ ...plugin, currentPreset: preset.name }, builtinPresets[plugin.id]?.[preset.id] ?? [], true) ?? plugin;
   for (const [name, value] of Object.entries(saved.params)) {
@@ -770,50 +770,86 @@ function moduleEffectNode(built: BuiltEffect, saved: ModuleEffect, id: NodeId, p
     const param = plugin.params.find((p) => p.name === name);
     if (param && !pinned.includes(param.index)) pinned.push(param.index);
   }
+  return { ...plugin, pinned };
+}
+
+/**
+ * The node that an effect of a module makes (`settings_of_a_module_effect`): the plugin as `moduleWorkedPlugin` has it, the mix (held to its range) and whether the stage before it feeds it.
+ */
+function moduleEffectNode(built: BuiltEffect, saved: ModuleEffect, id: NodeId, parent: NodeId): Node {
   const [low, high] = GAIN_RANGES.mix;
-  const effect: Node = { id, parent, name: built.name, kind: "effect", plugin: { ...plugin, pinned }, mix: clamp(saved.mix, low, high), feed: saved.fed ? "chain" : "none", ...(built.side ? { side: built.side } : {}) };
+  const effect: Node = { id, parent, name: built.name, kind: "effect", plugin: moduleWorkedPlugin(built.plugin, saved), mix: clamp(saved.mix, low, high), feed: saved.fed ? "chain" : "none", ...(built.side ? { side: built.side } : {}) };
   return effect;
 }
 
 /**
- * A module of the library added, as the controller adds one (`load_module`): a lane of its own at the end, with no instrument and its way out cut (`addFreeEffectOutcome`), the effects of the chain in it in their order, each as
- * the module says it (`moduleEffectNode`), and the cables that the module has between them. Every plugin is looked at before anything is made, so that a module that has one the catalog does not name, an instrument, or one that the mock
- * cannot make leaves no lane and uses no id; the lane's node is made first and the effects' after it, in order, and then the cables (a redo gives the ids back in that order). A cable that cannot be drawn (it would make the audio go
- * round) is left out, as the controller leaves it.
+ * The node that a lane of a module makes of its instrument (`settings_of_a_module_instrument`): the lane that has the plugin as `moduleWorkedPlugin` has it and the volume (held to its range), at full range and bare (its way
+ * out is cut, as every lane that a module makes is).
+ */
+function moduleInstrumentNode(made: (typeof builtinInstruments)[string], saved: ModuleInstrument, id: NodeId): Node {
+  const [low, high] = GAIN_RANGES.volume;
+  return { id, parent: null, name: made.name, kind: "instrument", plugin: moduleWorkedPlugin(made.plugin, saved), range: null, transpose: 0, volume: clamp(saved.volume, low, high), muted: false, solo: false, route: "none", pattern: null };
+}
+
+/**
+ * A module of the library added, as the controller adds one (`load_module`): a lane of its own at the end for each of the module's, bare (its way out cut, `addFreeEffectOutcome`), each with the instrument that the module says
+ * it has, if it does (`moduleInstrumentNode`) and the effects of its chain in their order (`moduleEffectNode`), and then the cables that the module has between the plugins. Every plugin is looked at before anything is made, so that a
+ * module that has one the catalog does not name, one of the wrong kind, or one that the mock cannot make leaves no lane and uses no id; the nodes are made lane by lane, a lane's node first and its effects' after it, and then the
+ * cables (a redo gives the ids back in that order). A cable that cannot be drawn (it would make the audio go round) is left out, as the controller leaves it.
  */
 function addModuleOutcome(snapshot: Snapshot, name: string, counters: Counters, catalog: readonly CatalogEntry[], library: ReadonlyMap<string, Module>): Outcome {
   const module = library.get(name);
   if (!module) return invalid(`there is no module called ${name} in the library`);
-  const chain: { built: BuiltEffect; saved: ModuleEffect }[] = [];
-  for (const saved of module.effects) {
-    const entry = catalog.find((e) => e.id === saved.plugin);
-    const built = builtinEffects[saved.plugin];
-    const why = !entry ? `${saved.plugin} is not a plugin that is installed` : entry.isInstrument ? `${entry.name} is an instrument, not an effect` : !built ? `${entry.name} could not be loaded` : null;
-    if (why !== null || !built) return invalid(`the module ${name} cannot be added: ${why ?? "it could not be loaded"}`);
-    chain.push({ built, saved });
+  const refused = (why: string): Outcome => invalid(`the module ${name} cannot be added: ${why}`);
+  const loaded: { instrument: { made: (typeof builtinInstruments)[string]; saved: ModuleInstrument } | null; effects: { built: BuiltEffect; saved: ModuleEffect }[] }[] = [];
+  for (const lane of module.lanes) {
+    let instrument: (typeof loaded)[number]["instrument"] = null;
+    if (lane.instrument) {
+      const entry = catalog.find((e) => e.id === lane.instrument?.plugin);
+      const made = builtinInstruments[lane.instrument.plugin];
+      const why = !entry ? `${lane.instrument.plugin} is not a plugin that is installed` : !entry.isInstrument ? `${entry.name} is an effect, not an instrument` : !made ? `${entry.name} could not be loaded` : null;
+      if (why !== null || !made) return refused(why ?? "it could not be loaded");
+      instrument = { made, saved: lane.instrument };
+    }
+    const effects: { built: BuiltEffect; saved: ModuleEffect }[] = [];
+    for (const saved of lane.effects) {
+      const entry = catalog.find((e) => e.id === saved.plugin);
+      const built = builtinEffects[saved.plugin];
+      const why = !entry ? `${saved.plugin} is not a plugin that is installed` : entry.isInstrument ? `${entry.name} is an instrument, not an effect` : !built ? `${entry.name} could not be loaded` : null;
+      if (why !== null || !built) return refused(why ?? "it could not be loaded");
+      effects.push({ built, saved });
+    }
+    loaded.push({ instrument, effects });
   }
   const { nodes, edges } = snapshot.graph;
   const master = nodes.find((n) => n.kind === "master");
   if (!master) return invalid("the session has no master to hear a lane");
 
-  // (A bare module, as every effect that stands by itself is: the lane's way out is cut.)
-  const lane: Node = { id: counters.node(), parent: null, name: "(empty)", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, route: "none", pattern: null };
-  const effects = chain.map(({ built, saved }) => moduleEffectNode(built, saved, counters.node(), lane.id));
+  // (Bare, as every effect that stands by itself is: the way out of each lane is cut. A lane's meters are made with the lane, so that the layout lists them lane by lane.)
+  const made: Node[] = [];
+  const meters: LayoutEntry[] = [];
+  const lanes: { lane: Node; effects: Node[] }[] = [];
+  for (const { instrument, effects } of loaded) {
+    const lane: Node = instrument
+      ? moduleInstrumentNode(instrument.made, instrument.saved, counters.node())
+      : { id: counters.node(), parent: null, name: "(empty)", kind: "instrument", plugin: null, range: null, transpose: 0, volume: 1, muted: false, solo: false, route: "none", pattern: null };
+    meters.push({ slot: counters.slot(), node: lane.id, port: { type: "audioOut" }, kind: "peak" }, { slot: counters.slot(), node: lane.id, port: { type: "audioOut" }, kind: "clips" });
+    const fx = effects.map(({ built, saved }) => moduleEffectNode(built, saved, counters.node(), lane.id));
+    made.push(lane, ...fx);
+    lanes.push({ lane, effects: fx });
+  }
   const atNode = endOfLanes(nodes);
-  const grown: Graph = { nodes: [...nodes.slice(0, atNode), lane, ...effects, ...nodes.slice(atNode)], edges };
-  const meters: LayoutEntry[] = [
-    { slot: counters.slot(), node: lane.id, port: { type: "audioOut" }, kind: "peak" },
-    { slot: counters.slot(), node: lane.id, port: { type: "audioOut" }, kind: "clips" },
-  ];
+  const grown: Graph = { nodes: [...nodes.slice(0, atNode), ...made, ...nodes.slice(atNode)], edges };
   let session: Snapshot = {
     ...snapshot,
     graph: { nodes: grown.nodes, edges: relinked(grown) },
     telemetry: { ...snapshot.telemetry, rev: snapshot.telemetry.rev + 1, meters: [...snapshot.telemetry.meters, ...meters] },
   };
   for (const cable of module.cables) {
-    const [from, to] = [effects[cable.from], effects[cable.to]];
-    if (!from || !to) continue;
-    const drawn = addCableOutcome(session, { node: from.id, port: { type: "audioOut" } }, { node: to.id, port: { type: cable.side ? "audioInSide" : "audioIn" } }, cable.gain, counters);
+    const start = cable.from.effect === null ? lanes[cable.from.lane]?.lane : lanes[cable.from.lane]?.effects[cable.from.effect];
+    const end = lanes[cable.to.lane]?.effects[cable.to.effect];
+    if (!start || !end) continue;
+    const drawn = addCableOutcome(session, { node: start.id, port: { type: "audioOut" } }, { node: end.id, port: { type: cable.to.side ? "audioInSide" : "audioIn" } }, cable.gain, counters);
     if ("restructured" in drawn) session = drawn.restructured;
   }
   return { restructured: session };
@@ -829,6 +865,23 @@ function saveModuleOutcome(snapshot: Snapshot, node: NodeId, name: string): Outc
   const cleaned = cleanModuleName(name);
   if ("error" in cleaned) return invalid(cleaned.error);
   const module = moduleOf(snapshot, found);
+  if (typeof module === "string") return invalid(module);
+  return { event: { type: "moduleSaved", name: cleaned.name } };
+}
+
+/**
+ * The plugins in `nodes` saved as a module (`save_selection_intent`, step 105): the nodes are looked for first (the first that is not there is not found), then the name, then what they make (`moduleOfNodes`).
+ */
+function saveSelectionOutcome(snapshot: Snapshot, nodes: readonly NodeId[], name: string): Outcome {
+  const chosen: Node[] = [];
+  for (const id of nodes) {
+    const found = snapshot.graph.nodes.find((n) => n.id === id);
+    if (!found || id === MASTER) return noNode(id);
+    chosen.push(found);
+  }
+  const cleaned = cleanModuleName(name);
+  if ("error" in cleaned) return invalid(cleaned.error);
+  const module = moduleOfNodes(snapshot, chosen);
   if (typeof module === "string") return invalid(module);
   return { event: { type: "moduleSaved", name: cleaned.name } };
 }
@@ -1244,6 +1297,7 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "save") return saveOutcome(snapshot);
   if (intent.type === "saveAs") return saveAsOutcome(snapshot, intent.name, files);
   if (intent.type === "saveModule") return saveModuleOutcome(snapshot, intent.node, intent.name);
+  if (intent.type === "saveSelectionAsModule") return saveSelectionOutcome(snapshot, intent.nodes, intent.name);
   // (Undo and Redo are not the outcome of an intent on a snapshot: the history is the server's, `MockServer#carry`.)
   if (intent.type === "undo" || intent.type === "redo") return invalid(`${intent.type} is done by the history`);
   if (intent.type === "setScale") return scaleOutcome(intent.scale);
@@ -1540,18 +1594,26 @@ export class MockServer {
   }
 
   /**
-   * Keep the module that the chain of `intent.node` is, under the name that the intent gives it, as `save_module_intent` writes its file: a module of that name is written over, and the clients are told the catalog again
-   * if what it lists is not what it listed (a module saved again with as many effects is the same entry).
+   * Keep the module that `intent` saves (the chain of `intent.node`, or the plugins in `intent.nodes`), under the name that the intent gives it, as `save_module_intent` and `save_selection_intent` write its file: a module of that
+   * name is written over, and the clients are told the catalog again if what it lists is not what it listed (a module saved again with as many plugins is the same entry).
    */
-  #keepModule(snapshot: Snapshot, intent: Extract<Intent, { type: "saveModule" }>, tell: boolean): void {
-    const node = snapshot.graph.nodes.find((n) => n.id === intent.node);
+  #keepModule(snapshot: Snapshot, intent: Extract<Intent, { type: "saveModule" | "saveSelectionAsModule" }>, tell: boolean): void {
     const cleaned = cleanModuleName(intent.name);
-    if (!node || "error" in cleaned) return;
-    const module = moduleOf(snapshot, node);
+    if ("error" in cleaned) return;
+    let module: Module | string;
+    if (intent.type === "saveModule") {
+      const node = snapshot.graph.nodes.find((n) => n.id === intent.node);
+      if (!node) return;
+      module = moduleOf(snapshot, node);
+    } else {
+      const chosen = intent.nodes.flatMap((id) => snapshot.graph.nodes.filter((n) => n.id === id));
+      if (chosen.length !== intent.nodes.length) return;
+      module = moduleOfNodes(snapshot, chosen);
+    }
     if (typeof module === "string") return;
     const before = this.#library.get(cleaned.name);
     this.#library.set(cleaned.name, module);
-    if (!tell || before?.effects.length === module.effects.length) return;
+    if (!tell || (before !== undefined && pluginCount(before) === pluginCount(module))) return;
     for (const connection of this.#connections) {
       if (connection.subscribed) connection.tell(this.#catalogMessage());
     }
@@ -1709,7 +1771,7 @@ export class MockServer {
     if ("error" in outcome) return outcome;
     const done = this.#commit(outcome, tell);
     // (A module that is saved is a file of the library, which the catalog lists from then on.)
-    if (intent.type === "saveModule") this.#keepModule(before, intent, tell);
+    if (intent.type === "saveModule" || intent.type === "saveSelectionAsModule") this.#keepModule(before, intent, tell);
     // (A save as writes a file, which a save as after it does not write over.)
     if ("event" in outcome && outcome.event.type === "saved" && outcome.event.file !== null) this.#files.add(outcome.event.file);
     this.#keep(plan, made, before);
@@ -1893,7 +1955,7 @@ export class MockServer {
       const { label, intent, at } = plan.added;
       const undo = takesOut(this.#snapshot, intent, made);
       // (It made something that cannot be named, or what it made is not there: nothing puts it back.)
-      if (undo) this.#history.record({ ...stepOf(label, undo, intent, null, at), redoMade: made });
+      if (undo) this.#history.record(addedStep(label, undo, intent, made, at));
       else this.#history.clear();
     }
   }
