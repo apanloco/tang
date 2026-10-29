@@ -49,6 +49,10 @@ struct Tang {
     addr: SocketAddr,
     /// What it has logged (its stderr), for the message of a test that fails.
     log: Arc<Mutex<String>>,
+    /// The library of modules it was started with (`TANG_MODULES_DIR`): a directory of the test's own, so that no test reads or writes the library of the person who runs them.
+    library: std::path::PathBuf,
+    /// (Kept so that a directory that was made for the program goes when the program does.)
+    _own_library: Option<tempfile::TempDir>,
 }
 
 impl Tang {
@@ -74,11 +78,19 @@ impl Tang {
     }
 
     fn start_with(dir: Option<&std::path::Path>, session: impl AsRef<std::ffi::OsStr>, midi_device: &str) -> Tang {
+        Tang::start_with_library(dir, session, midi_device, None)
+    }
+
+    /// `tang serve` on the session in `session`, with the library of modules in `library` (an empty directory that is made for it, if none).
+    fn start_with_library(dir: Option<&std::path::Path>, session: impl AsRef<std::ffi::OsStr>, midi_device: &str, library: Option<&std::path::Path>) -> Tang {
+        let own_library = library.is_none().then(|| tempfile::tempdir().expect("a directory for the library"));
+        let library = library.map(std::path::Path::to_path_buf).unwrap_or_else(|| own_library.as_ref().expect("made above").path().to_path_buf());
         let mut command = Command::new(env!("CARGO_BIN_EXE_tang"));
         command
             .args(["--audio-device", "none", "--midi-device", midi_device, "serve"])
             .arg(session)
             .args(["--web-bind", "127.0.0.1:0"])
+            .env("TANG_MODULES_DIR", &library)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -111,7 +123,7 @@ impl Tang {
             .unwrap_or_else(|_| panic!("tang did not say where it serves within a minute:\n{}", log.lock().unwrap()));
         let url = line.strip_prefix("Web interface: http://").unwrap_or_else(|| panic!("an unexpected first line: {line:?}"));
         let addr = url.trim_end_matches('/').parse().unwrap_or_else(|e| panic!("{url:?}: {e}"));
-        Tang { child, addr, log }
+        Tang { child, addr, log, library, _own_library: own_library }
     }
 
     fn log(&self) -> String {
@@ -1219,6 +1231,111 @@ async fn a_browser_adds_the_audio_input_and_it_is_silent_until_a_cable_is_drawn_
     tell(&mut second, json!({"type": "request", "reqId": 1, "intent": {"type": "addCable", "from": start, "to": end, "gain": null}})).await;
     assert_eq!(answer(&mut second, 1).await["type"], "ack");
     peak_until(&mut second, &again, at, SOON, "the tone that the file's gain makes", |peak| (peak - 0.5).abs() < 0.03).await;
+}
+
+/// The entries of a `catalog` message whose format is `Module`, as (id, name, number of effects).
+fn modules_of(catalog: &Value) -> Vec<(String, String, u64)> {
+    let entries = catalog["entries"].as_array().unwrap();
+    entries.iter().filter(|entry| entry["format"] == "Module").map(|entry| (entry["id"].as_str().unwrap().to_string(), entry["name"].as_str().unwrap().to_string(), entry["params"].as_u64().unwrap())).collect()
+}
+
+/// The next `catalog` message that lists all of `ids` (the catalog comes after the snapshot as far as the scan has got, and the library's modules are in it from the start: an intent that names a plugin that
+/// the scan has not found yet is refused as for one that is not installed).
+async fn until_catalog_has(client: &mut Client, tang: &Tang, ids: &[&str]) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let message = next_json(client).await;
+        if message["type"] == "catalog" {
+            let listed: Vec<&str> = message["entries"].as_array().unwrap().iter().map(|entry| entry["id"].as_str().unwrap()).collect();
+            if ids.iter().all(|id| listed.contains(id)) {
+                return message;
+            }
+        }
+        assert!(Instant::now() < deadline, "{ids:?} were not all listed in 30 s\n{}", tang.log());
+    }
+}
+
+#[tokio::test]
+async fn a_browser_saves_a_chain_of_effects_as_a_module_and_adds_it_in_a_lane_of_its_own_and_hears_it_through_cables_and_the_library_is_the_programs_and_another_program_has_the_module() {
+    // A lane that is an oscillator through a filter and a reverb, the way out of which is cut, so that nothing is heard until a cable says where.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("chain.toml");
+    std::fs::write(&file, "[[instrument]]\nplugin = \"builtin:osc\"\nroute = \"none\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[instrument.effect.params]\ncutoff = 0.4\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\nmix = 0.3\n").unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, snapshot) = listening(&tang).await;
+    until_installed(&mut client, &tang, "builtin:reverb").await;
+    let lane = id_of(&snapshot, "Oscillator");
+
+    // A note is held through it all, and nothing is heard: the lane's way out is cut.
+    tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    peak_until(&mut client, &tang, at, SOON, "the held note, with the way out cut", |peak| peak < 0.001).await;
+
+    // The chain is saved as a module: the answer is the revision and the event, the clients are told the catalog again with the module in it (a format of its own, the number of its effects), and the file is in the library, which is this program's own.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "saveModule", "node": lane, "name": "Room"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!(answered["type"], "ack", "{answered}\n{}", tang.log());
+    assert!(said.iter().any(|m| m["type"] == "event" && m["event"]["type"] == "moduleSaved" && m["event"]["name"] == "Room"), "the client is told of the module: {said:?}");
+    let catalog = match said.iter().rfind(|m| m["type"] == "catalog") {
+        Some(catalog) => catalog.clone(),
+        None => until_catalog_has(&mut client, &tang, &["module:Room"]).await,
+    };
+    assert_eq!(modules_of(&catalog), [("module:Room".to_string(), "Room".to_string(), 2)], "{catalog}");
+    assert!(!catalog.to_string().contains(&dir.path().display().to_string()) && !catalog.to_string().contains(&tang.library.display().to_string()), "where the library is, is not told: {catalog}");
+    let module = std::fs::read_to_string(tang.library.join("Room.toml")).unwrap();
+    assert!(module.contains("plugin = \"builtin:filter\"") && module.contains("plugin = \"builtin:reverb\"") && module.contains("cutoff = 0.4") && module.contains("mix = 0.3"), "{module}");
+    assert!(!module.contains("builtin:osc"), "a module is the chain and not the instrument:\n{module}");
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("Room"), "and the session's own file has nothing of it");
+
+    // It is added as an effect that stands by itself: a lane of its own with its two effects, bare, and the step of the history says so.
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "addFreeEffect", "plugin": "module:Room"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 2).await;
+    assert_eq!(answered["type"], "ack", "{answered}\n{}", tang.log());
+    assert_eq!(said.iter().rfind(|m| m["type"] == "history").cloned().expect("a message of the history"), json!({"type": "history", "undo": "add Room", "redo": null}));
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("the new structure is told as a snapshot");
+    let nodes = told["snapshot"]["graph"]["nodes"].as_array().unwrap();
+    let new_lane = nodes.iter().rfind(|n| n["kind"] == "instrument").expect("a new lane");
+    assert_eq!((new_lane["route"].clone(), new_lane["plugin"].clone()), (json!("none"), json!(null)), "bare, with no instrument: {new_lane}");
+    let effects: Vec<&Value> = nodes.iter().filter(|n| n["kind"] == "effect" && n["parent"] == new_lane["id"]).collect();
+    assert_eq!(effects.iter().map(|n| n["name"].as_str().unwrap()).collect::<Vec<_>>(), ["Filter", "Reverb"]);
+    let (first, last) = (effects[0]["id"].as_u64().unwrap(), effects[1]["id"].as_u64().unwrap());
+    peak_until(&mut client, &tang, at, SOON, "the held note, with the module added and not cabled", |peak| peak < 0.001).await;
+
+    // Cables say where: the oscillator into the module's first effect, and the module's last effect to the mix (which gives the lane its way out). The note is heard through the module, and only now.
+    let from_the_lane = json!({"node": lane, "port": {"type": "audioOut"}});
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "addCable", "from": from_the_lane, "to": {"node": first, "port": {"type": "audioIn"}}, "gain": null}})).await;
+    assert_eq!(answer(&mut client, 3).await["type"], "ack");
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "addCable", "from": {"node": last, "port": {"type": "audioOut"}}, "to": {"node": MASTER, "port": {"type": "audioIn"}}, "gain": null}})).await;
+    assert_eq!(answer(&mut client, 4).await["type"], "ack");
+    peak_until(&mut client, &tang, at, SOON, "the held note, heard through the module", |peak| peak > 0.01).await;
+
+    // The session's file has the lane that the module made as any lane is written (no instrument, its effects with what they were saved with) and the cable; the module is not in it.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 5).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(saved.matches("[[instrument]]").count(), 2, "{saved}");
+    assert_eq!(saved.matches("plugin = \"builtin:filter\"").count(), 2, "{saved}");
+    assert_eq!(saved.matches("cutoff = 0.4").count(), 2, "the module's cutoff is in the lane that it made: {saved}");
+    assert!(saved.contains("from = \"instrument[0]\"") && saved.contains("to = \"instrument[1].effect[0]\""), "{saved}");
+
+    // A program that is started on another session and on this library has the module: the catalog says so at the start, and the module is added there as well.
+    let other = dir.path().join("other.toml");
+    std::fs::write(&other, "[[instrument]]\nplugin = \"builtin:osc\"\n").unwrap();
+    let again = Tang::start_with_library(None, &other, "no such device", Some(&tang.library));
+    let (mut second, _, _) = listening(&again).await;
+    let catalog = until_catalog_has(&mut second, &again, &["module:Room", "builtin:filter", "builtin:reverb"]).await;
+    assert_eq!(modules_of(&catalog), [("module:Room".to_string(), "Room".to_string(), 2)]);
+    tell(&mut second, json!({"type": "request", "reqId": 1, "intent": {"type": "addFreeEffect", "plugin": "module:Room"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut second, 1).await;
+    assert_eq!(answered["type"], "ack", "{answered}\n{}", again.log());
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("the new structure is told as a snapshot");
+    assert_eq!(told["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().filter(|n| n["kind"] == "effect").count(), 2);
+
+    // A program that has no module of that name refuses it, in words, and has no more lanes for it.
+    tell(&mut second, json!({"type": "request", "reqId": 2, "intent": {"type": "addFreeEffect", "plugin": "module:Nothing"}})).await;
+    let refused = answer(&mut second, 2).await;
+    assert_eq!(refused["type"], "rejected", "{refused}");
+    assert!(refused["error"]["message"].as_str().unwrap_or_default().contains("no module called Nothing"), "{refused}");
 }
 
 /// Where in a meters frame the master's cell of this kind (`peak`, `clips` or `reduction`) is, from the layout of a snapshot.

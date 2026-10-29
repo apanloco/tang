@@ -5,10 +5,11 @@
 //! that describes it. The checks come first: an intent that fails changes
 //! nothing, and does not count as a revision.
 
-use crate::app::controller::{Controller, FileMode, NewTarget, depth_command, envelope_command, key_command, macro_command, master_command, rate_command, steps_command, sync_command};
+use crate::app::controller::{ChainAt, Controller, FileMode, NewTarget, depth_command, envelope_command, key_command, macro_command, master_command, outputs_fit_the_chain, rate_command, steps_command, sync_command};
 use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
+use crate::app::module::{self, Module};
 use crate::app::model::{
     BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, LinkOf, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NEW_CABLE_GAIN, NodeId, NodePath, ParamKind, ParamSlot,
     PatternState, PluginSlot, STEP_MAX, STEP_MIN, sync_beats,
@@ -43,6 +44,8 @@ impl Controller {
         match intent {
             Intent::Save => return self.save_intent(),
             Intent::SaveAs { name } => return self.save_as_intent(&name),
+            // (A module that is saved is nothing of the session: it is not marked, and the history is as it was.)
+            Intent::SaveModule { node, name } => return self.save_module_intent(node, &name),
             // (What they do is carried out as any intent is, and is no step of the history.)
             Intent::Undo => return self.undo(),
             Intent::Redo => return self.redo(),
@@ -131,7 +134,7 @@ impl Controller {
             Intent::AddInstrument { plugin } => self.add_instrument_intent(&plugin)?,
             Intent::ReplaceInstrument { node, plugin } => self.replace_instrument_intent(node, &plugin)?,
             Intent::ClearInstrument { node } => self.clear_instrument_intent(node)?,
-            Intent::Save | Intent::SaveAs { .. } | Intent::Undo | Intent::Redo => unreachable!("done above"),
+            Intent::Save | Intent::SaveAs { .. } | Intent::SaveModule { .. } | Intent::Undo | Intent::Redo => unreachable!("done above"),
         };
         Ok(self.conclude(done))
     }
@@ -948,8 +951,118 @@ impl Controller {
     }
 
     fn add_free_effect_intent(&mut self, plugin: &str) -> Result<Done, IntentError> {
-        self.add_free_effect(plugin)?;
+        // (A module of the library is a chain of effects that stands by itself: the lane and all of its effects, which are made in order.)
+        match module::name_of(plugin) {
+            Some(name) => self.load_module(name)?,
+            None => {
+                self.add_free_effect(plugin)?;
+            }
+        }
         Ok(Done::Restructured)
+    }
+
+    /// Write the chain of effects of the lane `node` is of as a module of the library, under `name` (`Intent::SaveModule`), and have the catalog list it. The text is made before anything is
+    /// written, so that a refusal leaves the library as it was; a module that has the name is replaced. The session is not marked and the history is as it was, but a revision is used, as
+    /// a save uses one: what the clients are told (`ModuleSaved`) is an event of the session's stream.
+    fn save_module_intent(&mut self, node: NodeId, name: &str) -> Result<Applied, IntentError> {
+        let Some(dir) = self.modules_dir.clone() else { return Err(IntentError::Io("this program keeps no library of modules".to_string())) };
+        self.model.locate(node).ok_or(IntentError::NotFound(node))?;
+        let name = module::clean_name(name).map_err(invalid)?;
+        let text = module::to_text(&self.model, node).map_err(invalid)?;
+        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(module::path_in(&dir, &name), text)).map_err(|error| IntentError::Io(error.to_string()))?;
+        self.refresh_modules();
+        self.rev += 1;
+        let applied = Applied::of(self.rev, vec![Event::ModuleSaved { name }]);
+        self.publish(&applied);
+        Ok(applied)
+    }
+
+    /// Add the module called `name` of the library as a lane of its own that has no instrument, bare as every effect that stands by itself is, with the module's effects in its chain in their order:
+    /// each with the preset that the file says (by its name), the values that it says over it, its mix, the knobs pinned to its node and whether the stage before it feeds it, and the audio cables that the file
+    /// has between them. The lane's node is made first and the effects' after it, in order, and then the cables, so that a redo gives all of them back under the ids they had. Every plugin is
+    /// loaded before anything is made: a module that has one that is not installed, or does not load, leaves no lane and uses no id. What the file says of a preset or a value that the plugin has not is
+    /// logged and left out, as the loader leaves it out of a session; a cable that cannot be drawn (it would make the audio go round) is too.
+    fn load_module(&mut self, name: &str) -> Result<(), IntentError> {
+        let Some(dir) = self.modules_dir.clone() else { return Err(invalid("this program keeps no library of modules")) };
+        let text = std::fs::read_to_string(module::path_in(&dir, name)).map_err(|_| invalid(format!("there is no module called {name} in the library")))?;
+        let module = module::parse(&text).map_err(|why| invalid(format!("{name} is not a module: {why}")))?;
+        let mut plugins = Vec::new();
+        for effect in &module.effects {
+            let loaded = self.load_effect(&effect.plugin).map_err(|error| match error {
+                IntentError::Invalid(why) => invalid(format!("the module {name} cannot be added: {why}")),
+                other => other,
+            })?;
+            outputs_fit_the_chain(loaded.name(), loaded.audio_output_count())?;
+            plugins.push(loaded);
+        }
+        // (What the intent takes out is written down when it is carried out and has nothing here to put back: a preset loaded for the module is part of what it is made of.)
+        let journal = self.journal.take();
+        let made = self.make_module(&module, plugins);
+        self.journal = journal;
+        made
+    }
+
+    /// The lane and the effects of `module`, made from the plugins that were loaded for them in the order of its effects (`load_module`).
+    fn make_module(&mut self, module: &Module, plugins: Vec<Box<dyn plugin::Plugin>>) -> Result<(), IntentError> {
+        let mut plugins = plugins.into_iter().zip(&module.effects);
+        let (first, effect) = plugins.next().ok_or_else(|| invalid("a module has at least one effect"))?;
+        let mut nodes = vec![self.add_free_effect_loaded(first, &effect.plugin)?];
+        let inst = self.model.instruments.len() - 1;
+        for (loaded, effect) in plugins {
+            nodes.push(self.insert_effect(ChainAt::Lane(inst), loaded, &effect.plugin)?);
+        }
+        for (node, effect) in nodes.iter().zip(&module.effects) {
+            self.settings_of_a_module_effect(*node, effect);
+        }
+        for cable in &module.cables {
+            let from = Endpoint { node: nodes[cable.from], port: Port::AudioOut };
+            let to = Endpoint { node: nodes[cable.to], port: if cable.side { Port::AudioInSide } else { Port::AudioIn } };
+            if let Err(error) = self.add_cable_intent(from, to, Some(cable.gain)) {
+                log::warn!("a cable of the module is left out: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Give the effect in `node`, which has just been made from a module, what the module's file says of it, in the order that the loader gives a session's plugin what its file says: the preset, the values
+    /// over it, then what the host keeps (the mix, the knobs pinned to its node, and whether the stage before it feeds it).
+    fn settings_of_a_module_effect(&mut self, node: NodeId, effect: &session::EffectConfig) {
+        let Ok(at) = self.locate_plugin(node) else { return };
+        if let Some(wanted) = &effect.preset {
+            let id = self.plugin_at(&at).and_then(|slot| slot.presets.iter().find(|preset| preset.name == *wanted).map(|preset| preset.id.clone()));
+            match id {
+                Some(id) => {
+                    if let Err(error) = self.load_preset(node, &id) {
+                        log::warn!("the preset {wanted} of the module's effect could not be loaded: {error}");
+                    }
+                }
+                None => log::warn!("the module's effect has no preset {wanted}"),
+            }
+        }
+        let mut names: Vec<&String> = effect.params.keys().collect();
+        names.sort();
+        for name in names {
+            let index = self.plugin_at(&at).and_then(|slot| slot.params.iter().find(|row| row.name == *name).map(|row| row.index));
+            match index {
+                Some(index) => {
+                    if let Err(error) = self.set_param(node, index, effect.params[name] as f32) {
+                        log::warn!("the module's value of {name} was not set: {error}");
+                    }
+                }
+                None => log::warn!("the module's effect has no parameter {name}"),
+            }
+        }
+        if let Err(error) = self.set_gain(node, Gain::Mix, effect.mix as f32) {
+            log::warn!("the module's mix was not set: {error}");
+        }
+        if let Some(slot) = self.plugin_at(&at) {
+            slot.pin_names(&effect.pinned);
+        }
+        if effect.feed == Feed::None {
+            if let Err(error) = self.set_feed_intent(node, Feed::None) {
+                log::warn!("the module's cut feed was not set: {error}");
+            }
+        }
     }
 
     fn add_instrument_intent(&mut self, plugin: &str) -> Result<Done, IntentError> {
@@ -6961,6 +7074,212 @@ type = "midi"
         assert!(sent(&engine).is_empty(), "nothing reached the audio thread");
         assert_eq!((ctl.rev, ctl.dirty), (0, false), "a refusal is not a revision");
         testutil::assert_same_model("after the refusals", &ctl.model, &untouched);
+    }
+
+    // -- modules (step 104) --
+
+    /// A controller with the built-in plugins and a library of modules in `dir`, and a chain that stands by itself (lane 2): a filter with its cutoff turned, then a reverb with a preset, a value over it, a mix of its own,
+    /// a knob pinned to its node and the link into it cut, and a cable from the filter to it at a level of 0.5. The node of the lane.
+    fn a_chain(dir: &std::path::Path) -> (StubEngine, Controller, NodeId) {
+        let (engine, mut ctl) = controller_with_builtins();
+        ctl.modules_dir = Some(dir.to_path_buf());
+        add_free_effect(&mut ctl, "builtin:filter").unwrap();
+        let holder = ctl.model.instruments[2].node;
+        add_effect(&mut ctl, holder, "builtin:reverb").unwrap();
+        let (filter, reverb) = (ctl.model.instruments[2].effects[0].node, ctl.model.instruments[2].effects[1].node);
+        let (cutoff, _) = param(&ctl, NodePath::Effect { inst: 2, index: 0 }, "cutoff");
+        ctl.apply(Intent::SetParam { node: filter, param: cutoff, value: 0.25 }).unwrap();
+        let preset = ctl.model.instruments[2].effects[1].presets[0].id.clone();
+        ctl.apply(Intent::LoadPreset { node: reverb, preset }).unwrap();
+        let (size, from_the_preset) = param(&ctl, NodePath::Effect { inst: 2, index: 1 }, "size");
+        assert_ne!(from_the_preset, 0.9, "the preset has a size of its own, so that a value over it is told from it");
+        ctl.apply(Intent::SetParam { node: reverb, param: size, value: 0.9 }).unwrap();
+        ctl.apply(Intent::SetGain { node: reverb, gain: Gain::Mix, value: 0.4 }).unwrap();
+        ctl.apply(Intent::SetPinned { node: reverb, params: vec![size] }).unwrap();
+        ctl.apply(Intent::SetFeed { node: reverb, feed: Feed::None }).unwrap();
+        draw(&mut ctl, out(filter), into(reverb), Some(0.5)).unwrap();
+        (engine, ctl, holder)
+    }
+
+    /// What the chain of lane `inst` is, effect by effect, as far as a module keeps it: the plugin, the preset, every value, the mix, the knobs pinned and whether it is fed by the stage before it.
+    #[allow(clippy::type_complexity)]
+    fn the_chain_of(ctl: &Controller, inst: usize) -> Vec<(String, Option<String>, Vec<(String, f32)>, f32, Vec<u32>, bool)> {
+        ctl.model.instruments[inst]
+            .effects
+            .iter()
+            .map(|fx| (fx.id.clone(), fx.current_preset.clone(), fx.params.iter().map(|row| (row.name.clone(), row.value)).collect(), fx.mix, fx.pinned.clone(), fx.fed))
+            .collect()
+    }
+
+    #[test]
+    fn a_chain_of_effects_is_saved_as_a_module_of_the_library_and_the_catalog_lists_it_with_the_plugins_and_the_session_is_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl, holder) = a_chain(dir.path());
+        ctl.dirty = false;
+        let (rev, catalog_rev, history) = (ctl.rev, ctl.catalog.rev(), ctl.history_state());
+        let applied = ctl.apply(Intent::SaveModule { node: holder, name: "  Space  ".to_string() }).unwrap();
+        assert_eq!(applied, Applied::of(rev + 1, vec![Event::ModuleSaved { name: "Space".to_string() }]), "a revision of the session's stream, with what a client is told");
+        assert_eq!((ctl.rev, ctl.dirty, ctl.history_state()), (rev + 1, false, history), "nothing of the session changed: it is not marked and the history is as it was");
+        assert!(ctl.catalog.rev() > catalog_rev, "the clients are told the catalog again");
+        let text = std::fs::read_to_string(dir.path().join("Space.toml")).unwrap();
+        assert!(text.starts_with("# A chain of effects, saved by Tang as a module"), "{text}");
+        let module = module::parse(&text).unwrap();
+        assert_eq!(module.effects.iter().map(|effect| effect.plugin.as_str()).collect::<Vec<_>>(), ["builtin:filter", "builtin:reverb"]);
+        assert_eq!(module.effects[1].mix, 0.4, "written as it is typed, not as the 32-bit number it is held in");
+        assert_eq!(module.effects[1].feed, Feed::None);
+        assert_eq!(module.cables, [module::ModuleCable { from: 0, to: 1, side: false, gain: 0.5 }]);
+        // Listed with the plugins, by name, as a module, which is no plugin that is loaded.
+        let listed: Vec<_> = ctl.catalog.entries().into_iter().filter(|entry| entry.format == "Module").map(|entry| (entry.id, entry.name, entry.params, entry.is_instrument)).collect();
+        assert_eq!(listed, [("module:Space".to_string(), "Space".to_string(), 2, false)]);
+        assert!(ctl.catalog.plugins().iter().all(|plugin| module::name_of(&plugin.id).is_none()));
+        // From an effect of the chain as well as from the lane; the same name is the same module, replaced, and nothing is said of the catalog that it did not say.
+        let reverb = ctl.model.instruments[2].effects[1].node;
+        let catalog_rev = ctl.catalog.rev();
+        ctl.apply(Intent::SaveModule { node: reverb, name: "Space.toml".to_string() }).unwrap();
+        assert_eq!(ctl.catalog.rev(), catalog_rev);
+        assert_eq!(std::fs::read_to_string(dir.path().join("Space.toml")).unwrap(), text);
+        ctl.apply(Intent::SaveModule { node: reverb, name: "Hall".to_string() }).unwrap();
+        assert_eq!(ctl.catalog.entries().into_iter().filter(|entry| entry.format == "Module").map(|entry| entry.name).collect::<Vec<_>>(), ["Hall", "Space"]);
+    }
+
+    #[test]
+    fn a_module_is_added_as_a_bare_lane_that_holds_the_effects_it_was_saved_with_and_undo_takes_it_out_and_redo_gives_it_back_under_the_same_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, mut ctl, holder) = a_chain(dir.path());
+        ctl.apply(Intent::SaveModule { node: holder, name: "Space".to_string() }).unwrap();
+        let chain = the_chain_of(&ctl, 2);
+        assert!(chain[1].1.is_some() && chain[1].4.len() == 1 && !chain[1].5 && chain[1].3 == 0.4, "the chain that is saved has a preset, a knob, a mix and a link that is cut: {chain:?}");
+        sent(&engine);
+        let applied = add_free_effect(&mut ctl, "module:Space").unwrap();
+        assert_eq!(applied, Applied::restructured(ctl.rev));
+        assert_eq!(ctl.model.instruments.len(), 4, "a lane of its own, at the end");
+        let lane = &ctl.model.instruments[3];
+        assert!(lane.instrument.is_none());
+        assert_eq!((lane.range, lane.group, lane.route), (None, None, Route::None), "bare, as every module that stands by itself is");
+        assert_eq!(the_chain_of(&ctl, 3), chain, "the effects, in order, as they were saved: the preset, the values, the mixes, the knobs and the links");
+        let (new_filter, new_reverb) = (lane.effects[0].node, lane.effects[1].node);
+        assert_eq!(ctl.model.cables.iter().map(|cable| (cable.from, cable.to, cable.gain)).collect::<Vec<_>>().len(), 2);
+        assert!(ctl.model.cables.iter().any(|cable| (cable.from, cable.to, cable.gain) == (CableFrom::Effect(new_filter), CableTo::Effect(new_reverb), 0.5)), "the cable between the effects");
+        ctl.model.check_ids().unwrap();
+        // The engine was told what a lane and its effects are, and then each one's values.
+        let told = sent(&engine);
+        assert!(told[0].starts_with("AddInstrument") && told[1].starts_with("SetLaneRoute") && told[2].starts_with("InsertEffect inst=3 index=0 plugin=Filter") && told[3].starts_with("InsertEffect inst=3 index=1 plugin=Reverb"), "{told:?}");
+        assert!(told.iter().any(|command| command.starts_with("LoadPreset inst=3 slot=2")) && told.iter().any(|command| command.starts_with("SetParameter inst=3 slot=1")) && told.iter().any(|command| command.starts_with("SetEffectFeed")), "{told:?}");
+
+        // A step of the history, in the words of the button that adds one; undo takes the lane out with its effects and its cable, and redo makes them again under the ids that they had.
+        assert_eq!(ctl.history_state().undo.as_deref(), Some("add Space"));
+        let ids = (lane.node, new_filter, new_reverb, ctl.model.cables.last().map(|cable| cable.id));
+        ctl.apply(Intent::Undo).unwrap();
+        assert_eq!((ctl.model.instruments.len(), ctl.model.cables.len()), (3, 1), "the lane is gone with its effects and the cable between them; the other chain's cable is there");
+        ctl.apply(Intent::Redo).unwrap();
+        assert_eq!(the_chain_of(&ctl, 3), chain);
+        let back = &ctl.model.instruments[3];
+        assert_eq!((back.node, back.effects[0].node, back.effects[1].node, ctl.model.cables.last().map(|cable| cable.id)), ids);
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_module_that_cannot_be_added_leaves_no_lane_and_uses_no_id_and_a_module_is_no_plugin_to_put_in_a_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, mut ctl, holder) = a_chain(dir.path());
+        let other_dir = tempfile::tempdir().unwrap();
+        let (_other_engine, untouched, _) = a_chain(other_dir.path());
+        std::fs::write(dir.path().join("Needs.toml"), "[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument.effect]]\nplugin = \"clap:com.example.nothing\"\n").unwrap();
+        std::fs::write(dir.path().join("Oscillating.toml"), "[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:osc\"\n").unwrap();
+        std::fs::write(dir.path().join("Broken.toml"), "[[instrument]]\n").unwrap();
+        sent(&engine);
+        let refused = |ctl: &mut Controller, module: &str| add_free_effect(ctl, &format!("module:{module}")).expect_err("refused").to_string();
+        assert!(refused(&mut ctl, "Nothing").contains("no module called Nothing"));
+        assert!(refused(&mut ctl, "Needs").contains("cannot be added") && refused(&mut ctl, "Needs").contains("clap:com.example.nothing"), "{}", refused(&mut ctl, "Needs"));
+        assert!(refused(&mut ctl, "Oscillating").contains("an instrument, not an effect"), "{}", refused(&mut ctl, "Oscillating"));
+        assert!(refused(&mut ctl, "Broken").contains("is not a module"), "{}", refused(&mut ctl, "Broken"));
+        assert!(refused(&mut ctl, "..").contains("no module called .."), "a name is no path: {}", refused(&mut ctl, ".."));
+        assert!(sent(&engine).is_empty(), "no lane was made, on the audio thread or in the model");
+        testutil::assert_same_model("after the refusals", &ctl.model, &untouched.model);
+        // A program with no library has none to add from.
+        ctl.modules_dir = None;
+        assert!(refused(&mut ctl, "Space").contains("keeps no library"));
+        // And a module is not a plugin that goes in a chain or a lane: the effect that it is made of is.
+        ctl.modules_dir = Some(dir.path().to_path_buf());
+        ctl.apply(Intent::SaveModule { node: holder, name: "Space".to_string() }).unwrap();
+        let lane0 = lane(&ctl);
+        for refusal in [add_effect(&mut ctl, lane0, "module:Space"), ctl.apply(Intent::AddInstrument { plugin: "module:Space".to_string() })] {
+            let error = refusal.expect_err("a module goes in a lane of its own").to_string();
+            assert!(error.contains("a module is added as an effect that stands by itself"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_module_that_is_saved_from_what_is_not_a_chain_or_under_what_is_not_a_name_is_refused_and_nothing_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl, holder) = a_chain(dir.path());
+        let rev = ctl.rev;
+        let save = |ctl: &mut Controller, node: NodeId, name: &str| ctl.apply(Intent::SaveModule { node, name: name.to_string() }).expect_err("refused");
+        assert!(matches!(save(&mut ctl, NodeId(9999), "Space"), IntentError::NotFound(NodeId(9999))));
+        let empty_lane = node(&ctl, NodePath::Instrument(1));
+        let no_chain = save(&mut ctl, empty_lane, "Space").to_string();
+        assert!(no_chain.contains("no chain to save"), "a lane that has no effect: {no_chain}");
+        assert!(matches!(save(&mut ctl, NodeId::MASTER, "Space"), IntentError::NotFound(NodeId::MASTER)), "the master, which the model does not have");
+        for bad in ["", "   ", "a/b", "a:b", "con", "tab\tname"] {
+            assert!(matches!(save(&mut ctl, holder, bad), IntentError::Invalid(_)), "{bad:?}");
+        }
+        // A group's bus is not a chain of a lane, and a modulator is no lane.
+        let group = node(&ctl, NodePath::Group(0));
+        let bus_effect = node(&ctl, NodePath::GroupEffect { group: 0, index: 0 });
+        let modulator = node(&ctl, NodePath::Modulator { at: ModulatorLocation::Free, index: 0 });
+        for refused in [group, bus_effect, modulator] {
+            assert!(matches!(save(&mut ctl, refused, "Space"), IntentError::Invalid(_)), "{refused:?}");
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing was written");
+        assert_eq!(ctl.rev, rev, "and no revision was used");
+        // No library: nowhere to write.
+        ctl.modules_dir = None;
+        assert!(matches!(save(&mut ctl, holder, "Space"), IntentError::Io(_)));
+    }
+
+    #[test]
+    fn a_cable_at_the_second_input_of_an_effect_of_a_module_is_kept_at_the_second_input_with_its_level_and_the_effects_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = controller_with_builtins();
+        ctl.modules_dir = Some(dir.path().to_path_buf());
+        add_free_effect(&mut ctl, "builtin:filter").unwrap();
+        let holder = ctl.model.instruments[2].node;
+        add_effect(&mut ctl, holder, "builtin:math").unwrap();
+        let (filter, math) = (ctl.model.instruments[2].effects[0].node, ctl.model.instruments[2].effects[1].node);
+        let (mode, _) = param(&ctl, NodePath::Effect { inst: 2, index: 1 }, "mode");
+        ctl.apply(Intent::SetParam { node: math, param: mode, value: 4.0 }).unwrap();
+        draw(&mut ctl, out(filter), side(math), Some(0.7)).unwrap();
+        ctl.apply(Intent::SaveModule { node: math, name: "Pulse".to_string() }).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("Pulse.toml")).unwrap();
+        assert!(text.contains("to = \"instrument[0].effect[1].side\""), "the file names the input: {text}");
+
+        add_free_effect(&mut ctl, "module:Pulse").unwrap();
+        let lane = &ctl.model.instruments[3];
+        let (new_filter, new_math) = (lane.effects[0].node, lane.effects[1].node);
+        let kept = ctl.model.cables.iter().filter(|cable| matches!(cable.to, CableTo::EffectSide(to) if to == new_math)).map(|cable| (cable.from, cable.gain)).collect::<Vec<_>>();
+        assert_eq!(kept, [(CableFrom::Effect(new_filter), 0.7)], "one cable, at B and not at A");
+        assert_eq!(param(&ctl, NodePath::Effect { inst: 3, index: 1 }, "mode").1, 4.0);
+        assert!(ctl.model.instruments[3].effects[1].side.is_some(), "the effect that was loaded again has its second input");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_module_that_names_what_its_plugins_do_not_have_is_added_all_the_same_with_what_they_do_have() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = controller_with_builtins();
+        ctl.modules_dir = Some(dir.path().to_path_buf());
+        let file = "[[instrument]]\n\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\npreset = \"No Such Preset\"\nmix = 0.3\npinned = [\"no_such_knob\", \"size\"]\n\n[instrument.effect.params]\nsize = 0.9\nno_such_param = 0.5\n\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n";
+        std::fs::write(dir.path().join("Odd.toml"), file).unwrap();
+        add_free_effect(&mut ctl, "module:Odd").unwrap();
+        let lane = ctl.model.instruments.last().unwrap();
+        assert_eq!((lane.effects.len(), lane.route), (2, Route::None), "a module is bare whatever its file says of its way out");
+        let reverb = &lane.effects[0];
+        assert_eq!(reverb.current_preset, None, "a preset that the plugin has not is left out");
+        assert_eq!(reverb.params.iter().find(|row| row.name == "size").map(|row| row.value), Some(0.9), "what it has is set");
+        assert_eq!(reverb.mix, 0.3);
+        assert_eq!(reverb.pinned, reverb.params.iter().filter(|row| row.name == "size").map(|row| row.index).collect::<Vec<_>>(), "a knob that it has not is not pinned, and the one it has is");
+        assert_eq!(lane.effects[1].mix, 1.0, "a file that says no mix is fully wet, as a session's is");
+        ctl.model.check_ids().unwrap();
     }
 
     // -- AddFreeEffect --

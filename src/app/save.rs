@@ -153,7 +153,7 @@ fn overrides(params: &[ParamSlot]) -> Vec<(String, f32)> {
         .collect()
 }
 
-fn effect_to_save(fx: &PluginSlot, ui: &BTreeMap<NodeId, NodeUi>) -> SaveEffect {
+pub(super) fn effect_to_save(fx: &PluginSlot, ui: &BTreeMap<NodeId, NodeUi>) -> SaveEffect {
     SaveEffect {
         plugin: fx.id.clone(),
         mix: fx.mix,

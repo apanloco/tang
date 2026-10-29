@@ -111,8 +111,12 @@ impl Snapshot {
             self.change(event)?;
         }
         self.rev = applied.rev;
-        // An intent, from whichever front-end, is a change the session has not saved, unless it is a save.
-        self.meta.dirty = !applied.events.iter().any(|event| matches!(event, Event::Saved { .. }));
+        // An intent, from whichever front-end, is a change the session has not saved, unless it is a save; and a module that is saved changes nothing of the session, which is as unsaved as it was.
+        if applied.events.iter().any(|event| matches!(event, Event::Saved { .. })) {
+            self.meta.dirty = false;
+        } else if !(applied.events.len() == 1 && matches!(applied.events[0], Event::ModuleSaved { .. })) {
+            self.meta.dirty = true;
+        }
         Ok(())
     }
 
@@ -277,6 +281,8 @@ impl Snapshot {
                 shown.clone_from(pattern);
             }
             Event::Saved { file } => self.meta.file.clone_from(file),
+            // (The library is not part of the session: the catalog is told as it changes.)
+            Event::ModuleSaved { .. } => {}
         }
         Ok(())
     }

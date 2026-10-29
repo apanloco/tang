@@ -1534,7 +1534,9 @@ impl State {
                 | intent::Event::GainSet { .. }
                 | intent::Event::PresetLoaded { .. }
                 // (The tab shows what the controller says is unsaved, which is not the case now.)
-                | intent::Event::Saved { .. } => {}
+                | intent::Event::Saved { .. }
+                // (The library is not part of the session: the selectors read the catalog when they open.)
+                | intent::Event::ModuleSaved { .. } => {}
             }
         }
     }

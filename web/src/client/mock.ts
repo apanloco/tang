@@ -1145,6 +1145,8 @@ function outcomeOf(snapshot: Snapshot, intent: Intent, counters: Counters, catal
 function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, catalog: readonly CatalogEntry[], files: ReadonlySet<string>): Outcome {
   if (intent.type === "save") return saveOutcome(snapshot);
   if (intent.type === "saveAs") return saveAsOutcome(snapshot, intent.name, files);
+  // (The mock engine has no library of modules to write: it says what a program that has none says.)
+  if (intent.type === "saveModule") return { error: { code: "io", message: "this program keeps no library of modules" } };
   // (Undo and Redo are not the outcome of an intent on a snapshot: the history is the server's, `MockServer#carry`.)
   if (intent.type === "undo" || intent.type === "redo") return invalid(`${intent.type} is done by the history`);
   if (intent.type === "setScale") return scaleOutcome(intent.scale);

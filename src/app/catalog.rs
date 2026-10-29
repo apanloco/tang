@@ -24,7 +24,7 @@ pub struct CatalogEntry {
     /// What the plugin is loaded by: `builtin:osc`, a CLAP id, an LV2 URI, a VST3 name.
     pub id: String,
     pub name: String,
-    /// `Built-in`, `LV2`, `CLAP` or `VST3`.
+    /// `Built-in`, `LV2`, `CLAP`, `VST3` or `Module` (a chain of effects that the library has, which is added as an effect that stands by itself and not loaded as a plugin).
     pub format: String,
     pub is_instrument: bool,
     /// How many parameters it has.
@@ -37,6 +37,9 @@ pub struct CatalogEntry {
 pub struct Catalog {
     /// Everything found so far, sorted by name without regard to case.
     plugins: Vec<PluginInfo>,
+    /// The modules of the library (`app::module`): chains of effects that are saved in files, as `module:<name>`, sorted by name without regard to case. They are listed with the plugins to
+    /// a client (`entries`) and are not among `plugins`, which is what a plugin is loaded from and what tells whether a scan has been made.
+    modules: Vec<PluginInfo>,
     /// Where the scan thread delivers its batches; `None` when no scan is
     /// running.
     batches: Option<Receiver<Vec<PluginInfo>>>,
@@ -82,6 +85,22 @@ impl Catalog {
         &self.plugins
     }
 
+    /// The modules of the library, sorted by name without regard to case.
+    pub fn modules(&self) -> &[PluginInfo] {
+        &self.modules
+    }
+
+    /// Put these in the place of the modules the catalog lists: the library was read again. True, and the revision up, if they are not the modules that it listed (a client has to be told again).
+    pub fn set_modules(&mut self, modules: Vec<PluginInfo>) -> bool {
+        let key = |list: &[PluginInfo]| list.iter().map(|module| (module.id.clone(), module.param_count)).collect::<Vec<_>>();
+        if key(&self.modules) == key(&modules) {
+            return false;
+        }
+        self.modules = modules;
+        self.rev += 1;
+        true
+    }
+
     /// True until the scan has finished (or if none was ever started: false).
     pub fn is_scanning(&self) -> bool {
         self.batches.is_some()
@@ -93,11 +112,12 @@ impl Catalog {
         self.rev
     }
 
-    /// The plugins as a client is told of them, in the order of `plugins`.
+    /// The plugins and the modules as a client is told of them: by name without regard to case, a plugin before a module of the same name.
     #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime sends the catalog"))]
     pub fn entries(&self) -> Vec<CatalogEntry> {
-        self.plugins
-            .iter()
+        let mut all: Vec<&PluginInfo> = self.plugins.iter().chain(&self.modules).collect();
+        all.sort_by_key(|p| p.name.to_lowercase());
+        all.into_iter()
             .map(|p| CatalogEntry {
                 id: p.id.clone(),
                 name: p.name.clone(),
@@ -224,6 +244,52 @@ mod tests {
         catalog.add(vec![info("A", "a")]);
         catalog.ensure_scan();
         assert!(!catalog.is_scanning(), "the catalog has what a scan found: nothing starts");
+    }
+
+    fn module(name: &str, effects: usize) -> PluginInfo {
+        PluginInfo { param_count: effects, ..info(name, &format!("module:{name}")) }
+    }
+
+    #[test]
+    fn the_modules_of_the_library_are_listed_with_the_plugins_by_name_and_are_none_of_the_plugins() {
+        let mut catalog = Catalog::default();
+        catalog.add(vec![info("Zeta", "clap:zeta"), info("Space", "builtin:space")]);
+        assert!(catalog.set_modules(vec![module("hall", 2), module("Space", 3)]));
+        let listed: Vec<(String, String, String, usize)> = catalog.entries().into_iter().map(|entry| (entry.id, entry.name, entry.format, entry.params)).collect();
+        let words = |id: &str, name: &str, format: &str, params: usize| (id.to_string(), name.to_string(), format.to_string(), params);
+        assert_eq!(
+            listed,
+            [
+                words("module:hall", "hall", "Module", 2),
+                // (A plugin before a module that has its name.)
+                words("builtin:space", "Space", "Built-in", 0),
+                words("module:Space", "Space", "Module", 3),
+                words("clap:zeta", "Zeta", "CLAP", 0),
+            ]
+        );
+        // What a plugin is loaded from, and what says that a scan has been made, are the plugins alone.
+        assert_eq!(names(&catalog), ["Space", "Zeta"]);
+        assert_eq!(catalog.modules().iter().map(|module| module.name.as_str()).collect::<Vec<_>>(), ["hall", "Space"]);
+        assert!(catalog.entries().iter().filter(|entry| entry.format == "Module").all(|entry| !entry.is_instrument && entry.presets == 0));
+        let mut only_modules = Catalog::default();
+        only_modules.set_modules(vec![module("hall", 2)]);
+        assert!(only_modules.plugins().is_empty() && !only_modules.is_scanning(), "a library is no scan: a program that has modules and no plugins still has plugins to find");
+    }
+
+    #[test]
+    fn the_revision_goes_up_when_the_modules_that_are_listed_change_and_not_when_the_library_is_read_again_and_is_the_same() {
+        let mut catalog = Catalog::default();
+        assert!(!catalog.set_modules(vec![]), "no library is the library there was");
+        assert_eq!(catalog.rev(), 0);
+        assert!(catalog.set_modules(vec![module("Space", 2)]));
+        assert_eq!(catalog.rev(), 1);
+        assert!(!catalog.set_modules(vec![module("Space", 2)]), "the same module is not news");
+        assert_eq!(catalog.rev(), 1);
+        // A module that is saved again with another number of effects is the same name and another module; one that is taken away or put in is one more.
+        assert!(catalog.set_modules(vec![module("Space", 3)]));
+        assert!(catalog.set_modules(vec![module("Hall", 3), module("Space", 3)]));
+        assert!(catalog.set_modules(vec![]));
+        assert_eq!(catalog.rev(), 4);
     }
 
     /// The built-ins as the web client's mock engine serves them for a catalog (and its tests read

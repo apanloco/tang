@@ -319,6 +319,14 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
     Ok((config, path))
 }
 
+/// Where the library of modules is: `TANG_MODULES_DIR` if it says, else `modules` in the config directory (`~/.config/tang/modules`). None if neither can be found.
+fn modules_dir() -> Option<std::path::PathBuf> {
+    match std::env::var_os("TANG_MODULES_DIR") {
+        Some(dir) if !dir.is_empty() => Some(std::path::PathBuf::from(dir)),
+        _ => dirs_config().ok().map(|config| config.join("modules")),
+    }
+}
+
 fn dirs_config_sessions() -> anyhow::Result<std::path::PathBuf> {
     let config = dirs_config()?;
     Ok(config.join("sessions"))
@@ -554,6 +562,9 @@ fn run_session(
         },
         Some(source.clone()),
     );
+    // The library of modules (step 104): chains of effects that are saved in files, which every session can add. Where it is can be said (`TANG_MODULES_DIR`: the tests of the real program say it).
+    ctl.modules_dir = modules_dir();
+    ctl.refresh_modules();
     if midi_available {
         ctl.watch_devices(Box::new(midi_mgr));
     }

@@ -14,6 +14,7 @@ pub mod journal;
 pub mod layout;
 pub mod load;
 pub mod model;
+pub mod module;
 pub mod probes;
 pub mod protocol;
 pub mod save;

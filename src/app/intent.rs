@@ -268,6 +268,13 @@ pub enum Intent {
     /// be written is `Io`. Refused, nothing changes: the session keeps its file and its mark, and no revision is used. It is no step of the
     /// history, and does not forget it.
     SaveAs { name: String },
+    /// Save the chain of effects of a lane as a module in the library (step 104): `node` is the node of the lane, or of an effect in its chain, and `name` what the module is called, which
+    /// `module::clean_name` makes a file name of (the spaces round it go, `.toml` is not part of it, and it has to be a name and not a path). The module is the effects as they are now, in
+    /// order, with their presets, values, mixes, knobs and feeds, and the audio cables between them; what is not in the chain (the lane's instrument, its modulators, the cables that
+    /// go into the chain and out of it) is not saved. A module that has the name already is replaced. It is added to a session by `AddFreeEffect` with the module's id from the catalog
+    /// (`module:<name>`), which the clients are told again. It is no change of the session: no revision of it, no step of the history, and the session is not marked. Refused, with
+    /// nothing written, for a node that is not a lane or an effect of one, a lane that has no effect, a name that is not one, and a program that has no library (`Io` for a write that fails).
+    SaveModule { node: NodeId, name: String },
     /// Put back what the last step that can be undone did: a parameter, a gain, a modulator's setting, a cable's depth, the keys
     /// of a lane, the place of a node, the knobs a node shows, a group's name, the scale or the lock of the piano, the place of
     /// an effect. A change that goes on (a knob that is dragged) is one step. What it does is told as the intents it is made of
@@ -578,6 +585,8 @@ pub enum Event {
     /// The session is written: it has nothing unsaved now. `file` is the name of the file it was
     /// written to (not its path), if the session has one.
     Saved { file: Option<String> },
+    /// A module is written to the library under `name` (the name as `module::clean_name` made it): the session is as it was, and the catalog has the module.
+    ModuleSaved { name: String },
 }
 
 /// A parameter, by the plugin's own index, and the value it has.
@@ -832,6 +841,7 @@ mod tests {
             (Intent::ClearInstrument { node: NodeId(2) }, json!({"type": "clearInstrument", "node": 2})),
             (Intent::Save, json!({"type": "save"})),
             (Intent::SaveAs { name: "copy".to_string() }, json!({"type": "saveAs", "name": "copy"})),
+            (Intent::SaveModule { node: NodeId(4), name: "Space".to_string() }, json!({"type": "saveModule", "node": 4, "name": "Space"})),
             (Intent::Undo, json!({"type": "undo"})),
             (Intent::Redo, json!({"type": "redo"})),
             (
@@ -961,6 +971,7 @@ mod tests {
             (Event::CableGainSet { edge: EdgeId(9), gain: 1.5 }, json!({"type": "cableGainSet", "edge": 9, "gain": 1.5})),
             (Event::Saved { file: Some("song.toml".to_string()) }, json!({"type": "saved", "file": "song.toml"})),
             (Event::Saved { file: None }, json!({"type": "saved", "file": null})),
+            (Event::ModuleSaved { name: "Space".to_string() }, json!({"type": "moduleSaved", "name": "Space"})),
         ]
     }
 

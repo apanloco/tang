@@ -40,6 +40,7 @@ use crate::app::history::History;
 use crate::app::journal::{Inverse, Journal, Kept, Replaced};
 use crate::app::intent::{Applied, IntentError};
 use crate::app::load::fresh_slot;
+use crate::app::module;
 use crate::app::model::{
     AudioCable, CABLE_GAIN_MAX, Driven, EdgeId, GainTarget, GroupNode, InstrumentNode, Made, ModGain, ModSetting, ModSourceSlot, ModTargetSlot, ModulatorSlot, NodeId, NodePath, ParamTarget,
     PatternState, PluginSlot, SessionModel, default_effect_mix, mod_source_slot_to_graph, modulator_slot_commands,
@@ -258,6 +259,9 @@ pub struct Controller {
     /// `catalog.scan()` is called: sessions that never open a selector (`play`)
     /// do not pay for it.
     pub catalog: Catalog,
+    /// The directory of the library of modules (`app::module`): a file for each chain of effects that is saved. None for a controller that has no library (a test's), which lists none and
+    /// saves none; the program's is `~/.config/tang/modules`, or where `TANG_MODULES_DIR` says.
+    pub modules_dir: Option<PathBuf>,
 
     pub cmd_tx: Sender<GraphCommand>,
     pub midi_tx: Sender<MidiEvent>,
@@ -327,6 +331,7 @@ impl Controller {
         let mut controller = Controller {
             rev: 0,
             catalog: Catalog::default(),
+            modules_dir: None,
             model,
             session_path,
             dirty: false,
@@ -606,6 +611,14 @@ impl Controller {
         self.insert_effect(ChainAt::Bus(group), loaded, source)
     }
 
+    /// Read the library of modules again and have the catalog list what is in it (`app::module`). True if it listed other modules than it did, which the clients are told again. A controller that
+    /// has no library lists none.
+    pub fn refresh_modules(&mut self) -> bool {
+        let Some(dir) = &self.modules_dir else { return false };
+        let modules = module::list(dir);
+        self.catalog.set_modules(modules)
+    }
+
     /// Add the plugin `source` as an effect that stands by itself (step 87): a lane of its own at the end, with no instrument, full range and in no group,
     /// with the effect as the whole of its chain (`add_lane` and then `add_effect`). The node of the effect, which is the second that is made, the lane's the first.
     /// It is a bare module (step 88): the lane's way out is cut, so that the effect sends where cables are drawn from it and nowhere before. Refused, with nothing
@@ -617,7 +630,7 @@ impl Controller {
 
     /// `add_free_effect` with the plugin loaded. What the chain cannot take is turned away before the lane is made, so that a plugin that is refused leaves
     /// neither a lane nor a gap in the ids (`insert_effect` looks again: the check is the same).
-    fn add_free_effect_loaded(&mut self, loaded: Box<dyn Plugin>, source: &str) -> Result<NodeId, IntentError> {
+    pub(super) fn add_free_effect_loaded(&mut self, loaded: Box<dyn Plugin>, source: &str) -> Result<NodeId, IntentError> {
         outputs_fit_the_chain(loaded.name(), loaded.audio_output_count())?;
         let inst = self.add_lane();
         // (Cut before the effect is in, as the loader cuts what a file cuts, before the cables: a way out that was there for a moment would be one that is heard.)
@@ -627,13 +640,17 @@ impl Controller {
     }
 
     /// The plugin `source` loaded to be an effect. The catalog has to name it and it must not be an instrument.
-    fn load_effect(&mut self, source: &str) -> Result<Box<dyn Plugin>, IntentError> {
+    pub(super) fn load_effect(&mut self, source: &str) -> Result<Box<dyn Plugin>, IntentError> {
         self.load_from_catalog(source, false)
     }
 
     /// The plugin `source`, loaded, if the catalog names it and it is an instrument or not as `instrument` says. (Why it did
     /// not load goes to the log: it can name where the plugin is on this machine.)
     fn load_from_catalog(&mut self, source: &str, instrument: bool) -> Result<Box<dyn Plugin>, IntentError> {
+        // (A module is listed with the plugins and is not one: it is a chain of effects, which goes in a lane of its own.)
+        if module::name_of(source).is_some() {
+            return Err(IntentError::Invalid("a module is added as an effect that stands by itself, in a lane of its own: it is not a plugin that goes in a chain".to_string()));
+        }
         let Some(entry) = self.catalog.plugins().iter().find(|p| p.id == source) else {
             return Err(IntentError::Invalid(format!("{source} is not a plugin that is installed")));
         };
@@ -649,7 +666,7 @@ impl Controller {
     }
 
     /// Put `loaded`, the plugin `source`, at the end of the chain `at` (`add_effect` says how, and when not).
-    fn insert_effect(&mut self, at: ChainAt, mut loaded: Box<dyn Plugin>, source: &str) -> Result<NodeId, IntentError> {
+    pub(super) fn insert_effect(&mut self, at: ChainAt, mut loaded: Box<dyn Plugin>, source: &str) -> Result<NodeId, IntentError> {
         let index = match at {
             ChainAt::Lane(inst) => self.model.instruments.get(inst).map(|lane| lane.effects.len()),
             ChainAt::Bus(group) => self.model.groups.get(group).map(|g| g.effects.len()),
@@ -1700,6 +1717,36 @@ plugin = "builtin:reverb"
         assert_eq!(mirror.heard().last(), Some(&Heard::Resynced(2)));
         assert!(!mirror.copy().meta.dirty);
         assert_eq!(mirror.copy(), ctl.snapshot());
+    }
+
+    #[test]
+    fn a_module_that_is_saved_is_told_as_an_event_that_neither_marks_the_session_nor_cleans_it_and_leaves_nothing_for_a_resync() {
+        let (library, sessions) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (_engine, mut ctl) = controller_for(WITH_REVERB);
+        ctl.modules_dir = Some(library.path().to_path_buf());
+        ctl.session_path = Some(sessions.path().join("song.toml"));
+        let mirror = Mirror::join(&mut ctl);
+        let osc = ctl.model.instruments[0].node;
+
+        // A session that has been changed is still unsaved after a module is saved from it: the session's own file is not what was written.
+        ctl.apply(Intent::SetGain { node: osc, gain: Gain::Volume, value: 2.0 }).unwrap();
+        assert!(mirror.copy().meta.dirty);
+        let saved = ctl.apply(Intent::SaveModule { node: osc, name: "Room".to_string() }).unwrap();
+        assert_eq!(saved.events, [Event::ModuleSaved { name: "Room".to_string() }]);
+        assert!(mirror.copy().meta.dirty, "the module is a file of its own: the session is as unsaved as it was");
+        assert_eq!(mirror.heard().last(), Some(&Heard::Applied(saved.rev)));
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        assert!(!ctl.resync(), "what a mirror keeps is what the session is: nothing to tell again");
+
+        // And a session that has been saved is as saved after it.
+        ctl.save().unwrap();
+        assert!(ctl.resync());
+        assert!(!mirror.copy().meta.dirty);
+        ctl.apply(Intent::SaveModule { node: osc, name: "Room".to_string() }).unwrap();
+        assert!(!mirror.copy().meta.dirty, "a module that is saved is no change of the session");
+        assert_eq!(mirror.copy(), ctl.snapshot());
+        assert!(!ctl.resync());
+        assert!(!ctl.dirty);
     }
 
     #[test]

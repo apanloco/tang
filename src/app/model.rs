@@ -1904,6 +1904,9 @@ fn push_params(targets: &mut Vec<ParamTarget>, plugin: &PluginSlot, slot: usize,
 pub fn format_from_id(id: &str) -> String {
     if id.starts_with("builtin:") {
         "Built-in".into()
+    } else if id.starts_with("module:") {
+        // (A chain of effects that the library has: `app::module`.)
+        "Module".into()
     } else if id.starts_with("lv2:") || id.starts_with("http://") || id.starts_with("urn:") {
         "LV2".into()
     } else if id.starts_with("clap:") || id.contains('.') && !id.contains('/') {

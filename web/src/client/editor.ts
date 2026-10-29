@@ -74,6 +74,7 @@ const DOING: Record<Intent["type"], string> = {
   moveEffect: "move an effect along its chain",
   save: "save the session",
   saveAs: "save the session under another name",
+  saveModule: "save a chain of effects as a module",
   undo: "undo",
   redo: "redo",
 };

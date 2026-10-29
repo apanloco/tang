@@ -20,6 +20,7 @@ use crate::app::graph::{NoteRange, Port, SourceInfo};
 use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, ModulatorKind};
 use crate::app::journal::{Journal, lane_words};
 use crate::app::model::{EdgeId, Made, NodeId, NodePath, PluginSlot};
+use crate::app::module;
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::ModulatorLocation;
 use crate::session::{Feed, Route};
@@ -392,7 +393,7 @@ impl Controller {
         let added = |label: String| Plan::Added { label, intent: intent.clone(), at: now };
         match intent {
             // (Done before `plan_history` is asked, by `apply`: they are no steps of the history.)
-            Intent::Save | Intent::SaveAs { .. } | Intent::Undo | Intent::Redo => Plan::Nothing,
+            Intent::Save | Intent::SaveAs { .. } | Intent::SaveModule { .. } | Intent::Undo | Intent::Redo => Plan::Nothing,
             // A pattern is not put back by undo (what a recording took and what a clear took are not kept): these are no steps, and take nothing from the ones there are.
             Intent::SetRecording { .. } | Intent::ClearPattern { .. } | Intent::SetPatternField { .. } => Plan::Nothing,
             Intent::SetParam { node, param, .. } => match self.param_row(*node, *param) {
@@ -666,8 +667,10 @@ impl Controller {
             // (The modulator is taken out with its cable, which is the one thing that was made besides it.)
             (Intent::Modulate { .. }, [node], [_]) if self.model.locate(*node).is_some() => Some(Intent::RemoveNode { node: *node }),
             (Intent::Modulate { .. }, ..) => None,
-            // (The lane is taken out with the effect in it: the two nodes that were made, the lane's first.)
-            (Intent::AddFreeEffect { .. }, [lane, _effect], []) if self.lane_place(*lane).is_some() => Some(Intent::RemoveNode { node: *lane }),
+            // (The lane is taken out with the effect in it: the two nodes that were made, the lane's first, and no cable.)
+            (Intent::AddFreeEffect { plugin }, [lane, _], []) if module::name_of(plugin).is_none() && self.lane_place(*lane).is_some() => Some(Intent::RemoveNode { node: *lane }),
+            // (A module made the lane, the effects of its chain in order, and the cables that it has between them: the lane is taken out, with all of it.)
+            (Intent::AddFreeEffect { plugin }, [lane, _, ..], _) if module::name_of(plugin).is_some() && self.lane_place(*lane).is_some() => Some(Intent::RemoveNode { node: *lane }),
             (Intent::AddFreeEffect { .. }, ..) => None,
             (_, [node], []) if self.model.locate(*node).is_some() => Some(Intent::RemoveNode { node: *node }),
             _ => None,
@@ -676,7 +679,8 @@ impl Controller {
 
     /// The name the catalog has for the plugin `source`.
     fn catalog_name(&self, source: &str) -> Option<String> {
-        self.catalog.plugins().iter().find(|plugin| plugin.id == source).map(|plugin| plugin.name.clone())
+        // (A module of the library is named as a plugin is: `add Space`.)
+        self.catalog.plugins().iter().chain(self.catalog.modules()).find(|plugin| plugin.id == source).map(|plugin| plugin.name.clone())
     }
 
     /// The place of the lane whose node is `node`.
@@ -2814,6 +2818,15 @@ rate = 3.0
         assert_eq!(ctl.takes_out(&add_free, &nodes(&[lfo, lane0])), None);
         assert_eq!(ctl.takes_out(&add_free, &nodes(&[NodeId(9_999), lfo])), None);
         assert_eq!(ctl.takes_out(&add_free, &Made { nodes: vec![lane0, lfo], edges: vec![edge] }), None);
+        // A module made the lane, one effect or more, and the cables between them: it is the lane that is taken out, with all of it, when the first node is a lane that is there and there is an effect at least.
+        let add_module = Intent::AddFreeEffect { plugin: "module:Space".to_string() };
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, lfo])), Some(Intent::RemoveNode { node: lane0 }));
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, lfo, lfo, lfo])), Some(Intent::RemoveNode { node: lane0 }));
+        assert_eq!(ctl.takes_out(&add_module, &Made { nodes: vec![lane0, lfo, lfo], edges: vec![edge] }), Some(Intent::RemoveNode { node: lane0 }), "its cables go with the lane");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0])), None, "a lane with no effect in it is not what a module makes");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[])), None);
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lfo, lane0, lfo])), None, "the first node is a lane");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[NodeId(9_999), lfo])), None, "and is there");
     }
 
     #[test]

@@ -187,6 +187,27 @@ describe("a saved event", () => {
   });
 });
 
+describe("a module saved event", () => {
+  const unsaved = { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, dirty: true } };
+  const told: StampedEvent = { rev: 1, type: "moduleSaved", name: "Space" };
+
+  test("is a file of the library and no change of the session: the revision goes on and nothing else does, as saved or as unsaved as it was", () => {
+    const after = applied(unsaved, told);
+    expect(after.rev).toBe(1);
+    expect(after.meta).toBe(unsaved.meta);
+    expect(after.graph).toBe(unsaved.graph);
+    expect(after.telemetry).toBe(unsaved.telemetry);
+    const clean = applied(tracerSnapshot, told);
+    expect(clean.meta).toBe(tracerSnapshot.meta);
+    expect(clean.meta.dirty).toBe(false);
+  });
+
+  test("is an event like the others: one that skips a revision means events were missed, and one the snapshot has already is nothing to do", () => {
+    expect(applyEvent(unsaved, { ...told, rev: 2 }).ok).toBe(false);
+    expect(applyEvent(unsaved, { ...told, rev: 0 })).toEqual({ ok: true, snapshot: unsaved });
+  });
+});
+
 describe("a scale set", () => {
   const dorian: StampedEvent = { rev: 1, type: "scaleSet", scale: "F# dorian", root: 6, kind: "dorian", notes: [1, 3, 4, 6, 8, 9, 11] };
   const locked = { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, piano: { ...tracerSnapshot.meta.piano, locked: true } } };
