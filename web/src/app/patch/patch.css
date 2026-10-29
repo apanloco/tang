@@ -412,6 +412,13 @@
   background: var(--tang-warn);
 }
 
+/* The button that saves the chain of effects of a lane as a module: no switch, so nothing is pressed; lit while its field is open. */
+.tang-flag--module:hover,
+.tang-flag--module[aria-expanded="true"] {
+  border-color: var(--tang-modulation);
+  color: var(--tang-text);
+}
+
 /* A node that cannot be heard at the master (muted, not soloed while something is, or in the chain of one): dimmed, and as ready as it was. (It stays dimmed under the pointer: a press of its mute is seen at once.) */
 .tang-node--unheard {
   opacity: 0.55;

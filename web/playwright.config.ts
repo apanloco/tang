@@ -23,8 +23,8 @@ export default defineConfig({
       // The real program (`cargo build --features web`), on the null audio backend: no sound
       // card and no MIDI port is opened, so nothing is heard. It serves a copy of the tracer scene
       // (the tests' own, not `examples/tracer.toml`, which a person can save over; a test that
-      // saves the session writes the copy).
-      command: `mkdir -p .e2e-session && cp src/client/fixtures/tracer.toml .e2e-session/tracer.toml && ../target/debug/tang --audio-device none --midi-device "no such device" serve .e2e-session/tracer.toml --web-bind 127.0.0.1:${TANG} --web-origin http://127.0.0.1:${VITE}`,
+      // saves the session writes the copy). Its library of modules is the tests' own as well (`.e2e-session/modules`, emptied when the program starts), so that the one of the person who runs them is not met.
+      command: `mkdir -p .e2e-session && rm -rf .e2e-session/modules && cp src/client/fixtures/tracer.toml .e2e-session/tracer.toml && TANG_MODULES_DIR=.e2e-session/modules ../target/debug/tang --audio-device none --midi-device "no such device" serve .e2e-session/tracer.toml --web-bind 127.0.0.1:${TANG} --web-origin http://127.0.0.1:${VITE}`,
       url: `http://127.0.0.1:${TANG}/`,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,

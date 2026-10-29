@@ -121,7 +121,7 @@ function withPlugin(node: Node, plugin: Plugin): Node {
 }
 
 /** The plugin with these parameters at these values (and, if `baseline`, with them as their defaults); null if it lacks one of them. */
-function withValues(plugin: Plugin, values: readonly ParamValue[], baseline = false): Plugin | null {
+export function withValues(plugin: Plugin, values: readonly ParamValue[], baseline = false): Plugin | null {
   const wanted = new Map(values.map((v) => [v.param, v.value]));
   let found = 0;
   const params = plugin.params.map((param) => {

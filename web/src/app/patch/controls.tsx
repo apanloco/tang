@@ -13,7 +13,7 @@ import { gainPorts } from "../../client/reach";
 import type { Drivable, GainPort } from "../../client/reach";
 import { slotReader } from "../../client/readers";
 import { rateAt } from "../../client/tempo";
-import { cableDepthOf, cableGainOf, cableSourceOf, flagsOf, gainOf, groupChoicesOf, isKnob, limiterOf, modulatorFieldOf, paramOf, paramUnusedBecause, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
+import { cableDepthOf, cableGainOf, cableSourceOf, chainLengthOf, flagsOf, gainOf, groupChoicesOf, isKnob, limiterOf, modulatorFieldOf, paramOf, paramUnusedBecause, rangeOf, sameFlags, sameGroupChoices, stepsOf } from "../../client/selectors";
 import { CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, MODULATOR_FIELD_DEFAULTS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, SYNC_DIVISIONS, SYNC_FREE, WAVEFORMS } from "../../protocol";
 import type { EdgeId, Gain, ModulatorField, NodeId, NoteRange, Param, Port } from "../../protocol";
 import { Choice } from "../../ui/Choice";
@@ -28,6 +28,7 @@ import { ConnectingContext, keyOf } from "./connection";
 import { seconds } from "./describe";
 import type { SettingField } from "./describe";
 import { ModulateMenu } from "./ModulateMenu";
+import { SaveModuleButton } from "./SaveModule";
 import { depthHandle, handleOf, paramHandle } from "./toFlow";
 
 /** What of a parameter does not change as its value does: the same by this, it is drawn the same. */
@@ -443,6 +444,8 @@ export const GroupCell = memo(function GroupCell({ node, name }: { node: NodeId;
 export const MuteSoloCell = memo(function MuteSoloCell({ node, name }: { node: NodeId; name: string }) {
   const editor = useEditor();
   const flags = useClientSelection((state) => flagsOf(state, node), sameFlags);
+  // (A lane that has a chain of effects can save it as a module; a group's bus and a lane that has no effect cannot.)
+  const chain = useClientSelection((state) => chainLengthOf(state, node), Object.is);
   if (flags === undefined) return null;
   return (
     <div className="tang-cell">
@@ -473,6 +476,7 @@ export const MuteSoloCell = memo(function MuteSoloCell({ node, name }: { node: N
           >
             S
           </button>
+          {chain > 0 ? <SaveModuleButton node={node} name={name} /> : null}
         </span>
       </div>
     </div>

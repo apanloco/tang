@@ -132,6 +132,13 @@ export function flagsOf(state: ClientState, id: NodeId): Flags | undefined {
   return node?.kind === "instrument" || node?.kind === "group" ? { muted: node.muted, solo: node.solo } : undefined;
 }
 
+/** How many effects the chain of the lane `id` has: what a module of it would be made of. None for a node that is no lane (a group's bus is not saved as a module). */
+export function chainLengthOf(state: ClientState, id: NodeId): number {
+  const nodes = state.snapshot?.graph.nodes;
+  if (nodes?.find((node) => node.id === id)?.kind !== "instrument") return 0;
+  return nodes.filter((node) => node.kind === "effect" && node.parent === id).length;
+}
+
 /** Whether two answers of `flagsOf` are the same flags (the answer is made anew each time). */
 export function sameFlags(a: Flags | undefined, b: Flags | undefined): boolean {
   if (a === b) return true;

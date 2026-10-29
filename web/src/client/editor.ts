@@ -457,6 +457,17 @@ export class Editor {
     return this.#attempt(`save the session as ${quoted(name.trim())}`, { type: "saveAs", name });
   }
 
+  /**
+   * Save the chain of effects of the lane `node` is of (the lane, or an effect of its chain) as a module of the library under `name`: a file name and not a path, to which `.toml` is added, as the program checks it; a
+   * module that has the name is written over. The catalog that the server tells has the module from then on, and the bar's "+ Effect" adds it. True if it was saved, and the page says so; if it was not it says why (a name that is
+   * no name, a lane that has no effect, a program that keeps no library). The session is not changed by it: nothing is unsaved because of it, and there is nothing to undo.
+   */
+  async saveModule(node: NodeId, name: string): Promise<boolean> {
+    const done = await this.#attempt(`save the chain of ${this.#name(node)} as the module ${quoted(name.trim())}`, { type: "saveModule", node, name });
+    if (done) this.#notices.say(`Saved the module ${quoted(name.trim())}: + Effect adds it`);
+    return done;
+  }
+
   /** Put back what the last change that can be undone changed (what the server says it is: `ClientState.history`). True if it was done (the page says why if it was not). */
   undo(): Promise<boolean> {
     return this.#attempt(DOING.undo, { type: "undo" });

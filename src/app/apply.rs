@@ -7282,6 +7282,169 @@ type = "midi"
         ctl.model.check_ids().unwrap();
     }
 
+    /// A lane that has an oscillator and a chain of three effects set as a module keeps what it keeps (a filter with a value over its own, its mix and two knobs pinned; a reverb with a preset, a value over it, a mix, a knob pinned and the link
+    /// into it cut; a math effect with a choice), three cables (one between two of the effects beside the link that is cut, one to the second input of the math, one from the instrument, which the chain does not keep), a group with a bus
+    /// effect, a modulator and an empty lane: what the controller's `module` section is tried on.
+    const A_CHAIN_TO_KEEP: &str = r#"
+[[group]]
+[[group.effect]]
+plugin = "builtin:filter"
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 0.8
+pinned = ["resonance", "cutoff"]
+[instrument.effect.params]
+cutoff = 0.25
+
+[[instrument.effect]]
+plugin = "builtin:reverb"
+preset = "Cathedral"
+mix = 0.4
+feed = "none"
+pinned = ["size"]
+[instrument.effect.params]
+size = 0.9
+
+[[instrument.effect]]
+plugin = "builtin:math"
+[instrument.effect.params]
+mode = 4
+
+[[instrument]]
+
+[[modulator]]
+type = "lfo"
+
+[[cable]]
+from = "instrument[0].effect[0]"
+to = "instrument[0].effect[1]"
+gain = 0.5
+
+[[cable]]
+from = "instrument[0].effect[0]"
+to = "instrument[0].effect[2].side"
+gain = 0.7
+
+[[cable]]
+from = "instrument[0]"
+to = "instrument[0].effect[2]"
+gain = 0.3
+"#;
+
+    /// `A_CHAIN_TO_KEEP` and what the controller makes of saving its chain as a module, adding it, undoing that and redoing it, saving the chain that came of it under another name and adding that, and of what it refuses, as the web client's
+    /// tests read it (`web/src/client/fixtures/modules.json`): they pin the mock engine's library to the controller's, step by step. Each step is answered by the events it made (stamped), whether it changed the structure, what Undo and Redo
+    /// would do after it, the modules that the catalog lists, and the nodes, the cables and the layout of the telemetry that the session has then; a refusal by the controller's words. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture`
+    /// rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_module_comes_to_is_current() {
+        let library = tempfile::tempdir().unwrap();
+        // (A page is subscribed, as there is when a server runs: a change of the structure is told to it as a snapshot at a revision of its own. Room for the commands of the whole script, which nothing takes.)
+        let fresh = |library: &std::path::Path| {
+            let (handles, engine) = testutil::stub_engine_of(4_096);
+            let mut ctl = Controller::new(load(A_CHAIN_TO_KEEP).model, handles, None);
+            ctl.catalog.add(plugin::builtin::enumerate_plugins());
+            ctl.modules_dir = Some(library.to_path_buf());
+            ctl.subscribe(Box::new(|_: &Applied| {}));
+            (engine, ctl)
+        };
+        let normalized = |mut layout: serde_json::Value| {
+            // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+            layout["rev"] = serde_json::json!(1);
+            layout
+        };
+        let (engine, mut ctl) = fresh(library.path());
+        let before = ctl.snapshot();
+        let mut snapshot = testutil::wire(&before);
+        snapshot["telemetry"]["rev"] = serde_json::json!(1);
+        let (lane, empty_lane) = (ctl.model.instruments[0].node, ctl.model.instruments[1].node);
+        let reverb = ctl.model.instruments[0].effects[1].node;
+        let (group, bus_effect) = (ctl.model.groups[0].node, ctl.model.groups[0].effects[0].node);
+        let modulator = ctl.model.free_modulators[0].node;
+
+        let mut steps = Vec::new();
+        let mut take = |ctl: &mut Controller, intent: Intent| {
+            let applied = ctl.apply(intent.clone()).unwrap_or_else(|error| panic!("{intent:?}: {error}"));
+            engine.drain();
+            let state = ctl.snapshot();
+            let history = ctl.history_state();
+            let modules: Vec<serde_json::Value> =
+                ctl.catalog.entries().into_iter().filter(|entry| entry.format == "Module").map(|entry| serde_json::json!({ "id": entry.id, "name": entry.name, "params": entry.params })).collect();
+            steps.push(serde_json::json!({
+                "intent": testutil::wire(&intent),
+                "events": testutil::wire(&applied.stamped()),
+                "restructured": applied.restructured,
+                "history": { "undo": history.undo, "redo": history.redo },
+                "modules": modules,
+                "graph": testutil::wire(&state.graph),
+                "telemetry": normalized(testutil::wire(&state.telemetry)),
+            }));
+        };
+        let save = |node: NodeId, name: &str| Intent::SaveModule { node, name: name.to_string() };
+        let add = |name: &str| Intent::AddFreeEffect { plugin: format!("module:{name}") };
+        take(&mut ctl, save(lane, "  Room  "));
+        take(&mut ctl, save(reverb, "Room.toml"));
+        take(&mut ctl, add("Room"));
+        take(&mut ctl, Intent::Undo);
+        take(&mut ctl, Intent::Redo);
+        let copy = ctl.model.instruments[2].effects[1].node;
+        take(&mut ctl, save(copy, "Copy"));
+        take(&mut ctl, add("Copy"));
+
+        // What is refused: a fresh controller for each, with a library that has no module in it.
+        let ghost = NodeId(9_999);
+        let long = "x".repeat(300);
+        let intents = vec![
+            save(ghost, "Room"),
+            save(NodeId::MASTER, "Room"),
+            save(empty_lane, "Room"),
+            save(group, "Room"),
+            save(bus_effect, "Room"),
+            save(modulator, "Room"),
+            save(ghost, ""),
+            save(group, ""),
+            save(lane, ""),
+            save(lane, "   "),
+            save(lane, "a/b"),
+            save(lane, "a:b"),
+            save(lane, "con"),
+            save(lane, ".toml"),
+            save(lane, "a.toml.toml"),
+            save(lane, &long),
+            add("Nothing"),
+            add(".."),
+            Intent::AddEffect { parent: lane, plugin: "module:Room".to_string() },
+            Intent::AddInstrument { plugin: "module:Room".to_string() },
+            Intent::ReplaceInstrument { node: lane, plugin: "module:Room".to_string() },
+        ];
+        let refusals: Vec<serde_json::Value> = intents
+            .into_iter()
+            .map(|intent| {
+                let empty = tempfile::tempdir().unwrap();
+                let (_engine, mut ctl) = fresh(empty.path());
+                let error = ctl.apply(intent.clone()).expect_err("refused").to_string();
+                serde_json::json!({ "intent": testutil::wire(&intent), "error": error })
+            })
+            .collect();
+        let fixture = serde_json::json!({ "snapshot": snapshot, "steps": steps, "refusals": refusals });
+        let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/modules.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what a module comes to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
+
     // -- AddFreeEffect --
 
     fn add_free_effect(ctl: &mut Controller, plugin: &str) -> Result<Applied, IntentError> {

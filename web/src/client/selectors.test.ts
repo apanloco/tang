@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
 import { MASTER, audioCablesFixture, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { audibleAt, cableDepthOf, cableGainOf, cableSourceOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, limiterOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, stepsOf } from "./selectors";
+import { audibleAt, cableDepthOf, cableGainOf, cableSourceOf, chainLengthOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, isKnob, limiterOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, stepsOf } from "./selectors";
 import type { Node, Snapshot } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -734,6 +734,45 @@ describe("the mute and the solo of a lane or a group", () => {
     expect(sameFlags(undefined, undefined)).toBe(true);
     expect(sameFlags(a, undefined)).toBe(false);
     expect(sameFlags(undefined, a)).toBe(false);
+  });
+});
+
+describe("how many effects the chain of a lane has (what a module of it is made of)", () => {
+  const reach = stateOf(reachFixture.snapshot);
+  /** The tracer with `extra` effects more in the chain of the oscillator's lane, and one that is in the chain of the node `elsewhere`, which is not the lane's. */
+  const chained = (extra: number, elsewhere?: number): ClientState => {
+    const copy = structuredClone(tracerSnapshot);
+    const effect = nodeNamed(tracerSnapshot, "Filter");
+    if (effect.kind !== "effect") throw new Error("no effect");
+    for (let i = 0; i < extra; i += 1) copy.graph.nodes.push({ ...effect, id: 1000 + i });
+    if (elsewhere !== undefined) copy.graph.nodes.push({ ...effect, id: 2000, parent: elsewhere });
+    return stateOf(copy);
+  };
+
+  test("is how many effects the lane has: one for the tracer's, none for a lane that has none and for a lane that has no instrument either", () => {
+    expect(chainLengthOf(state, oscillator.id)).toBe(1);
+    expect(chainLengthOf(reach, 4)).toBe(1);
+    expect(chainLengthOf(reach, 9)).toBe(1);
+    expect(chainLengthOf(reach, 6)).toBe(0);
+    expect(chainLengthOf(reach, 11)).toBe(0); // no instrument, and no effect
+  });
+
+  test("grows with each effect that is put in the chain, and is not moved by an effect that is in the chain of another node", () => {
+    expect(chainLengthOf(chained(1), oscillator.id)).toBe(2);
+    expect(chainLengthOf(chained(2), oscillator.id)).toBe(3);
+    expect(chainLengthOf(chained(2, 4242), oscillator.id)).toBe(3);
+    expect(chainLengthOf(chained(0, 4242), oscillator.id)).toBe(1);
+  });
+
+  test("counts the lane's own effects and not those of the bus of the group that it is in: a lane in a group has its own chain, and a group has none to save", () => {
+    expect(chainLengthOf(reach, 7)).toBe(1); // a lane in group 2, whose bus has an effect too
+    expect(chainLengthOf(reach, 2)).toBe(0);
+    expect(chainLengthOf(reach, 0)).toBe(0); // a group whose bus has an effect
+  });
+
+  test("is none for what is no lane: an effect, a modulator, the master, a node that is not there, and before there is a session", () => {
+    for (const node of [filter.id, lfo.id, MASTER, 424242]) expect(chainLengthOf(state, node), `node ${String(node)}`).toBe(0);
+    expect(chainLengthOf(stateOf(null), oscillator.id)).toBe(0);
   });
 });
 

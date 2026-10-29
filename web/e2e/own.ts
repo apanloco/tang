@@ -33,6 +33,8 @@ export interface OwnTang {
   url: string;
   /** The session file it saves to. */
   file: string;
+  /** The directory of its library of modules (`TANG_MODULES_DIR`): its own, so that no test reads or writes the one of the person who runs them. */
+  library: string;
 }
 
 /** `test` for a program that is started on the tracer's file with `added` at the end of it. */
@@ -47,8 +49,10 @@ function programOn(added: string) {
       // (What it logs is kept with a test that fails: the program is gone by the time anyone looks.)
       const log = join(dir, "tang.log");
       const logFile = openSync(log, "w");
+      const library = join(dir, "modules");
       const child = spawn(join("..", "target", "debug", "tang"), ["--audio-device", "none", "--midi-device", "no such device", "serve", file, "--web-bind", "127.0.0.1:0"], {
         stdio: ["ignore", "pipe", logFile],
+        env: { ...process.env, TANG_MODULES_DIR: library },
       });
       try {
         const output = child.stdout;
@@ -70,7 +74,7 @@ function programOn(added: string) {
             reject(new Error(`the program ended (${String(code)}) before it said where it serves`));
           });
         });
-        await provide({ url, file });
+        await provide({ url, file, library });
       } finally {
         child.kill();
         closeSync(logFile);

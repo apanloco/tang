@@ -84,11 +84,14 @@ describe("a link of the audio path", () => {
     await rig(<PatchView />, { snapshot: reachFixture.snapshot });
     await remove("(empty) → Master");
     expect(screen.queryAllByRole("button", { name: /^Cut the (way out|input) of / })).toHaveLength(0);
-    // (A lane's and a group's cell has the mute and the solo, and an effect has no more than its own buttons.)
+    // (A lane's and a group's cell has the mute and the solo, and a lane that has a chain of effects the button that saves it as a module (step 104); an effect has no more than its own buttons.)
     for (const button of screen.getAllByRole("button", { name: /^Mute / })) {
       const cell = button.closest<HTMLElement>(".tang-cell");
       if (!cell) throw new Error("the mute is in no cell");
-      expect(within(cell).getAllByRole("button")).toHaveLength(2);
+      const names = within(cell).getAllByRole("button").map((each) => each.getAttribute("aria-label") ?? "");
+      expect(names.slice(0, 2).map((name) => name.split(" ")[0])).toEqual(["Mute", "Solo"]);
+      expect(names.slice(2).every((name) => /^Save the chain of .* as a module$/.test(name))).toBe(true);
+      expect(names.length).toBeLessThanOrEqual(3);
     }
     expect(document.querySelectorAll(".tang-way-out, .tang-feed")).toHaveLength(0);
   });

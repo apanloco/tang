@@ -1193,6 +1193,50 @@ describe("saving the session under another name", () => {
   });
 });
 
+describe("saving a chain of effects as a module", () => {
+  test("resolves true when the module is in the library, which the catalog then lists, says so, and changes nothing of the session: nothing is unsaved because of it, and there is nothing to undo", async () => {
+    const { server, client, notices, editor } = await open();
+    expect(await editor.saveModule(oscillator.id, "  Tracer chain  ")).toBe(true);
+    expect(server.received.at(-1)).toMatchObject({ type: "request", intent: { type: "saveModule", node: oscillator.id, name: "  Tracer chain  " } });
+    expect(said(notices)).toEqual(['Saved the module "Tracer chain": + Effect adds it']);
+    await until(() => client.state.catalog?.entries.some((entry) => entry.id === "module:Tracer chain") === true, "the catalog with the module");
+    expect(client.state.catalog?.entries.find((entry) => entry.id === "module:Tracer chain")).toEqual({ id: "module:Tracer chain", name: "Tracer chain", format: "Module", isInstrument: false, params: 1, presets: 0 });
+    expect(client.state.snapshot?.graph).toEqual(tracerSnapshot.graph);
+    expect(client.state.snapshot?.meta.dirty).toBe(false);
+    expect(client.state.history).toEqual({ undo: null, redo: null });
+  });
+
+  test("is the chain of the lane whether the node is the lane or an effect of it", async () => {
+    const { client, editor } = await open();
+    expect(await editor.saveModule(filter.id, "Chain")).toBe(true);
+    await until(() => client.state.catalog?.entries.some((entry) => entry.id === "module:Chain") === true, "the catalog with the module");
+  });
+
+  test("is refused as the controller refuses it: false, and the page says what it could not do, and why, and nothing changes", async () => {
+    const { client, notices, editor } = await open();
+    // (The notices keep the last few: each is read as it is said.)
+    const cases: [number, string, string][] = [
+      [oscillator.id, "", 'Could not save the chain of Oscillator as the module "": a file name is needed'],
+      [oscillator.id, "a/b", 'Could not save the chain of Oscillator as the module "a/b": a file name has no folder in it: `/` and `\\` are not allowed'],
+      [lfo.id, "Room", 'Could not save the chain of LFO as the module "Room": a module is made of the chain of a lane'],
+      [9_999, "Room", 'Could not save the chain of that node as the module "Room": there is no node 9999'],
+    ];
+    for (const [node, name, words] of cases) {
+      expect(await editor.saveModule(node, name), words).toBe(false);
+      expect(said(notices).at(-1)).toBe(words);
+    }
+    expect(client.state.snapshot).toEqual(tracerSnapshot);
+    expect(client.state.catalog?.entries.some((entry) => entry.format === "Module")).toBe(false);
+  });
+
+  test("with no connection says so", async () => {
+    const { client, notices, editor } = await open();
+    client.stop();
+    expect(await editor.saveModule(oscillator.id, "Room")).toBe(false);
+    expect(said(notices)).toEqual(['Could not save the chain of Oscillator as the module "Room": Not connected to the server.']);
+  });
+});
+
 describe("setting the scale of the piano", () => {
   const piano = (client: Client) => client.state.snapshot?.meta.piano;
 

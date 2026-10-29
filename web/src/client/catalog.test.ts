@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { CatalogEntry } from "../protocol";
 import { builtinCatalog } from "./fixtures";
-import { effectItems, instrumentItems } from "./catalog";
+import { effectItems, freeEffectItems, instrumentItems, MODULE_FORMAT } from "./catalog";
 
 const entry = (id: string, name: string, format: string, isInstrument = false): CatalogEntry => ({ id, name, format, isInstrument, params: 1, presets: 0 });
 
@@ -51,6 +51,31 @@ describe("the plugins a person can choose an effect from", () => {
     const copy = [...entries];
     effectItems(entries);
     expect(entries).toEqual(copy);
+  });
+});
+
+describe("the modules a person saved", () => {
+  const module = (id: string, name: string): CatalogEntry => entry(id, name, MODULE_FORMAT);
+  const entries = [entry("clap:com.acme.chorus", "Chorus", "CLAP"), module("module:Room", "Room"), entry("builtin:filter", "Filter", "Built-in"), module("module:Big hall", "Big hall"), entry("builtin:osc", "Oscillator", "Built-in", true)];
+
+  test("are no effect of a chain: the lane's and the bus's menus do not list them", () => {
+    expect(effectItems(entries).map((item) => item.label)).toEqual(["Filter", "Chorus"]);
+    expect(instrumentItems(entries).map((item) => item.label)).toEqual(["Oscillator"]);
+  });
+
+  test("are what an effect that stands by itself can be made of, first and under a heading of their own, and then the plugins that can be an effect", () => {
+    expect(freeEffectItems(entries).map((item) => `${item.group ?? "?"}: ${item.label} (${item.id})`)).toEqual([
+      "Module: Room (module:Room)",
+      "Module: Big hall (module:Big hall)",
+      "Built-in: Filter (builtin:filter)",
+      "CLAP: Chorus (clap:com.acme.chorus)",
+    ]);
+  });
+
+  test("are nothing when there are none: the list is the plugins', and an instrument that is called a module is not one", () => {
+    expect(freeEffectItems(builtinCatalog)).toEqual(effectItems(builtinCatalog));
+    expect(freeEffectItems([entry("module:Odd", "Odd", MODULE_FORMAT, true)])).toEqual([]);
+    expect(freeEffectItems([])).toEqual([]);
   });
 });
 

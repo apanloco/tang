@@ -11,6 +11,7 @@ import type { CatalogEntry, EdgeId, Endpoint, Gain, Graph, Intent, ModulatorFiel
 import { cablesThatGo, drivesRoundToItself, isAudioCable, isModulation, isNotesCable } from "./cables";
 import { trimmed } from "./inputs";
 import { MODULATOR_LABELS, kindOf } from "./modulatorKinds";
+import { moduleNameOf } from "./modules";
 
 /** What a change is of, for a change that goes on to be told from the rest: a string that says which parameter, gain, setting or cable. */
 export type Key = string;
@@ -173,10 +174,12 @@ export function takesOut(snapshot: Snapshot, added: Intent, made: Made): Intent 
     if (edge === undefined || more.length > 0 || made.nodes.length > 0) return null;
     return snapshot.graph.edges.some((e) => e.kind === "modulation" && e.id === edge) ? { type: "removeEdge", edge } : null;
   }
-  // An effect that stands by itself makes the lane that holds it, and then the effect: it is the lane that is taken out, with the effect in it.
+  // An effect that stands by itself makes the lane that holds it, and then the effect, and no cable: it is the lane that is taken out, with the effect in it. A module makes the lane, the effects of its chain and the
+  // cables that it has between them: the lane is taken out with all of it, when there is an effect at least.
   if (added.type === "addFreeEffect") {
     const [lane, effect, ...rest] = made.nodes;
-    if (lane === undefined || effect === undefined || rest.length > 0 || made.edges.length > 0) return null;
+    if (lane === undefined || effect === undefined) return null;
+    if (moduleNameOf(added.plugin) === null && (rest.length > 0 || made.edges.length > 0)) return null;
     return snapshot.graph.nodes.some((n) => n.id === lane && n.kind === "instrument") ? { type: "removeNode", node: lane } : null;
   }
   const [node, ...more] = made.nodes;

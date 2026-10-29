@@ -4,7 +4,7 @@
 // program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Event, Feed, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Route, SideInfo, Snapshot, StampedEvent } from "../protocol";
+import type { CatalogEntry, Event, Feed, Graph, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Route, SideInfo, Snapshot, StampedEvent, TelemetryLayout } from "../protocol";
 import { isLink } from "./cables";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
@@ -21,6 +21,7 @@ import audioCables from "./fixtures/audioCables.json";
 import sideCables from "./fixtures/sideCables.json";
 import uses from "./fixtures/uses.json";
 import builtinPresetValues from "./fixtures/builtins.presets.json";
+import modules from "./fixtures/modules.json";
 import moves from "./fixtures/moves.json";
 import noise from "./fixtures/noise.json";
 import patterns from "./fixtures/patterns.json";
@@ -92,6 +93,26 @@ export const movesFixture = moves as unknown as {
 export const pinsFixture = pins as unknown as {
   snapshot: Snapshot;
   pins: ({ node: NodeId; params: number[] } & ({ error: string } | { pinned: number[] }))[];
+};
+
+/**
+ * A session with a lane that has an oscillator and a chain of three effects (a filter, a reverb that has a preset, a mix of its own and the link into it cut, and a math effect), three audio cables and a group, a modulator and an empty
+ * lane, and what the controller makes of saving the chain as a module, adding it, undoing that and redoing it, saving the chain that came of it under another name and adding that: steps, each an intent that was asked in turn, with the
+ * events it was answered with, whether it changed the structure, what Undo and Redo would do after it, the modules that the catalog lists, and the nodes and cables and the layout of the telemetry that the session has then. The
+ * refusals are the controller's words for what it turned away, each on a session that had no module. Written by the controller (`the_web_clients_fixture_of_what_a_module_comes_to_is_current`).
+ */
+export const modulesFixture = modules as unknown as {
+  snapshot: Snapshot;
+  steps: {
+    intent: Intent;
+    events: StampedEvent[];
+    restructured: boolean;
+    history: { undo: string | null; redo: string | null };
+    modules: { id: string; name: string; params: number }[];
+    graph: Graph;
+    telemetry: TelemetryLayout;
+  }[];
+  refusals: { intent: Intent; error: string }[];
 };
 
 /**
