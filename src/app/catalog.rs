@@ -90,6 +90,12 @@ impl Catalog {
         &self.modules
     }
 
+    /// What the terminal's selectors list: the modules of the library, and then the plugins, each by name; a row of a selector names what it is by its place in this list. (Only the selector of an
+    /// effect that stands by itself shows the modules: a chain of effects goes in a lane of its own, whole.)
+    pub fn listed(&self) -> Vec<&PluginInfo> {
+        self.modules.iter().chain(&self.plugins).collect()
+    }
+
     /// Put these in the place of the modules the catalog lists: the library was read again. True, and the revision up, if they are not the modules that it listed (a client has to be told again).
     pub fn set_modules(&mut self, modules: Vec<PluginInfo>) -> bool {
         let key = |list: &[PluginInfo]| list.iter().map(|module| (module.id.clone(), module.param_count)).collect::<Vec<_>>();
@@ -274,6 +280,15 @@ mod tests {
         let mut only_modules = Catalog::default();
         only_modules.set_modules(vec![module("hall", 2)]);
         assert!(only_modules.plugins().is_empty() && !only_modules.is_scanning(), "a library is no scan: a program that has modules and no plugins still has plugins to find");
+    }
+
+    #[test]
+    fn the_terminals_selectors_list_the_modules_first_and_then_the_plugins() {
+        let mut catalog = Catalog::default();
+        catalog.add(vec![info("Zeta", "clap:zeta"), info("Alpha", "builtin:alpha")]);
+        catalog.set_modules(vec![module("hall", 2), module("Space", 3)]);
+        assert_eq!(catalog.listed().iter().map(|plugin| plugin.id.as_str()).collect::<Vec<_>>(), ["module:hall", "module:Space", "builtin:alpha", "clap:zeta"]);
+        assert_eq!(Catalog::default().listed().len(), 0);
     }
 
     #[test]

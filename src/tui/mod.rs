@@ -38,6 +38,7 @@ use crate::app::controller::Controller;
 use crate::app::graph::NoteRange;
 use crate::cli::WebArgs;
 use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, PatternField, Taper};
+use crate::app::module;
 use crate::app::model::{
     AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, Driven, EdgeId, FREE, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId, NodePath,
     ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, SYNC_DIVISIONS, SessionModel, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
@@ -417,6 +418,15 @@ struct SaveAsState {
     error: Option<String>,
 }
 
+/// State for the popup that names the module that a chain of effects is saved as (step 104).
+struct SaveModuleState {
+    /// The lane whose chain is saved (`Intent::SaveModule` takes a lane or an effect of its chain).
+    node: NodeId,
+    input: TextInputState,
+    /// Why the last attempt was refused, shown in the popup.
+    error: Option<String>,
+}
+
 /// State for the scale picker popup (Piano tab).
 struct ScaleSelectorState {
     filter: FilterListState,
@@ -476,6 +486,7 @@ struct State {
     bpm_editing: Option<EditState>,
     gain_editing: Option<GainEditState>,
     save_as: Option<SaveAsState>,
+    save_module: Option<SaveModuleState>,
     // Piano tab state.
     /// Center MIDI octave for the piano view (0..=8). Default 4.
     piano_view_octave: i8,
@@ -534,6 +545,7 @@ impl State {
             bpm_editing: None,
             gain_editing: None,
             save_as: None,
+            save_module: None,
             piano_view_octave: 4,
             scale_selector: None,
             scope: scope_view::Scope::new(),
@@ -794,15 +806,18 @@ impl State {
         self.ctl.model.free_modulators.get(index)
     }
 
+    /// What the selectors list, and the places that a row of one names: the modules of the library and then the plugins (`Catalog::listed`). Only the selector of an effect that stands by itself
+    /// lists the modules: a chain of effects goes in a lane of its own, whole, and not in a chain.
     fn selector_items(&self, mode: SelectorMode) -> Vec<FilterListItem> {
         self.ctl
             .catalog
-            .plugins()
-            .iter()
+            .listed()
+            .into_iter()
             .enumerate()
             .filter(|(_, e)| match mode {
                 SelectorMode::Instrument => e.is_instrument,
-                SelectorMode::Effect | SelectorMode::FreeEffect | SelectorMode::GroupEffect(_) => !e.is_instrument,
+                SelectorMode::FreeEffect => !e.is_instrument,
+                SelectorMode::Effect | SelectorMode::GroupEffect(_) => !e.is_instrument && module::name_of(&e.id).is_none(),
             })
             .map(|(i, e)| {
                 let fmt = format_from_id(&e.id);
@@ -829,7 +844,7 @@ impl State {
         // selector starts on the preset that is loaded. (With the audio input in the list, which sorts before the oscillator, the first row is not the one that was always there.)
         if matches!(mode, SelectorMode::Instrument) {
             let current = self.selected_inst().and_then(|inst| self.ctl.model.instruments.get(inst)).and_then(|lane| lane.instrument.as_ref()).map(|slot| slot.id.as_str());
-            let plugins = self.ctl.catalog.plugins();
+            let plugins = self.ctl.catalog.listed();
             if let Some(at) = current.and_then(|id| items.iter().position(|item| plugins.get(item.index).is_some_and(|entry| entry.id == id))) {
                 filter.list.selected = at;
             }
@@ -866,7 +881,7 @@ impl State {
                 return;
             }
         };
-        let entry = &self.ctl.catalog.plugins()[chosen];
+        let Some(entry) = self.ctl.catalog.listed().get(chosen).copied() else { return };
 
         // Determine which instrument to operate on from current selection.
         let inst = self.selected_inst().unwrap_or(0);
@@ -876,6 +891,7 @@ impl State {
         // the chain's, leaves the session as it was: the controller says why.)
         let source = entry.id.clone();
         let name = entry.name.clone();
+        // (A module is not made of one plugin but of the plugins that its file names, any of which can be slow to load: it waits for a frame that says so, as a plugin that is not built in does.)
         let built_in = source.starts_with("builtin:");
         log::info!("Loading plugin '{}' (id={}) into inst={}", entry.name, source, inst);
         let intent = match sel.mode {
@@ -1889,6 +1905,7 @@ fn popup_is_open(s: &State) -> bool {
         || s.gain_editing.is_some()
         || s.cable_editing.is_some()
         || s.save_as.is_some()
+        || s.save_module.is_some()
         || s.editing.is_some()
         || s.range_edit.is_some()
         || s.rename_group.is_some()
@@ -1957,6 +1974,8 @@ fn handle_event(s: &mut State, ev: Event) {
                 handle_cable_edit_key(s, key.code);
             } else if s.save_as.is_some() {
                 handle_save_as_key(s, key.code);
+            } else if s.save_module.is_some() {
+                handle_save_module_key(s, key.code);
             } else if s.editing.is_some() {
                 handle_edit_key(s, key.code);
             } else if s.range_edit.is_some() {
@@ -1984,6 +2003,7 @@ fn handle_event(s: &mut State, ev: Event) {
                 || s.gain_editing.is_some()
                 || s.cable_editing.is_some()
                 || s.save_as.is_some()
+                || s.save_module.is_some()
             {
                 if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                     s.selector = None;
@@ -2000,6 +2020,7 @@ fn handle_event(s: &mut State, ev: Event) {
                     s.gain_editing = None;
                     s.cable_editing = None;
                     s.save_as = None;
+                    s.save_module = None;
                 }
                 return;
             }
@@ -2354,6 +2375,47 @@ fn handle_save_as_key(s: &mut State, code: KeyCode) {
     }
 }
 
+/// The keys of the popup that names the module that a chain of effects is saved as: Enter asks the controller (the intent a browser's button asks, `SaveModule`), which says what a name may be and
+/// writes the file; a name that is refused stays in the popup with the reason.
+fn handle_save_module_key(s: &mut State, code: KeyCode) {
+    let Some(sm) = s.save_module.as_mut() else { return };
+    match code {
+        KeyCode::Esc => s.save_module = None,
+        KeyCode::Enter => {
+            let name = sm.input.value.trim().to_string();
+            if name.is_empty() {
+                return; // keep popup open until a name is given
+            }
+            match s.ctl.apply(Intent::SaveModule { node: sm.node, name }) {
+                Ok(_) => s.save_module = None,
+                // Keep the popup and show why, so that the name can be fixed or the popup left.
+                Err(e) => {
+                    if let Some(sm) = s.save_module.as_mut() {
+                        sm.error = Some(e.to_string());
+                    }
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            sm.error = None;
+            sm.input.backspace();
+        }
+        KeyCode::Delete => {
+            sm.error = None;
+            sm.input.delete();
+        }
+        KeyCode::Left => sm.input.move_left(),
+        KeyCode::Right => sm.input.move_right(),
+        KeyCode::Home => sm.input.home(),
+        KeyCode::End => sm.input.end(),
+        KeyCode::Char(ch) => {
+            sm.error = None;
+            sm.input.insert(ch);
+        }
+        _ => {}
+    }
+}
+
 fn handle_param_filter_key(s: &mut State, code: KeyCode) {
     match code {
         KeyCode::Esc => {
@@ -2514,6 +2576,16 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // it is fed. Wherever the cursor is.
         KeyCode::Char('N') if s.active_tab == TAB_SESSION && !s.focus_params => {
             s.open_selector(SelectorMode::FreeEffect);
+        }
+
+        // 'K' — keep the chain of effects of the lane the cursor is of as a module (step 104): a popup asks for the name, and the intent `SaveModule` writes the chain to the
+        // library, whose modules `N` lists with the effects and adds, each as a lane of its own. A lane that has no effect has no chain: nothing opens.
+        KeyCode::Char('K') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some(lane) = s.selected_inst().and_then(|inst| s.ctl.model.instruments.get(inst)) {
+                if !lane.effects.is_empty() {
+                    s.save_module = Some(SaveModuleState { node: lane.node, input: TextInputState::new(""), error: None });
+                }
+            }
         }
 
         // 'R' — set the key range of the selected instrument, or rename the
@@ -3348,6 +3420,9 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
             if let Some(sa) = &s.save_as {
                 render_save_as_popup(frame, area, sa);
             }
+            if let Some(sm) = &s.save_module {
+                render_save_module_popup(frame, area, sm);
+            }
         }
         TAB_PIANO => {
             render_piano_tab(frame, content_area, s);
@@ -3896,6 +3971,27 @@ fn render_save_as_popup(frame: &mut ratatui::Frame, area: Rect, sa: &SaveAsState
             TextInput::new(&sa.input),
             Rect::new(inner.x, inner.y + 1, inner.width, 1),
         );
+    }
+}
+
+fn render_save_module_popup(frame: &mut ratatui::Frame, area: Rect, sm: &SaveModuleState) {
+    let popup = centered_rect(52, 5, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Save Chain as Module ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.height >= 2 {
+        // The hint line doubles as the error line after a refused name.
+        let hint = match &sm.error {
+            Some(e) => Paragraph::new(e.as_str()).style(Style::default().fg(Color::Red)),
+            None => Paragraph::new("Module name (saved in the library; .toml added)").style(Style::default().fg(DIM)),
+        };
+        frame.render_widget(hint, Rect::new(inner.x, inner.y, inner.width, 1));
+        frame.render_widget(TextInput::new(&sm.input), Rect::new(inner.x, inner.y + 1, inner.width, 1));
     }
 }
 
@@ -4770,7 +4866,8 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  w          Cut / give back the way out of the lane or group (it is heard only through its audio cables)".into(),
         "  f          Cut / give back the link into the effect (it is fed by its audio cables and by nothing else)".into(),
         "  a          Add effect after selected".into(),
-        "  N          Add an effect that stands by itself (in a lane of its own; cables feed it)".into(),
+        "  N          Add an effect that stands by itself (in a lane of its own; cables feed it), or a module of the library (a chain of effects, whole)".into(),
+        "  K          Keep the chain of effects of the lane as a module (a popup asks for the name; `N` adds it, here or in another session)".into(),
         "  d          Delete selected".into(),
         "  m          Add a modulator that hears the lane or group the cursor is of (on a modulator: what it hears)".into(),
         "  F          Add a modulator that hears every note (its cables reach any plugin of the session)".into(),

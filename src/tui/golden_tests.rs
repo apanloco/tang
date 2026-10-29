@@ -8349,3 +8349,160 @@ mod patch_tab {
         }
     }
 }
+
+/// Chains of effects saved as modules (step 104): `K` on the Session tab names the chain of the lane the cursor is of and saves it to the library, and `N` lists the modules of the library with the
+/// effects and adds one, whole, as a lane of its own. The controller's part is in `app/apply.rs`; this is what the terminal asks of it and shows.
+mod modules {
+    use super::*;
+
+    /// A harness over a lane with a filter and a reverb (and an LFO), with the built-in plugins in the catalog and a library of modules that is an empty directory of the test's own.
+    fn harness() -> (tempfile::TempDir, Harness) {
+        let mut h = Harness::new(scene_two_effects());
+        h.s.ctl.catalog.add(plugin::builtin::enumerate_plugins());
+        let dir = tempfile::tempdir().unwrap();
+        h.s.ctl.modules_dir = Some(dir.path().to_path_buf());
+        (dir, h)
+    }
+
+    #[test]
+    fn capital_k_asks_for_a_name_and_saves_the_chain_of_the_lane_as_a_module_of_the_library_which_n_then_lists() {
+        let (dir, mut h) = harness();
+        h.press(KeyCode::Char('K'));
+        assert!(h.s.save_module.is_some(), "the popup opens");
+        assert_eq!(h.s.save_module.as_ref().map(|popup| popup.input.value.as_str()), Some(""), "with no name to begin with");
+        h.type_chars("  Room ").press(KeyCode::Enter);
+        assert!(h.s.save_module.is_none(), "the popup closes");
+        let text = std::fs::read_to_string(dir.path().join("Room.toml")).expect("the chain is a file of the library");
+        assert!(text.contains("plugin = \"builtin:filter\"") && text.contains("plugin = \"builtin:reverb\"") && !text.contains("builtin:osc"), "{text}");
+        // Nothing of the session changed: not marked, nothing to undo, nothing sent to the audio thread.
+        assert!(!h.s.ctl.dirty);
+        assert_eq!(h.s.ctl.history_state().undo, None);
+        assert_eq!(h.commands(), Vec::<String>::new());
+        // The catalog lists it, and the selector of `N` has it first, with the plugins after.
+        assert_eq!(h.s.ctl.catalog.modules().iter().map(|module| module.id.as_str()).collect::<Vec<_>>(), ["module:Room"]);
+        h.press(KeyCode::Char('N'));
+        let selector = h.s.selector.as_ref().expect("the selector is open");
+        assert_eq!(selector.items.first().map(|item| item.cells.clone()), Some(vec!["Room".to_string(), "Module".to_string(), "2".to_string(), "0".to_string()]));
+        assert!(selector.items.len() > 1 && selector.items.iter().skip(1).all(|item| item.cells[1] != "Module"));
+    }
+
+    #[test]
+    fn n_adds_the_module_as_a_lane_of_its_own_with_the_effects_it_was_saved_with_in_one_step_of_the_history() {
+        let (_dir, mut h) = harness();
+        h.press(KeyCode::Char('K')).type_chars("Room").press(KeyCode::Enter);
+        let lanes = h.s.ctl.model.instruments.len();
+        h.commands();
+        h.press(KeyCode::Char('N'));
+        assert_eq!(h.s.selector.as_ref().map(|selector| selector.mode), Some(SelectorMode::FreeEffect));
+        h.press(KeyCode::Enter);
+        assert!(h.s.selector.is_none());
+        assert_eq!(h.commands().iter().filter(|command| command.starts_with("InsertEffect")).count(), 2, "the filter and the reverb");
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes + 1);
+        let lane = &h.s.ctl.model.instruments[lanes];
+        assert!(lane.instrument.is_none());
+        assert_eq!(lane.effects.iter().map(|effect| effect.name.as_str()).collect::<Vec<_>>(), ["Filter", "Reverb"]);
+        let tree = h.tree();
+        let at = tree.iter().position(|line| line.contains("(empty)")).expect("the lane is in the tree, with no instrument");
+        assert!(tree[at].contains("[no out]") && tree[at + 1].contains("fx Filter") && tree[at + 2].contains("fx Reverb"), "{tree:#?}");
+        assert!(h.s.ctl.dirty);
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add Room"));
+        h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes, "one undo takes the lane out with both effects");
+    }
+
+    #[test]
+    fn a_name_that_is_refused_stays_in_the_popup_with_the_reason_and_what_is_typed_clears_it() {
+        let (dir, mut h) = harness();
+        h.press(KeyCode::Char('K')).type_chars("a/b").press(KeyCode::Enter);
+        let popup = h.s.save_module.as_ref().expect("the popup stays open");
+        assert_eq!(popup.error.as_deref(), Some("a file name has no folder in it: `/` and `\\` are not allowed"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing was written");
+        h.press(KeyCode::Backspace);
+        assert_eq!(h.s.save_module.as_ref().unwrap().error, None, "Backspace");
+        h.press_n(KeyCode::Backspace, 5).type_chars("a.toml.toml").press(KeyCode::Enter);
+        assert_eq!(h.s.save_module.as_ref().unwrap().error.as_deref(), Some("the name of a module does not end in .toml: that is the extension of its file"));
+        h.type_chars("x");
+        assert_eq!(h.s.save_module.as_ref().unwrap().error, None, "typing");
+        h.press_n(KeyCode::Backspace, 20).type_chars("Fixed").press(KeyCode::Enter);
+        assert!(h.s.save_module.is_none());
+        assert!(dir.path().join("Fixed.toml").exists());
+    }
+
+    #[test]
+    fn a_name_of_nothing_waits_and_escape_leaves_with_nothing_written() {
+        let (dir, mut h) = harness();
+        h.press(KeyCode::Char('K')).press(KeyCode::Enter);
+        let popup = h.s.save_module.as_ref().expect("the popup stays open");
+        assert_eq!(popup.error, None, "no complaint, it just waits");
+        h.type_chars("   ").press(KeyCode::Enter);
+        assert!(h.s.save_module.is_some());
+        h.press(KeyCode::Esc);
+        assert!(h.s.save_module.is_none());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn capital_k_is_for_a_lane_that_has_a_chain_on_the_session_tab_and_opens_nothing_else() {
+        // A lane that has no effect has no chain; the other tabs have no such key; in the parameter pane a capital is text.
+        let mut split = Harness::new(scene_split());
+        split.press(KeyCode::Char('K'));
+        assert!(split.s.save_module.is_none());
+        let (_dir, mut h) = harness();
+        for tab in ['2', '3', '4', '5'] {
+            h.press(KeyCode::Char(tab)).press(KeyCode::Char('K'));
+            assert!(h.s.save_module.is_none(), "tab {tab}");
+            h.press(KeyCode::Char('1'));
+        }
+        h.press(KeyCode::Enter).press(KeyCode::Char('K'));
+        assert!(h.s.save_module.is_none(), "in the parameter pane");
+        h.press(KeyCode::Esc);
+        // On the effect of the lane, and on the modulator that hears it, it is the lane's chain.
+        let effect = h.s.tree_entries.iter().find(|entry| matches!(entry.address, TreeAddress::Effect { .. })).map(|entry| entry.address).expect("the lane has an effect");
+        h.goto(effect).press(KeyCode::Char('K'));
+        assert!(h.s.save_module.is_some());
+    }
+
+    #[test]
+    fn the_selectors_of_a_chain_do_not_list_the_modules_a_chain_of_effects_does_not_go_in_a_chain() {
+        let (_dir, mut h) = harness();
+        h.press(KeyCode::Char('K')).type_chars("Room").press(KeyCode::Enter);
+        for key in ['a', 'N'] {
+            h.press(KeyCode::Char(key));
+            let selector = h.s.selector.as_ref().expect("the selector is open");
+            let listed = selector.items.iter().any(|item| item.cells[0] == "Room");
+            assert_eq!(listed, key == 'N', "{key}");
+            h.press(KeyCode::Esc);
+        }
+        h.press(KeyCode::Char('n'));
+        let selector = h.s.selector.as_ref().expect("the instrument selector is open");
+        assert!(selector.items.iter().all(|item| item.cells[0] != "Room"));
+    }
+
+    #[test]
+    fn a_program_that_keeps_no_library_says_so_in_the_popup() {
+        let mut h = Harness::new(scene_two_effects());
+        h.press(KeyCode::Char('K')).type_chars("Room").press(KeyCode::Enter);
+        assert_eq!(h.s.save_module.as_ref().and_then(|popup| popup.error.as_deref()), Some("this program keeps no library of modules"));
+    }
+
+    #[test]
+    fn popup_save_module() {
+        let (_dir, mut h) = harness();
+        h.press(KeyCode::Char('K')).type_chars("Room");
+        assert_golden("popup_save_module", &mut h);
+    }
+
+    #[test]
+    fn popup_save_module_with_a_name_that_was_refused() {
+        let (_dir, mut h) = harness();
+        h.press(KeyCode::Char('K')).type_chars("a/b").press(KeyCode::Enter);
+        assert_golden("popup_save_module_with_a_name_that_was_refused", &mut h);
+    }
+
+    #[test]
+    fn the_help_tab_lists_the_key_that_keeps_a_chain_as_a_module_and_what_n_adds() {
+        let h = Harness::new(scene_two_effects());
+        assert!(h.s.help_lines.iter().any(|line| line.trim_start().starts_with("K ") && line.contains("Keep the chain of effects of the lane as a module")), "{:?}", h.s.help_lines);
+        assert!(h.s.help_lines.iter().any(|line| line.trim_start().starts_with("N ") && line.contains("a module of the library")), "{:?}", h.s.help_lines);
+    }
+}
