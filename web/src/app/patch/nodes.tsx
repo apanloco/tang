@@ -26,6 +26,7 @@ import { AudioPort, DepthPort, DrivePicker, GainCell, GroupCell, ModulatorSettin
 import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./describe";
 import { HearsMenu } from "./HearsMenu";
 import { InspectorContext, paramsButtonId } from "./inspector";
+import { LevelStrip } from "./LevelStrip";
 import { ModulateMenu } from "./ModulateMenu";
 import { NodeScope, ScopeButton, ScopePanel } from "./NodeScope";
 import { NotesFromMenu, NotesToMenu } from "./NotesMenus";
@@ -481,6 +482,8 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
       {/* (A node that is no lane has no pattern: the cell draws nothing for it. Nor has a lane that takes no notes, which has no keys to record.) */}
       {data.notes ? <PatternCell node={data.node} name={data.name} /> : null}
       {data.scope ? <NodeScope node={data.node} name={data.name} /> : null}
+      {/* (A lane has a level, which an effect in it does not: the lane's is the end of its chain. A lane that has no way out has it too.) */}
+      {effect ? null : <LevelStrip node={data.node} name={data.name} />}
     </div>
   );
 }
@@ -624,6 +627,7 @@ export function GroupNode({ data }: NodeProps<PatchNode>) {
         <MuteSoloCell node={data.node} name={data.name} />
       </div>
       {data.scope ? <NodeScope node={data.node} name={data.name} /> : null}
+      <LevelStrip node={data.node} name={data.name} />
     </div>
   );
 }

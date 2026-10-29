@@ -35,6 +35,28 @@
   color: var(--tang-text);
 }
 
+/* The level of a lane or a group (step 100), drawn over the stripe of the colour of its kind that is the card's top border (3 px), so that no card is taller for it. */
+.tang-node__level {
+  position: absolute;
+  top: -3px;
+  left: -1px;
+  right: -1px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--tang-radius) var(--tang-radius) 0 0;
+  pointer-events: none;
+}
+
+.tang-node__level .tang-meter {
+  display: block;
+}
+
+.tang-node__level .tang-livebar {
+  height: 3px;
+  border-radius: 0;
+  background: transparent;
+}
+
 .tang-node--instrument {
   --kind: var(--tang-instrument);
 }

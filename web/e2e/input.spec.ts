@@ -58,6 +58,8 @@ mock("the audio input is added from the bar in a lane that has no way out: its n
   await expect(input.locator('.react-flow__handle[data-handleid="eventsIn"]')).toHaveCount(0);
   await expect(input.getByRole("combobox", { name: "Group of Audio Input", exact: true })).toBeVisible();
   await expect(input.getByRole("button", { name: "Mute Audio Input", exact: true })).toBeVisible();
+  // Its card has the level of its lane (step 100), as every lane's and every group's has: one meter, along the top edge of the card.
+  await expect(input.getByRole("meter", { name: "Level of Audio Input", exact: true })).toHaveCount(1);
 
   // A cable drawn from its output to the master is the way out given back, a link like every lane's (it has no slider: it has no level), and the history says so.
   await drag(page, audioOut(input), audioIn(node(page, "Master")));
@@ -102,6 +104,11 @@ test("the audio input on the real program is silent until a cable is drawn from 
   await addInput(page);
   await expect(links(page)).toHaveCount(2);
   await silent("an audio input that no cable leaves");
+  // Its own level (step 100: the meter along the top edge of its card) reads the tone all the same, before any cable is drawn: the lane is bare and nothing of it is in the mix, and what says that it hears is its level
+  // (a microphone that the system does not give is a level that stays at the floor). A sine of 0.25 is -12 dB.
+  const cardLevel = node(page, "Audio Input").getByRole("meter", { name: "Level of Audio Input", exact: true });
+  await expect.poll(async () => Number(await cardLevel.getAttribute("aria-valuenow")), { message: "the level of the bare lane reads the tone", timeout: 15_000 }).toBeGreaterThan(-14);
+  expect(Number(await cardLevel.getAttribute("aria-valuenow"))).toBeLessThan(-10);
   // The file has the lane as a bare one: its way out is cut, and there is no cable.
   const bare = await saved();
   expect(laneOfInput(bare)).toContain('route = "none"\n');
@@ -137,6 +144,8 @@ test("the audio input on the real program is silent until a cable is drawn from 
   // The lane's mute is a mute (the lane is bare, and its cable is what it sends: a muted lane sends nothing).
   await page.getByRole("button", { name: "Mute Audio Input", exact: true }).click();
   await silent("a muted audio input");
+  // (A lane that is muted has no level: its meter is after the fade that the mute makes.)
+  await expect.poll(async () => Number(await cardLevel.getAttribute("aria-valuenow")), { message: "the level of a muted lane falls to the floor", timeout: 15_000 }).toBeLessThan(-50);
   await page.getByRole("button", { name: "Mute Audio Input", exact: true }).click();
   await heard("the audio input, unmuted");
 
