@@ -297,6 +297,99 @@ describe("dragging", () => {
   });
 });
 
+
+/** The page is hidden, as a browser does when its tab is left (jsdom has no tabs: `document.hidden` says it, and the event follows). */
+function hidePage(): void {
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+  fireEvent(document, new Event("visibilitychange"));
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+}
+
+describe("a drag whose release was never seen", () => {
+  // (The user: "sometimes the mouse pointer gets "attached" to a knob or window and wont release even when I release my mouse". The button goes up over another window, a context menu takes the release, the window loses the focus.)
+  const mouse = { pointerId: 1, pointerType: "mouse" };
+  const press = (knob: Harness): void => {
+    fireEvent.pointerDown(knob.dial, { clientY: 300, button: 0, buttons: 1, ...mouse });
+    fireEvent.pointerMove(knob.dial, { clientY: 300 - DRAG_PIXELS / 4, buttons: 1, ...mouse });
+  };
+
+  test("is over when a mouse moves over the knob with no button down: it keeps the value that it had, with a commit, and follows nothing from then on", () => {
+    const knob = mount();
+    press(knob);
+    expect(knob.changes).toEqual([7.5]);
+    expect(knob.root.hasAttribute("data-dragging")).toBe(true);
+    fireEvent.pointerMove(knob.dial, { clientY: 100, buttons: 0, ...mouse });
+    expect(knob.commits).toEqual([7.5]);
+    expect(knob.root.hasAttribute("data-dragging")).toBe(false);
+    // (Nor does it follow a mouse that is pressed again over it: no drag is on until a press.)
+    fireEvent.pointerMove(knob.dial, { clientY: 50, buttons: 0, ...mouse });
+    fireEvent.pointerMove(knob.dial, { clientY: 20, buttons: 1, ...mouse });
+    expect(knob.changes).toEqual([7.5]);
+    expect(knob.dial.getAttribute("aria-valuenow")).toBe("7.5");
+  });
+
+  test("is not over for a touch or a pen that moves with no button: only a mouse has a button that can be let go of unseen", () => {
+    const knob = mount();
+    fireEvent.pointerDown(knob.dial, { clientY: 300, button: 0, buttons: 1, pointerId: 1, pointerType: "pen" });
+    fireEvent.pointerMove(knob.dial, { clientY: 300 - DRAG_PIXELS / 4, buttons: 0, pointerId: 1, pointerType: "pen" });
+    fireEvent.pointerMove(knob.dial, { clientY: 300 - DRAG_PIXELS / 2, buttons: 0, pointerId: 1, pointerType: "touch" });
+    expect(knob.changes).toEqual([7.5, 10]);
+    expect(knob.commits).toEqual([]);
+  });
+
+  test("is over when the window loses the focus, when the page is hidden, when a pointer goes up anywhere, when a context menu opens and when the capture is lost: each commits the value once", () => {
+    const endings: [string, (knob: Harness) => void][] = [
+      ["the window loses the focus", () => fireEvent.blur(window)],
+      ["the page is hidden", () => hidePage()],
+      ["a pointer goes up somewhere else", () => fireEvent.pointerUp(document.body, { pointerId: 1 })],
+      ["a pointer is cancelled somewhere else", () => fireEvent.pointerCancel(document.body, { pointerId: 1 })],
+      ["a context menu opens", () => fireEvent.contextMenu(document.body)],
+      ["the capture is lost", (knob) => fireEvent.lostPointerCapture(knob.dial, { pointerId: 1 })],
+    ];
+    for (const [what, end] of endings) {
+      cleanup();
+      const knob = mount();
+      press(knob);
+      end(knob);
+      expect(knob.commits, what).toEqual([7.5]);
+      expect(knob.root.hasAttribute("data-dragging"), what).toBe(false);
+      // (And the pointer up that comes after, from the element, does not commit it again.)
+      fireEvent.pointerUp(knob.dial, { pointerId: 1 });
+      expect(knob.commits, `${what}, and then a pointer up`).toEqual([7.5]);
+    }
+  });
+
+  test("is not begun by a press with Control held, which on a Mac is the secondary button and opens a menu that takes the release", () => {
+    const knob = mount();
+    fireEvent.pointerDown(knob.dial, { clientY: 300, button: 0, buttons: 1, ctrlKey: true, ...mouse });
+    fireEvent.pointerMove(knob.dial, { clientY: 250, buttons: 1, ctrlKey: true, ...mouse });
+    expect(knob.changes).toEqual([]);
+    expect(knob.root.hasAttribute("data-dragging")).toBe(false);
+  });
+
+  test("commits to the latest holder: the one that is given to the knob when the drag is over, and not the one that it had when the drag began", () => {
+    const first: number[] = [];
+    const later: number[] = [];
+    const props = { label: "a", value: 5, min: 0, max: 10, onChange: () => undefined };
+    const view = render(<Knob {...props} onCommit={(next) => first.push(next)} />);
+    const dial = view.getByRole("slider");
+    fireEvent.pointerDown(dial, { clientY: 300, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse" });
+    fireEvent.pointerMove(dial, { clientY: 250, buttons: 1, pointerId: 1, pointerType: "mouse" });
+    view.rerender(<Knob {...props} onCommit={(next) => later.push(next)} />);
+    fireEvent.blur(window);
+    expect([first, later]).toEqual([[], [7.5]]);
+  });
+
+  test("leaves nothing listening when the knob goes while a drag is on: the window losing the focus then commits nothing", () => {
+    const knob = mount();
+    press(knob);
+    cleanup();
+    fireEvent.blur(window);
+    fireEvent.pointerUp(document.body, { pointerId: 1 });
+    expect(knob.commits).toEqual([]);
+  });
+});
+
 describe("the keyboard", () => {
   test("arrows step the value by a hundredth of the range, and say so as a gesture of their own", () => {
     const knob = mount();

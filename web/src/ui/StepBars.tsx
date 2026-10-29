@@ -5,6 +5,7 @@ import { pageFrames } from "../client/frameloop";
 import type { FrameLoop } from "../client/frameloop";
 import { columnAt, paintTo, playheadStep, stepValueAt } from "../client/stepbars";
 import type { Paint } from "../client/stepbars";
+import { releaseLost, startsDrag, useDragEnd } from "./dragEnd";
 import { formatValue } from "./Knob";
 import { afterKey } from "./knob-geometry";
 import "./StepBars.css";
@@ -41,6 +42,8 @@ export function StepBars({ label, values, length, onChange, onCommit, read, fram
   const stroke = useRef<{ values: number[]; last: Paint } | null>(null);
   // The bar that is in the tab order (the others are got to with the arrows that go across).
   const [tabbed, setTabbed] = useState(0);
+  // Whether a stroke is on, for the ways that a stroke can end besides the pointer up that reaches the bars (`useDragEnd`).
+  const [painting, setPainting] = useState(false);
   const readOnly = !onChange;
 
   useEffect(() => {
@@ -67,7 +70,7 @@ export function StepBars({ label, values, length, onChange, onCommit, read, fram
   };
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>): void => {
-    if (!onChange || event.button !== 0) return;
+    if (!onChange || !startsDrag(event)) return;
     // (jsdom has no pointer capture, and a pointer that is gone before it is captured is no harm.)
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -77,6 +80,7 @@ export function StepBars({ label, values, length, onChange, onCommit, read, fram
     const place = placeOf(event);
     const painted = paintTo(values, null, place);
     stroke.current = { values: painted, last: place };
+    setPainting(true);
     bars.current[place.column]?.focus();
     onChange(painted);
   };
@@ -84,6 +88,11 @@ export function StepBars({ label, values, length, onChange, onCommit, read, fram
   const onPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
     const gesture = stroke.current;
     if (!gesture || !onChange) return;
+    // A mouse that moves with no button down is one whose release was never seen: the stroke is over, with the bars as they are.
+    if (releaseLost(event)) {
+      endStroke();
+      return;
+    }
     const place = placeOf(event);
     if (place.column === gesture.last.column && place.value === gesture.last.value) return;
     const painted = paintTo(gesture.values, gesture.last, place);
@@ -94,8 +103,12 @@ export function StepBars({ label, values, length, onChange, onCommit, read, fram
   const endStroke = (): void => {
     if (!stroke.current) return;
     stroke.current = null;
+    setPainting(false);
     onCommit?.();
   };
+
+  // The other ways for a stroke to be over: the release goes up anywhere, the window loses the focus, a context menu opens.
+  useDragEnd(painting, endStroke);
 
   const onKeyDown = (index: number, event: KeyboardEvent<HTMLDivElement>): void => {
     // The arrows that go across move the focus from bar to bar; the keys that go up and down change the value.
@@ -130,6 +143,7 @@ export function StepBars({ label, values, length, onChange, onCommit, read, fram
       onPointerMove={onPointerMove}
       onPointerUp={endStroke}
       onPointerCancel={endStroke}
+      onLostPointerCapture={endStroke}
     >
       {values.map((value, index) => (
         <div

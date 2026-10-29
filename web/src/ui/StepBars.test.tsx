@@ -203,6 +203,86 @@ describe("a stroke across the bars", () => {
   });
 });
 
+
+/** The page is hidden, as a browser does when its tab is left (jsdom has no tabs: `document.hidden` says it, and the event follows). */
+function hidePage(): void {
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+  fireEvent(document, new Event("visibilitychange"));
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+}
+
+describe("a stroke whose release was never seen", () => {
+  // (The same as the knob's: the button goes up over another window, a context menu takes the release, the window loses the focus: the bars went on painting under a mouse that was not pressed.)
+  const mouse = { pointerType: "mouse" };
+
+  test("is over when a mouse moves over the bars with no button down: the bars keep what the stroke painted, with a commit, and the mouse paints nothing more", () => {
+    const { group, changes, commits } = mount();
+    fireEvent.pointerDown(group, { ...at(0, 1), buttons: 1, ...mouse });
+    fireEvent.pointerMove(group, { ...at(1, 1), buttons: 1, ...mouse });
+    expect(changes).toHaveLength(2);
+    fireEvent.pointerMove(group, { ...at(2, 1), buttons: 0, ...mouse });
+    expect(commits()).toBe(1);
+    // (Not a bar painted by that move, nor by the ones that come after, pressed or not: no stroke is on until a press.)
+    fireEvent.pointerMove(group, { ...at(3, 1), buttons: 0, ...mouse });
+    fireEvent.pointerMove(group, { ...at(4, 1), buttons: 1, ...mouse });
+    expect(changes).toHaveLength(2);
+  });
+
+  test("is not over for a touch or a pen that moves with no button", () => {
+    const { group, changes, commits } = mount();
+    fireEvent.pointerDown(group, { ...at(0, 1), buttons: 1, pointerType: "pen" });
+    fireEvent.pointerMove(group, { ...at(1, 1), buttons: 0, pointerType: "pen" });
+    fireEvent.pointerMove(group, { ...at(2, 1), buttons: 0, pointerType: "touch" });
+    expect(changes).toHaveLength(3);
+    expect(commits()).toBe(0);
+  });
+
+  test("is over when the window loses the focus, when a pointer goes up or is cancelled anywhere, when a context menu opens and when the capture is lost: each commits once", () => {
+    const endings: [string, (group: HTMLElement) => void][] = [
+      ["the window loses the focus", () => fireEvent.blur(window)],
+      ["the page is hidden", () => hidePage()],
+      ["a pointer goes up somewhere else", () => fireEvent.pointerUp(document.body, { pointerId: 1 })],
+      ["a pointer is cancelled somewhere else", () => fireEvent.pointerCancel(document.body, { pointerId: 1 })],
+      ["a context menu opens", () => fireEvent.contextMenu(document.body)],
+      ["the capture is lost", (group) => fireEvent.lostPointerCapture(group, { pointerId: 1 })],
+    ];
+    for (const [what, end] of endings) {
+      cleanup();
+      const { group, commits } = mount();
+      fireEvent.pointerDown(group, { ...at(0, 1), buttons: 1, ...mouse });
+      end(group);
+      expect(commits(), what).toBe(1);
+      fireEvent.pointerUp(group, { pointerId: 1 });
+      expect(commits(), `${what}, and then a pointer up`).toBe(1);
+    }
+  });
+
+  test("takes its listeners off the window when the stroke is over, and has none before one", () => {
+    const off = vi.spyOn(window, "removeEventListener");
+    const { group } = mount();
+    fireEvent.pointerDown(group, { ...at(0, 1), buttons: 1, ...mouse });
+    off.mockClear();
+    fireEvent.pointerUp(group, { pointerId: 1 });
+    expect(off.mock.calls.map(([type]) => type)).toContain("blur");
+    off.mockRestore();
+  });
+
+  test("is not begun by a press with Control held (the secondary button of a Mac, which opens a menu that takes the release)", () => {
+    const { group, changes } = mount();
+    fireEvent.pointerDown(group, { ...at(0, 1), buttons: 1, ctrlKey: true, ...mouse });
+    fireEvent.pointerMove(group, { ...at(1, 1), buttons: 1, ctrlKey: true, ...mouse });
+    expect(changes).toEqual([]);
+  });
+
+  test("leaves nothing listening when the bars go while a stroke is on", () => {
+    const { group, commits } = mount();
+    fireEvent.pointerDown(group, { ...at(0, 1), buttons: 1, ...mouse });
+    cleanup();
+    fireEvent.blur(window);
+    expect(commits()).toBe(0);
+  });
+});
+
 describe("the keys of a bar", () => {
   test("change its value by a fiftieth with the keys that go up and down, by a tenth with the page keys and to the ends with Home and End, each press a gesture of its own", () => {
     const { step, changes, commits } = mount({ start: Array.from({ length: 16 }, () => 0) });

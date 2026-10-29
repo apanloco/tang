@@ -3,6 +3,7 @@ import type { KeyboardEvent, PointerEvent } from "react";
 
 import { pageFrames } from "../client/frameloop";
 import type { FrameLoop } from "../client/frameloop";
+import { releaseLost, startsDrag, useDragEnd } from "./dragEnd";
 import { afterKey, angleOf, arcPath, dragged, fractionOf, pointAt } from "./knob-geometry";
 import type { Scale } from "./knob-geometry";
 import "./Knob.css";
@@ -97,7 +98,7 @@ export function Knob({
   }, [frames, readEffective, min, max, scale]);
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>): void => {
-    if (inert || event.button !== 0) return;
+    if (inert || !startsDrag(event)) return;
     // (jsdom has no pointer capture, and a pointer that is gone before it is captured is no harm.)
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -112,6 +113,11 @@ export function Knob({
   const onPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
     const gesture = drag.current;
     if (!gesture || !onChange) return;
+    // A mouse that moves with no button down is one whose release was never seen (the button went up elsewhere): the drag is over, at the value that it has.
+    if (releaseLost(event)) {
+      endDrag();
+      return;
+    }
     // Rebased on each move, so that a change of speed (shift) does not make the knob jump,
     // and so that a pointer that has gone past an end comes back at once.
     const next = dragged(gesture.value, event.clientY - gesture.y, min, max, event.shiftKey ? 0.1 : 1, scale);
@@ -126,6 +132,9 @@ export function Knob({
     setDragging(false);
     if (gesture.moved) onCommit?.(gesture.value);
   };
+
+  // The other ways for a drag to be over: the release goes up anywhere, the window loses the focus, a context menu opens.
+  useDragEnd(dragging, endDrag);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (inert) return;
@@ -160,6 +169,7 @@ export function Knob({
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
         onKeyDown={onKeyDown}
         onDoubleClick={onDoubleClick}
       >

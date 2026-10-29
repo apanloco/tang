@@ -27,6 +27,7 @@ import { StructureContext } from "./structure";
 import { sameGraphStructure } from "./toFlow";
 import type { Flow } from "./toFlow";
 import { useLayout } from "./useLayout";
+import { useStuckDragGuard } from "./stuckDrag";
 import { useMovableNodes } from "./useMovableNodes";
 import { rectOf, viewToShow } from "./view";
 import type { View } from "./view";
@@ -180,6 +181,8 @@ export function PatchView() {
   // The nodes as they are on the canvas: the layout's, but where a person is dragging one it is where the pointer has taken it.
   const moveNode = useCallback((node: NodeId, ui: NodeUi) => editor.moveNode(node, ui), [editor]);
   const { nodes, onNodesChange, onNodeDragStart, onNodeDragStop } = useMovableNodes(flow.nodes, moveNode);
+  // (A card that stays in hand when the release of the mouse was lost is let go of.)
+  useStuckDragGuard();
   // The ports that take the cable being dragged, for them to say so.
   const [connecting, setConnecting] = useState<Dragged | null>(null);
   // The plugin whose parameters are in the panel, if the panel is open.
