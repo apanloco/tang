@@ -240,7 +240,7 @@ describe("a stroke whose release was never seen", () => {
   test("is over when the window loses the focus, when a pointer goes up or is cancelled anywhere, when a context menu opens and when the capture is lost: each commits once", () => {
     const endings: [string, (group: HTMLElement) => void][] = [
       ["the window loses the focus", () => fireEvent.blur(window)],
-      ["the page is hidden", () => hidePage()],
+      ["the page is hidden", hidePage],
       ["a pointer goes up somewhere else", () => fireEvent.pointerUp(document.body, { pointerId: 1 })],
       ["a pointer is cancelled somewhere else", () => fireEvent.pointerCancel(document.body, { pointerId: 1 })],
       ["a context menu opens", () => fireEvent.contextMenu(document.body)],

@@ -24,7 +24,12 @@ const endings: [string, () => void][] = [
   ["a pointer is cancelled", () => fireEvent.pointerCancel(document.body, { pointerId: 1 })],
   ["the window loses the focus", () => fireEvent.blur(window)],
   ["a context menu opens", () => fireEvent.contextMenu(document.body)],
-  ["the page is hidden", () => pageIs(true)],
+  [
+    "the page is hidden",
+    () => {
+      pageIs(true);
+    },
+  ],
 ];
 
 describe("what ends a drag that no pointer up has ended", () => {
