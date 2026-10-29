@@ -169,8 +169,8 @@ export function moduleOfNodes(snapshot: Snapshot, chosen: readonly Node[]): Modu
     chain.forEach((effect, index) => {
       if (!here.effects.has(effect.id)) return;
       const plugin = effect.plugin;
-      // (The stage before it in the module's chain is the one before it in the session's only if that was chosen too; the first of a lane that has no instrument has nothing before it either way.)
-      const sameStage = before === null ? here.instrument && index === 0 : before + 1 === index;
+      // (The stage before it in the module's chain is the one before it in the session's only if that was chosen too; the first of a lane that has no instrument has nothing before it either way, which the cut below leaves alone.)
+      const sameStage = before === null ? index === 0 : before + 1 === index;
       const cut = !sameStage && (before !== null || here.instrument);
       effectAt.set(effect.id, { lane: lanes.length, effect: effects.length });
       effects.push({

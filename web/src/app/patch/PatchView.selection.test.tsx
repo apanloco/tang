@@ -143,4 +143,40 @@ describe("choosing nodes on the canvas", () => {
     });
     expect(document.querySelectorAll(".react-flow__node.selected")).toHaveLength(0);
   });
+
+  test("is not left by an Escape that something else took: what is open closes with the key and what is chosen stays, and the key that nothing took leaves it", async () => {
+    await rigged();
+    const button = await chooseButton();
+    fireEvent.click(button);
+    fireEvent.click(await nodeOnCanvas("Oscillator"));
+    await waitFor(() => {
+      expect(document.querySelectorAll(".react-flow__node.selected")).toHaveLength(1);
+    });
+    // (A menu or a field that is open takes the key and says so; the canvas's own listener, on the window, comes after it.)
+    const take = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") event.preventDefault();
+    };
+    window.addEventListener("keydown", take, true);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    window.removeEventListener("keydown", take, true);
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelectorAll(".react-flow__node.selected")).toHaveLength(1);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => {
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+    });
+    expect(document.querySelectorAll(".react-flow__node.selected")).toHaveLength(0);
+  });
+
+  test("chooses no cable: a click on one while choosing is on leaves what is chosen as it was, and a cable is none of what a module is made of", async () => {
+    await rigged();
+    fireEvent.click(await chooseButton());
+    await nodeOnCanvas("Oscillator");
+    const cables = Array.from(document.querySelectorAll<HTMLElement>(".react-flow__edge"));
+    expect(cables.length).toBeGreaterThan(0);
+    for (const cable of cables) fireEvent.click(cable);
+    expect(document.querySelectorAll(".react-flow__edge.selected")).toHaveLength(0);
+    expect(document.querySelectorAll(".react-flow__edge.selectable")).toHaveLength(0);
+    expect(screen.getByRole("status").textContent).toBe("Drag a box round the nodes to keep");
+  });
 });

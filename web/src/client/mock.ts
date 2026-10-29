@@ -1606,8 +1606,8 @@ export class MockServer {
       if (!node) return;
       module = moduleOf(snapshot, node);
     } else {
+      // (The nodes are all there: an intent that names one that is not was refused before this.)
       const chosen = intent.nodes.flatMap((id) => snapshot.graph.nodes.filter((n) => n.id === id));
-      if (chosen.length !== intent.nodes.length) return;
       module = moduleOfNodes(snapshot, chosen);
     }
     if (typeof module === "string") return;

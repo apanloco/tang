@@ -1,10 +1,10 @@
 import { describe, expect, test } from "vitest";
 
 import type { CatalogEntry, Intent, ServerMessage, Snapshot, TelemetryLayout } from "../protocol";
-import { builtinCatalog, moduleGraphsFixture, modulesFixture, tracerSnapshot } from "./fixtures";
+import { builtinCatalog, MASTER, moduleGraphsFixture, modulesFixture, tracerSnapshot } from "./fixtures";
 import { MockServer } from "./mock";
 import { chainOf, cleanModuleName, moduleEntry, moduleId, moduleNameOf, moduleOf, moduleOfNodes, pluginCount, withModules } from "./modules";
-import type { Module, ModuleEffect } from "./modules";
+import type { Module, ModuleEffect, ModuleLane } from "./modules";
 
 // Chains of effects saved as modules (`Intent::SaveModule`), against the mock engine: what the controller does (`save_module_intent`, `load_module`), with a library that is kept in memory.
 // `fixtures/modules.json` is what the controller made of a script on a session of its own, step by step; the mock is held to it here.
@@ -311,6 +311,53 @@ describe("the mock engine's library of graph modules", () => {
     expect(cable?.kind === "cable" ? cable.gain : null).toBe(2);
   });
 
+  test("turns away a module that a hand wrote whose plugins cannot be loaded, in the controller's words, whichever lane the fault is in, and makes no lane", () => {
+    const effects = (...plugins: string[]): ModuleLane => ({ instrument: null, effects: plugins.map(plain) });
+    const instrument = (plugin: string): ModuleLane["instrument"] => ({ plugin, preset: null, params: {}, volume: 1, pinned: [] });
+    const library: Record<string, Module> = {
+      // The second lane's second plugin is not installed: the first lane is not made.
+      Late: { lanes: [effects("builtin:reverb"), effects("builtin:filter", "clap:com.example.nothing")], cables: [] },
+      // An instrument slot that names an effect, an effect slot that names an instrument, and an instrument that is not installed.
+      Wrong: { lanes: [{ instrument: instrument("builtin:filter"), effects: [] }], cables: [] },
+      Backwards: { lanes: [effects("builtin:reverb"), effects("builtin:osc")], cables: [] },
+      Missing: { lanes: [{ instrument: instrument("clap:com.example.nothing"), effects: [plain("builtin:reverb")] }], cables: [] },
+    };
+    const server = new MockServer({ snapshot: fixture.snapshot, modules: library });
+    const graph = server.snapshot.graph;
+    const refused = (name: string): string => refusedWith(server, { type: "addFreeEffect", plugin: `module:${name}` });
+    expect(refused("Late")).toBe("the module Late cannot be added: clap:com.example.nothing is not a plugin that is installed");
+    expect(refused("Wrong")).toBe("the module Wrong cannot be added: Filter is an effect, not an instrument");
+    expect(refused("Backwards")).toBe("the module Backwards cannot be added: Oscillator is an instrument, not an effect");
+    expect(refused("Missing")).toBe("the module Missing cannot be added: clap:com.example.nothing is not a plugin that is installed");
+    expect(server.snapshot.graph).toBe(graph);
+  });
+
+  test("says over the wire, with the words, that a node is not found when a chosen list names one that is not there, the master too, and that what a module cannot be made of is invalid", async () => {
+    const server = new MockServer({ snapshot: fixture.snapshot });
+    const heard: ServerMessage[] = [];
+    const transport = server.transport();
+    transport.connect({
+      open: () => undefined,
+      text: (data) => {
+        heard.push(JSON.parse(data) as ServerMessage);
+      },
+      binary: () => undefined,
+      close: () => undefined,
+    });
+    // (`apply` throws the words alone: the code is what the server's answer has.)
+    const refusal = async (nodes: number[]): Promise<string[]> => {
+      heard.length = 0;
+      transport.send(JSON.stringify({ type: "request", reqId: 1, intent: { type: "saveSelectionAsModule", nodes, name: "Room" } satisfies Intent }));
+      await quiet(5);
+      const answer = heard.find((message) => message.type === "rejected");
+      return answer?.type === "rejected" ? [answer.error.code, answer.error.message] : [];
+    };
+    expect(await refusal([MASTER])).toEqual(["notFound", `there is no node ${String(MASTER)}`]);
+    expect(await refusal([9_999])).toEqual(["notFound", "there is no node 9999"]);
+    expect(await refusal([])).toEqual(["invalid", "nothing is chosen: a module is made of the effects and instruments that are"]);
+    transport.close();
+  });
+
   test("tells the catalog again when a module is saved that was not there or that has another number of plugins, and not for one that is saved again as it was", async () => {
     const server = new MockServer({ snapshot: fixture.snapshot });
     const heard: ServerMessage[] = [];
@@ -403,6 +450,25 @@ describe("the plugins that a module is made of", () => {
     const cut = { ...snapshot, graph: { ...snapshot.graph, nodes: snapshot.graph.nodes.map((node) => (node.id === delay.id && node.kind === "effect" ? { ...node, feed: "none" as const } : node)) } };
     expect(feeds(moduleOfNodes(cut, [osc, filter, delay, reverb]))).toEqual([[true, false, true]]);
     expect(feeds(moduleOfNodes(cut, [delay]))).toEqual([[false]]);
+  });
+
+  test("name an effect by the place that it has in the module and not by the place it had in the session: the cable into the reverb, with the delay between the two left out", () => {
+    const module = moduleOfNodes(snapshot, [filter, reverb, math]);
+    if (typeof module === "string") throw new Error(module);
+    expect(module.lanes.map((lane) => lane.effects.map((effect) => effect.plugin))).toEqual([["builtin:filter", "builtin:reverb"], ["builtin:math"]]);
+    expect(module.cables).toEqual([
+      { from: { lane: 0, effect: 0 }, to: { lane: 1, effect: 0, side: true }, gain: 0.7 },
+      { from: { lane: 1, effect: 0 }, to: { lane: 0, effect: 1, side: false }, gain: 1 },
+    ]);
+  });
+
+  test("turn away an effect that is in no lane: its parent is neither a lane nor a group, or is not there", () => {
+    const modulator = snapshot.graph.nodes.find((node) => node.kind === "modulator");
+    if (!modulator) throw new Error("the fixture has a modulator");
+    const words = "a module is made of effects and instruments: that effect is in no lane";
+    // (No server makes one: an effect is in a lane or on a bus. A graph of another make is told what it is.)
+    expect(moduleOfNodes(snapshot, [{ ...reverb, parent: modulator.id }])).toBe(words);
+    expect(moduleOfNodes(snapshot, [{ ...reverb, parent: 424_242 }])).toBe(words);
   });
 
   test("are refused, in the controller's words, for what a module has none of: a group's bus, a modulator, a source, a lane that has no instrument, and nothing", () => {

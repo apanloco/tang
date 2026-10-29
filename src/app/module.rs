@@ -211,10 +211,10 @@ pub fn to_text_of(model: &SessionModel, nodes: &[NodeId]) -> Result<String, Stri
         for &index in &lane_chosen.effects {
             let effect = &lane.effects[index];
             let mut saved = save::effect_to_save(effect, &no_places);
-            // (The stage before it in the module's chain is the one before it in the session's only if that was chosen too; the first of a lane that has no instrument has nothing before it either way.)
+            // (The stage before it in the module's chain is the one before it in the session's only if that was chosen too; the first of a lane that has no instrument has nothing before it either way, which the cut below leaves alone.)
             let same_stage = match before {
                 Some(previous) => previous + 1 == index,
-                None => lane_chosen.instrument && index == 0,
+                None => index == 0,
             };
             if !same_stage && (before.is_some() || lane_chosen.instrument) {
                 saved.feed = Feed::None;

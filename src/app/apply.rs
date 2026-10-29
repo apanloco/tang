@@ -7991,6 +7991,9 @@ gain = 3.0
         let (copied_filter, copied_math) = (ctl.model.instruments[5].effects[0].node, ctl.model.instruments[6].effects[0].node);
         take(&mut ctl, save(&[copied_osc, copied_filter, copied_math], "Copy"));
         take(&mut ctl, add("Copy"));
+        // (A lane that has an effect left out between two that are chosen, and a cable that ends at the one after the gap: the cable names the place that the effect has in the module, which is not the one it had in the session.)
+        take(&mut ctl, save(&[filter, reverb, math], "Skip"));
+        take(&mut ctl, add("Skip"));
 
         // What is refused: a fresh controller for each, with a library that has no module in it.
         let ghost = NodeId(9_999);
