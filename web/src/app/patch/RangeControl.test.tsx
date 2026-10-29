@@ -56,11 +56,10 @@ describe("the keys of a lane", () => {
     const node = (await lowest()).closest(".tang-node");
     expect(node?.classList.contains("tang-node--instrument")).toBe(true);
     const cells = Array.from(node?.querySelectorAll(".tang-node__controls > .tang-cell") ?? []);
-    expect(cells).toHaveLength(12); // eight parameters, the volume, the keys, the group and the mute and solo
-    const keys = cells.at(-3);
+    expect(cells).toHaveLength(11); // eight parameters, the volume, the keys and the mute and solo (the choice of group is there only while the session has a group)
+    const keys = cells.at(-2);
     expect(keys?.textContent).toContain("Keys");
     expect(within(keys as HTMLElement).getAllByRole("combobox")).toHaveLength(2);
-    expect(cells.at(-2)?.textContent).toContain("Group");
     expect(cells.at(-1)?.textContent).toContain("Mute");
   });
 

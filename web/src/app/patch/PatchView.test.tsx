@@ -94,9 +94,9 @@ describe("the patch", () => {
     expect(Array.from(lfoTitle?.children ?? [], (child) => child.className)).toEqual(["tang-node__name", "tang-menu-button nodrag nopan tang-node__notes tang-node__notes--set"]);
   });
 
-  test("shows each plugin node's parameters as controls, and its own gain after them (and a lane's keys and its group after that)", async () => {
+  test("shows each plugin node's parameters as controls, and its own gain after them (and a lane's keys after that, and its group only while the session has one)", async () => {
     await rig(<PatchView />);
-    expect(controlsIn(await nodeOf(oscillator.id))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator", "Highest key of Oscillator", "Group of Oscillator"]);
+    expect(controlsIn(await nodeOf(oscillator.id))).toEqual(["waveform", "detune", "volume", "attack", "decay", "sustain", "release", "pan", "Volume", "Lowest key of Oscillator", "Highest key of Oscillator"]);
     expect(controlsIn(await nodeOf(filter.id))).toEqual(["cutoff", "resonance", "type", "drive", "Mix"]);
   });
 

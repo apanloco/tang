@@ -48,7 +48,7 @@ mock("the audio input is added from the bar in a lane that has no way out: its n
   await expect(page.getByRole("button", { name: "Send audio from Audio Input", exact: true })).toBeVisible();
 
   // Its instrument takes no notes (step 99c), so that its card has none of what a lane has for them: no key range, no pattern to record, no input of events and no menu that takes notes in. The cells that
-  // are not about notes are the lane's all the same: its group, its mute and its solo. (The tracer's lane, which plays notes, has its keys and its pattern: one of each on the canvas.)
+  // are not about notes are the lane's all the same: its mute and its solo (and its group, while the session has one, which the tracer has not). (The tracer's lane, which plays notes, has its keys and its pattern: one of each on the canvas.)
   await expect(page.getByLabel(/^Lowest key of /)).toHaveCount(1);
   await expect(page.getByRole("group", { name: /^Pattern of / })).toHaveCount(1);
   await expect(input.getByLabel(/^(Lowest|Highest) key of /)).toHaveCount(0);
@@ -56,7 +56,7 @@ mock("the audio input is added from the bar in a lane that has no way out: its n
   await expect(input.getByRole("button", { name: "Record a pattern on Audio Input" })).toHaveCount(0);
   await expect(input.getByRole("button", { name: "Take notes into Audio Input" })).toHaveCount(0);
   await expect(input.locator('.react-flow__handle[data-handleid="eventsIn"]')).toHaveCount(0);
-  await expect(input.getByRole("combobox", { name: "Group of Audio Input", exact: true })).toBeVisible();
+  await expect(input.getByRole("combobox", { name: /^Group of / })).toHaveCount(0);
   await expect(input.getByRole("button", { name: "Mute Audio Input", exact: true })).toBeVisible();
   // Its card has the level of its lane (step 100), as every lane's and every group's has: one meter, along the top edge of the card.
   await expect(input.getByRole("meter", { name: "Level of Audio Input", exact: true })).toHaveCount(1);

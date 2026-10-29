@@ -4,7 +4,7 @@ import { expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
 import { showAll } from "./canvas";
-import { test } from "./own";
+import { test, testWithGroups } from "./own";
 
 // Mute and solo from the page, on the real program (a program of its own, on the null audio backend: the master's meter is what the engine mixed, and the file it saves is read). A
 // lane or a group that is muted is never heard, and while anything is soloed only what is soloed is; the notes go on while it is silent, so that a held key is heard again when the
@@ -155,12 +155,15 @@ test("a press of the mute is a step of the history, undone and done again from t
   await other.close();
 });
 
-test("a group is muted from its node: the lanes in it are silent at the master and dimmed with it, and the group's flag is in the saved file", async ({ page, own }) => {
+// (A program started on the tracer's file with a group: the page has no way to make one.)
+const grouped = testWithGroups(1);
+
+grouped("a group is muted from its node: the lanes in it are silent at the master and dimmed with it, and the group's flag is in the saved file", async ({ page, own }) => {
   await open(page, own.url);
   const master = level(page);
 
-  // The tracer's lane in a group of its own, chosen on the lane.
-  await page.getByRole("combobox", { name: "Group of Oscillator" }).selectOption({ label: "new group" });
+  // The tracer's lane in the group that the file has, chosen on the lane.
+  await page.getByRole("combobox", { name: "Group of Oscillator" }).selectOption({ label: "Group 1" });
   await expect(nodeOf(page, "Group 1")).toBeVisible();
   await page.getByRole("status").click();
   await page.keyboard.down("z");

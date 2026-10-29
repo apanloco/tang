@@ -4,16 +4,16 @@ import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
 import { node, open } from "./canvas";
-import { test as own } from "./own";
+import { testWithGroups } from "./own";
 
-// Groups, from the page: one is added from the bar and from a lane's own choice of group, a lane is put in one and taken out of it, a group is
-// named in place, and a lane or a group is taken out for good after the page has asked whether to. What the page does is the program's: a second
-// page sees it, and the saved file has it.
+// Groups, from the page: the page has no way to make one (step 103), so that a session has one when it is loaded (the mock's `groups` scene, and a program that is
+// started on the tracer's file with groups added). A lane is put in one and taken out of it, a group is named in place, and a lane or a group is taken out for
+// good after the page has asked whether to. What the page does is the program's: a second page sees it, and the saved file has it.
 
 const groupChoice = (page: Page, lane: string) => page.getByRole("combobox", { name: `Group of ${lane}` });
 
-test("a group is added from the bar, a lane is put in it and taken out of it, the group is named in place and taken out after the page has asked", async ({ page }) => {
-  await open(page);
+test("a group that the session has is drawn, a lane is put in it and taken out of it, the group is named in place and taken out after the page has asked", async ({ page }) => {
+  await open(page, "groups");
   // The tracer has one lane, which has no group, and a session keeps its last lane: nothing takes the lane out, and its menu only offers to take the instrument out of it.
   await expect(groupChoice(page, "Oscillator")).toHaveValue("");
   await expect(page.getByRole("button", { name: /^Remove the lane of / })).toHaveCount(1);
@@ -21,11 +21,12 @@ test("a group is added from the bar, a lane is put in it and taken out of it, th
   await expect(page.getByRole("menuitem")).toHaveText(["Keep Oscillator", "Remove Oscillator only: its 1 effect stays in the lane"]);
   await page.keyboard.press("Escape");
 
-  // A group from the bar: it is on the canvas, empty and with its own buttons, and the lane can be put in it.
-  await page.getByRole("button", { name: "Add a group" }).click();
+  // The group of the scene: it is on the canvas, empty and with its own buttons, and the lane's choice offers it and nothing else (the bar has no button that adds one).
   const group = node(page, "Group 1");
   await expect(group).toBeVisible();
   await expect(group.getByRole("button", { name: "Add an effect to Group 1" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add a group" })).toHaveCount(0);
+  await expect(groupChoice(page, "Oscillator").locator("option")).toHaveText(["none", "Group 1"]);
   await groupChoice(page, "Oscillator").selectOption({ label: "Group 1" });
   await expect(groupChoice(page, "Oscillator").locator("option:checked")).toHaveText("Group 1");
   // The lane's last link, from its filter, goes into the group now and the group's goes to the master.
@@ -58,13 +59,30 @@ test("a group is added from the bar, a lane is put in it and taken out of it, th
   await node(page, "Pad").getByRole("button", { name: "Remove Pad" }).click();
   await page.getByRole("menuitem", { name: /^Remove Pad for good/ }).click();
   await expect(node(page, "Pad")).toHaveCount(0);
-  await expect(groupChoice(page, "Oscillator")).toHaveValue("");
-  await expect(page.getByRole("button", { name: "Add a group" })).toBeFocused();
+  // The last group is gone: the lane has no choice of group any more, and the focus is on the bar's button that adds an instrument.
+  await expect(groupChoice(page, "Oscillator")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add an instrument" })).toBeFocused();
 });
 
-test("a group is made from a lane's choice, a second lane is added and taken out again, and the last one cannot be", async ({ page }) => {
+test("the page has no way to make a group: the bar has no button for it, and a lane has no choice of group while the session has none", async ({ page }) => {
   await open(page);
-  await groupChoice(page, "Oscillator").selectOption("new");
+  await expect(page.getByRole("button", { name: "Add an instrument" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add a group" })).toHaveCount(0);
+  await expect(page.getByRole("combobox", { name: /^Group of / })).toHaveCount(0);
+  // The lane has its keys and its mute and solo, and no cell for a group.
+  const lane = node(page, "Oscillator");
+  await expect(lane.getByRole("combobox", { name: "Lowest key of Oscillator" })).toBeVisible();
+  await expect(lane.getByRole("button", { name: "Mute Oscillator", exact: true })).toBeVisible();
+  // A second lane has none either.
+  await page.getByRole("button", { name: "Add an instrument" }).click();
+  await page.getByRole("menuitem", { name: "Oscillator" }).click();
+  await expect(node(page, "Oscillator 2")).toBeVisible();
+  await expect(page.getByRole("combobox", { name: /^Group of / })).toHaveCount(0);
+});
+
+test("a lane is put in a group, a second lane is added and taken out again, and the last one cannot be", async ({ page }) => {
+  await open(page, "groups");
+  await groupChoice(page, "Oscillator").selectOption({ label: "Group 1" });
   await expect(node(page, "Group 1")).toBeVisible();
   await expect(groupChoice(page, "Oscillator").locator("option:checked")).toHaveText("Group 1");
 
@@ -109,19 +127,21 @@ test("the instrument of a lane is taken out alone: its filter and its LFO stay a
   await expect(node(page, "LFO")).toBeVisible();
 });
 
-own("what is done to groups is the program's: a second page sees it, and the saved file has the groups, their names and which lane is in which", async ({ page, browser, own: tang }) => {
+// (A program started on the tracer's file with two groups: the page has no way to make one.)
+const grouped = testWithGroups(2);
+
+grouped("what is done to groups is the program's: a second page sees it, and the saved file has the groups, their names and which lane is in which", async ({ page, browser, own: tang }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(tang.url);
   await expect(page.getByRole("status")).toHaveText("Connected");
 
-  // A group made from the lane's choice, named; an empty one from the bar.
-  await groupChoice(page, "Oscillator").selectOption("new");
+  // The lane is put in the first group, which is named; the second is empty.
+  await expect(node(page, "Group 2")).toBeVisible();
+  await groupChoice(page, "Oscillator").selectOption({ label: "Group 1" });
   await node(page, "Group 1").getByRole("button", { name: "Rename Group 1" }).click();
   await page.getByRole("textbox", { name: "Name of Group 1" }).fill("Pad");
   await page.keyboard.press("Enter");
   await expect(node(page, "Pad")).toBeVisible();
-  await page.getByRole("button", { name: "Add a group" }).click();
-  await expect(node(page, "Group 2")).toBeVisible();
 
   // A second page has all of it, and what it does shows on the first: the lane goes to the other group.
   const other = await browser.newPage();

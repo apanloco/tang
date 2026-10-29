@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { createConnection, engineFor, MOCK_INPUTS, sceneFor } from "./engine";
 
 describe("which scene a page asks of the mock", () => {
-  test("is the tracer, unless it asks for the stress scene or the two lanes", () => {
+  test("is the tracer, unless it asks for the stress scene, the two lanes or the group", () => {
     expect(sceneFor("")).toBe("tracer");
     expect(sceneFor("?engine=mock")).toBe("tracer");
     expect(sceneFor("?scene=tracer")).toBe("tracer");
@@ -11,6 +11,7 @@ describe("which scene a page asks of the mock", () => {
     expect(sceneFor("?engine=mock&scene=stress")).toBe("stress");
     expect(sceneFor("?scene=stress&engine=mock")).toBe("stress");
     expect(sceneFor("?engine=mock&scene=lanes")).toBe("lanes");
+    expect(sceneFor("?engine=mock&scene=groups")).toBe("groups");
   });
 
   test("gives the mock the session that was asked for", async () => {
@@ -19,6 +20,7 @@ describe("which scene a page asks of the mock", () => {
       ["?engine=mock", 1],
       ["?engine=mock&scene=stress", 32],
       ["?engine=mock&scene=lanes", 2],
+      ["?engine=mock&scene=groups", 1],
     ] as const) {
       const { client } = createConnection({ ...at, search });
       client.start();
@@ -32,9 +34,31 @@ describe("which scene a page asks of the mock", () => {
 });
 
 describe("what the scenes of the mock are", () => {
+  test("the groups scene is the tracer with a group that nothing is in, which the page has no way to make: its lane is in none, and the group has no effect", async () => {
+    const { client } = createConnection({ protocol: "http:", host: "localhost:5173", hash: "", search: "?engine=mock&scene=groups" });
+    client.start();
+    await vi.waitFor(() => {
+      expect(client.state.status).toBe("open");
+    });
+    const nodes = client.state.snapshot?.graph.nodes ?? [];
+    const groups = nodes.filter((node) => node.kind === "group");
+    expect(groups.map((group) => group.name)).toEqual(["Group 1"]);
+    expect(nodes.filter((node) => node.kind === "instrument").map((lane) => lane.parent)).toEqual([null]);
+    expect(nodes.filter((node) => node.kind === "effect" && node.parent === groups[0]?.id)).toHaveLength(0);
+    // The tracer's own scene has none.
+    const plain = createConnection({ protocol: "http:", host: "localhost:5173", hash: "", search: "?engine=mock" }).client;
+    plain.start();
+    await vi.waitFor(() => {
+      expect(plain.state.status).toBe("open");
+    });
+    expect(plain.state.snapshot?.graph.nodes.filter((node) => node.kind === "group")).toHaveLength(0);
+    client.stop();
+    plain.stop();
+  });
+
   test("sessions as the program has them once it has loaded them: no modulator is in a lane or a group, and each hears the lane it was in", async () => {
     const at = { protocol: "http:", host: "localhost:5173", hash: "" };
-    for (const search of ["?engine=mock", "?engine=mock&scene=stress", "?engine=mock&scene=lanes"]) {
+    for (const search of ["?engine=mock", "?engine=mock&scene=stress", "?engine=mock&scene=lanes", "?engine=mock&scene=groups"]) {
       const { client } = createConnection({ ...at, search });
       client.start();
       await vi.waitFor(() => {
@@ -56,7 +80,7 @@ describe("the MIDI inputs of the mock", () => {
   test("are open in every scene, so that a source of notes can be added for one: the mock has no MIDI of its own", async () => {
     const at = { protocol: "http:", host: "localhost:5173", hash: "" };
     expect(MOCK_INPUTS).toEqual(["Mock Keyboard MIDI In", "Mock Pad Controller"]);
-    for (const search of ["?engine=mock", "?engine=mock&scene=stress", "?engine=mock&scene=lanes"]) {
+    for (const search of ["?engine=mock", "?engine=mock&scene=stress", "?engine=mock&scene=lanes", "?engine=mock&scene=groups"]) {
       const { client } = createConnection({ ...at, search });
       client.start();
       await vi.waitFor(() => {

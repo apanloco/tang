@@ -3,7 +3,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { angleOf, arcPath, fractionOf, pointAt } from "../src/ui/knob-geometry";
 import { addEnvelope, drag, node, output, setting, showAll, still } from "./canvas";
-import { test } from "./own";
+import { test, testWithGroups } from "./own";
 
 // What a cable to a modulator's own setting looks like, on the real program (a program of its own, on the null audio backend): the rate of the
 // LFO is a knob that has the ring and the dot of a parameter's knob once an envelope is drawn to it, and the real envelope moves the dot while a
@@ -108,10 +108,12 @@ test("the depth that the user sets for a cable whose depth another cable drives 
   await expect.poll(said, { timeout: 8000 }).toBeCloseTo(-0.1, 2);
 });
 
-test("a group's envelope drawn to the rate of a member's LFO gives the Rate knob its ring and its dot, which follow the real engine: the member's modulator is told by the group", async ({ page, own }) => {
+// (A program started on the tracer's file with a group: the page has no way to make one.)
+const grouped = testWithGroups(1);
+
+grouped("a group's envelope drawn to the rate of a member's LFO gives the Rate knob its ring and its dot, which follow the real engine: the member's modulator is told by the group", async ({ page, own }) => {
   await open(page, own.url);
-  // A group with the lane in it, and an envelope in the group (a group's modulator reaches the modulators of its members).
-  await page.getByRole("button", { name: "Add a group", exact: true }).click();
+  // The group that the file has, with the lane in it, and an envelope in the group (a group's modulator reaches the modulators of its members).
   await expect(node(page, "Group 1")).toBeVisible();
   await page.getByRole("combobox", { name: "Group of Oscillator" }).selectOption({ label: "Group 1" });
   await expect(page.getByRole("combobox", { name: "Group of Oscillator" }).locator("option:checked")).toHaveText("Group 1");

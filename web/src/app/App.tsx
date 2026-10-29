@@ -4,7 +4,6 @@ import { ConnectionStatus } from "../ui/ConnectionStatus";
 import { NoticeBoard } from "../ui/NoticeBoard";
 import { AddFreeEffectMenu } from "./AddFreeEffect";
 import { AddFreeModulatorMenu } from "./AddFreeModulator";
-import { AddGroupButton } from "./AddGroup";
 import { AddInstrumentMenu } from "./AddInstrument";
 import { AddSourceMenu } from "./AddSource";
 import { BusyLight } from "./BusyLight";
@@ -60,7 +59,6 @@ export function App({ engine }: { engine: EngineKind }) {
         <AddFreeEffectMenu />
         <AddFreeModulatorMenu />
         <AddSourceMenu />
-        <AddGroupButton />
         <span className="tang-app__keys" title={KEYS_HINT}>
           Keys: octave {octave}
         </span>

@@ -3,7 +3,7 @@ import { expect } from "@playwright/test";
 import { node } from "./canvas";
 import { test } from "./own";
 
-// A server that is slow to answer, seen from the page, on the real program (a program of its own, which the test adds a group to): a plugin that is slow
+// A server that is slow to answer, seen from the page, on the real program (a program of its own, whose lane the test mutes): a plugin that is slow
 // to load is done by the program on the thread that answers, so that the page waits for its answer. There is no such plugin on the machine of a test (they load in a third
 // of a second at most),
 // so the words of the server are held back on the way to the page instead, which is what a slow answer looks like from it.
@@ -34,20 +34,20 @@ test("a request that the server is slow to answer shows Working… until it is a
   await expect(busy).toHaveCount(0);
   await expect(node(page, "Oscillator")).toBeVisible();
 
-  // (Exactly: the button of Undo says "Undo add a group" once there is one to undo.)
-  // A request that is answered at once is not slow: the group is there, and the light never came (it is not there a second after, longer than it waits).
-  await page.getByRole("button", { name: "Add a group", exact: true }).click();
-  await expect(node(page, "Group 1")).toBeVisible();
+  // A request that is answered at once is not slow: the lane is muted, and the light never came (it is not there a second after, longer than it waits).
+  const mute = node(page, "Oscillator").getByRole("button", { name: "Mute Oscillator", exact: true });
+  await mute.click();
+  await expect(mute).toHaveAttribute("aria-pressed", "true");
   await page.waitForTimeout(700);
   await expect(busy).toHaveCount(0);
 
-  // One that is not answered: the light comes, over the canvas and out of the way, and the page is as it was.
+  // One that is not answered: the light comes, over the canvas and out of the way, and the page is as it was (the button shows what the session has, and not what was asked).
   holding = true;
   const before = await node(page, "Oscillator").boundingBox();
-  await page.getByRole("button", { name: "Add a group", exact: true }).click();
+  await mute.click();
   await expect(busy).toBeVisible();
   await expect(busy).toHaveText("Working…");
-  await expect(node(page, "Group 2")).toHaveCount(0);
+  await expect(mute).toHaveAttribute("aria-pressed", "true");
   expect(await node(page, "Oscillator").boundingBox()).toEqual(before);
   // The light is over the canvas and does not take the pointer: the node under it can be pressed as before.
   await expect(busy).toHaveCSS("pointer-events", "none");
@@ -57,5 +57,5 @@ test("a request that the server is slow to answer shows Working… until it is a
   holding = false;
   for (const tell of held.splice(0)) tell();
   await expect(busy).toHaveCount(0);
-  await expect(node(page, "Group 2")).toBeVisible();
+  await expect(mute).toHaveAttribute("aria-pressed", "false");
 });

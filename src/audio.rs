@@ -1458,9 +1458,25 @@ mod tests {
     }
 
     #[test]
+    fn the_shared_reverb_example_has_no_group_its_room_is_a_reverb_in_a_lane_that_has_no_instrument_and_both_oscillators_are_cabled_to_it() {
+        // (The page has no way to make a group, step 103: the room that the example had on the bus of a group is a reverb that stands by itself, and it sounds the same to the bit.)
+        use crate::plugin::chain::{CableFrom, CableTo};
+        let run = crate::app::testutil::load(&example("shared-reverb.toml"));
+        assert!(run.model.groups.is_empty(), "the example has no group");
+        assert_eq!(run.model.instruments.len(), 3);
+        let room = &run.model.instruments[2];
+        assert!(room.instrument.is_none(), "the room's lane has no instrument");
+        assert_eq!(room.effects.iter().map(|effect| effect.name.as_str()).collect::<Vec<_>>(), ["Reverb"]);
+        let reverb = room.effects[0].node;
+        let sends: Vec<_> = run.model.cables.iter().map(|cable| (cable.from, cable.to, cable.gain)).collect();
+        let (saw, square) = (run.model.instruments[0].node, run.model.instruments[1].node);
+        assert_eq!(sends, [(CableFrom::Instrument(saw), CableTo::Effect(reverb), 1.0), (CableFrom::Instrument(square), CableTo::Effect(reverb), 0.6)]);
+    }
+
+    #[test]
     fn the_shared_reverb_example_rings_on_in_a_room_that_both_oscillators_are_sent_to_by_their_cables_and_not_otherwise() {
         // The keys go up after a second, and the oscillators are done a quarter of a second after that (their release): what is heard from 1.6 s on is the reverb's tail, which only
-        // the cables bring into the bus of the group (it has no lane in it), so that the same session with its cables taken out has none, and with one of them has the room of one oscillator.
+        // the cables bring into the reverb (it stands by itself, in a lane that has no instrument), so that the same session with its cables taken out has none, and with one of them has the room of one oscillator.
         let session = example("shared-reverb.toml");
         // (The tables, at the start of a line: the header of the file says `[[cable]]` too.)
         let first = session.find("\n[[cable]]\n").expect("the example has its cables") + 1;
@@ -1491,7 +1507,8 @@ mod tests {
         let heard = |session: &str| play(session, &[48, 52, 55], 0.0, 1.0, 3.0);
         let whole = heard(&session);
         let oscillators = heard(&session[..first]);
-        let cut = heard(&session.replace("[[instrument]]\n", "[[instrument]]\nroute = \"none\"\n"));
+        // (The oscillators' tables are the ones that have a plugin: the room's lane has none, and keeps its way out.)
+        let cut = heard(&session.replace("[[instrument]]\nplugin = \"builtin:osc\"\n", "[[instrument]]\nroute = \"none\"\nplugin = \"builtin:osc\"\n"));
         let room: Vec<f32> = whole.iter().zip(&oscillators).map(|(w, o)| w - o).collect();
         assert!(rms(&room) > 0.002, "the room is heard: {}", rms(&room));
         let worst = cut.iter().zip(&room).map(|(c, r)| (c - r).abs()).fold(0.0f32, f32::max);
@@ -1502,12 +1519,12 @@ mod tests {
 
     #[test]
     fn the_shared_reverb_example_with_the_saw_soloed_is_the_saw_and_the_room_that_it_sends_to_and_the_session_with_the_square_muted() {
-        // The saw is soloed: it is heard as it is, and the room is heard for its cable, though nothing in the room's group is soloed; the square is not soloed, so that it is not heard and sends
+        // The saw is soloed: it is heard as it is, and the room is heard for its cable, though the room itself is not soloed; the square is not soloed, so that it is not heard and sends
         // nothing, as when it is muted, and the two sessions are one sound to the bit.
         let session = example("shared-reverb.toml");
         let heard = |session: &str| play(session, &[48, 52, 55], 0.0, 1.0, 3.0);
         let soloed = heard(&session.replacen("[[instrument]]\n", "[[instrument]]\nsolo = true\n", 1));
-        let square = session.rfind("[[instrument]]\n").expect("the square's table") + "[[instrument]]\n".len();
+        let square = session.find("[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 0.12\n").expect("the square's table") + "[[instrument]]\n".len();
         let muted = heard(&format!("{}mute = true\n{}", &session[..square], &session[square..]));
         assert_eq!(soloed, muted, "soloing the saw is muting the square");
         // It is not nothing, and not the whole session: the room rings on after the keys (the saw's cable alone brings it, and it is the room that the file with that cable alone has), and the square is gone.

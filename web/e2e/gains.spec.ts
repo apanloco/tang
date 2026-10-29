@@ -4,7 +4,7 @@ import { expect, test as mock } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
 import { cables, drag, node, open, output, port, showAll, still } from "./canvas";
-import { modulatorsIn, test } from "./own";
+import { modulatorsIn, testWithGroups } from "./own";
 
 // The values that the host keeps, driven by a modulator as a plugin's parameters are (docs/web-ui.md D97, step 97; the user's "I cannot modulate everything, for example mix and some volume, is that fixable?"):
 // the volume of a lane that has an instrument, the mix of an effect, and the volume and the pan of a group. Their knobs have a port on the top edge where a cable ends and a "~" button, as a parameter's knob has,
@@ -23,9 +23,11 @@ const cell = (plugin: Locator, name: string): Locator => plugin.locator(".tang-c
 /** The button that says whose notes a modulator hears. */
 const hears = (modulator: Locator): Locator => modulator.getByRole("button", { name: /^Whose notes / });
 
-/** A group from the bar, with the lane of the tracer put in it: its node, which has a volume and a pan. */
-async function addGroup(page: Page): Promise<Locator> {
-  await page.getByRole("button", { name: "Add a group", exact: true }).click();
+// (The page has no way to make a group: the real program is started on the tracer's file with a group, and the mock opens its groups scene.)
+const test = testWithGroups(1);
+
+/** The group that the session has, with the lane of the tracer put in it: its node, which has a volume and a pan. */
+async function intoTheGroup(page: Page): Promise<Locator> {
   const group = node(page, "Group 1");
   await expect(group).toBeVisible();
   await page.getByRole("combobox", { name: "Group of Oscillator" }).selectOption({ label: "Group 1" });
@@ -93,8 +95,8 @@ mock("the \"~\" button of the mix knob makes a modulator that hears the lane of 
 });
 
 mock("a group has a volume and a pan that a modulator drives, and a modulator that is made from the pan knob hears the group", async ({ page }) => {
-  await open(page);
-  const group = await addGroup(page);
+  await open(page, "groups");
+  const group = await intoTheGroup(page);
   await showAll(page);
   const lfo = node(page, "LFO");
   await still(lfo);
@@ -115,7 +117,7 @@ mock("a group has a volume and a pan that a modulator drives, and a modulator th
 });
 
 test("a cable to a mix, a volume and a pan, in the real program: the knobs move on the engine's own values, the file names what each drives, and Undo and a page opened again have them", async ({ page, own }) => {
-  // (A good many waits, a group added, and three cables.)
+  // (A good many waits, and three cables.)
   test.slow();
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(own.url);
@@ -148,7 +150,7 @@ test("a cable to a mix, a volume and a pan, in the real program: the knobs move 
     return readFileSync(own.file, "utf8");
   };
 
-  const group = await addGroup(page);
+  const group = await intoTheGroup(page);
   await showAll(page);
   const lfo = node(page, "LFO");
   const filter = node(page, "Filter");

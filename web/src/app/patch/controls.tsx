@@ -388,10 +388,10 @@ export const RangeCell = memo(function RangeCell({ node, name }: { node: NodeId;
 });
 
 /**
- * The group a lane is in, as a choice in a cell of its node: none, a group of the session by the name it has, or a new group with the lane in
- * it (the controller's `AddGroup` with the lane as its member). A group it leaves lets go of it: its cables to the lane go, and what they drove
- * has the value that was set. What is chosen is shown until the server has answered; if it was refused (the page says why) the group the session
- * has comes back. A node that is no lane has no group, and nothing is drawn for it.
+ * The group a lane is in, as a choice in a cell of its node: none, or a group of the session by the name it has. The page offers no way to make a group (step 103: a lane is put in one that the session
+ * has, a session that was loaded with one or that the terminal made one in, and the node draws the cell only then: `PatchNodeData.groupCell`). A group it leaves lets go of it (the cables of the modulators that
+ * hear the group stay: a cable names its plugin). What is chosen is shown until the server has answered; if it was refused (the page says why) the group the session has comes back. A node that is no lane has no
+ * group, and nothing is drawn for it.
  */
 export const GroupCell = memo(function GroupCell({ node, name }: { node: NodeId; name: string }) {
   const editor = useEditor();
@@ -401,12 +401,11 @@ export const GroupCell = memo(function GroupCell({ node, name }: { node: NodeId;
   if (stored === undefined) return null;
   const value = pending ?? (stored.current === null ? "" : String(stored.current));
   // (The choice is narrow and cuts a long name: the tooltip has all of it.)
-  const inGroup = value === "new" ? "a new group" : (stored.groups.find((group) => String(group.id) === value)?.name ?? "no group");
+  const inGroup = stored.groups.find((group) => String(group.id) === value)?.name ?? "no group";
   const choose = (next: string): void => {
     const mine = (latest.current += 1);
     setPending(next);
-    const done = next === "new" ? editor.addGroup([node]) : editor.setLaneGroup(node, next === "" ? null : Number(next));
-    void done.finally(() => {
+    void editor.setLaneGroup(node, next === "" ? null : Number(next)).finally(() => {
       if (latest.current === mine) setPending(undefined);
     });
   };
@@ -429,7 +428,6 @@ export const GroupCell = memo(function GroupCell({ node, name }: { node: NodeId;
               {group.name}
             </option>
           ))}
-          <option value="new">new group</option>
         </select>
       </div>
     </div>

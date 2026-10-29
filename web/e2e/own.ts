@@ -2,8 +2,11 @@
 // cannot be taken out from the page, so a test that adds one starts a program that is thrown away with
 // it (on the null audio backend, so nothing is heard, and a copy of the tracer in a directory of its own,
 // which the test may save). The program serves the page itself, as `embedded.spec.ts` has it.
+// The page has no way to make a group (step 103), so a test that is about what the page does with one starts the
+// program on the tracer's file with groups added to it (`testWithGroups`: a group has no key but its name, and
+// is called by its place, `Group 1`, when it has none).
 import { spawn } from "node:child_process";
-import { closeSync, copyFileSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -22,6 +25,9 @@ export function modulatorsIn(saved: string): string[] {
     .map((part) => part.split(/^\[(?!\[modulator\.target\]\])/m)[0] ?? "");
 }
 
+/** What a file has to say for `count` groups, empty, which are added to the end of the tracer's file. */
+export const withGroups = (count: number): string => "\n[[group]]\n".repeat(count);
+
 export interface OwnTang {
   /** Where the program serves the page. */
   url: string;
@@ -29,45 +35,53 @@ export interface OwnTang {
   file: string;
 }
 
-export const test = base.extend<{ own: OwnTang }>({
-  // (Playwright's fixture function is given `use`, which is not named so here: it is not a React hook.)
-  // eslint-disable-next-line no-empty-pattern -- a fixture that needs no other fixture still has to take the (empty) first argument
-  own: async ({}, provide, testInfo) => {
-    const dir = mkdtempSync(join(tmpdir(), "tang-e2e-"));
-    const file = join(dir, "tracer.toml");
-    copyFileSync(join("src", "client", "fixtures", "tracer.toml"), file);
-    // (What it logs is kept with a test that fails: the program is gone by the time anyone looks.)
-    const log = join(dir, "tang.log");
-    const logFile = openSync(log, "w");
-    const child = spawn(join("..", "target", "debug", "tang"), ["--audio-device", "none", "--midi-device", "no such device", "serve", file, "--web-bind", "127.0.0.1:0"], {
-      stdio: ["ignore", "pipe", logFile],
-    });
-    try {
-      const output = child.stdout;
-      if (!output) throw new Error("the program has no output to read where it serves from");
-      // Where it serves is the first line it writes.
-      const url = await new Promise<string>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          reject(new Error("the program did not say where it serves within a minute"));
-        }, 60_000);
-        createInterface({ input: output }).on("line", (line) => {
-          const found = /^Web interface: (http:\/\/\S+)/.exec(line);
-          if (found?.[1]) {
-            clearTimeout(timer);
-            resolve(found[1]);
-          }
-        });
-        child.on("exit", (code) => {
-          clearTimeout(timer);
-          reject(new Error(`the program ended (${String(code)}) before it said where it serves`));
-        });
+/** `test` for a program that is started on the tracer's file with `added` at the end of it. */
+function programOn(added: string) {
+  return base.extend<{ own: OwnTang }>({
+    // (Playwright's fixture function is given `use`, which is not named so here: it is not a React hook.)
+    // eslint-disable-next-line no-empty-pattern -- a fixture that needs no other fixture still has to take the (empty) first argument
+    own: async ({}, provide, testInfo) => {
+      const dir = mkdtempSync(join(tmpdir(), "tang-e2e-"));
+      const file = join(dir, "tracer.toml");
+      writeFileSync(file, readFileSync(join("src", "client", "fixtures", "tracer.toml"), "utf8") + added);
+      // (What it logs is kept with a test that fails: the program is gone by the time anyone looks.)
+      const log = join(dir, "tang.log");
+      const logFile = openSync(log, "w");
+      const child = spawn(join("..", "target", "debug", "tang"), ["--audio-device", "none", "--midi-device", "no such device", "serve", file, "--web-bind", "127.0.0.1:0"], {
+        stdio: ["ignore", "pipe", logFile],
       });
-      await provide({ url, file });
-    } finally {
-      child.kill();
-      closeSync(logFile);
-      if (testInfo.status !== testInfo.expectedStatus) await testInfo.attach("tang.log", { path: log });
-      rmSync(dir, { recursive: true, force: true });
-    }
-  },
-});
+      try {
+        const output = child.stdout;
+        if (!output) throw new Error("the program has no output to read where it serves from");
+        // Where it serves is the first line it writes.
+        const url = await new Promise<string>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(new Error("the program did not say where it serves within a minute"));
+          }, 60_000);
+          createInterface({ input: output }).on("line", (line) => {
+            const found = /^Web interface: (http:\/\/\S+)/.exec(line);
+            if (found?.[1]) {
+              clearTimeout(timer);
+              resolve(found[1]);
+            }
+          });
+          child.on("exit", (code) => {
+            clearTimeout(timer);
+            reject(new Error(`the program ended (${String(code)}) before it said where it serves`));
+          });
+        });
+        await provide({ url, file });
+      } finally {
+        child.kill();
+        closeSync(logFile);
+        if (testInfo.status !== testInfo.expectedStatus) await testInfo.attach("tang.log", { path: log });
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  });
+}
+
+export const test = programOn("");
+
+/** `test` for a program that is started on the tracer's file with `count` groups added to it (the page has no way to make one). */
+export const testWithGroups = (count: number): typeof test => programOn(withGroups(count));

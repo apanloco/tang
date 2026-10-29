@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { expect } from "@playwright/test";
 
 import { node, open } from "./canvas";
-import { test } from "./own";
+import { test, testWithGroups } from "./own";
 
 // Undo and Redo from the page, on the real program (a program of its own: the history is the program's, whatever page changed what, so what
 // other tests did would be on it).
@@ -68,7 +68,10 @@ test("a knob turned in one go is put back by one Undo, by the button and by the 
   await other.close();
 });
 
-test("a key typed in a field that takes text is the field's own undo and not the session's, and something that cannot be undone yet empties the history", async ({ page, own }) => {
+// (A program started on the tracer's file with a group: the page has no way to make one.)
+const grouped = testWithGroups(1);
+
+grouped("a key typed in a field that takes text is the field's own undo and not the session's, and the same key outside one is the session's", async ({ page, own }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(own.url);
   await expect(page.getByRole("status")).toHaveText("Connected");
@@ -90,21 +93,19 @@ test("a key typed in a field that takes text is the field's own undo and not the
   await expect(detune).toHaveAttribute("aria-valuenow", "24");
   await expect(undo).toBeEnabled();
 
-  // An effect that is added is a step of its own, and so is a lane that is put in a group; a group made of a lane that is in one is a change that nothing puts back yet (the
-  // lane leaves its group), and it empties the history: there is nothing to undo, and the keys leave Control+Z alone.
+  // An effect that is added is a step of its own, and so is a lane that is put in a group.
   await page.getByRole("button", { name: "Add an effect to Oscillator" }).click();
   await page.getByRole("menuitem", { name: "Reverb" }).click();
   await expect(node(page, "Reverb")).toBeVisible();
   await expect(undo).toHaveAccessibleName("Undo add Reverb");
-  await page.getByRole("button", { name: "Add a group" }).click();
-  await expect(node(page, "Group 1")).toBeVisible();
   const inGroup = page.getByRole("combobox", { name: "Group of Oscillator" });
   await inGroup.selectOption({ label: "Group 1" });
   await expect(undo).toHaveAccessibleName("Undo put a lane in a group");
-  await inGroup.selectOption({ label: "new group" });
-  await expect(undo).toBeDisabled();
+  // (A change that nothing puts back yet, a group made of a lane that is in one, empties the history; the page has no way to make a group, and the terminal's `g` does.)
+  // Outside a field the key is the session's: the lane leaves the group again, and the detune stays where it was put.
   await detune.focus();
   await page.keyboard.press("ControlOrMeta+Z");
+  await expect(inGroup.locator("option:checked")).toHaveText("none");
   await expect(detune).toHaveAttribute("aria-valuenow", "24");
 });
 
@@ -373,7 +374,7 @@ test("a lane that is taken out is put back by Undo with its instrument, its effe
   await expect(undo).toBeDisabled();
 });
 
-test("a group that is taken out is put back by Undo with its member and its bus effect, and taken out again by Redo, and the saved file has what is done", async ({ page, own }) => {
+grouped("a group that is taken out is put back by Undo with its member and its bus effect, and taken out again by Redo, and the saved file has what is done", async ({ page, own }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(own.url);
   await expect(page.getByRole("status")).toHaveText("Connected");
@@ -387,8 +388,7 @@ test("a group that is taken out is put back by Undo with its member and its bus 
   const group = node(page, "Group 1");
   const choice = page.getByRole("combobox", { name: "Group of Oscillator" });
 
-  // A group with the lane in it, and a reverb on its bus.
-  await page.getByRole("button", { name: "Add a group" }).click();
+  // The group that the file has, with the lane in it, and a reverb on its bus.
   await expect(group).toBeVisible();
   await choice.selectOption({ label: "Group 1" });
   await expect(choice.locator("option:checked")).toHaveText("Group 1");
@@ -404,7 +404,8 @@ test("a group that is taken out is put back by Undo with its member and its bus 
   await page.getByRole("menuitem", { name: /^Remove Group 1 for good/ }).click();
   await expect(group).toHaveCount(0);
   await expect(node(page, "Reverb")).toHaveCount(0);
-  await expect(choice.locator("option:checked")).toHaveText("none");
+  // (The session has no group now: the lane has no choice of one.)
+  await expect(choice).toHaveCount(0);
   await expect(undo).toHaveAccessibleName("Undo remove Group 1");
   const taken = await save();
   expect(taken).not.toContain("[[group]]");
@@ -419,7 +420,7 @@ test("a group that is taken out is put back by Undo with its member and its bus 
   await expect(redo).toHaveAccessibleName("Redo remove Group 1");
   expect(await save()).toBe(before);
 
-  // Taken out again by Redo, and put back by the keys; then what was done before it is put back, one step at a time, to the group that was added.
+  // Taken out again by Redo, and put back by the keys; then what was done before it is put back, one step at a time, to the group that the file had.
   await redo.click();
   await expect(group).toHaveCount(0);
   expect(await save()).toBe(taken);
@@ -429,8 +430,8 @@ test("a group that is taken out is put back by Undo with its member and its bus 
   await expect(node(page, "Reverb")).toHaveCount(0);
   await undo.click();
   await expect(choice.locator("option:checked")).toHaveText("none");
-  await undo.click();
-  await expect(group).toHaveCount(0);
+  // (The group is the file's, not a step: it stays, and there is nothing more to undo.)
+  await expect(group).toBeVisible();
   await expect(undo).toBeDisabled();
 });
 
@@ -663,10 +664,13 @@ test("the mock engine in the page has the same buttons and keys, and they do wha
   await expect(node(page, "Oscillator 2")).toBeVisible();
   await redo.click();
   await expect(node(page, "Oscillator 2")).toHaveCount(0);
-  // And a group, with what it has.
-  await undo.click();
-  await page.getByRole("button", { name: "Add a group" }).click();
-  await expect(node(page, "Group 1")).toBeVisible();
+});
+
+test("the mock engine puts a group that is taken out back by Undo, as the program does", async ({ page }) => {
+  await open(page, "groups");
+  const undo = page.getByRole("button", { name: /^Undo/ });
+  const redo = page.getByRole("button", { name: /^Redo/ });
+  await expect(undo).toBeDisabled();
   await node(page, "Group 1").getByRole("button", { name: "Remove Group 1" }).click();
   await page.getByRole("menuitem", { name: /^Remove Group 1 for good/ }).click();
   await expect(node(page, "Group 1")).toHaveCount(0);
@@ -675,4 +679,6 @@ test("the mock engine in the page has the same buttons and keys, and they do wha
   await expect(node(page, "Group 1")).toBeVisible();
   await redo.click();
   await expect(node(page, "Group 1")).toHaveCount(0);
+  // (The last group is gone: no lane has a choice of one.)
+  await expect(page.getByRole("combobox", { name: /^Group of / })).toHaveCount(0);
 });

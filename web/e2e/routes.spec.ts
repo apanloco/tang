@@ -64,8 +64,8 @@ mock("the link from the end of a lane's chain to the master is a cable with a bu
 });
 
 mock("a lane in a group has its link to the group, and a group its link to the master, and each is taken out apart from the other", async ({ page }) => {
-  await open(page);
-  await page.getByRole("combobox", { name: "Group of Oscillator" }).selectOption({ label: "new group" });
+  await open(page, "groups");
+  await page.getByRole("combobox", { name: "Group of Oscillator" }).selectOption({ label: "Group 1" });
   await expect(node(page, "Group 1")).toBeVisible();
   // The instrument to the filter, the filter to the group, the group to the master.
   await expect(links(page)).toHaveCount(3);

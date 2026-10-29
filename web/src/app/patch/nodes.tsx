@@ -333,7 +333,8 @@ function RemoveLaneOrGroupMenu({ node }: { node: NodeId }) {
           return;
         }
         void editor.removeNode(node).then((removed) => {
-          if (removed) focusWhenPossible(removal.kind === "lane" ? "add-instrument" : "add-group");
+          // (The bar has no button that adds a group: the page offers no way to make one, so that the focus goes where it goes when a lane is taken out.)
+          if (removed) focusWhenPossible("add-instrument");
         });
       }}
     >
@@ -476,7 +477,8 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
         ))}
         <GainCell node={data.node} gain={effect ? "mix" : "volume"} />
         {data.notes ? <RangeCell node={data.node} name={data.name} /> : null}
-        <GroupCell node={data.node} name={data.name} />
+        {/* (The choice of group is there only while the session has a group: the page offers no way to make one, and a session that was loaded with one has it drawn.) */}
+        {data.groupCell ? <GroupCell node={data.node} name={data.name} /> : null}
         {/* (An effect that stands by itself has the cell of the lane that holds it, which has no card to have it on: the first of them does.) */}
         <MuteSoloCell node={held?.first ? held.lane : data.node} name={data.name} />
       </div>

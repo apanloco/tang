@@ -258,34 +258,58 @@ function tall(graph: Graph, id: NodeId): number {
 
 describe("the height of a node", () => {
   test("is as much more for a lane as its pattern under its controls is, which no other node has: a lane and an effect with as many rows of controls differ by it", () => {
-    // (A lane has the volume, the keys, the group and the mute and solo beside its knobs, an effect only its mix: no knob and three make a row of four each.)
-    expect(controlCount(nodeOf(twoLanes, 1), 0)).toBe(controlCount(nodeOf(twoLanes, 2), 3));
-    expect(nodeHeight(nodeOf(twoLanes, 1), 0) - nodeHeight(nodeOf(twoLanes, 2), 3)).toBe(PATTERN_HEIGHT);
+    // (A lane has the volume, the keys and the mute and solo beside its knobs, and the group while the session has one, an effect only its mix: with the group, no knob and three make a row of four each.)
+    expect(controlCount(nodeOf(twoLanes, 1), 0, false, true)).toBe(controlCount(nodeOf(twoLanes, 2), 3));
+    expect(nodeHeight(nodeOf(twoLanes, 1), 0, 0, false, false, true) - nodeHeight(nodeOf(twoLanes, 2), 3)).toBe(PATTERN_HEIGHT);
     // A group, and a modulator, have none (a group has three controls and no pattern).
     expect(nodeHeight(nodeOf(grouped, 10), 0)).toBe(nodeHeight(nodeOf(twoLanes, 2), 3));
   });
 
-  test("is without the pattern and without the keys for a lane whose instrument takes no notes (an audio input): its controls are the volume, the group and the mute and solo beside the knobs", () => {
+  test("is without the pattern and without the keys for a lane whose instrument takes no notes (an audio input): its controls are the volume and the mute and solo beside the knobs, and the group while the session has one", () => {
     const keyed = (knobs: number): Node => instrument(1, knobs);
     const silent = (knobs: number): Node => instrumentOf(2, { ...plugin(knobs), takesNotes: false });
-    expect([0, 1, 3, 4].map((knobs) => [controlCount(keyed(knobs), knobs), controlCount(silent(knobs), knobs)])).toEqual([
+    const counted = (groupCell: boolean): number[][] => [0, 1, 3, 4].map((knobs) => [controlCount(keyed(knobs), knobs, false, groupCell), controlCount(silent(knobs), knobs, false, groupCell)]);
+    expect(counted(true)).toEqual([
       [4, 3],
       [5, 4],
       [7, 6],
       [8, 7],
     ]);
-    // (Three knobs make two rows of four with the keys and without them: the lane is as tall as the other less its pattern. One knob makes five controls with the keys, which are two rows, and four without, which are one.)
-    const row = nodeHeight(keyed(1), 1) - nodeHeight(keyed(0), 0);
+    // (Without the choice of group, which a session that has no group has no use for, each is one fewer.)
+    expect(counted(false)).toEqual([
+      [3, 2],
+      [4, 3],
+      [6, 5],
+      [7, 6],
+    ]);
+    // (In a session that has a group, three knobs make two rows of four with the keys and without them: the lane is as tall as the other less its pattern. One knob makes five controls with the keys, which are two rows, and four without, which are one.)
+    const height = (node: Node, knobs: number): number => nodeHeight(node, knobs, 0, false, false, true);
+    const row = height(keyed(1), 1) - height(keyed(0), 0);
     expect(row).toBeGreaterThan(0);
-    expect(nodeHeight(keyed(3), 3) - nodeHeight(silent(3), 3)).toBe(PATTERN_HEIGHT);
-    expect(nodeHeight(keyed(1), 1) - nodeHeight(silent(1), 1)).toBe(PATTERN_HEIGHT + row);
+    expect(height(keyed(3), 3) - height(silent(3), 3)).toBe(PATTERN_HEIGHT);
+    expect(height(keyed(1), 1) - height(silent(1), 1)).toBe(PATTERN_HEIGHT + row);
     // A lane that has no instrument may be given one that plays notes, and is as tall as the lane of one; a plugin that says nothing of it takes notes (the wire leaves the word out).
-    expect(nodeHeight(instrumentOf(3, null), 0)).toBe(nodeHeight(keyed(0), 0));
-    expect(nodeHeight(instrumentOf(4, { ...plugin(2), takesNotes: true }), 2)).toBe(nodeHeight(keyed(2), 2));
+    expect(height(instrumentOf(3, null), 0)).toBe(height(keyed(0), 0));
+    expect(height(instrumentOf(4, { ...plugin(2), takesNotes: true }), 2)).toBe(height(keyed(2), 2));
   });
 });
 
 describe("the nodes on the canvas", () => {
+  test("say whether a lane has the choice of group, which it has only while the session has a group (the page offers no way to make one), and no other node has it", () => {
+    const none = toFlow(twoLanes);
+    expect([1, 5].map((id) => at(none, id).data.groupCell)).toEqual([false, false]);
+    const some = toFlow(grouped);
+    expect([4, 1, 3].map((id) => at(some, id).data.groupCell)).toEqual([true, true, true]);
+    // An effect, a group, a modulator and the master have none to choose, whatever the session has.
+    expect([5, 10, 11, 12, MASTER].map((id) => at(some, id).data.groupCell)).toEqual([false, false, false, false, false]);
+    // The lane is as tall as the layout says with the choice and without it: one knob is a second row with the choice, and not without it.
+    const heightIn = (graph: Graph, id: NodeId): number | undefined => blocksOf(graph, toFlow(graph)).blocks.find((block) => block.id === id)?.height;
+    const lane = (graph: Graph): Graph => ({ ...graph, nodes: graph.nodes.map((node) => (node.id === 4 && node.kind === "instrument" ? instrument(4, 1) : node)) });
+    expect(heightIn(lane(grouped), 4)).toBe(nodeHeight(instrument(4, 1), 1, 0, false, false, true));
+    expect(heightIn(lane(twoLanes), 1)).toBe(nodeHeight(instrument(1, 3), 3));
+    expect(nodeHeight(instrument(4, 1), 1, 0, false, false, true)).toBeGreaterThan(nodeHeight(instrument(4, 1), 1));
+  });
+
   test("say whether a lane takes notes, which its card has the keys, the pattern and the input of events for: an audio input does not, and an effect, a group and the master have none to take", () => {
     const microphone: Graph = {
       nodes: [instrument(1), instrumentOf(2, { ...plugin(2), takesNotes: false }), instrumentOf(3, null), effect(4, 1), group(5), master],
@@ -1526,7 +1550,7 @@ describe("the parameters a node shows", () => {
   });
 
   test("lay the lane below further down when a pin makes a node of the lane a row taller, by what a row is", () => {
-    // (An instrument has its volume, its keys, its group and its mute and solo among the controls: twelve are three rows of four, thirteen are four.)
+    // (An instrument has its volume, its keys and its mute and solo among the controls, and no choice of group while the session has no group: twelve are three rows of four, thirteen are four, so that eight parameters and nine are three rows and ten begins the fourth.)
     const lanes = (pinned: number[]): Graph => ({
       nodes: [instrumentOf(1, { ...plugin(12), pinned }), instrumentOf(2, plugin(2)), master],
       edges: [audio(1, MASTER), audio(2, MASTER)],
@@ -1539,8 +1563,9 @@ describe("the parameters a node shows", () => {
     expect(grown).toBe(nodeHeight(nodeOf(eight, 1), 11) - nodeHeight(nodeOf(eight, 1), 8));
     // A pin that leaves the node as tall as it was moves nothing (eleven parameters and twelve are four rows each).
     expect(at(toFlow(lanes(indices)), 2).position.y).toBe(at(toFlow(eleven), 2).position.y);
-    // And the ninth parameter, which makes thirteen controls, is the one that begins the fourth row.
-    expect(at(toFlow(lanes(indices.slice(0, 9))), 2).position.y).toBe(at(toFlow(eleven), 2).position.y);
+    // And the tenth parameter, which makes thirteen controls, is the one that begins the fourth row (nine make twelve, which are three rows, as eight do).
+    expect(at(toFlow(lanes(indices.slice(0, 10))), 2).position.y).toBe(at(toFlow(eleven), 2).position.y);
+    expect(at(toFlow(lanes(indices.slice(0, 9))), 2).position.y).toBe(at(toFlow(eight), 2).position.y);
   });
 
   test("include a parameter that is beyond the first few when a cable ends at it", () => {
@@ -1554,7 +1579,8 @@ describe("the parameters a node shows", () => {
   });
 
   test("are counted with the node's own gain, so that the layout knows how tall it is", () => {
-    expect(controlCount(instrument(1), 3)).toBe(7); // the parameters, the volume, the keys, the group and the mute and solo
+    expect(controlCount(instrument(1), 3)).toBe(6); // the parameters, the volume, the keys and the mute and solo
+    expect(controlCount(instrument(1), 3, false, true)).toBe(7); // and the group, while the session has one
     expect(controlCount(effect(2, 1), 8)).toBe(9);
     expect(controlCount(group(3), 0)).toBe(3); // the volume, the pan and the mute and solo
     expect(controlCount(modulator(4, 1), 0)).toBe(0);
@@ -1564,12 +1590,20 @@ describe("the parameters a node shows", () => {
     expect(nodeHeight(effect(2, 1), 4)).toBeGreaterThan(nodeHeight(effect(2, 1), 3));
     expect(nodeHeight(effect(2, 1), 7)).toBe(nodeHeight(effect(2, 1), 4));
     expect(nodeHeight(effect(2, 1), 8)).toBeGreaterThan(nodeHeight(effect(2, 1), 7));
-    // An instrument has its keys, its group and its mute and solo as well as its volume: they fill the first row, a first parameter begins a second, a fifth a third.
-    expect(nodeHeight(instrument(1), 1)).toBeGreaterThan(nodeHeight(instrument(1), 0));
-    expect(nodeHeight(instrument(1), 4)).toBe(nodeHeight(instrument(1), 1));
-    expect(nodeHeight(instrument(1), 5)).toBeGreaterThan(nodeHeight(instrument(1), 4));
-    expect(nodeHeight(instrument(1), 8)).toBe(nodeHeight(instrument(1), 5));
-    expect(nodeHeight(instrument(1), 9)).toBeGreaterThan(nodeHeight(instrument(1), 8));
+    // An instrument has its keys and its mute and solo as well as its volume, and its group while the session has one: with the group they fill the first row, a first parameter begins a second, a fifth a third.
+    const inGroups = (knobs: number): number => nodeHeight(instrument(1), knobs, 0, false, false, true);
+    expect(inGroups(1)).toBeGreaterThan(inGroups(0));
+    expect(inGroups(4)).toBe(inGroups(1));
+    expect(inGroups(5)).toBeGreaterThan(inGroups(4));
+    expect(inGroups(8)).toBe(inGroups(5));
+    expect(inGroups(9)).toBeGreaterThan(inGroups(8));
+    // Without it three fill the first row with the first parameter, and a second parameter begins a second, a sixth a third and a tenth a fourth.
+    expect(nodeHeight(instrument(1), 1)).toBe(nodeHeight(instrument(1), 0));
+    expect(nodeHeight(instrument(1), 2)).toBeGreaterThan(nodeHeight(instrument(1), 1));
+    expect(nodeHeight(instrument(1), 5)).toBe(nodeHeight(instrument(1), 2));
+    expect(nodeHeight(instrument(1), 6)).toBeGreaterThan(nodeHeight(instrument(1), 5));
+    expect(nodeHeight(instrument(1), 9)).toBe(nodeHeight(instrument(1), 6));
+    expect(nodeHeight(instrument(1), 10)).toBeGreaterThan(nodeHeight(instrument(1), 9));
   });
 });
 

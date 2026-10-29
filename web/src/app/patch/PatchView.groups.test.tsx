@@ -51,7 +51,7 @@ describe("the group of a lane", () => {
     expect(screen.getAllByRole("combobox", { name: /^Group of / })).toHaveLength(4);
   });
 
-  test("offers none, each group by the name it has, and a new group, in that order", async () => {
+  test("offers none and each group by the name it has, in that order, and no new group: the page offers no way to make one", async () => {
     await rig(<PatchView />, session);
     const options = Array.from((await choice(4)).options).map((option) => [option.value, option.textContent]);
     expect(options).toEqual([
@@ -59,8 +59,22 @@ describe("the group of a lane", () => {
       ["0", "Group 1"],
       ["1", "Group 2"],
       ["2", "Lead"],
-      ["new", "new group"],
     ]);
+  });
+
+  test("is not there on any lane while the session has no group, is there when the session gets one (the terminal makes one), and goes when the last is taken out", async () => {
+    const { server } = await rig(<PatchView />);
+    await screen.findAllByRole("combobox", { name: /^Lowest key of / });
+    expect(screen.queryAllByRole("combobox", { name: /^Group of / })).toHaveLength(0);
+    server.apply({ type: "addGroup", members: [] });
+    const made = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Group of Oscillator" });
+    expect(Array.from(made.options).map((option) => option.textContent)).toEqual(["none", "Group 1"]);
+    const group = server.snapshot.graph.nodes.find((node) => node.kind === "group");
+    expect(group).toBeDefined();
+    server.apply({ type: "removeNode", node: group?.id ?? -1 });
+    await waitFor(() => {
+      expect(screen.queryAllByRole("combobox", { name: /^Group of / })).toHaveLength(0);
+    });
   });
 
   test("asks for the lane to be put in the group that is chosen, and the canvas draws its audio into that group when the server has done it", async () => {
@@ -95,21 +109,15 @@ describe("the group of a lane", () => {
     expect(cables()).toBe(5);
   });
 
-  test("asks for a new group with the lane in it for a new group, and the lane is in it when the server has made it", async () => {
-    const { requests } = await rig(<PatchView />, session);
-    const select = await choice(4);
-    fireEvent.change(select, { target: { value: "new" } });
-    // Until the server has made it the choice says so, and so does the tooltip.
-    expect([select.value, select.title]).toEqual(["new", "Oscillator 2 is in a new group"]);
-    await waitFor(() => {
-      expect(requests().map((request) => request.intent)).toEqual([{ type: "addGroup", members: [4] }]);
-    });
+  test("has a group that somebody else makes among every lane's options, and the lane that is put in it when it is made is in it", async () => {
+    const { server } = await rig(<PatchView />, session);
+    expect(chosen(await choice(4))).toBe("none");
+    server.apply({ type: "addGroup", members: [4] });
     await waitFor(async () => {
       expect(chosen(await choice(4))).toBe("Group 4");
     });
     expect((await choice(4)).value).toBe("16");
-    // And every lane's choice has the new group among its options.
-    expect(Array.from((await choice(6)).options).map((option) => option.textContent)).toEqual(["none", "Group 1", "Group 2", "Lead", "Group 4", "new group"]);
+    expect(Array.from((await choice(6)).options).map((option) => option.textContent)).toEqual(["none", "Group 1", "Group 2", "Lead", "Group 4"]);
   });
 
   test("follows a group that somebody else names, and a lane that somebody else puts in another group", async () => {

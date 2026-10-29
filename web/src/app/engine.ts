@@ -13,20 +13,21 @@ export type EngineKind = "server" | "mock";
 export const MOCK_INPUTS: readonly string[] = ["Mock Keyboard MIDI In", "Mock Pad Controller"];
 
 /**
- * The session the mock engine serves: the tracer, the big one that the performance test runs on, or two lanes with an
- * LFO each (where a cable can be drawn out of reach, which the tracer's one lane has no room for).
+ * The session the mock engine serves: the tracer, the big one that the performance test runs on, two lanes with an
+ * LFO each (where a cable can be drawn out of reach, which the tracer's one lane has no room for), or the tracer with a
+ * group, empty (the page has no way to make a group, so that the tests of what the page does with one start from a session that has it).
  */
-export type SceneKind = "tracer" | "stress" | "lanes";
+export type SceneKind = "tracer" | "stress" | "lanes" | "groups";
 
 /** The engine a page address asks for: `?engine=mock` for the mock, the server otherwise. */
 export function engineFor(search: string): EngineKind {
   return new URLSearchParams(search).get("engine") === "mock" ? "mock" : "server";
 }
 
-/** The scene an address asks of the mock engine: `?scene=stress` for the big one, `?scene=lanes` for the two lanes, the tracer otherwise. */
+/** The scene an address asks of the mock engine: `?scene=stress` for the big one, `?scene=lanes` for the two lanes, `?scene=groups` for the tracer with a group, the tracer otherwise. */
 export function sceneFor(search: string): SceneKind {
   const scene = new URLSearchParams(search).get("scene");
-  return scene === "stress" || scene === "lanes" ? scene : "tracer";
+  return scene === "stress" || scene === "lanes" || scene === "groups" ? scene : "tracer";
 }
 
 /** The snapshot of a scene, as the program has the session once it has loaded it: every modulator is the session's own, and hears the lane or the group it was made for. */
@@ -38,6 +39,12 @@ function snapshotOf(scene: SceneKind): MockOptions {
       return { snapshot: stressSnapshot({ lanes: 2, lfosPerLane: 1, targetsPerLfo: 1 }) };
     case "tracer":
       return { snapshot: tracerSnapshot };
+    case "groups": {
+      // (The tracer, and a group that nothing is in: made the way the mock makes everything, by the intent that the controller's answer is pinned to.)
+      const server = new MockServer({ snapshot: tracerSnapshot });
+      server.applyQuietly({ type: "addGroup", members: [] });
+      return { snapshot: server.snapshot };
+    }
   }
 }
 

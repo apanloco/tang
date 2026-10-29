@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
+import type { Graph, Node } from "../../protocol";
 import { nodeHeight, NODE_SCOPE_HEIGHT, NODE_WIDTH, toFlow } from "./toFlow";
 import { MARGIN, rectOf, viewToShow } from "./view";
 
@@ -104,6 +105,21 @@ describe("where a node is on the canvas", () => {
     // (The tracer's LFO drives one parameter, so that it lists a row.)
     expect(rectOf(graph, toFlow(graph), lfo.id)?.height).toBe(nodeHeight(lfo, 0, 1));
     expect(nodeHeight(lfo, 0, 1)).toBeGreaterThan(nodeHeight(lfo, 0, 0));
+  });
+
+  test("is as tall as the layout makes a lane that has the choice of group, which a session that has a group gives it: a row more where its controls pass a multiple of four", () => {
+    const oscillator = nodeNamed(tracerSnapshot, "Oscillator");
+    if (oscillator.kind !== "instrument" || oscillator.plugin === null) throw new Error("the tracer's oscillator has a plugin");
+    // (Nine parameters pinned: twelve controls without the choice of group, which are three rows of four, and thirteen with it, which are four.)
+    const pinned = oscillator.plugin.params.slice(0, 9).map((param) => param.index);
+    const lane: Node = { ...oscillator, plugin: { ...oscillator.plugin, pinned } };
+    const group: Node = { id: 9999, parent: null, name: "Group 1", kind: "group", volume: 1, pan: 0, muted: false, solo: false, route: "out" };
+    const without: Graph = { ...tracerSnapshot.graph, nodes: tracerSnapshot.graph.nodes.map((node) => (node.id === lane.id ? lane : node)) };
+    const within: Graph = { ...without, nodes: [...without.nodes, group] };
+    const heightOf = (graph: Graph): number | undefined => rectOf(graph, toFlow(graph), lane.id)?.height;
+    expect(heightOf(without)).toBe(nodeHeight(lane, 9));
+    expect(heightOf(within)).toBe(nodeHeight(lane, 9, 0, false, false, true));
+    expect((heightOf(within) ?? 0) - (heightOf(without) ?? 0)).toBeGreaterThan(0);
   });
 
   test("is the tracer's oscillator at the left of the strip it is in", () => {

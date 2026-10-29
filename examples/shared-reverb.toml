@@ -1,28 +1,18 @@
 # Example: two oscillators into one reverb, by audio cables (`[[cable]]`). A saw, and a square an octave above it,
-# each go to the mix as they are, and each sends part of itself to the reverb on the bus of a group that has no
-# lane in it. The reverb is all wet, so it puts out its tail only: what is heard is the two oscillators and, under
-# them, one room that both of them are in, which rings on when the keys are let go. On the page, draw a cable
-# yourself, from the dot on the right of an oscillator to the dot on the left of the reverb (or choose the reverb
-# from the `⇢` menu under the oscillator's name), and turn the level on the cable: 0 is out of the room, 1 is as
-# far into it as the oscillator goes, 2 is twice that.
+# each go to the mix as they are, and each sends part of itself to a reverb that stands by itself: a lane with no
+# instrument in front of the reverb (on the page, "+ Effect" makes one), which only the cables feed. The reverb is
+# all wet, so it puts out its tail only: what is heard is the two oscillators and, under them, one room that both of
+# them are in, which rings on when the keys are let go. On the page, draw a cable yourself, from the dot on the right
+# of an oscillator to the dot on the left of the reverb (or choose the reverb from the `⇢` menu under the oscillator's
+# name), and turn the level on the cable: 0 is out of the room, 1 is as far into it as the oscillator goes, 2 is twice
+# that.
 #
-# To hear the room alone, cut the way out of each oscillator: put `route = "none"` in its table (on the page, the
-# button under its mute and solo says `→ Master`, and says `no out` when it is cut), and the oscillators are heard
-# through their cables and in no other way.
+# To hear the room alone, cut the cable that takes each oscillator to the mix (the x on it on the page; `route = "none"`
+# in its table in the file), and the oscillators are heard through their cables and in no other way.
 #
 # To hear one oscillator with the room that it sends to, solo it (`solo = true` in its table, or the S button on the
-# page): the room is heard for its cable, though nothing in the room's group is soloed, and the other oscillator is
-# not heard and sends nothing.
-
-[[group]]
-name = "Room"
-
-[[group.effect]]
-plugin = "builtin:reverb"
-mix = 1.0 # all wet: the tail only
-
-[group.effect.params]
-size = 0.85
+# page): the room is heard for its cable, though the room itself is not soloed, and the other oscillator is not heard
+# and sends nothing.
 
 [[instrument]]
 plugin = "builtin:osc"
@@ -44,12 +34,22 @@ pulse = 0.4
 attack = 0.03
 release = 0.25
 
+# The room: a lane that has no instrument, and the reverb in it.
+[[instrument]]
+
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 1.0 # all wet: the tail only
+
+[instrument.effect.params]
+size = 0.85
+
 [[cable]]
 from = "instrument[0]"
-to = "group[0].effect[0]"
+to = "instrument[2].effect[0]"
 gain = 1.0
 
 [[cable]]
 from = "instrument[1]"
-to = "group[0].effect[0]"
+to = "instrument[2].effect[0]"
 gain = 0.6

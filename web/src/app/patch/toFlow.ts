@@ -93,6 +93,8 @@ export interface PatchNodeData extends Record<string, unknown> {
   cables: readonly CableRow[];
   /** For a lane: whether it takes notes (`laneTakesNotes`), which its card has the keys, the pattern and the input of events for; an audio input does not. False for the other nodes. */
   notes: boolean;
+  /** For a lane: whether its card has the choice of group, which it has only while the session has a group (the page offers no way to make one: step 103). False for the other nodes. */
+  groupCell: boolean;
   /** Whether it shows a scope of what comes out of it (the viewer's own choice, `toFlow`'s `scopes`, for a node that has a signal: `canScope`), which it is taller by. */
   scope: boolean;
   /** For a source of notes: what it is (the keys, or a device by the name it stands for); nothing for the other nodes. */
@@ -235,13 +237,14 @@ function drivenSettings(graph: Graph): Map<NodeId, SettingHandle[]> {
 
 /**
  * How many controls a node shows: its parameters, and its own gain (a volume or a mix; a lane's keys, its group and its mute and solo too) or a group's three. `carriesLane` is whether an effect has
- * the cell of the lane that holds it (the mute, the solo and the way out of a lane the canvas draws no card for): one control more; it is nothing to the other nodes.
+ * the cell of the lane that holds it (the mute, the solo and the way out of a lane the canvas draws no card for): one control more; it is nothing to the other nodes. `groupCell` is whether a lane has the
+ * choice of group, which it has only while the session has a group: one control more; it is nothing to the other nodes.
  */
-export function controlCount(node: Node, knobs: number, carriesLane = false): number {
+export function controlCount(node: Node, knobs: number, carriesLane = false, groupCell = false): number {
   switch (node.kind) {
     case "instrument":
-      // (Its gain, its keys, its group, its mute and solo: a lane that takes no notes has no keys.)
-      return knobs + (laneTakesNotes(node) ? 4 : 3);
+      // (Its gain, its keys, its group and its mute and solo: a lane that takes no notes has no keys, and one has no choice of group while the session has no group.)
+      return knobs + 2 + (laneTakesNotes(node) ? 1 : 0) + (groupCell ? 1 : 0);
     case "effect":
       return knobs + 1 + (carriesLane ? 1 : 0);
     case "group":
@@ -262,9 +265,9 @@ export function canScope(node: Node): boolean {
 /**
  * How tall a node is, as the layout assumes it (the components' styles keep to it). `cables` is how many a modulator lists (`CableRow`); it is nothing to the other nodes.
  * `scope` is whether an instrument, an effect or a group shows its scope, which it is taller by (`NODE_SCOPE_HEIGHT`); it is nothing to a modulator, and to the master.
- * `carriesLane` is whether an effect has the cell of the lane that holds it (`controlCount`): it is nothing to the other nodes.
+ * `carriesLane` is whether an effect has the cell of the lane that holds it, and `groupCell` whether a lane has the choice of group (`controlCount`): they are nothing to the other nodes.
  */
-export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false, carriesLane = false): number {
+export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false, carriesLane = false, groupCell = false): number {
   switch (node.kind) {
     case "modulator": {
       const listed = cables > 0 ? CABLES_GAP + cables * CABLE_ROW_HEIGHT : 0;
@@ -277,7 +280,7 @@ export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false,
     case "source":
       return SOURCE_HEIGHT;
     default: {
-      const rows = Math.max(1, Math.ceil(controlCount(node, knobs, carriesLane) / CONTROLS_PER_ROW));
+      const rows = Math.max(1, Math.ceil(controlCount(node, knobs, carriesLane, groupCell) / CONTROLS_PER_ROW));
       return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING + (laneTakesNotes(node) ? PATTERN_HEIGHT : 0) + (scope ? NODE_SCOPE_HEIGHT : 0);
     }
   }
@@ -795,7 +798,7 @@ export function blocksOf(graph: Graph, flow: Flow): { blocks: Block[]; wires: Wi
   const blocks = flow.nodes.flatMap((placed): Block[] => {
     const node = known.get(placed.data.node);
     if (!node) return [];
-    const height = nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope, placed.data.heldIn?.first ?? false);
+    const height = nodeHeight(node, placed.data.knobs.length, placed.data.cables.length, placed.data.scope, placed.data.heldIn?.first ?? false, placed.data.groupCell);
     return [{ id: node.id, x: placed.position.x, y: placed.position.y, width: NODE_WIDTH, height }];
   });
   return { blocks, wires: wiresOf(graph, new Map(flow.nodes.map((placed) => [placed.data.node, placed.data.knobs]))) };
@@ -829,7 +832,9 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
   const knobCounts = new Map([...knobs].map(([id, params]) => [id, params.length]));
   const cableCounts = new Map(graph.nodes.map((node) => [node.id, node.kind === "modulator" ? (listed.get(node.id)?.length ?? 0) : 0]));
   const withScope = new Set(graph.nodes.filter((node) => scopes.has(node.id) && canScope(node)).map((node) => node.id));
-  const heightOf = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0, withScope.has(node.id), carriers.has(node.id));
+  // (The page offers no way to make a group: a lane has the choice of one only while the session has a group.)
+  const groups = graph.nodes.some((node) => node.kind === "group");
+  const heightOf = (node: Node): number => nodeHeight(node, knobCounts.get(node.id) ?? 0, cableCounts.get(node.id) ?? 0, withScope.has(node.id), carriers.has(node.id), groups);
   const ownerOf = ownersOf(graph);
   const baseline = layout(graph, heightOf, holders, ownerOf);
   // (The slots are those of the rows' layout, whatever the places are: a layout that goes on from an arrangement finds the nodes in the slots that were remembered.)
@@ -874,6 +879,7 @@ export function toFlow(graph: Graph, remembered: Places = NOTHING_REMEMBERED, sc
       drivenSettings: node.kind === "modulator" ? (settingsDriven.get(node.id) ?? []) : [],
       cables: node.kind === "modulator" ? (listed.get(node.id) ?? []) : [],
       notes: laneTakesNotes(node),
+      groupCell: node.kind === "instrument" && groups,
       scope: withScope.has(node.id),
       source: node.kind === "source" ? node.source : null,
       heldIn: heldIn(node),
