@@ -7143,6 +7143,18 @@ type = "midi"
     }
 
     #[test]
+    fn a_module_is_saved_in_a_library_whose_directory_is_not_there_yet_and_the_directory_is_made() {
+        let root = tempfile::tempdir().unwrap();
+        let library = root.path().join("config").join("modules");
+        let (_engine, mut ctl, holder) = a_chain(&library);
+        assert!(!library.exists());
+        assert!(module::list(&library).is_empty(), "a library that is not there lists none");
+        ctl.apply(Intent::SaveModule { node: holder, name: "Space".to_string() }).unwrap();
+        assert!(library.join("Space.toml").is_file(), "the directory is made when the first module goes in it");
+        assert_eq!(module::list(&library).iter().map(|module| module.name.as_str()).collect::<Vec<_>>(), ["Space"]);
+    }
+
+    #[test]
     fn a_module_is_added_as_a_bare_lane_that_holds_the_effects_it_was_saved_with_and_undo_takes_it_out_and_redo_gives_it_back_under_the_same_ids() {
         let dir = tempfile::tempdir().unwrap();
         let (engine, mut ctl, holder) = a_chain(dir.path());
@@ -7335,7 +7347,23 @@ to = "instrument[0].effect[2]"
 gain = 0.3
 "#;
 
-    /// `A_CHAIN_TO_KEEP` and what the controller makes of saving its chain as a module, adding it, undoing that and redoing it, saving the chain that came of it under another name and adding that, and of what it refuses, as the web client's
+    /// A module file as a person might write it by hand, with what a plugin cannot take in it: a preset that the plugin has not, a parameter that it has not, a value beyond its range, a choice that is not
+    /// a whole number, a mix beyond 1, and knobs to pin that are named twice or name nothing (the fixture test below adds it to a session, and the page's mock engine is held to what comes of it).
+    const ODD_MODULE: &str = r#"
+[[instrument]]
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+preset = "No such preset"
+mix = 1.5
+pinned = ["resonance", "no such parameter", "resonance", "drive"]
+[instrument.effect.params]
+cutoff = 7.0
+type = 2.6
+"no such parameter" = 1.0
+"#;
+
+    /// `A_CHAIN_TO_KEEP` and what the controller makes of saving its chain as a module, adding it, undoing that and redoing it, saving the chain that came of it under another name and adding that, and of what it refuses, and of adding a module that a hand wrote (`ODD_MODULE`), as the web client's
     /// tests read it (`web/src/client/fixtures/modules.json`): they pin the mock engine's library to the controller's, step by step. Each step is answered by the events it made (stamped), whether it changed the structure, what Undo and Redo
     /// would do after it, the modules that the catalog lists, and the nodes, the cables and the layout of the telemetry that the session has then; a refusal by the controller's words. `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture`
     /// rewrites it.
@@ -7429,7 +7457,26 @@ gain = 0.3
                 serde_json::json!({ "intent": testutil::wire(&intent), "error": error })
             })
             .collect();
-        let fixture = serde_json::json!({ "snapshot": snapshot, "steps": steps, "refusals": refusals });
+        // What a module that a hand wrote comes to: a library with the one file, listed, and the module added to the same session.
+        let by_hand = tempfile::tempdir().unwrap();
+        std::fs::write(by_hand.path().join("Odd.toml"), ODD_MODULE).unwrap();
+        let (_odd_engine, mut odd_ctl) = fresh(by_hand.path());
+        assert!(odd_ctl.refresh_modules(), "the library has a module that the catalog did not list");
+        let odd_intent = add("Odd");
+        let odd_applied = odd_ctl.apply(odd_intent.clone()).unwrap();
+        let (odd_state, odd_history) = (odd_ctl.snapshot(), odd_ctl.history_state());
+        let odd = serde_json::json!({
+            "file": ODD_MODULE,
+            "step": {
+                "intent": testutil::wire(&odd_intent),
+                "events": testutil::wire(&odd_applied.stamped()),
+                "restructured": odd_applied.restructured,
+                "history": { "undo": odd_history.undo, "redo": odd_history.redo },
+                "graph": testutil::wire(&odd_state.graph),
+                "telemetry": normalized(testutil::wire(&odd_state.telemetry)),
+            },
+        });
+        let fixture = serde_json::json!({ "snapshot": snapshot, "steps": steps, "refusals": refusals, "odd": odd });
         let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
 
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/modules.json");

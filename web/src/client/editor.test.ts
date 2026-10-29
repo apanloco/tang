@@ -1218,6 +1218,7 @@ describe("saving a chain of effects as a module", () => {
     const cases: [number, string, string][] = [
       [oscillator.id, "", 'Could not save the chain of Oscillator as the module "": a file name is needed'],
       [oscillator.id, "a/b", 'Could not save the chain of Oscillator as the module "a/b": a file name has no folder in it: `/` and `\\` are not allowed'],
+      [oscillator.id, "  a/b ", 'Could not save the chain of Oscillator as the module "a/b": a file name has no folder in it: `/` and `\\` are not allowed'],
       [lfo.id, "Room", 'Could not save the chain of LFO as the module "Room": a module is made of the chain of a lane'],
       [9_999, "Room", 'Could not save the chain of that node as the module "Room": there is no node 9999'],
     ];

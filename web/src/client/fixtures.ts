@@ -113,6 +113,11 @@ export const modulesFixture = modules as unknown as {
     telemetry: TelemetryLayout;
   }[];
   refusals: { intent: Intent; error: string }[];
+  /** A module that a hand wrote (`file`, with what a plugin cannot take in it) added to the same session, and what the controller made of it. */
+  odd: {
+    file: string;
+    step: { intent: Intent; events: StampedEvent[]; restructured: boolean; history: { undo: string | null; redo: string | null }; graph: Graph; telemetry: TelemetryLayout };
+  };
 };
 
 /**

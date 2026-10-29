@@ -37,6 +37,29 @@ describe("the mock engine's library of modules", () => {
     }
   });
 
+  test("adds a module that a hand wrote as the controller adds it: a preset that the plugin has not, a parameter it has not, a value beyond its range, a choice that is not a whole number, a mix beyond 1, and knobs that are named twice or name nothing", () => {
+    // (This is what the file `modulesFixture.odd.file` says, as the library of the mock keeps a module.)
+    const odd: Module = {
+      effects: [{ plugin: "builtin:filter", preset: "No such preset", params: { cutoff: 7, type: 2.6, "no such parameter": 1 }, mix: 1.5, pinned: ["resonance", "no such parameter", "resonance", "drive"], fed: true }],
+      cables: [],
+    };
+    const server = new MockServer({ snapshot: modulesFixture.snapshot, modules: { Odd: odd } });
+    const { step } = modulesFixture.odd;
+    const told = server.apply(step.intent);
+    expect(told.events).toEqual(step.events);
+    expect(server.history).toEqual(step.history);
+    expect(server.snapshot.graph).toEqual(step.graph);
+    expect(layoutOf(server.snapshot.telemetry)).toEqual(layoutOf(step.telemetry));
+    // In words as well, so that a fixture that is written again cannot take the rules away unseen: the value is held to the range and the choice is a whole number, the mix is held to 1, the preset that is not
+    // there is no preset, and the knobs are the plugin's own, once each, in the order they were named.
+    const filter = server.snapshot.graph.nodes.findLast((node) => node.kind === "effect");
+    if (filter?.kind !== "effect") throw new Error("the module has an effect");
+    const value = (name: string): number | undefined => filter.plugin.params.find((p) => p.name === name)?.value;
+    expect([value("cutoff"), value("type"), filter.mix]).toEqual([1, 3, 1]);
+    expect(filter.plugin.pinned).toEqual([1, 3]);
+    expect(filter.plugin.currentPreset).toBeNull();
+  });
+
   test("lists the modules to a client that subscribes, with the plugins, and tells the catalog again when one is saved that was not there or that has another number of effects, and not for one that is saved again as it was", async () => {
     const server = new MockServer({ snapshot: modulesFixture.snapshot });
     const heard: ServerMessage[] = [];
@@ -50,6 +73,17 @@ describe("the mock engine's library of modules", () => {
       close: () => undefined,
     });
     transport.send(JSON.stringify({ type: "subscribe" }));
+    // (A connection that has not subscribed is told nothing of the library.)
+    const idle: ServerMessage[] = [];
+    const bystander = server.transport();
+    bystander.connect({
+      open: () => undefined,
+      text: (data) => {
+        idle.push(JSON.parse(data) as ServerMessage);
+      },
+      binary: () => undefined,
+      close: () => undefined,
+    });
     await quiet();
     const catalogs = (): Extract<ServerMessage, { type: "catalog" }>[] => heard.filter((message): message is Extract<ServerMessage, { type: "catalog" }> => message.type === "catalog");
     const modulesOf = (message: Extract<ServerMessage, { type: "catalog" }> | undefined): CatalogEntry[] => message?.entries.filter((entry) => entry.format === "Module") ?? [];
@@ -68,7 +102,17 @@ describe("the mock engine's library of modules", () => {
     server.apply(again);
     await quiet();
     expect(catalogs()).toHaveLength(2);
+    // A module that is saved again under the same name with another number of effects is another entry: the catalog is told again.
+    server.apply({ type: "addFreeEffect", plugin: "builtin:delay" });
+    const holder = server.snapshot.graph.nodes.findLast((node) => node.kind === "instrument");
+    if (holder?.kind !== "instrument") throw new Error("a lane was added");
+    server.apply({ type: "saveModule", node: holder.id, name: "Room" });
+    await quiet();
+    expect(catalogs()).toHaveLength(3);
+    expect(modulesOf(catalogs().at(-1))).toEqual([{ id: "module:Room", name: "Room", format: "Module", isInstrument: false, params: 1, presets: 0 }]);
+    expect(idle.filter((message) => message.type === "catalog")).toEqual([]);
     transport.close();
+    bystander.close();
   });
 
   test("turns away what the controller turns away, in its words, and changes nothing", () => {

@@ -8436,6 +8436,7 @@ mod modules {
         assert_eq!(popup.error, None, "no complaint, it just waits");
         h.type_chars("   ").press(KeyCode::Enter);
         assert!(h.s.save_module.is_some());
+        assert_eq!(h.s.save_module.as_ref().unwrap().error, None, "blanks are no name either: nothing is asked of the controller, which would refuse it in words, and nothing is said");
         h.press(KeyCode::Esc);
         assert!(h.s.save_module.is_none());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -8483,6 +8484,76 @@ mod modules {
         let mut h = Harness::new(scene_two_effects());
         h.press(KeyCode::Char('K')).type_chars("Room").press(KeyCode::Enter);
         assert_eq!(h.s.save_module.as_ref().and_then(|popup| popup.error.as_deref()), Some("this program keeps no library of modules"));
+    }
+
+    #[test]
+    fn every_key_that_edits_the_name_takes_the_complaint_away_and_a_key_that_only_moves_the_cursor_leaves_it() {
+        let (_dir, mut h) = harness();
+        h.press(KeyCode::Char('K')).type_chars("a/b").press(KeyCode::Enter);
+        let complaint = |h: &Harness| h.s.save_module.as_ref().expect("the popup is open").error.clone();
+        assert!(complaint(&h).is_some());
+        for key in [KeyCode::Left, KeyCode::Right, KeyCode::Home, KeyCode::End] {
+            h.press(key);
+            assert!(complaint(&h).is_some(), "{key:?} only moves the cursor");
+        }
+        h.press(KeyCode::Home).press(KeyCode::Delete);
+        assert_eq!(complaint(&h), None, "Delete");
+        assert_eq!(h.s.save_module.as_ref().map(|popup| popup.input.value.as_str()), Some("/b"), "and it took the first letter");
+    }
+
+    #[test]
+    fn a_letter_with_control_held_is_no_text_of_the_name_and_asks_nothing_of_the_session_under_the_popup() {
+        use crate::app::intent::{Gain, Intent};
+        let (_dir, mut h) = harness();
+        let lane = h.s.ctl.model.instruments[0].node;
+        h.s.ctl.apply(Intent::SetGain { node: lane, gain: Gain::Volume, value: 0.5 }).unwrap();
+        let name = |h: &Harness| h.s.save_module.as_ref().map(|popup| popup.input.value.clone());
+        h.press(KeyCode::Char('K')).type_chars("Ro");
+        h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(name(&h).as_deref(), Some("Ro"), "Ctrl+Z is not a z");
+        assert!(h.s.ctl.history_state().undo.is_some(), "and it undoes nothing under the popup");
+        h.press_with(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert!(h.notes().is_empty(), "the panic is not heard under it");
+        assert_eq!(name(&h).as_deref(), Some("Ro"));
+        h.press_with(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(h.s.quit, "Ctrl+C leaves from the popup as from the chain");
+    }
+
+    #[test]
+    fn a_click_outside_leaves_the_popup_as_it_leaves_the_others_and_saves_nothing() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let (dir, mut h) = harness();
+        h.press(KeyCode::Char('K')).type_chars("Room");
+        process_event(&mut h.s, Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: 1, row: 1, modifiers: KeyModifiers::NONE }));
+        assert!(h.s.save_module.is_none());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_selector_of_an_instrument_starts_on_the_one_the_lane_has_whatever_modules_the_library_lists_before_the_plugins() {
+        let (_dir, mut h) = harness();
+        h.press(KeyCode::Char('K')).type_chars("Room").press(KeyCode::Enter);
+        h.press(KeyCode::Char('i'));
+        let selector = h.s.selector.as_ref().expect("the selector is open");
+        let item = selector.filter.selected_item(&selector.items).expect("a row is selected");
+        assert_eq!(h.s.ctl.catalog.listed()[item.index].id, "builtin:osc", "the lane has the oscillator, which Enter keeps");
+    }
+
+    #[test]
+    fn a_module_waits_for_a_frame_that_says_it_is_loading_as_a_plugin_that_is_not_built_in_does() {
+        let (_dir, mut h) = harness();
+        h.press(KeyCode::Char('K')).type_chars("Room").press(KeyCode::Enter);
+        let lanes = h.s.ctl.model.instruments.len();
+        h.press(KeyCode::Char('N'));
+        handle_event(&mut h.s, enter());
+        // The popup is closed, nothing is made, and what is to be done waits for the frame that says so.
+        assert!(h.s.selector.is_none());
+        assert_eq!(h.s.pending_load.as_ref().map(|pending| pending.name.as_str()), Some("Room"));
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes);
+        assert!(h.dump().contains("Loading Room…"));
+        run_pending(&mut h.s);
+        assert!(h.s.pending_load.is_none());
+        assert_eq!(h.s.ctl.model.instruments.len(), lanes + 1);
     }
 
     #[test]

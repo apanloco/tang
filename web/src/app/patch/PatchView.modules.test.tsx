@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { nodeNamed, reachFixture, tracerSnapshot } from "../../client/fixtures";
 import type { Intent } from "../../protocol";
@@ -154,11 +154,16 @@ describe("the button that saves the chain of a lane as a module", () => {
     const field = await screen.findByRole("textbox", { name: "Module name" });
     fireEvent.change(field, { target: { value: "a/b" } });
     fireEvent.submit(formOf(field));
+    // (The person pressed Save: the focus is on that button, or nowhere, when the answer comes.)
+    field.blur();
     await waitFor(() => {
       expect(noticeTexts()).toEqual(['Could not save the chain of Oscillator as the module "a/b": a file name has no folder in it: `/` and `\\` are not allowed']);
     });
-    expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Module name" }).value).toBe("a/b");
-    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Module name" }));
+    const again = screen.getByRole<HTMLInputElement>("textbox", { name: "Module name" });
+    expect(again.value).toBe("a/b");
+    // The field has the focus again, with the name selected, so that what is typed next is the name that is tried.
+    expect(document.activeElement).toBe(again);
+    expect([again.selectionStart, again.selectionEnd]).toEqual([0, 3]);
     // (Tried again with a name that is one.)
     fireEvent.change(screen.getByRole("textbox", { name: "Module name" }), { target: { value: "Fixed" } });
     fireEvent.submit(formOf(screen.getByRole("textbox", { name: "Module name" })));
@@ -173,15 +178,97 @@ describe("the button that saves the chain of a lane as a module", () => {
     fireEvent.click(await saveButton("Oscillator"));
     const field = await screen.findByRole("textbox", { name: "Module name" });
     const form = formOf(field);
+    // (`fireEvent` says whether the browser would still do what it does with a submit, which is to go to another page with the form: false when the field held it back.)
+    expect(fireEvent.submit(form)).toBe(false);
+    expect(asked(requests)).toEqual([]);
+    fireEvent.change(field, { target: { value: "   " } });
     fireEvent.submit(form);
     expect(asked(requests)).toEqual([]);
     fireEvent.change(field, { target: { value: "Twice" } });
     fireEvent.submit(form);
+    // (While it waits for the answer the button that asks again is out of reach.)
+    expect(within(form).getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true);
     fireEvent.submit(form);
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
     expect(asked(requests)).toEqual([{ type: "saveModule", node: oscillator.id, name: "Twice" }]);
+  });
+});
+
+describe("the field for the name of a module", () => {
+  const boxAt = (left: number, bottom: number): DOMRect => ({ x: left, y: bottom - 20, left, right: left + 20, top: bottom - 20, bottom, width: 20, height: 20, toJSON: () => ({}) });
+
+  test("is Escape's when it is open: Escape ends it and the page's own handlers of the key do not hear it, and the other keys are heard as they are", async () => {
+    await rigged();
+    const button = await saveButton("Oscillator");
+    fireEvent.click(button);
+    const field = await screen.findByRole("textbox", { name: "Module name" });
+    const heard = vi.fn();
+    document.addEventListener("keydown", heard);
+    try {
+      fireEvent.keyDown(field, { key: "a" });
+      expect(heard).toHaveBeenCalledTimes(1);
+      // (`fireEvent` says whether the browser would still do what it does with the key: false when it was held back.)
+      expect(fireEvent.keyDown(field, { key: "Escape" })).toBe(false);
+      expect(heard).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener("keydown", heard);
+    }
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  test("goes when the page is scrolled or sized, as it does when the page is pressed anywhere else; and a press on the button that opened it is not away from it", async () => {
+    await rigged();
+    const button = await saveButton("Oscillator");
+    fireEvent.click(button);
+    await screen.findByRole("dialog");
+    fireEvent.wheel(document.body);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(button);
+    await screen.findByRole("dialog");
+    fireEvent(window, new Event("resize"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // (The press on the button and then the click that follows it: the click closes it, and the press does not close it first, which the click would open again.)
+    fireEvent.click(button);
+    await screen.findByRole("dialog");
+    fireEvent.pointerDown(button);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.click(button);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  test("opens empty each time, under the button, and is kept inside the window", async () => {
+    await rigged();
+    const button = await saveButton("Oscillator");
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+    const at = (left: number, bottom: number): void => {
+      vi.spyOn(button, "getBoundingClientRect").mockReturnValue(boxAt(left, bottom));
+    };
+    const placed = async (): Promise<[string, string]> => {
+      fireEvent.click(button);
+      const dialog = await screen.findByRole("dialog");
+      return [dialog.style.left, dialog.style.top];
+    };
+
+    at(400, 60);
+    expect(await placed()).toEqual(["400px", "64px"]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Module name" }), { target: { value: "abc" } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    // (It is shown again with nothing in it: what was typed for the last is not the name of this one.)
+    at(400, 60);
+    await placed();
+    expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Module name" }).value).toBe("");
+    fireEvent.click(button);
+
+    // Near the right edge of the window it is moved left, to be seen whole; near the left edge, in.
+    at(1000, 60);
+    expect(await placed()).toEqual(["716px", "64px"]);
+    fireEvent.click(button);
+    at(-50, 200);
+    expect(await placed()).toEqual(["8px", "204px"]);
   });
 });
 

@@ -302,9 +302,10 @@ mod tests {
         assert_eq!(catalog.rev(), 1);
         // A module that is saved again with another number of effects is the same name and another module; one that is taken away or put in is one more.
         assert!(catalog.set_modules(vec![module("Space", 3)]));
+        assert!(catalog.set_modules(vec![module("Hall", 3)]), "another module with as many effects is another listing");
         assert!(catalog.set_modules(vec![module("Hall", 3), module("Space", 3)]));
         assert!(catalog.set_modules(vec![]));
-        assert_eq!(catalog.rev(), 4);
+        assert_eq!(catalog.rev(), 5);
     }
 
     /// The built-ins as the web client's mock engine serves them for a catalog (and its tests read

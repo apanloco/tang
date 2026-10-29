@@ -79,7 +79,8 @@ pub fn parse(text: &str) -> Result<Module, String> {
     if lane.instrument.is_some() {
         return Err("a module is a chain of effects, and this lane has an instrument".to_string());
     }
-    if !config.groups.is_empty() || !config.free_modulators.is_empty() || !lane.modulators.is_empty() || config.keys.is_some() || !config.devices.is_empty() {
+    // (A lane's own modulators are moved to the session's own when a file is read, `session::parse`: a module that has any has `free_modulators`.)
+    if !config.groups.is_empty() || !config.free_modulators.is_empty() || config.keys.is_some() || !config.devices.is_empty() {
         return Err("a module is a chain of effects and nothing else: it has no group, no modulator and no source of notes".to_string());
     }
     if lane.effects.is_empty() {
@@ -219,10 +220,29 @@ mod tests {
         assert!(refused("[[instrument]]\n[[instrument]]\n").contains("2 lanes"));
         assert!(refused("[[group]]\n[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n").contains("nothing else"));
         assert!(refused("[[modulator]]\n[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n").contains("nothing else"));
+        // (A source of notes, a device and a lane's own modulator, which is moved to the session's own when a file is read and is a modulator all the same: none is the chain's.)
+        let one = "[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n";
+        assert!(refused(&format!("[keys]\n{one}")).contains("nothing else"), "{}", refused(&format!("[keys]\n{one}")));
+        assert!(refused(&format!("[[device]]\nname = \"Launchkey\"\n{one}")).contains("nothing else"));
+        assert!(refused(&format!("{one}[[instrument.modulator]]\ntype = \"lfo\"\n")).contains("nothing else"));
         let to_master = "[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[cable]]\nfrom = \"instrument[0].effect[0]\"\nto = \"master\"\n";
         assert!(refused(to_master).contains("cable[0] is not between two effects"), "{}", refused(to_master));
         let beyond = "[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[cable]]\nfrom = \"instrument[0].effect[0]\"\nto = \"instrument[0].effect[3]\"\n";
         assert!(refused(beyond).contains("an effect that the chain has not"), "{}", refused(beyond));
+        // The end of a chain of one effect is effect[0]: effect[1] is the first that is not there, at either end of a cable.
+        let between = |from: &str, to: &str| format!("[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[cable]]\nfrom = \"{from}\"\nto = \"{to}\"\n");
+        assert!(refused(&between("instrument[0].effect[0]", "instrument[0].effect[1]")).contains("an effect that the chain has not"));
+        assert!(refused(&between("instrument[0].effect[1]", "instrument[0].effect[0]")).contains("an effect that the chain has not"));
+        assert!(refused(&between("instrument[0].effect[0]", "instrument[0].effect[1].side")).contains("an effect that the chain has not"));
+        // A cable that names the effects of another lane is not between two effects of this chain, whichever end it is at and whichever input it ends at.
+        for (from, to) in [
+            ("instrument[1].effect[0]", "instrument[0].effect[0]"),
+            ("instrument[0].effect[0]", "instrument[1].effect[0]"),
+            ("instrument[1].effect[0]", "instrument[0].effect[0].side"),
+            ("instrument[0].effect[0]", "instrument[1].effect[0].side"),
+        ] {
+            assert!(refused(&between(from, to)).contains("cable[0] is not between two effects"), "{from} to {to}: {}", refused(&between(from, to)));
+        }
         assert!(refused("this is not toml [").contains("TOML") || !refused("this is not toml [").is_empty());
     }
 
@@ -234,9 +254,14 @@ mod tests {
         std::fs::write(dir.path().join("alpha.toml"), chain(&["builtin:delay"])).unwrap();
         std::fs::write(dir.path().join("broken.toml"), "[[instrument]]\n").unwrap();
         std::fs::write(dir.path().join("notes.txt"), "not a module").unwrap();
+        // (A file that is valid and has a name that no module is saved under: the listing would call it `twice.toml`, which is not a name that this program makes of `twice.toml`.)
+        std::fs::write(dir.path().join("twice.toml.toml"), chain(&["builtin:delay"])).unwrap();
         std::fs::create_dir(dir.path().join("folder.toml")).unwrap();
         let listed = list(dir.path());
-        assert_eq!(listed.iter().map(|module| (module.id.as_str(), module.name.as_str(), module.param_count, module.is_instrument)).collect::<Vec<_>>(), [("module:alpha", "alpha", 1, false), ("module:Space", "Space", 2, false)]);
+        assert_eq!(
+            listed.iter().map(|module| (module.id.as_str(), module.name.as_str(), module.param_count, module.preset_count, module.is_instrument)).collect::<Vec<_>>(),
+            [("module:alpha", "alpha", 1, 0, false), ("module:Space", "Space", 2, 0, false)]
+        );
         assert!(list(&dir.path().join("not-there")).is_empty());
     }
 }
