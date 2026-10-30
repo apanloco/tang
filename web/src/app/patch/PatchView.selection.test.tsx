@@ -98,26 +98,83 @@ describe("choosing nodes on the canvas", () => {
     expect(screen.getByRole("status").textContent).toBe("1 chosen");
   });
 
-  test("leaves out of what it asks the nodes that a module cannot hold, and says how many: a modulator that is chosen with the plugins is none of them", async () => {
+  /** The nodes called these, added one after the other to what is chosen (a second node is added to the ones that are chosen while the key for it is held: React Flow reads that from the keys, not from the click). */
+  async function choose(...names: string[]): Promise<void> {
+    fireEvent.click(await nodeOnCanvas(names[0] ?? ""));
+    for (const key of ["Control", "Meta"]) fireEvent.keyDown(document.body, { key, code: `${key}Left` });
+    for (const name of names.slice(1)) fireEvent.click(await nodeOnCanvas(name), { ctrlKey: true, metaKey: true });
+    for (const key of ["Control", "Meta"]) fireEvent.keyUp(document.body, { key, code: `${key}Left` });
+  }
+
+  const saveAs = async (name: string): Promise<void> => {
+    fireEvent.click(screen.getByRole("button", { name: "Save the chosen nodes as a module" }));
+    const field = await screen.findByRole("textbox", { name: "Module name" });
+    fireEvent.change(field, { target: { value: name } });
+    fireEvent.submit(formOf(field));
+  };
+
+  test("asks for the modulators that are chosen with the plugins, in the order of the canvas's nodes (the server has the lanes of a module in the session's order whatever it is given), and counts them among what is chosen", async () => {
     const { requests } = await rigged();
     fireEvent.click(await chooseButton());
     const modulator = tracerSnapshot.graph.nodes.find((node) => node.kind === "modulator");
     if (!modulator) throw new Error("the tracer has a modulator");
-    fireEvent.click(await nodeOnCanvas("Oscillator"));
-    // (A second node is added to the ones that are chosen while the key for it is held: React Flow reads that from the keys, not from the click.)
-    for (const key of ["Control", "Meta"]) fireEvent.keyDown(document.body, { key, code: `${key}Left` });
-    fireEvent.click(await nodeOnCanvas(modulator.name), { ctrlKey: true, metaKey: true });
-    for (const key of ["Control", "Meta"]) fireEvent.keyUp(document.body, { key, code: `${key}Left` });
+    await choose(modulator.name, "Oscillator");
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("2 chosen");
+    });
+    await saveAs("Voice");
+    await waitFor(() => {
+      expect(asked(requests)).toEqual([{ type: "saveSelectionAsModule", nodes: [oscillator.id, modulator.id], name: "Voice" }]);
+    });
+  });
+
+  test("leaves out of what it asks the nodes that a module cannot hold, and says how many: the master is none of them", async () => {
+    const { requests } = await rigged();
+    fireEvent.click(await chooseButton());
+    await choose("Oscillator", "Master");
     await waitFor(() => {
       expect(screen.getByRole("status").textContent).toBe("1 chosen, 1 that a module cannot hold left out");
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save the chosen nodes as a module" }));
-    const field = await screen.findByRole("textbox", { name: "Module name" });
-    fireEvent.change(field, { target: { value: "Voice" } });
-    fireEvent.submit(formOf(field));
+    await saveAs("Voice");
     await waitFor(() => {
       expect(asked(requests)).toEqual([{ type: "saveSelectionAsModule", nodes: [oscillator.id], name: "Voice" }]);
     });
+  });
+
+  test("has nothing to hold when the master alone is chosen, says that and no more of what a module needs, and cannot be saved", async () => {
+    const { requests } = await rigged();
+    fireEvent.click(await chooseButton());
+    fireEvent.click(await nodeOnCanvas("Master"));
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("0 chosen, 1 that a module cannot hold left out");
+    });
+    const save = screen.getByRole("button", { name: "Save the chosen nodes as a module" });
+    expect(save).toHaveProperty("disabled", true);
+    fireEvent.click(save);
+    expect(screen.queryByRole("textbox", { name: "Module name" })).toBeNull();
+    expect(asked(requests)).toEqual([]);
+  });
+
+  test("cannot be saved with a modulator and no plugin, and says what a module needs: it is made of effects and instruments, which a modulator goes with", async () => {
+    const { requests } = await rigged();
+    fireEvent.click(await chooseButton());
+    const modulator = tracerSnapshot.graph.nodes.find((node) => node.kind === "modulator");
+    if (!modulator) throw new Error("the tracer has a modulator");
+    fireEvent.click(await nodeOnCanvas(modulator.name));
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("1 chosen, and a module needs an effect or an instrument");
+    });
+    const save = screen.getByRole("button", { name: "Save the chosen nodes as a module" });
+    expect(save).toHaveProperty("disabled", true);
+    fireEvent.click(save);
+    expect(screen.queryByRole("textbox", { name: "Module name" })).toBeNull();
+    expect(asked(requests)).toEqual([]);
+    // With the filter chosen as well it can.
+    await choose(modulator.name, "Filter");
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toBe("2 chosen");
+    });
+    expect(screen.getByRole("button", { name: "Save the chosen nodes as a module" })).toHaveProperty("disabled", false);
   });
 
   test("forgets what is chosen when it is turned off, and Escape turns it off", async () => {

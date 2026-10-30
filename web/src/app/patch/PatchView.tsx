@@ -298,9 +298,9 @@ export function PatchView() {
                         <span className="tang-patch__chosen" role="status">
                           {chosen.length === 0
                             ? "Drag a box round the nodes to keep"
-                            : `${String(held.nodes.length)} chosen${held.left > 0 ? `, ${String(held.left)} that a module cannot hold left out` : ""}`}
+                            : `${String(held.nodes.length)} chosen${held.left > 0 ? `, ${String(held.left)} that a module cannot hold left out` : ""}${held.nodes.length > 0 && held.plugins === 0 ? ", and a module needs an effect or an instrument" : ""}`}
                         </span>
-                        <SaveSelectionButton nodes={held.nodes} />
+                        <SaveSelectionButton nodes={held.nodes} plugins={held.plugins} />
                       </>
                     ) : null}
                     <button

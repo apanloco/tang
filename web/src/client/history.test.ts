@@ -821,12 +821,25 @@ describe("what takes out what an add made", () => {
     // (A module may be an instrument alone, which is a lane and nothing in its chain; and a lane is taken out wherever it is among what was made.)
     expect(takesOut(snapshot, addModule, nodes(lane0))).toEqual([remove(lane0)]);
     expect(takesOut(snapshot, addModule, nodes(effect.id, lane0, effect.id))).toEqual([remove(lane0)]);
-    expect(takesOut(snapshot, addModule, nodes(lane0, effect.id, lane1.id, lfo.id, lfo.id))).toEqual([remove(lane1.id), remove(lane0)]);
+    expect(takesOut(snapshot, addModule, nodes(lane0, effect.id, lane1.id, effect.id, effect.id))).toEqual([remove(lane1.id), remove(lane0)]);
     expect(takesOut(snapshot, addModule, { nodes: [lane0, lane1.id], edges: [cable.id, cable.id] })).toEqual([remove(lane1.id), remove(lane0)]);
-    // Not nothing, nor what made no lane, nor a node that is not there.
+    // Not nothing, nor what made no lane and no modulator (an effect goes with its lane), nor a node that is not there.
     expect(takesOut(snapshot, addModule, nodes())).toBeNull();
-    expect(takesOut(snapshot, addModule, nodes(effect.id, lfo.id))).toBeNull();
+    expect(takesOut(snapshot, addModule, nodes(effect.id, effect.id))).toBeNull();
     expect(takesOut(snapshot, addModule, nodes(9_999, effect.id))).toBeNull();
+  });
+
+  test("is the modulators that a module made as well, which it made last, and so they are taken out first, each with its cables, and then the lanes", () => {
+    const addModule: Intent = { type: "addFreeEffect", plugin: "module:Space" };
+    const effect = snapshot.graph.nodes.find((n) => n.kind === "effect" && n.parent === lane0);
+    const lane1 = snapshot.graph.nodes.find((n) => n.kind === "instrument" && n.id !== lane0);
+    if (!effect || !lane1) throw new Error("the fixture has an effect and a second lane");
+    const remove = (node: number): Intent => ({ type: "removeNode", node });
+    expect(takesOut(snapshot, addModule, nodes(lane0, effect.id, lfo.id))).toEqual([remove(lfo.id), remove(lane0)]);
+    expect(takesOut(snapshot, addModule, { nodes: [lane0, effect.id, lane1.id, lfo.id], edges: [cable.id, cable.id, cable.id] })).toEqual([remove(lfo.id), remove(lane1.id), remove(lane0)]);
+    // (In the reverse of the order that they were made in, whatever it is, and a node that is not there is neither.)
+    expect(takesOut(snapshot, addModule, nodes(lfo.id, lane0))).toEqual([remove(lane0), remove(lfo.id)]);
+    expect(takesOut(snapshot, addModule, nodes(lfo.id, 9_999))).toEqual([remove(lfo.id)]);
   });
 
   test("is the node that a modulate made, which takes its cable out with it, if the node is there and it made one cable besides", () => {

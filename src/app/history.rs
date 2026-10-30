@@ -657,13 +657,14 @@ impl Controller {
         }
     }
 
-    /// The intents that take out what `added`, an add that is carried out, made: the one node, or the one cable (a free effect: its lane), or the lanes of a module, the last that was made first.
+    /// The intents that take out what `added`, an add that is carried out, made: the one node, or the one cable (a free effect: its lane), or the lanes and the modulators of a module, the last that was made first.
     fn takes_out(&self, added: &Intent, made: &Made) -> Option<Vec<Intent>> {
-        // (A module made a lane for each of its own, and the plugins in them, and the cables between the plugins: each lane is taken out, with all that is in it and the cables at it.)
+        // (A module made a lane for each of its own, and the plugins in them, and the cables between the plugins, and then its modulators, which have their cables: each modulator and each lane is taken out, with all that is in
+        // it and the cables at it, the modulators first, which were made last.)
         if let Intent::AddFreeEffect { plugin } = added {
             if module::name_of(plugin).is_some() {
-                let lanes: Vec<NodeId> = made.nodes.iter().copied().filter(|node| self.lane_place(*node).is_some()).collect();
-                return (!lanes.is_empty()).then(|| lanes.into_iter().rev().map(|node| Intent::RemoveNode { node }).collect());
+                let nodes: Vec<NodeId> = made.nodes.iter().copied().filter(|node| matches!(self.model.locate(*node), Some(NodePath::Instrument(_) | NodePath::Modulator { .. }))).collect();
+                return (!nodes.is_empty()).then(|| nodes.into_iter().rev().map(|node| Intent::RemoveNode { node }).collect());
             }
         }
         self.takes_out_one(added, made).map(|intent| vec![intent])
@@ -2828,21 +2829,28 @@ rate = 3.0
         assert_eq!(ctl.takes_out(&add_free, &nodes(&[lfo, lane0])), None);
         assert_eq!(ctl.takes_out(&add_free, &nodes(&[NodeId(9_999), lfo])), None);
         assert_eq!(ctl.takes_out(&add_free, &Made { nodes: vec![lane0, lfo], edges: vec![edge] }), None);
-        // A module made a lane for each of its own (an instrument or an effect or more in each), and the cables between the plugins: every lane that it made is taken out, with all that is in it and the cables at it, the last
-        // that was made first. A module with one lane is the one lane.
+        // A module made a lane for each of its own (an instrument or an effect or more in each), the cables between the plugins, and then its modulators with their cables: every lane and every modulator that it made is taken
+        // out, with all that is in it and the cables at it, the last that was made first (the modulators first, which come last). A module with one lane is the one lane. An effect is what stands for a plugin that it made:
+        // it is no lane and no modulator, and goes with its lane.
         let add_module = Intent::AddFreeEffect { plugin: "module:Space".to_string() };
         let remove = |node: NodeId| Intent::RemoveNode { node };
         let lane1 = ctl.model.instruments[1].node;
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, lfo])), Some(vec![remove(lane0)]));
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, lfo, lfo, lfo])), Some(vec![remove(lane0)]));
-        assert_eq!(ctl.takes_out(&add_module, &Made { nodes: vec![lane0, lfo, lfo], edges: vec![edge] }), Some(vec![remove(lane0)]), "its cables go with the lane");
+        let effect = ctl.model.instruments[0].effects[0].node;
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, effect])), Some(vec![remove(lane0)]));
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, effect, effect, effect])), Some(vec![remove(lane0)]));
+        assert_eq!(ctl.takes_out(&add_module, &Made { nodes: vec![lane0, effect, effect], edges: vec![edge] }), Some(vec![remove(lane0)]), "its cables go with the lane");
         assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0])), Some(vec![remove(lane0)]), "a module may be an instrument alone, which is a lane and nothing in its chain");
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, lfo, lane1, lfo, lfo])), Some(vec![remove(lane1), remove(lane0)]), "the lanes, the last first");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, effect, lane1, effect, effect])), Some(vec![remove(lane1), remove(lane0)]), "the lanes, the last first");
         assert_eq!(ctl.takes_out(&add_module, &Made { nodes: vec![lane0, lane1], edges: vec![edge, edge] }), Some(vec![remove(lane1), remove(lane0)]), "with the cables between its lanes");
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lfo, lane0, lfo])), Some(vec![remove(lane0)]), "a lane wherever it is among what was made");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[effect, lane0, effect])), Some(vec![remove(lane0)]), "a lane wherever it is among what was made");
         assert_eq!(ctl.takes_out(&add_module, &nodes(&[])), None);
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lfo, lfo])), None, "no lane was made: nothing that a module makes");
-        assert_eq!(ctl.takes_out(&add_module, &nodes(&[NodeId(9_999), lfo])), None, "a node that is not there is no lane");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[effect, effect])), None, "no lane and no modulator was made: nothing that a module makes");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[NodeId(9_999), effect])), None, "a node that is not there is no lane");
+        // The modulators come after the lanes and are taken out before them, the last first, each with its cables; the cables that they drew are among the edges that were made and go with them.
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lane0, effect, lfo])), Some(vec![remove(lfo), remove(lane0)]));
+        assert_eq!(ctl.takes_out(&add_module, &Made { nodes: vec![lane0, effect, lane1, lfo], edges: vec![edge, edge, edge] }), Some(vec![remove(lfo), remove(lane1), remove(lane0)]), "the modulators first, then the lanes, the last first");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lfo, lane0])), Some(vec![remove(lane0), remove(lfo)]), "in the reverse of the order that they were made in, whatever it is");
+        assert_eq!(ctl.takes_out(&add_module, &nodes(&[lfo, NodeId(9_999)])), Some(vec![remove(lfo)]), "a node that is not there is neither");
     }
 
     #[test]

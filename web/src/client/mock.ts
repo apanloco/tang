@@ -49,7 +49,7 @@ import type { HistoryState, Made, Plan } from "./history";
 import { noise } from "./noise";
 import { deviceName, eventCableEnds, withHears } from "./noteWiring";
 import { cleanModuleName, moduleNameOf, moduleOf, moduleOfNodes, pluginCount, withModules } from "./modules";
-import type { Module, ModuleEffect, ModuleInstrument } from "./modules";
+import type { Module, ModuleEffect, ModuleInstrument, ModuleOutput, ModuleTarget } from "./modules";
 import { noteName } from "./notes";
 import { fieldsOf, gainPorts, isGainPort, samePort } from "./reach";
 import { applyEvent, withValues } from "./reducers";
@@ -624,11 +624,16 @@ function addFreeModulatorOutcome(snapshot: Snapshot, kind: ModulatorKind, hears:
  * is. The session's own modulators are listed in the graph after the lanes' nodes (the sources come first and the master last), so the first of them goes before the master.
  */
 function withModulator(snapshot: Snapshot, kind: ModulatorKind, counters: Counters, hears: NodeId | null = null): { session: Snapshot; node: Node } {
+  const { name, source } = NEW_MODULATORS[kind];
+  return withModulatorOf(snapshot, name, source, counters, hears);
+}
+
+/** `withModulator` for a modulator that is what `source` says, called `name` (a module's modulators are: `addModuleOutcome`). */
+function withModulatorOf(snapshot: Snapshot, name: string, source: ModulatorSource, counters: Counters, hears: NodeId | null): { session: Snapshot; node: Node } {
   const { nodes } = snapshot.graph;
   const last = nodes.findLastIndex((n) => n.kind === "modulator");
   const master = nodes.findIndex((n) => n.kind === "master");
   const at = last >= 0 ? last + 1 : master >= 0 ? master : nodes.length;
-  const { name, source } = NEW_MODULATORS[kind];
   const added: Node = { id: counters.node(), parent: null, name, kind: "modulator", source, ...(hears === null ? {} : { hears }) };
   const before = new Set(nodes.slice(0, at).filter((n) => n.kind === "modulator").map((n) => n.id));
   const outputs = snapshot.telemetry.modulation;
@@ -795,7 +800,7 @@ function moduleInstrumentNode(made: (typeof builtinInstruments)[string], saved: 
  * A module of the library added, as the controller adds one (`load_module`): a lane of its own at the end for each of the module's, bare (its way out cut, `addFreeEffectOutcome`), each with the instrument that the module says
  * it has, if it does (`moduleInstrumentNode`) and the effects of its chain in their order (`moduleEffectNode`), and then the cables that the module has between the plugins. Every plugin is looked at before anything is made, so that a
  * module that has one the catalog does not name, one of the wrong kind, or one that the mock cannot make leaves no lane and uses no id; the nodes are made lane by lane, a lane's node first and its effects' after it, and then the
- * cables (a redo gives the ids back in that order). A cable that cannot be drawn (it would make the audio go round) is left out, as the controller leaves it.
+ * cables (a redo gives the ids back in that order). A cable that cannot be drawn (it would make the audio go round) is left out, as the controller leaves it. The module's modulators come after the cables (`withModuleModulators`).
  */
 function addModuleOutcome(snapshot: Snapshot, name: string, counters: Counters, catalog: readonly CatalogEntry[], library: ReadonlyMap<string, Module>): Outcome {
   const module = library.get(name);
@@ -852,7 +857,160 @@ function addModuleOutcome(snapshot: Snapshot, name: string, counters: Counters, 
     const drawn = addCableOutcome(session, { node: start.id, port: { type: "audioOut" } }, { node: end.id, port: { type: cable.to.side ? "audioInSide" : "audioIn" } }, cable.gain, counters);
     if ("restructured" in drawn) session = drawn.restructured;
   }
-  return { restructured: session };
+  return { restructured: withModuleModulators(session, module, lanes, counters) };
+}
+
+/**
+ * What a modulator is made of a module's source, as the loader makes it of a file's (`build_mod_source`): a knob is held to what a knob goes to, a fade to what a fade goes to, the steps of a sequencer to what they can be (a value, a glide
+ * and a length), and a control that is bound to nothing is waiting for the next that is moved (`learning`).
+ */
+function heldSource(source: ModulatorSource): ModulatorSource {
+  switch (source.type) {
+    case "lfo":
+      return { ...source, fade: clamp(source.fade, MODULATOR_FIELD_RANGES.fade[0], MODULATOR_FIELD_RANGES.fade[1]) };
+    case "macro":
+      return { ...source, value: clamp(source.value, MODULATOR_FIELD_RANGES.value[0], MODULATOR_FIELD_RANGES.value[1]) };
+    case "midiLearn":
+      return { ...source, learning: source.control === null };
+    case "steps":
+      return {
+        ...source,
+        values: source.values.map((value) => clamp(value, STEP_RANGE[0], STEP_RANGE[1])),
+        length: clamp(source.length, MODULATOR_FIELD_RANGES.length[0], MODULATOR_FIELD_RANGES.length[1]),
+        glide: clamp(source.glide, MODULATOR_FIELD_RANGES.glide[0], MODULATOR_FIELD_RANGES.glide[1]),
+      };
+    case "envelope":
+      return source;
+  }
+}
+
+/** What a node of a modulator that is what `source` says is called (`ModSourceSlot::node_name`): its kind, or what a control is bound to. */
+function nameOfSource(source: ModulatorSource): string {
+  switch (source.type) {
+    case "lfo":
+      return "LFO";
+    case "envelope":
+      return "ADSR";
+    case "macro":
+      return "Macro";
+    case "steps":
+      return "Steps";
+    case "midiLearn":
+      switch (source.control?.type) {
+        case undefined:
+          return source.learning ? "MIDI (learning…)" : "MIDI (unbound)";
+        case "cc":
+          return `CC ${String(source.control.number)}`;
+        case "pitchBend":
+          return "Pitch Bend";
+        case "aftertouch":
+          return "Aftertouch";
+        case "velocity":
+          return "Velocity";
+        case "key":
+          return "Key";
+      }
+  }
+}
+
+/**
+ * The modulators of a module, made after its lanes, its plugins and its audio cables (`make_module_modulators`, step 106): all of them first, each hearing the lane of the module that it heard (the lane that was made, which is
+ * `lanes[…]`) or every note, so that a cable can drive the settings of one that comes after it, and then their cables. A cable that drives the depth of another waits for it: those are made last, in sweeps over the ones that wait,
+ * each as soon as the cable that it drives is there (one that drives a cable that is never made is left out). Every other cable is made in the order of the file. What cannot be made (a parameter that the plugin has not, a
+ * cable that drives what it drives already, a setting that the modulator has not) is left out, with nothing used for it.
+ */
+function withModuleModulators(snapshot: Snapshot, module: Module, lanes: readonly { lane: Node; effects: readonly Node[] }[], counters: Counters): Snapshot {
+  let session = snapshot;
+  const made: Node[] = [];
+  for (const modulator of module.modulators) {
+    const source = heldSource(modulator.source);
+    const ear = modulator.hears === null ? null : (lanes[modulator.hears]?.lane.id ?? null);
+    const added = withModulatorOf(session, nameOfSource(source), source, counters, ear);
+    session = added.session;
+    made.push(added.node);
+  }
+  const edges: (EdgeId | null)[][] = module.modulators.map((modulator) => modulator.targets.map(() => null));
+  const draw = (m: number, target: ModuleTarget, driven: EdgeId | null): EdgeId | null => {
+    const from = made[m];
+    if (!from) return null;
+    const drawn = moduleCable(session, from, target, made, lanes, driven, counters);
+    if (!drawn) return null;
+    session = drawn.session;
+    return drawn.edge;
+  };
+  let waiting: [number, number][] = [];
+  module.modulators.forEach((modulator, m) => {
+    modulator.targets.forEach((target, t) => {
+      if (target.drives.type === "depth") {
+        waiting.push([m, t]);
+        return;
+      }
+      const edge = draw(m, target, null);
+      if (edge !== null && edges[m]) edges[m][t] = edge;
+    });
+  });
+  for (let progressed = true; progressed; ) {
+    progressed = false;
+    const still: [number, number][] = [];
+    for (const [m, t] of waiting) {
+      const target = module.modulators[m]?.targets[t];
+      if (target?.drives.type !== "depth") continue;
+      const driven = edges[target.drives.modulator]?.[target.drives.target] ?? null;
+      if (driven === null) {
+        still.push([m, t]);
+        continue;
+      }
+      progressed = true;
+      const edge = draw(m, target, driven);
+      if (edge !== null && edges[m]) edges[m][t] = edge;
+    }
+    waiting = still;
+  }
+  return session;
+}
+
+/**
+ * The cable that `target` of a module's modulator `from` is, drawn in `session` (`module_cable`): to the parameter of a plugin of the module that has the name, to the volume or the mix of one, to a setting of another of the
+ * module's modulators (`made`) or, with the id of the cable `driven` whose depth it drives, to that; at the depth that the module says (held to the range of a depth). The session with it and its id, or none if it cannot be drawn
+ * (nothing is used for one that is not).
+ */
+function moduleCable(
+  session: Snapshot,
+  from: Node,
+  target: ModuleTarget,
+  made: readonly Node[],
+  lanes: readonly { lane: Node; effects: readonly Node[] }[],
+  driven: EdgeId | null,
+  counters: Counters,
+): { session: Snapshot; edge: EdgeId } | null {
+  const plugin = (place: ModuleOutput): Node | undefined => (place.effect === null ? lanes[place.lane]?.lane : lanes[place.lane]?.effects[place.effect]);
+  const { drives } = target;
+  let drawn: Outcome;
+  if (drives.type === "param") {
+    const node = plugin(drives.plugin);
+    const row = node && (node.kind === "instrument" || node.kind === "effect") ? node.plugin?.params.find((p) => p.name === drives.name) : undefined;
+    if (!node || !row) return null;
+    drawn = addParamCable(session, from, node.id, row.index, counters);
+  } else if (drives.type === "gain") {
+    const node = plugin(drives.plugin);
+    if (!node) return null;
+    drawn = addGainCable(session, from, node.id, { type: drives.gain }, counters);
+  } else if (drives.type === "setting") {
+    const node = made[drives.modulator];
+    if (!node) return null;
+    drawn = addFieldCable(session, from, { node: node.id, port: { type: drives.port } }, counters);
+  } else {
+    const node = made[drives.modulator];
+    if (!node || driven === null) return null;
+    drawn = addFieldCable(session, from, { node: node.id, port: { type: "depth", edge: driven } }, counters);
+  }
+  if (!("restructured" in drawn)) return null;
+  const before = new Set(session.graph.edges.filter(isModulation).map((e) => e.id));
+  const cable = drawn.restructured.graph.edges.find((e): e is Edge & { kind: "modulation"; id: EdgeId } => isModulation(e) && !before.has(e.id));
+  if (!cable) return null;
+  const amount = clamp(target.depth, DEPTH_RANGE[0], DEPTH_RANGE[1]);
+  const edges = drawn.restructured.graph.edges.map((e) => (e === cable ? { ...e, amount } : e));
+  return { session: { ...drawn.restructured, graph: { ...drawn.restructured.graph, edges } }, edge: cable.id };
 }
 
 /**

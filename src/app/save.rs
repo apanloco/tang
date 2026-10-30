@@ -176,6 +176,26 @@ fn sync_for_file(sync: usize) -> Option<String> {
     (sync > 0).then(|| sync_name(sync).to_string())
 }
 
+/// What a modulator is, and how it is set, as the file writes it (a module's file writes it too).
+pub(super) fn source_to_save(source: &ModSourceSlot) -> SaveModSource {
+    match source {
+        ModSourceSlot::Lfo { waveform, rate, retrigger, fade, sync } => SaveModSource::Lfo { waveform: waveform.name().to_string(), rate: *rate, retrigger: *retrigger, fade: *fade, sync: sync_for_file(*sync) },
+        ModSourceSlot::Envelope { attack, decay, sustain, release } => SaveModSource::Envelope { attack: *attack, decay: *decay, sustain: *sustain, release: *release },
+        ModSourceSlot::MidiLearn { source, .. } => SaveModSource::MidiLearn {
+            cc: match source {
+                Some(MidiBindSource::Cc(n)) => Some(*n),
+                _ => None,
+            },
+            pitch_bend: matches!(source, Some(MidiBindSource::PitchBend)),
+            aftertouch: matches!(source, Some(MidiBindSource::Aftertouch)),
+            velocity: matches!(source, Some(MidiBindSource::Velocity)),
+            key: matches!(source, Some(MidiBindSource::Key)),
+        },
+        ModSourceSlot::Macro { value } => SaveModSource::Macro { value: *value },
+        ModSourceSlot::Steps { values, length, rate, glide, retrigger, sync } => SaveModSource::Steps { values: values.to_vec(), length: *length, rate: *rate, glide: *glide, retrigger: *retrigger, sync: sync_for_file(*sync) },
+    }
+}
+
 /// The modulators of the rack at `at`, as the file writes them: each cable by the place that the rack names what it drives by (`SessionModel::kind_of`: the file names a plugin by its
 /// place in the session, a sibling by its index).
 fn modulators_to_save(model: &SessionModel, at: ModulatorLocation) -> Vec<SaveModulator> {
@@ -184,31 +204,7 @@ fn modulators_to_save(model: &SessionModel, at: ModulatorLocation) -> Vec<SaveMo
     mods.iter()
         .enumerate()
         .map(|(index, m)| {
-            let source = match &m.source {
-                ModSourceSlot::Lfo { waveform, rate, retrigger, fade, sync } => {
-                    SaveModSource::Lfo { waveform: waveform.name().to_string(), rate: *rate, retrigger: *retrigger, fade: *fade, sync: sync_for_file(*sync) }
-                }
-                ModSourceSlot::Envelope { attack, decay, sustain, release } => SaveModSource::Envelope {
-                    attack: *attack,
-                    decay: *decay,
-                    sustain: *sustain,
-                    release: *release,
-                },
-                ModSourceSlot::MidiLearn { source, .. } => SaveModSource::MidiLearn {
-                    cc: match source {
-                        Some(MidiBindSource::Cc(n)) => Some(*n),
-                        _ => None,
-                    },
-                    pitch_bend: matches!(source, Some(MidiBindSource::PitchBend)),
-                    aftertouch: matches!(source, Some(MidiBindSource::Aftertouch)),
-                    velocity: matches!(source, Some(MidiBindSource::Velocity)),
-                    key: matches!(source, Some(MidiBindSource::Key)),
-                },
-                ModSourceSlot::Macro { value } => SaveModSource::Macro { value: *value },
-                ModSourceSlot::Steps { values, length, rate, glide, retrigger, sync } => {
-                    SaveModSource::Steps { values: values.to_vec(), length: *length, rate: *rate, glide: *glide, retrigger: *retrigger, sync: sync_for_file(*sync) }
-                }
-            };
+            let source = source_to_save(&m.source);
             SaveModulator {
                 source,
                 targets: m

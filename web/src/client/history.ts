@@ -164,14 +164,15 @@ export interface Removed {
 export type Plan = { step: Step } | { added: Added } | { removed: Removed } | "barrier" | "nothing";
 
 /**
- * The intents that take out what `added`, an add that was carried out, made: the one node, or the one cable (an effect that stands by itself: its lane), or the lanes of a module, the last that was made first, as they are in
+ * The intents that take out what `added`, an add that was carried out, made: the one node, or the one cable (an effect that stands by itself: its lane), or the lanes and the modulators of a module, the last that was made first, as they are in
  * `snapshot`; or null if it made something that cannot be named, or what it made is not there. As `takes_out` of the controller.
  */
 export function takesOut(snapshot: Snapshot, added: Intent, made: Made): Intent[] | null {
-  // A module made a lane for each of its own, and the plugins in them, and the cables between the plugins: each lane is taken out, with all that is in it and the cables at it, the last made first.
+  // A module made a lane for each of its own, and the plugins in them, and the cables between the plugins, and then its modulators with their cables: each lane and each modulator is taken out, with all that is in it and the cables
+  // at it, the last made first (the modulators, which come last, go first).
   if (added.type === "addFreeEffect" && moduleNameOf(added.plugin) !== null) {
-    const lanes = made.nodes.filter((id) => snapshot.graph.nodes.some((n) => n.id === id && n.kind === "instrument"));
-    return lanes.length === 0 ? null : lanes.reverse().map((node): Intent => ({ type: "removeNode", node }));
+    const taken = made.nodes.filter((id) => snapshot.graph.nodes.some((n) => n.id === id && (n.kind === "instrument" || n.kind === "modulator")));
+    return taken.length === 0 ? null : taken.reverse().map((node): Intent => ({ type: "removeNode", node }));
   }
   const one = takesOutOne(snapshot, added, made);
   return one === null ? null : [one];

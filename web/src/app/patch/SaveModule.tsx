@@ -178,12 +178,15 @@ export const SaveModuleButton = memo(function SaveModuleButton({ node, name }: {
   );
 });
 
-/** The button on the canvas's bar of choosing that saves the nodes that were chosen (`nodes`: the plugins that a module can hold, which `modulePluginsOf` picks out of what is chosen). It cannot be pressed with none. */
-export function SaveSelectionButton({ nodes }: { nodes: readonly NodeId[] }) {
+/**
+ * The button on the canvas's bar of choosing that saves the nodes that were chosen (`nodes`: the plugins and the modulators that a module can hold, which `modulePluginsOf` picks out of what is chosen, `plugins` of them plugins).
+ * It cannot be pressed with no plugin: a module is made of effects and instruments, and a modulator goes with the ones that it drives.
+ */
+export function SaveSelectionButton({ nodes, plugins }: { nodes: readonly NodeId[]; plugins: number }) {
   const editor = useEditor();
   const save = useCallback((text: string) => editor.saveSelectionAsModule(nodes, text), [editor, nodes]);
   return (
-    <ModuleNameButton label="Save the chosen nodes as a module" className="tang-patch__arrange" disabled={nodes.length === 0} save={save}>
+    <ModuleNameButton label="Save the chosen nodes as a module" className="tang-patch__arrange" disabled={plugins === 0} save={save}>
       Save as module…
     </ModuleNameButton>
   );

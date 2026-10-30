@@ -8444,6 +8444,38 @@ mod modules {
     }
 
     #[test]
+    fn n_adds_a_module_that_has_modulators_which_the_tree_lists_under_the_lane_each_hears_and_ctrl_z_takes_out_with_the_lanes() {
+        let (dir, mut h) = harness();
+        // A module with two lanes and two modulators (step 106): an LFO that hears the first lane and drives the filter's cutoff, and an envelope that hears every note and drives the reverb's mix.
+        let file = "[[instrument]]\nplugin = \"builtin:osc\"\n[[instrument.effect]]\nplugin = \"builtin:filter\"\n[[instrument]]\n[[instrument.effect]]\nplugin = \"builtin:reverb\"\n\
+                    [[modulator]]\ntype = \"lfo\"\nrate = 2.0\nhears = \"instrument[0]\"\n[[modulator.target]]\nto = \"instrument[0].effect[0]\"\nparam = \"cutoff\"\ndepth = 0.25\n\
+                    [[modulator]]\ntype = \"envelope\"\n[[modulator.target]]\nto = \"instrument[1].effect[0]\"\ngain = \"mix\"\ndepth = 0.5\n";
+        std::fs::write(dir.path().join("Voice.toml"), file).unwrap();
+        assert!(h.s.ctl.refresh_modules());
+        let (lanes, modulators) = (h.s.ctl.model.instruments.len(), h.s.ctl.model.free_modulators.len());
+        h.commands();
+        h.press(KeyCode::Char('N'));
+        assert_eq!(h.s.selector.as_ref().and_then(|selector| selector.items.first().map(|item| item.cells[2].clone())).as_deref(), Some("3"), "the plugins are counted, and the modulators are not");
+        h.press(KeyCode::Enter);
+        let told = h.commands();
+        assert_eq!(told.iter().filter(|command| command.starts_with("InsertFreeModulator")).count(), 2, "{told:?}");
+        assert_eq!(told.iter().filter(|command| command.starts_with("AddFreeModTarget")).count(), 2, "{told:?}");
+        assert_eq!((h.s.ctl.model.instruments.len(), h.s.ctl.model.free_modulators.len()), (lanes + 2, modulators + 2));
+        // The one that hears the module's first lane is listed under that lane, and the one that hears every note is among those that do, which come first, and ends `(free)`.
+        let tree = h.tree();
+        let oscillator = tree.iter().rposition(|line| line.contains("Oscillator")).expect("the module's oscillator is in the tree");
+        let lfo = tree.iter().rposition(|line| line.contains("~ LFO")).expect("the LFO is in the tree");
+        assert!(lfo > oscillator && tree[lfo].contains("Filter: cutoff (25%)") && !tree[lfo].contains("(free)"), "under the lane that it hears: {tree:#?}");
+        let envelope = tree.iter().position(|line| line.contains("~ ADSR") && line.contains("(free)")).expect("the envelope hears every note");
+        assert!(envelope < oscillator && tree[envelope].contains("mix (50%)"), "{tree:#?}");
+        assert_eq!(h.s.ctl.history_state().undo.as_deref(), Some("add Voice"));
+        h.press_with(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!((h.s.ctl.model.instruments.len(), h.s.ctl.model.free_modulators.len()), (lanes, modulators), "one undo takes the lanes out, and the modulators");
+        h.press_with(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert_eq!((h.s.ctl.model.instruments.len(), h.s.ctl.model.free_modulators.len()), (lanes + 2, modulators + 2), "and one redo puts them back");
+    }
+
+    #[test]
     fn a_name_that_is_refused_stays_in_the_popup_with_the_reason_and_what_is_typed_clears_it() {
         let (dir, mut h) = harness();
         h.press(KeyCode::Char('K')).type_chars("a/b").press(KeyCode::Enter);

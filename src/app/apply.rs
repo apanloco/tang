@@ -11,7 +11,7 @@ use crate::app::controller::{
 use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
 use crate::app::intent::{Applied, Event, Gain, Intent, IntentError, ModulatorField, ModulatorKind, ParamValue, PatternField};
 use crate::app::journal::{Inverse, Journal, RowBefore};
-use crate::app::module::{self, Module, ModuleOutput};
+use crate::app::module::{self, Module, ModuleDrives, ModuleOutput, ModuleTarget};
 use crate::app::model::{
     BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, EdgeId, FieldTarget, LinkOf, MAX_NAME, MAX_PINNED, ModSourceSlot, NEW_CABLE_DEPTH, NEW_CABLE_GAIN, NodeId, NodePath, ParamKind, ParamSlot,
     PatternState, PluginSlot, STEP_MAX, STEP_MIN, sync_beats,
@@ -1004,7 +1004,8 @@ impl Controller {
     /// the module's lane has, if it has one, and the module's effects in its chain in their order, each with the preset that the file says (by its name), the values that it says over it, its mix or its volume, the knobs pinned to
     /// its node and whether the stage before it feeds it, and then the audio cables that the file has between them. The lanes are made in order, each lane's node first and its effects' after it, and then the cables, so
     /// that a redo gives all of them back under the ids they had. Every plugin is loaded before anything is made: a module that has one that is not installed, or does not load, leaves no lane and uses no id. What the
-    /// file says of a preset or a value that the plugin has not is logged and left out, as the loader leaves it out of a session; a cable that cannot be drawn (it would make the audio go round) is too.
+    /// file says of a preset or a value that the plugin has not is logged and left out, as the loader leaves it out of a session; a cable that cannot be drawn (it would make the audio go round) is too. **The module's
+    /// modulators come last** (step 106: `make_module_modulators`), and need nothing loaded: they are made of what the file says.
     fn load_module(&mut self, name: &str) -> Result<(), IntentError> {
         let Some(dir) = self.modules_dir.clone() else { return Err(invalid("this program keeps no library of modules")) };
         let text = std::fs::read_to_string(module::path_in(&dir, name)).map_err(|_| invalid(format!("there is no module called {name} in the library")))?;
@@ -1073,7 +1074,92 @@ impl Controller {
                 log::warn!("a cable of the module is left out: {error}");
             }
         }
+        self.make_module_modulators(module, &made);
         Ok(())
+    }
+
+    /// The modulators of `module` (step 106), made after its lanes, its plugins and its audio cables, which are in `made` (the node of each lane, which is its instrument's, and of each of its effects): all of the modulators first,
+    /// each hearing the lane of the module that it heard (the lane that was made, or every note), so that a cable can drive the settings of one that comes after it, and then their cables. A cable that drives the depth of
+    /// another has to wait for it: those are made last, in sweeps over the ones that wait, each as soon as the cable that it drives is there (a cable that drives one that is never made is left out). Every other cable is made
+    /// in the order of the file. What cannot be made (a parameter that the plugin has not, a cable that drives what it drives already) is logged and left out, as the loader leaves it out of a session; nothing is used for it.
+    fn make_module_modulators(&mut self, module: &Module, made: &[(NodeId, Vec<NodeId>)]) {
+        let at = ModulatorLocation::Free;
+        let mut places = Vec::new();
+        for modulator in &module.modulators {
+            let ear = modulator.hears.map(|lane| made[lane].0);
+            places.push(self.add_modulator_hearing(at, modulator.source.clone(), ear).expect("the session's own rack is always there"));
+        }
+        let nodes: Vec<NodeId> = places.iter().map(|&place| self.model.free_modulators[place].node).collect();
+        // (The cable that each cable of the file is, once it is made.)
+        let mut edges: Vec<Vec<Option<EdgeId>>> = module.modulators.iter().map(|modulator| vec![None; modulator.targets.len()]).collect();
+        let mut waiting: Vec<(usize, usize)> = Vec::new();
+        for (m, modulator) in module.modulators.iter().enumerate() {
+            for (t, target) in modulator.targets.iter().enumerate() {
+                if matches!(target.drives, ModuleDrives::Depth { .. }) {
+                    waiting.push((m, t));
+                    continue;
+                }
+                match self.module_cable(places[m], target, made, &nodes, None) {
+                    Ok(edge) => edges[m][t] = Some(edge),
+                    Err(error) => log::warn!("cable {t} of modulator {m} of the module is left out: {error}"),
+                }
+            }
+        }
+        loop {
+            let mut progressed = false;
+            let mut still = Vec::new();
+            for (m, t) in waiting {
+                let target = &module.modulators[m].targets[t];
+                let ModuleDrives::Depth { modulator, target: of } = target.drives else { continue };
+                let Some(driven) = edges[modulator][of] else {
+                    still.push((m, t));
+                    continue;
+                };
+                progressed = true;
+                match self.module_cable(places[m], target, made, &nodes, Some(driven)) {
+                    Ok(edge) => edges[m][t] = Some(edge),
+                    Err(error) => log::warn!("cable {t} of modulator {m} of the module is left out: {error}"),
+                }
+            }
+            waiting = still;
+            if !progressed {
+                break;
+            }
+        }
+        for (m, t) in waiting {
+            log::warn!("cable {t} of modulator {m} of the module drives the depth of a cable that is not there: left out");
+        }
+    }
+
+    /// The cable that `target` is, drawn from the modulator at `place` of the session's own rack: to the parameter of a plugin of the module that has the name (`made` has the nodes of the module's lanes and effects), to
+    /// the volume or the mix of one, to a setting of another of the module's modulators (`nodes`) or, with the id of the cable `depth_of` that it drives the depth of, to that, at the depth that the module says (held to the
+    /// range of a depth). The id of the cable, or why it was not drawn; nothing is used for a cable that is not.
+    fn module_cable(&mut self, place: usize, target: &ModuleTarget, made: &[(NodeId, Vec<NodeId>)], nodes: &[NodeId], depth_of: Option<EdgeId>) -> Result<EdgeId, IntentError> {
+        let at = ModulatorLocation::Free;
+        let node_of = |plugin: ModuleOutput| match plugin {
+            ModuleOutput::Instrument { lane } => made[lane].0,
+            ModuleOutput::Effect { lane, effect } => made[lane].1[effect],
+        };
+        let mut new = match &target.drives {
+            ModuleDrives::Param { plugin, name } => {
+                let node = node_of(*plugin);
+                let found = self.locate_plugin(node)?;
+                let index = self.plugin_at(&found).and_then(|slot| slot.params.iter().find(|row| row.name == *name).map(|row| row.index));
+                self.param_cable(at, place, node, index.ok_or_else(|| invalid(format!("the plugin has no parameter {name}")))?)?
+            }
+            ModuleDrives::Gain { plugin, gain } => self.gain_cable(at, place, node_of(*plugin), Port::of_gain(*gain))?,
+            ModuleDrives::Setting { modulator, port } => self.field_cable(at, place, &Endpoint { node: nodes[*modulator], port: *port })?,
+            ModuleDrives::Depth { modulator, .. } => {
+                let edge = depth_of.ok_or_else(|| invalid("the cable that it drives the depth of is not made"))?;
+                self.field_cable(at, place, &Endpoint { node: nodes[*modulator], port: Port::Depth { edge } })?
+            }
+        };
+        new.depth = target.depth.clamp(DEPTH_MIN, DEPTH_MAX);
+        if !self.add_target(at, place, new) {
+            return Err(invalid("it drives nothing that is in reach of the session's modulators"));
+        }
+        let drawn = self.model.modulators(at).and_then(|rack| rack.get(place)).and_then(|modulator| modulator.targets.last()).map(|cable| cable.edge);
+        drawn.ok_or_else(|| invalid("the cable was not drawn"))
     }
 
     /// Give the plugin in `node`, which has just been made from a module, the preset that the module names (found by its name) and the values that it says over it (by the name of the parameter): the order in which the loader
@@ -7372,7 +7458,10 @@ type = "midi"
 
     /// A session of two lanes that hold plugins and a third that is empty: lane 0 is an oscillator (a volume of 0.8, a detune of 3 that is pinned) with a chain of a filter (at a mix of 0.9), a delay and a reverb (a
     /// preset, a mix of 0.4); lane 1 has no instrument and no way out, and holds a math effect (a mode of 4) and a drive. The cables: the oscillator into the math (0.3), the filter into the math's second input
-    /// (0.7), the math into the reverb, and the drive to the mix. It has a group with a bus effect, the keys as a source of notes and a modulator (what a module does not take).
+    /// (0.7), the math into the reverb, and the drive to the mix. It has a group with a bus effect, the keys as a source of notes and six modulators (step 106): rack 0 is an LFO whose one cable drives the depth of
+    /// the envelope's second cable; rack 1 an LFO that hears lane 0 and drives the filter's cutoff, the delay's mix, the oscillator's volume and the math's amount; rack 2 an envelope that drives the reverb's size
+    /// and the depth of the LFO's cable to the delay's mix; rack 3 a step sequencer that hears lane 1 and drives the first LFO's rate, the envelope's attack and a parameter of the group's bus effect (which a module has
+    /// not); rack 4 a macro that drives the math's level; rack 5 a control bound to CC 74 that drives the filter's resonance.
     const A_GRAPH_TO_KEEP: &str = r#"
 [keys]
 
@@ -7414,6 +7503,94 @@ plugin = "builtin:drive"
 
 [[modulator]]
 type = "lfo"
+
+[[modulator.target]]
+mod_depth = [2, 1]
+depth = 0.35
+
+[[modulator]]
+type = "lfo"
+waveform = "triangle"
+rate = 2.0
+retrigger = true
+fade = 0.5
+hears = "instrument[0]"
+
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "cutoff"
+depth = 0.25
+
+[[modulator.target]]
+to = "instrument[0].effect[1]"
+gain = "mix"
+depth = -0.5
+
+[[modulator.target]]
+to = "instrument[0]"
+gain = "volume"
+depth = 0.2
+
+[[modulator.target]]
+to = "instrument[1].effect[0]"
+param = "amount"
+depth = 0.4
+
+[[modulator]]
+type = "envelope"
+attack = 0.2
+decay = 0.4
+sustain = 0.6
+release = 0.8
+
+[[modulator.target]]
+to = "instrument[0].effect[2]"
+param = "size"
+depth = 0.5
+
+[[modulator.target]]
+mod_depth = [1, 1]
+depth = 0.1
+
+[[modulator]]
+type = "steps"
+steps = [0.5, -0.25, 1.0, 0.0]
+length = 4
+rate = 4.0
+glide = 0.5
+sync = "1/8"
+hears = "instrument[1]"
+
+[[modulator.target]]
+mod_rate = 1
+depth = 0.2
+
+[[modulator.target]]
+mod_attack = 2
+depth = 0.3
+
+[[modulator.target]]
+to = "group[0].effect[0]"
+param = "cutoff"
+depth = 0.3
+
+[[modulator]]
+type = "macro"
+value = 0.75
+
+[[modulator.target]]
+to = "instrument[1].effect[0]"
+param = "level"
+depth = 0.6
+
+[[modulator]]
+type = "midi"
+midi_cc = 74
+
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "resonance"
+depth = 1.0
 
 [[cable]]
 from = "instrument[0]"
@@ -7633,6 +7810,300 @@ to = "master"
         assert_eq!(text.matches("route = \"none\"").count(), 2, "{text}");
     }
 
+    /// What the cables of the modulator at place `m` of the session's own rack drive, and how far, as the model says it, in the order of its cables.
+    fn cables_of(ctl: &Controller, m: usize) -> Vec<(crate::ids::Driven, f32)> {
+        ctl.model.free_modulators[m].targets.iter().map(|cable| (cable.aim, cable.depth)).collect()
+    }
+
+    /// What the cables of the modulator `m` of a module drive and how far, as a file says them.
+    fn drives_of(module: &Module, m: usize) -> Vec<(module::ModuleDrives, f32)> {
+        module.modulators[m].targets.iter().map(|target| (target.drives.clone(), target.depth)).collect()
+    }
+
+    #[test]
+    fn modulators_chosen_with_the_plugins_that_they_drive_are_saved_with_their_cables_and_added_with_them_in_one_step() {
+        use crate::ids::{Driven, ModGain, ModSetting};
+        use module::ModuleDrives as Drives;
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, mut ctl) = a_graph(dir.path());
+        let osc = ctl.model.instruments[0].node;
+        let [filter, delay, reverb] = [0, 1, 2].map(|index| ctl.model.instruments[0].effects[index].node);
+        let math = ctl.model.instruments[1].effects[0].node;
+        let rack: Vec<NodeId> = ctl.model.free_modulators.iter().map(|modulator| modulator.node).collect();
+        assert_eq!(rack.len(), 6);
+        // (The first of them is left out here: it drives the depth of a cable of the envelope's, and goes with it in a test below.)
+        let mut chosen = vec![osc, filter, delay, reverb, math];
+        chosen.extend(&rack[1..]);
+        save_selection(&mut ctl, &chosen, "Rack").unwrap();
+        let module = module_in(dir.path(), "Rack");
+        assert_eq!((module.lanes.len(), module.plugin_count(), module.modulators.len()), (2, 5, 5), "the modulators are not counted among the plugins");
+        // What the file says of each: its kind and settings, the lane it hears (the places are the module's: the oscillator's lane is its first, the math's its second) and what its cables drive.
+        let sources: Vec<String> = module.modulators.iter().map(|modulator| format!("{:?}", modulator.source)).collect();
+        for (saved, original) in sources.iter().zip(&rack[1..]) {
+            let slot = ctl.model.free_modulators.iter().find(|slot| slot.node == *original).unwrap();
+            assert_eq!(*saved, format!("{:?}", slot.source), "what it is, and how it is set");
+        }
+        assert!(sources[0].starts_with("Lfo { waveform: Triangle, rate: 2.0, retrigger: true, fade: 0.5") && sources[3].starts_with("Macro { value: 0.75") && sources[4].contains("Cc(74)"), "{sources:?}");
+        assert_eq!(module.modulators.iter().map(|modulator| modulator.hears).collect::<Vec<_>>(), [Some(0), None, Some(1), None, None]);
+        let effect = |lane: usize, effect: usize| module::ModuleOutput::Effect { lane, effect };
+        let drives_param = |lane: usize, index: usize, name: &str| Drives::Param { plugin: effect(lane, index), name: name.to_string() };
+        assert_eq!(
+            drives_of(&module, 0),
+            [
+                (drives_param(0, 0, "cutoff"), 0.25),
+                (Drives::Gain { plugin: effect(0, 1), gain: ModGain::Mix }, -0.5),
+                (Drives::Gain { plugin: module::ModuleOutput::Instrument { lane: 0 }, gain: ModGain::Volume }, 0.2),
+                (drives_param(1, 0, "amount"), 0.4)
+            ]
+        );
+        assert_eq!(drives_of(&module, 1), [(drives_param(0, 2, "size"), 0.5), (Drives::Depth { modulator: 0, target: 1 }, 0.1)]);
+        assert_eq!(
+            drives_of(&module, 2),
+            [(Drives::Setting { modulator: 0, port: crate::app::graph::Port::Rate }, 0.2), (Drives::Setting { modulator: 1, port: crate::app::graph::Port::Attack }, 0.3)],
+            "the cable to the group's bus effect is the session's"
+        );
+        assert_eq!(drives_of(&module, 3), [(drives_param(1, 0, "level"), 0.6)]);
+        assert_eq!(drives_of(&module, 4), [(drives_param(0, 0, "resonance"), 1.0)]);
+
+        // Added: the lanes and their plugins and the audio cables, and then the modulators, each hearing the lane that was made for the one it heard, and then their cables.
+        let (cables_before, modulators_before) = (ctl.model.cables.len(), ctl.model.free_modulators.len());
+        sent(&engine);
+        let applied = add_free_effect(&mut ctl, "module:Rack").unwrap();
+        assert_eq!(applied, Applied::restructured(ctl.rev));
+        assert_eq!((ctl.model.instruments.len(), ctl.model.free_modulators.len()), (5, modulators_before + 5));
+        let (first, second) = (&ctl.model.instruments[3], &ctl.model.instruments[4]);
+        let (new_osc, new_filter, new_delay, new_reverb, new_math) = (first.node, first.effects[0].node, first.effects[1].node, first.effects[2].node, second.effects[0].node);
+        let (lane_one, lane_two) = (first.node, second.node);
+        let made: Vec<NodeId> = ctl.model.free_modulators[modulators_before..].iter().map(|modulator| modulator.node).collect();
+        assert_eq!(ctl.model.free_modulators[modulators_before..].iter().map(|modulator| modulator.ear).collect::<Vec<_>>(), [Some(lane_one), None, Some(lane_two), None, None]);
+        assert_eq!(ctl.model.free_modulators[modulators_before..].iter().map(|modulator| format!("{:?}", modulator.source)).collect::<Vec<_>>(), sources, "each is what it was saved as");
+        let index = |inst: usize, slot: usize, name: &str| param(&ctl, NodePath::Effect { inst, index: slot }, name).0;
+        let at = modulators_before;
+        assert_eq!(
+            cables_of(&ctl, at),
+            [
+                (Driven::Param { plugin: new_filter, index: index(3, 0, "cutoff") }, 0.25),
+                (Driven::Gain { node: new_delay, gain: ModGain::Mix }, -0.5),
+                (Driven::Gain { node: new_osc, gain: ModGain::Volume }, 0.2),
+                (Driven::Param { plugin: new_math, index: index(4, 0, "amount") }, 0.4)
+            ]
+        );
+        let delay_cable = ctl.model.free_modulators[at].targets[1].edge;
+        assert_eq!(cables_of(&ctl, at + 1), [(Driven::Param { plugin: new_reverb, index: index(3, 2, "size") }, 0.5), (Driven::Depth(delay_cable), 0.1)], "the depth of the cable that was made for the delay's mix");
+        assert_eq!(cables_of(&ctl, at + 2), [(Driven::Setting { modulator: made[0], field: ModSetting::Rate }, 0.2), (Driven::Setting { modulator: made[1], field: ModSetting::Attack }, 0.3)]);
+        assert_eq!(cables_of(&ctl, at + 3), [(Driven::Param { plugin: new_math, index: index(4, 0, "level") }, 0.6)]);
+        assert_eq!(cables_of(&ctl, at + 4), [(Driven::Param { plugin: new_filter, index: index(3, 0, "resonance") }, 1.0)]);
+        ctl.model.check_ids().unwrap();
+        let told = sent(&engine);
+        assert_eq!(told.iter().filter(|command| command.starts_with("InsertFreeModulator")).count(), 5, "{told:?}");
+        assert_eq!(told.iter().filter(|command| command.starts_with("AddFreeModTarget")).count(), 10, "a cable for each one that stays");
+        assert_eq!(told.iter().filter(|command| command.starts_with("SetModulatorEar")).count(), 2, "an ear for each that hears a lane");
+        // The nodes that were made come in the order of the file: each lane and its plugins, and then the modulators.
+        assert_eq!(ctl.last_made().nodes, [lane_one, new_filter, new_delay, new_reverb, lane_two, new_math, made[0], made[1], made[2], made[3], made[4]]);
+
+        // One step of the history, which Undo takes out whole, the modulators first, and Redo makes again under the ids that they had.
+        assert_eq!(ctl.history_state().undo.as_deref(), Some("add Rack"));
+        let ids: Vec<EdgeId> = ctl.model.free_modulators[at..].iter().flat_map(|modulator| modulator.targets.iter().map(|cable| cable.edge)).collect();
+        ctl.apply(Intent::Undo).unwrap();
+        assert_eq!((ctl.model.instruments.len(), ctl.model.free_modulators.len(), ctl.model.cables.len()), (3, modulators_before, cables_before), "the lanes, the modulators and every cable are gone");
+        assert!(ctl.model.free_modulators.iter().all(|modulator| !made.contains(&modulator.node)));
+        ctl.model.check_ids().unwrap();
+        ctl.apply(Intent::Redo).unwrap();
+        assert_eq!(ctl.model.free_modulators[at..].iter().map(|modulator| modulator.node).collect::<Vec<_>>(), made);
+        assert_eq!(ctl.model.free_modulators[at..].iter().flat_map(|modulator| modulator.targets.iter().map(|cable| cable.edge)).collect::<Vec<_>>(), ids);
+        ctl.model.check_ids().unwrap();
+        // What was added and saved again is the same file: a module that is made of a module is it.
+        let copy: Vec<NodeId> = [new_osc, new_filter, new_delay, new_reverb, new_math].into_iter().chain(made.iter().copied()).collect();
+        save_selection(&mut ctl, &copy, "Copy").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("Rack.toml")).unwrap(), std::fs::read_to_string(dir.path().join("Copy.toml")).unwrap());
+    }
+
+    #[test]
+    fn the_cables_of_a_modulator_to_what_is_not_chosen_are_left_out_and_so_is_an_ear_that_is_not_a_lane_of_the_module() {
+        use module::ModuleDrives as Drives;
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = a_graph(dir.path());
+        let [filter, delay] = [0, 1].map(|index| ctl.model.instruments[0].effects[index].node);
+        let math = ctl.model.instruments[1].effects[0].node;
+        let (group, holder) = (ctl.model.groups[0].node, ctl.model.instruments[1].node);
+        let [lfo, envelope] = [1, 2].map(|index| ctl.model.free_modulators[index].node);
+        let effect = |lane: usize, effect: usize| module::ModuleOutput::Effect { lane, effect };
+        // The filter with the first LFO: of the four cables that the LFO has, the one to the cutoff stays; the lane that it hears is the oscillator's, which is a lane of the module since the filter is in it.
+        save_selection(&mut ctl, &[filter, lfo], "Lfo").unwrap();
+        let module = module_in(dir.path(), "Lfo");
+        assert_eq!((module.lanes.len(), module.modulators.len(), module.modulators[0].hears), (1, 1, Some(0)));
+        assert_eq!(drives_of(&module, 0), [(Drives::Param { plugin: effect(0, 0), name: "cutoff".to_string() }, 0.25)]);
+        // The math with it: the LFO hears the oscillator's lane, which has nothing chosen in it, so the module has no such lane and it hears every note; only the cable to the math's amount is the module's.
+        save_selection(&mut ctl, &[math, lfo], "Amount").unwrap();
+        let module = module_in(dir.path(), "Amount");
+        assert_eq!((module.lanes.len(), module.modulators[0].hears), (1, None));
+        assert_eq!(drives_of(&module, 0), [(Drives::Param { plugin: effect(0, 0), name: "amount".to_string() }, 0.4)]);
+        // A modulator whose cables all go to what is not chosen is in the module all the same, with none: it is chosen, and its cables are the person's to draw.
+        save_selection(&mut ctl, &[math, envelope], "Bare").unwrap();
+        let module = module_in(dir.path(), "Bare");
+        assert_eq!((module.modulators.len(), module.modulators[0].targets.len(), module.modulators[0].hears), (1, 0, None));
+        // A modulator that hears a group hears every note in a module, which has no group; one that hears a lane that is chosen hears the module's.
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: Some(group) }).unwrap();
+        ctl.apply(Intent::AddFreeModulator { kind: ModulatorKind::Macro, hears: Some(holder) }).unwrap();
+        let [heard_by_a_group, heard_by_the_holder] = [6, 7].map(|index| ctl.model.free_modulators[index].node);
+        save_selection(&mut ctl, &[delay, math, heard_by_a_group, heard_by_the_holder], "Ears").unwrap();
+        let module = module_in(dir.path(), "Ears");
+        assert_eq!(module.modulators.iter().map(|modulator| modulator.hears).collect::<Vec<_>>(), [None, Some(1)], "the group is not in a module; the holder's lane is, with the math in it");
+        // A modulator is chosen as the plugins are, in any order, and a node that is in the list twice is one.
+        save_selection(&mut ctl, &[lfo, filter, lfo, envelope, filter], "Twice").unwrap();
+        assert_eq!(module_in(dir.path(), "Twice").modulators.len(), 2);
+    }
+
+    #[test]
+    fn a_cable_that_drives_the_depth_of_another_goes_with_that_other_and_names_the_place_it_has_among_the_cables_that_stay() {
+        use crate::ids::Driven;
+        use module::ModuleDrives as Drives;
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = a_graph(dir.path());
+        let [filter, delay] = [0, 1].map(|index| ctl.model.instruments[0].effects[index].node);
+        let rack: Vec<NodeId> = ctl.model.free_modulators.iter().map(|modulator| modulator.node).collect();
+        let [first, lfo, envelope] = [0, 1, 2].map(|index| rack[index]);
+        // The LFO's cables are the cutoff, the delay's mix, the volume and the amount; the envelope's second cable drives the depth of the second, and the first modulator's the depth of the envelope's second.
+        // With the delay and not the filter, the LFO's second cable is the first that stays, and what drives its depth names it as the first.
+        save_selection(&mut ctl, &[delay, lfo, envelope], "Shift").unwrap();
+        let module = module_in(dir.path(), "Shift");
+        assert_eq!(drives_of(&module, 1), [(Drives::Depth { modulator: 0, target: 0 }, 0.1)], "the place among the cables that stay, and not the place it had");
+        assert_eq!(module.modulators[0].targets.len(), 1);
+        // Without the delay the cable that is driven is not the module's, and neither is the one that drives it.
+        save_selection(&mut ctl, &[filter, lfo, envelope], "Cascade").unwrap();
+        let module = module_in(dir.path(), "Cascade");
+        assert_eq!((module.modulators[0].targets.len(), module.modulators[1].targets.len()), (1, 0));
+        // And the one that drives the depth of that: the first modulator's cable goes when the envelope's does, which goes when the LFO's does (the cables are looked at until no more go).
+        save_selection(&mut ctl, &[filter, first, lfo, envelope], "Chain").unwrap();
+        let module = module_in(dir.path(), "Chain");
+        assert_eq!(module.modulators.iter().map(|modulator| modulator.targets.len()).collect::<Vec<_>>(), [0, 1, 0]);
+        // With both, all of them stay: the first modulator's cable drives the depth of the envelope's, which is the first of its cables that stays now (its cable to the reverb is not the module's).
+        save_selection(&mut ctl, &[filter, delay, first, lfo, envelope], "Whole").unwrap();
+        let module = module_in(dir.path(), "Whole");
+        assert_eq!(drives_of(&module, 0), [(Drives::Depth { modulator: 2, target: 0 }, 0.35)]);
+        assert_eq!(drives_of(&module, 2), [(Drives::Depth { modulator: 1, target: 1 }, 0.1)]);
+        // Added, the cables that drive a depth wait for the cable that they drive and are made in sweeps, though the first modulator comes before the others: the envelope's is made first, and then the first's.
+        let before = ctl.model.free_modulators.len();
+        add_free_effect(&mut ctl, "module:Whole").unwrap();
+        let (new_first, new_lfo, new_envelope) = (before, before + 1, before + 2);
+        let edge = |modulator: usize, cable: usize| ctl.model.free_modulators[modulator].targets[cable].edge;
+        assert_eq!(cables_of(&ctl, new_first), [(Driven::Depth(edge(new_envelope, 0)), 0.35)]);
+        assert_eq!(cables_of(&ctl, new_envelope), [(Driven::Depth(edge(new_lfo, 1)), 0.1)]);
+        assert_eq!(ctl.model.free_modulators[new_lfo].targets.len(), 2, "the cutoff and the delay's mix");
+        assert!(edge(new_lfo, 1).0 < edge(new_envelope, 0).0 && edge(new_envelope, 0).0 < edge(new_first, 0).0, "made in that order: the cables that they drive first");
+        ctl.model.check_ids().unwrap();
+        // Saved again, the module is the same file.
+        let copies: Vec<NodeId> = {
+            let new_lane = &ctl.model.instruments[3];
+            [new_lane.effects[0].node, new_lane.effects[1].node].into_iter().chain([new_first, new_lfo, new_envelope].map(|index| ctl.model.free_modulators[index].node)).collect()
+        };
+        save_selection(&mut ctl, &copies, "Whole again").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("Whole.toml")).unwrap(), std::fs::read_to_string(dir.path().join("Whole again.toml")).unwrap());
+        ctl.apply(Intent::Undo).unwrap();
+        assert_eq!(ctl.model.free_modulators.len(), before, "the three modulators are gone with the lane");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_to_the_setting_of_a_modulator_that_is_not_chosen_goes_and_the_cables_that_name_the_places_of_others_count_without_it() {
+        use module::ModuleDrives as Drives;
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = a_graph(dir.path());
+        let filter = ctl.model.instruments[0].effects[0].node;
+        let [envelope, steps, knob] = [2, 3, 4].map(|index| ctl.model.free_modulators[index].node);
+        // The step sequencer's cables are the first LFO's rate (that LFO is not chosen), the envelope's attack and a parameter on a bus: only the second is the module's, and it is the first of the cables that stay.
+        let [to_the_rate, to_the_attack] = [0, 1].map(|cable| ctl.model.free_modulators[3].targets[cable].edge);
+        for edge in [to_the_rate, to_the_attack] {
+            ctl.apply(Intent::AddModEdge { modulator: knob, to: Endpoint { node: steps, port: Port::Depth { edge } } }).unwrap();
+        }
+        save_selection(&mut ctl, &[filter, envelope, steps, knob], "Setting").unwrap();
+        let module = module_in(dir.path(), "Setting");
+        assert_eq!(module.modulators.len(), 3);
+        assert_eq!(drives_of(&module, 1), [(Drives::Setting { modulator: 0, port: Port::Attack }, 0.3)], "the cable to the rate of the LFO that is not chosen is not the module's");
+        assert_eq!(
+            drives_of(&module, 2),
+            [(Drives::Depth { modulator: 1, target: 0 }, 0.5)],
+            "the cable that drives the depth of the one that went goes too, and the other names the cable to the attack as the first that stays"
+        );
+    }
+
+    #[test]
+    fn a_module_that_a_hand_wrote_with_modulators_is_added_with_the_cables_that_can_be_made_and_held_to_what_a_modulator_can_be() {
+        use crate::ids::{Driven, ModGain};
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = a_graph(dir.path());
+        let file = r#"
+[[instrument]]
+plugin = "builtin:osc"
+[[instrument.effect]]
+plugin = "builtin:filter"
+
+[[modulator]]
+type = "macro"
+value = 7.0
+hears = "instrument[0]"
+
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "cutoff"
+depth = 3.0
+
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "no such parameter"
+depth = 0.5
+
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+gain = "mix"
+depth = -0.25
+
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+gain = "mix"
+depth = 0.1
+
+[[modulator]]
+type = "lfo"
+rate = 1.5
+fade = 9.0
+
+[[modulator.target]]
+mod_rate = 0
+
+[[modulator.target]]
+mod_depth = [0, 1]
+
+[[modulator.target]]
+mod_depth = [0, 0]
+depth = 0.5
+"#;
+        std::fs::write(dir.path().join("Hand.toml"), file).unwrap();
+        // (A file that is put in the library by hand is listed when the library is read again: the history names a step by the catalog.)
+        assert!(ctl.refresh_modules());
+        let before = ctl.model.free_modulators.len();
+        add_free_effect(&mut ctl, "module:Hand").unwrap();
+        assert_eq!(ctl.model.free_modulators.len(), before + 2);
+        let (knob, lfo) = (&ctl.model.free_modulators[before], &ctl.model.free_modulators[before + 1]);
+        let lane = ctl.model.instruments.last().unwrap();
+        let (new_filter, new_osc) = (lane.effects[0].node, lane.node);
+        // What the loader holds a file's modulator to: a knob to 1, a fade to 5 seconds, a depth to 1.
+        assert!(matches!(knob.source, ModSourceSlot::Macro { value } if value == 1.0), "{:?}", knob.source);
+        assert!(matches!(lfo.source, ModSourceSlot::Lfo { rate, fade, .. } if rate == 1.5 && fade == 5.0), "{:?}", lfo.source);
+        assert_eq!((knob.ear, lfo.ear), (Some(new_osc), None));
+        let (cutoff, _) = param(&ctl, NodePath::Effect { inst: ctl.model.instruments.len() - 1, index: 0 }, "cutoff");
+        // The cable to a parameter that the plugin has not is left out, and so is the second cable to the mix that the first drives; what is left is made in the order of the file.
+        assert_eq!(cables_of(&ctl, before), [(Driven::Param { plugin: new_filter, index: cutoff }, 1.0), (Driven::Gain { node: new_filter, gain: ModGain::Mix }, -0.25)]);
+        // The LFO's cable to the rate of a knob (which has none) is left out, and so is the one that drives the depth of the cable that was left out; the one to the depth of the first cable is made.
+        let driven = ctl.model.free_modulators[before].targets[0].edge;
+        assert_eq!(cables_of(&ctl, before + 1), [(Driven::Depth(driven), 0.5)]);
+        ctl.model.check_ids().unwrap();
+        // One step, that Undo takes out whole.
+        ctl.apply(Intent::Undo).unwrap();
+        assert_eq!((ctl.model.free_modulators.len(), ctl.model.instruments.len()), (before, 3));
+        ctl.model.check_ids().unwrap();
+    }
+
     #[test]
     fn what_is_chosen_for_a_module_that_cannot_be_one_is_refused_and_nothing_is_written() {
         let dir = tempfile::tempdir().unwrap();
@@ -7663,8 +8134,10 @@ to = "master"
         assert!(invalid_because(&mut ctl, &[empty_lane], "Room").contains("has none to save"));
         assert!(invalid_because(&mut ctl, &[filter, group], "Room").contains("a group's bus is not saved"));
         assert!(invalid_because(&mut ctl, &[bus_effect, math], "Room").contains("a group's bus is not saved"));
-        assert!(invalid_because(&mut ctl, &[filter, modulator], "Room").contains("a modulator is not part of a module"));
+        assert!(invalid_because(&mut ctl, &[modulator], "Room").contains("a modulator alone is not a module"), "a modulator goes with the plugins that it drives: it has to be chosen with one");
+        assert!(invalid_because(&mut ctl, &[modulator, group], "Room").contains("a group's bus is not saved"));
         assert!(invalid_because(&mut ctl, &[keys], "Room").contains("a source of notes is not part of a module"));
+        assert!(invalid_because(&mut ctl, &[filter, modulator, keys], "Room").contains("a source of notes is not part of a module"));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing was written");
         assert_eq!(ctl.rev, rev, "and no revision was used");
         // No library: nowhere to write.
@@ -7921,6 +8394,38 @@ plugin = "builtin:filter"
 from = "instrument[0]"
 to = "instrument[1].effect[0]"
 gain = 3.0
+
+[[modulator]]
+type = "macro"
+value = 7.0
+hears = "instrument[1]"
+
+[[modulator.target]]
+to = "instrument[1].effect[0]"
+param = "cutoff"
+depth = 3.0
+
+[[modulator.target]]
+to = "instrument[1].effect[0]"
+param = "no such parameter"
+depth = 0.5
+
+[[modulator.target]]
+to = "instrument[0]"
+gain = "volume"
+depth = -0.25
+
+[[modulator]]
+type = "lfo"
+rate = 1.5
+fade = 9.0
+
+[[modulator.target]]
+mod_rate = 0
+
+[[modulator.target]]
+mod_depth = [0, 0]
+depth = 0.5
 "#;
 
     /// `A_GRAPH_TO_KEEP` and what the controller makes of saving a selection of its plugins as a module, adding it, undoing that and redoing it, saving what came of it again and adding that, and of what it refuses, and of adding a module that a hand wrote
@@ -7952,15 +8457,15 @@ gain = 3.0
         let (group, bus_effect) = (ctl.model.groups[0].node, ctl.model.groups[0].effects[0].node);
         let (modulator, keys) = (ctl.model.free_modulators[0].node, ctl.model.sources[0].node);
 
-        let mut steps = Vec::new();
-        let mut take = |ctl: &mut Controller, intent: Intent| {
+        // (What a step comes to: the events, what Undo and Redo would do, the modules that the catalog lists, the graph and the layout of the telemetry.)
+        let record = |engine: &StubEngine, ctl: &mut Controller, intent: Intent| -> serde_json::Value {
             let applied = ctl.apply(intent.clone()).unwrap_or_else(|error| panic!("{intent:?}: {error}"));
             engine.drain();
             let state = ctl.snapshot();
             let history = ctl.history_state();
             let modules: Vec<serde_json::Value> =
                 ctl.catalog.entries().into_iter().filter(|entry| entry.format == "Module").map(|entry| serde_json::json!({ "id": entry.id, "name": entry.name, "params": entry.params })).collect();
-            steps.push(serde_json::json!({
+            serde_json::json!({
                 "intent": testutil::wire(&intent),
                 "events": testutil::wire(&applied.stamped()),
                 "restructured": applied.restructured,
@@ -7968,8 +8473,10 @@ gain = 3.0
                 "modules": modules,
                 "graph": testutil::wire(&state.graph),
                 "telemetry": normalized(testutil::wire(&state.telemetry)),
-            }));
+            })
         };
+        let mut steps = Vec::new();
+        let mut take = |ctl: &mut Controller, intent: Intent| steps.push(record(&engine, ctl, intent));
         let save = |nodes: &[NodeId], name: &str| Intent::SaveSelectionAsModule { nodes: nodes.to_vec(), name: name.to_string() };
         let add = |name: &str| Intent::AddFreeEffect { plugin: format!("module:{name}") };
         take(&mut ctl, save(&[math, filter], "  Pair  "));
@@ -7995,6 +8502,29 @@ gain = 3.0
         take(&mut ctl, save(&[filter, reverb, math], "Skip"));
         take(&mut ctl, add("Skip"));
 
+
+        // The modulators that go with the plugins (step 106), on a controller of their own so that the graph does not carry what the steps above added: everything at once, with the five modulators that drive the
+        // plugins, added, undone and done again (the lanes, the modulators and every cable, under the ids they had); and a choice that leaves out most of what the modulators drive, with the first modulator, whose cable
+        // drives the depth of the envelope's cable, which drives the depth of the LFO's: the three cables that drive depths wait for the ones that they drive.
+        let modulator_library = tempfile::tempdir().unwrap();
+        let (modulator_engine, mut modulator_ctl) = fresh(modulator_library.path());
+        let mut modulator_steps = Vec::new();
+        let mut take_modulators = |ctl: &mut Controller, intent: Intent| modulator_steps.push(record(&modulator_engine, ctl, intent));
+        {
+            let ctl = &mut modulator_ctl;
+            let osc = ctl.model.instruments[0].node;
+            let [filter, delay, reverb] = [0, 1, 2].map(|index| ctl.model.instruments[0].effects[index].node);
+            let math = ctl.model.instruments[1].effects[0].node;
+            let rack: Vec<NodeId> = ctl.model.free_modulators.iter().map(|slot| slot.node).collect();
+            let [first, lfo, envelope, stepper, knob, control] = [0, 1, 2, 3, 4, 5].map(|index| rack[index]);
+            take_modulators(ctl, save(&[osc, filter, delay, reverb, math, lfo, envelope, stepper, knob, control], "Rack"));
+            take_modulators(ctl, add("Rack"));
+            take_modulators(ctl, Intent::Undo);
+            take_modulators(ctl, Intent::Redo);
+            take_modulators(ctl, save(&[filter, delay, first, lfo, envelope], "Whole"));
+            take_modulators(ctl, add("Whole"));
+        }
+
         // What is refused: a fresh controller for each, with a library that has no module in it.
         let ghost = NodeId(9_999);
         let long = "x".repeat(300);
@@ -8012,7 +8542,9 @@ gain = 3.0
             save(&[group], "Room"),
             save(&[bus_effect], "Room"),
             save(&[filter, bus_effect, math], "Room"),
-            save(&[filter, modulator], "Room"),
+            save(&[modulator], "Room"),
+            save(&[modulator, group], "Room"),
+            save(&[filter, modulator, keys], "Room"),
             save(&[keys], "Room"),
             save(&[group], ""),
             save(&[filter], ""),
@@ -8053,7 +8585,7 @@ gain = 3.0
                 "telemetry": normalized(testutil::wire(&odd_state.telemetry)),
             },
         });
-        let fixture = serde_json::json!({ "snapshot": snapshot, "steps": steps, "refusals": refusals, "odd": odd });
+        let fixture = serde_json::json!({ "snapshot": snapshot, "steps": steps, "modulatorSteps": modulator_steps, "refusals": refusals, "odd": odd });
         let fresh = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
 
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/moduleGraphs.json");

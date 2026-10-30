@@ -1554,7 +1554,7 @@ impl GroupNode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ModSourceSlot {
     /// An LFO: its waveform and rate, whether a note starts it again at the start of its wave, how many seconds it takes to come in after a note (0 for none) and the note length of the tempo
     /// that a cycle of it is instead of its rate, as a place in `SYNC_DIVISIONS` from 1 (0 for none: it goes at its rate, which is kept for when it does).

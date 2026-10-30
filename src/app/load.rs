@@ -960,8 +960,8 @@ fn plan_sibling_target(
 }
 
 /// Build the model's source for a modulator config, with a description for the
-/// log. The audio thread's `ModSource` is derived from it (`mod_source_slot_to_graph`).
-fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, String) {
+/// log. The audio thread's `ModSource` is derived from it (`mod_source_slot_to_graph`). A module's modulators are made of it too (`app::module`).
+pub(super) fn build_mod_source(mod_config: &session::ModulatorConfig) -> (ModSourceSlot, String) {
     match mod_config.mod_type.as_str() {
         "envelope" => {
             let source = ModSourceSlot::Envelope {

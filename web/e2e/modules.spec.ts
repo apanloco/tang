@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, test as mock } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
-import { audioIn, audioOut, centre, drag, node, nodeBoxes, open, showAll, still } from "./canvas";
+import { audioIn, audioOut, cables, centre, drag, node, nodeBoxes, open, showAll, still } from "./canvas";
 import { test } from "./own";
 import { heardAt, silentAt } from "./sound";
 
@@ -207,13 +207,15 @@ mock("effects that stand by themselves, joined by cables, are chosen with a box 
 mock("a node that a module cannot hold is left out of what is saved and said so, a node is chosen by a click, and Escape turns choosing off", async ({ page }) => {
   await open(page);
   await choose(page).click();
-  // The oscillator's card is chosen by a click; the LFO is not a plugin, and a module is not made of it: it is left out and counted.
+  // The oscillator's card is chosen by a click; the master is not a plugin, and a module is not made of it: it is left out and counted. (The LFO is held: it goes with the plugins that it drives.)
   await node(page, "Oscillator").locator(".tang-node__header").click();
   await expect(page.getByRole("status").filter({ hasText: "1 chosen" })).toBeVisible();
   await page.keyboard.down("Shift");
   await node(page, "LFO").locator(".tang-node__header").click();
+  await expect(page.getByRole("status").filter({ hasText: /^2 chosen$/ })).toBeVisible();
+  await node(page, "Master").locator(".tang-node__header").click();
   await page.keyboard.up("Shift");
-  await expect(page.getByRole("status").filter({ hasText: "1 chosen, 1 that a module cannot hold left out" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "2 chosen, 1 that a module cannot hold left out" })).toBeVisible();
   await saveChosen(page, "Tone");
   await addEffect(page).click();
   await expect(page.getByRole("menuitem", { name: "Tone", exact: true })).toBeVisible();
@@ -224,6 +226,68 @@ mock("a node that a module cannot hold is left out of what is saved and said so,
   await page.keyboard.press("Escape");
   await expect(choose(page)).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator(".react-flow__node.selected")).toHaveCount(0);
+});
+
+mock("a modulator that is chosen with the plugins that it drives is saved in the module and added with its cable to the new plugin: it hears the new lane, and Undo takes it out with the lane, and Redo gives it back", async ({ page }) => {
+  await open(page);
+  await showAll(page);
+  // The tracer's LFO hears the oscillator's lane and moves the filter's cutoff.
+  const wired = await cables(page).count();
+  expect(wired).toBeGreaterThan(0);
+  await choose(page).click();
+  await boxRound(page, ["LFO", "Oscillator", "Filter"]);
+  await expect(page.getByRole("status").filter({ hasText: /^3 chosen$/ })).toBeVisible();
+  await saveChosen(page, "Tracer voice");
+  await choose(page).click();
+
+  // Added: a lane with the oscillator and the filter, and a modulator, and the cable from the modulator to the new filter, in one step.
+  const before = (await names(page)).length;
+  await addEffect(page).click();
+  await page.getByRole("menuitem", { name: "Tracer voice", exact: true }).click();
+  await expect.poll(async () => (await names(page)).length).toBe(before + 3);
+  await expect(node(page, "LFO 2")).toBeVisible();
+  await showAll(page);
+  await expect(cables(page)).toHaveCount(wired * 2);
+  await expect(page.getByRole("button", { name: "Undo add Tracer voice" })).toBeVisible();
+  await page.getByRole("button", { name: "Undo add Tracer voice" }).click();
+  await expect.poll(async () => (await names(page)).length).toBe(before);
+  await expect(cables(page)).toHaveCount(wired);
+  await page.getByRole("button", { name: "Redo add Tracer voice" }).click();
+  await expect.poll(async () => (await names(page)).length).toBe(before + 3);
+  await expect(cables(page)).toHaveCount(wired * 2);
+});
+
+test("the tracer's LFO is chosen with the oscillator and the filter that it hears and drives, saved in the real program's library with its cable, and added from it as a modulator that hears the new lane, which the session's file then keeps", async ({ page, own }) => {
+  test.slow();
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.goto(own.url);
+  await expect(page.getByRole("status")).toHaveText("Connected");
+  await showAll(page);
+  await choose(page).click();
+  await boxRound(page, ["LFO", "Oscillator", "Filter"]);
+  await expect(page.getByRole("status").filter({ hasText: /^3 chosen$/ })).toBeVisible();
+  await saveChosen(page, "Tracer voice");
+  // The file is in the library: the oscillator and the filter in one lane, and the LFO that hears that lane, with its cable to the cutoff of the filter.
+  const module = readFileSync(join(own.library, "Tracer voice.toml"), "utf8");
+  expect(module).toContain('plugin = "builtin:osc"');
+  expect(module).toContain('plugin = "builtin:filter"');
+  expect(module.split("[[modulator]]")).toHaveLength(2);
+  expect(module).toContain('hears = "instrument[0]"');
+  expect(module).toContain('to = "instrument[0].effect[0]"');
+  expect(module).toContain('param = "cutoff"');
+  await choose(page).click();
+
+  // Added: the oscillator and the filter in a lane of their own, and a modulator of the session's own that hears that lane and moves the new filter's cutoff.
+  await addEffect(page).click();
+  await page.getByRole("menuitem", { name: "Tracer voice", exact: true }).click();
+  await expect(node(page, "LFO 2")).toBeVisible();
+  await expect(node(page, "Filter 2")).toBeVisible();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+  const saved = readFileSync(own.file, "utf8");
+  expect(saved.split("[[modulator]]")).toHaveLength(3);
+  expect(saved).toContain('hears = "instrument[1]"');
+  expect(saved).toContain('to = "instrument[1].effect[0]"');
 });
 
 test("effects joined by a cable are saved as one file of the real program's library with the cable in it, and added from it as lanes of their own with the cable between them, which the session's file then keeps", async ({ page, own }) => {
