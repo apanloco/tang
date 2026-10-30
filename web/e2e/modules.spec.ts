@@ -89,6 +89,8 @@ test("a chain of effects is saved as a file of the library of the real program, 
   // Cut the lane's way out (its filter is the link to the master): it is silent. The module is added in a lane of its own, bare: silent still, until cables say where. Then it is heard through them, and only through them.
   await showAll(page);
   await page.getByRole("button", { name: "Remove cable Filter → Master", exact: true }).click();
+  // (The page has the cut when the program has made it, and the engine has been told by then: a note is pressed after the cut and not beside it.)
+  await expect(page.getByRole("button", { name: "Remove cable Filter → Master", exact: true })).toHaveCount(0);
   await silentAt(page, "the lane, with its way out cut");
   await addEffect(page).click();
   await page.getByRole("menuitem", { name: "Tracer filter", exact: true }).click();

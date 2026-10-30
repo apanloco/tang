@@ -6,28 +6,35 @@
 // control): where it is put down goes to the server, which keeps it with the session (§4.4), and
 // every browser draws the node there. The nodes that are not moved are where the layout puts them, and stay there when the session
 // changes round them (a cable drawn, a node added or taken out: `toFlow` is given where it put them last) until the person asks for
-// the nodes to be arranged again. (Step 105: a button turns choosing on, and what is chosen, the plugins in it, is saved as a module: see `selection.ts`.)
-import { Background, Controls, Panel, ReactFlow, useReactFlow, useStore } from "@xyflow/react";
-import type { Connection, Edge, EdgeTypes, NodeChange, NodeTypes, OnConnectStart } from "@xyflow/react";
+// the nodes to be arranged again. (Step 105: a button turns choosing on, and what is chosen, the plugins in it, is saved as a module: see `selection.ts`. Step 107: a box drawn with Shift held chooses at any time, a click
+// with Shift or Control or Command held adds a node to what is chosen, a node that is chosen is moved with the others, and a right click opens a menu of what is under the pointer: see `contextMenus.ts`.)
+import { Background, Controls, Panel, ReactFlow, useKeyPress, useReactFlow, useStore } from "@xyflow/react";
+import type { Connection, Edge, EdgeTypes, NodeChange, NodeTypes, OnConnectStart, ReactFlowInstance } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 
+import { takesText } from "../../client/keyboard";
 import type { Graph, NodeId, NodeUi } from "../../protocol";
-import { useClientSelection, useEditor, useReveals } from "../ClientProvider";
+import { useClient, useClientSelection, useEditor, useReveals } from "../ClientProvider";
 import { focusWhenPossible } from "../focus";
 import { canConnect, ConnectingContext, drawCable, kindOfDrag, takersOf } from "./connection";
 import type { CableKind } from "./connection";
+import { ContextMenuHost, useContextMenu } from "./contextMenu";
+import { edgeSpec, nodeSpec, paneMenu } from "./contextMenus";
+import type { CanvasActions, MenuDeps } from "./contextMenus";
 import { AudioEdge, HearsEdge, ModulationEdge, NotesEdge, SendEdge } from "./edges";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import type { Inspector } from "./inspector";
 import { GroupNode, MasterNode, ModulatorNode, PluginNode, SourceNode } from "./nodes";
 import { ParamPanel } from "./ParamPanel";
-import { SaveSelectionButton } from "./SaveModule";
+import { dialogPlace, ModuleNameDialog, SaveSelectionButton } from "./SaveModule";
+import type { DialogPlace } from "./SaveModule";
 import { modulePluginsOf } from "./selection";
 import { ScopesContext } from "./scopes";
 import type { Scopes } from "./scopes";
 import { StructureContext } from "./structure";
 import { sameGraphStructure } from "./toFlow";
-import type { Flow, PatchNode } from "./toFlow";
+import type { Flow, PatchEdge, PatchNode } from "./toFlow";
 import { useLayout } from "./useLayout";
 import { useStuckDragGuard } from "./stuckDrag";
 import { useMovableNodes } from "./useMovableNodes";
@@ -46,7 +53,7 @@ const NODE_TYPES: NodeTypes = {
   source: SourceNode,
 };
 
-/** The keys that add a node to the ones that are chosen when it is clicked (step 105): Shift, which a person who has a box to draw round nodes expects it of, and the keys that React Flow has for it, Control and Command. */
+/** The keys that add a node to the ones that are chosen when it is clicked (step 105): Shift, which a person who has a box to draw round nodes expects it of, and the keys that React Flow has for it, Control and Command. A node is chosen by a click only while one is held (or choosing is on). */
 const MULTI_SELECTION_KEYS = ["Shift", "Meta", "Control"];
 
 const EDGE_TYPES: EdgeTypes = { audio: AudioEdge, modulation: ModulationEdge, send: SendEdge, notes: NotesEdge, hears: HearsEdge };
@@ -143,7 +150,7 @@ function FitWhenArranged({ requests, arranging }: { requests: number; arranging:
   return null;
 }
 
-export function PatchView() {
+function PatchCanvas() {
   // The canvas is laid out again when something other than a value changed.
   const graph = useClientSelection((state) => state.snapshot?.graph ?? null, sameGraphStructure);
   // The nodes that show a scope of what comes out of them: the viewer's own, which the layout makes room for (a node that cannot show one is not drawn with it, and one that is not there is nothing).
@@ -176,6 +183,8 @@ export function PatchView() {
   // How many times the nodes have been asked to be arranged again, for the canvas to be moved to show them.
   const [arrangements, setArrangements] = useState(0);
   const editor = useEditor();
+  const client = useClient();
+  const openMenu = useContextMenu();
   // (The button has nothing to do when the nodes are where the arrangement that makes the cables short put them and the session has not changed since: `optimized`, which a session as it was opened, one that has changed and one in which a person has placed a node are not.)
   const arrange = useCallback(() => {
     arrangeAgain();
@@ -186,21 +195,45 @@ export function PatchView() {
   // The nodes as they are on the canvas: the layout's, but where a person is dragging one it is where the pointer has taken it.
   const moveNode = useCallback((node: NodeId, ui: NodeUi) => editor.moveNode(node, ui), [editor]);
   const { nodes, onNodesChange, onNodeDragStart, onNodeDragStop } = useMovableNodes(flow.nodes, moveNode);
-  // Choosing nodes to make a module of (step 105). While it is on a node is chosen by a click and a box drawn on the canvas chooses the nodes in it, and nodes are not moved; the cables are none of what is chosen.
+  // Choosing nodes to make a module of (steps 105 and 107). A node is chosen by a box drawn on the canvas while Shift is held (or whenever, while the button has choosing on), and by a click while Shift, Control or Command is held (or
+  // while choosing is on): a plain click chooses nothing, since a click on a knob is a click on the node it is in, so that the canvas can be chosen from only while one of those is held (`elementsSelectable`: React Flow marks a node
+  // chosen as soon as it is clicked, before what it tells the page can be looked at). A node that is chosen is moved with the others (whether or not choosing is on: a node is draggable by its own word, `toFlow`'s `draggable`, which is what `nodesDraggable` gives way to); the cables are none of what is chosen.
   const [choosing, setChoosing] = useState(false);
+  const adding = useKeyPress(MULTI_SELECTION_KEYS);
+  // Whether a box is being drawn: it goes on being a box when Shift is let go of before the button is.
+  const [boxing, setBoxing] = useState(false);
   const chosen = useMemo(() => nodes.filter((node) => node.selected === true).map((node) => node.data.node), [nodes]);
   const held = useMemo(() => modulePluginsOf(graph, chosen), [graph, chosen]);
   const forgetChosen = useCallback(() => {
     const changes = nodes.filter((node) => node.selected === true).map((node): NodeChange<PatchNode> => ({ id: node.id, type: "select", selected: false }));
     if (changes.length > 0) onNodesChange(changes);
   }, [nodes, onNodesChange]);
+  const chooseAll = useCallback(() => {
+    const changes = nodes.filter((node) => node.selected !== true).map((node): NodeChange<PatchNode> => ({ id: node.id, type: "select", selected: true }));
+    if (changes.length > 0) onNodesChange(changes);
+  }, [nodes, onNodesChange]);
   const toggleChoosing = useCallback(() => {
     if (choosing) forgetChosen();
     setChoosing(!choosing);
   }, [choosing, forgetChosen]);
-  // (Escape leaves it, unless something that is open took the key: a menu closes with it.)
+  // (A box is done when the button is let go of, whatever happened to it: the next click is a click. Not at once: React Flow ends the box with the same event, and must find that choosing is still on to do it.)
   useEffect(() => {
-    if (!choosing) return;
+    const done = (): void => {
+      window.setTimeout(() => {
+        setBoxing(false);
+      }, 0);
+    };
+    window.addEventListener("pointerup", done, true);
+    window.addEventListener("pointercancel", done, true);
+    return () => {
+      window.removeEventListener("pointerup", done, true);
+      window.removeEventListener("pointercancel", done, true);
+    };
+  }, []);
+  // (Escape leaves it, and gives up what is chosen, unless something that is open took the key: a menu closes with it.)
+  const anyChosen = chosen.length > 0;
+  useEffect(() => {
+    if (!choosing && !anyChosen) return;
     const leave = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       forgetChosen();
@@ -210,7 +243,7 @@ export function PatchView() {
     return () => {
       window.removeEventListener("keydown", leave);
     };
-  }, [choosing, forgetChosen]);
+  }, [choosing, anyChosen, forgetChosen]);
   // (A cable is not chosen, and a click on one is as it was: it is none of what a module is made of.)
   const edges = useMemo(() => flow.edges.map((edge) => ({ ...edge, selectable: false })), [flow.edges]);
   // (A card that stays in hand when the release of the mouse was lost is let go of.)
@@ -234,6 +267,70 @@ export function PatchView() {
       if (focusBack && inspected !== null) focusWhenPossible(paramsButtonId(inspected));
     },
     [inspected],
+  );
+
+  // The menus (step 107). The canvas that React Flow made, to turn a place on the screen into a place on the canvas and to show every node; where the pointer was when the menu opened, for the field that a menu opens to be there.
+  const canvasRef = useRef<Pick<ReactFlowInstance<PatchNode>, "screenToFlowPosition" | "fitView"> | null>(null);
+  const menuAt = useRef({ x: 0, y: 0 });
+  const [naming, setNaming] = useState<{ label: string; at: DialogPlace; save: (name: string) => Promise<boolean> } | null>(null);
+  const closeNaming = useCallback(() => {
+    setNaming(null);
+  }, []);
+  const canvasActions = useMemo<CanvasActions>(
+    () => ({
+      inspecting: (node) => inspected === node,
+      inspect: (node) => {
+        inspector.toggle(node);
+      },
+      scoped: (node) => shown.has(node),
+      scope: (node) => {
+        scopes.toggle(node);
+      },
+      choosing,
+      toggleChoosing,
+      chosen,
+      held,
+      chooseAll,
+      chooseNone: forgetChosen,
+      nameModule: (label, save) => {
+        setNaming({ label, at: dialogPlace(menuAt.current.x, menuAt.current.y), save });
+      },
+      arrange,
+      canArrange: !(flow.arranged && optimized),
+      fit: () => {
+        void canvasRef.current?.fitView({ padding: FIT_PADDING, maxZoom: 1, duration: MOVE_MS });
+      },
+    }),
+    [inspected, inspector, shown, scopes, choosing, toggleChoosing, chosen, held, chooseAll, forgetChosen, arrange, flow.arranged, optimized],
+  );
+  /** What a menu opened by `event` is made from: the session as it is now, and the place on the canvas that the pointer was at. */
+  const depsAt = useCallback(
+    (event: { clientX: number; clientY: number }): MenuDeps => {
+      menuAt.current = { x: event.clientX, y: event.clientY };
+      const at = canvasRef.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      return { state: client.state, editor, canvas: canvasActions, ...(at ? { at } : {}) };
+    },
+    [client, editor, canvasActions],
+  );
+  const onPaneContextMenu = useCallback(
+    (event: ReactMouseEvent | MouseEvent) => {
+      openMenu(event, { label: "the canvas", items: paneMenu(depsAt(event)) });
+    },
+    [openMenu, depsAt],
+  );
+  const onNodeContextMenu = useCallback(
+    (event: ReactMouseEvent, node: PatchNode) => {
+      // (A field has its own menu, which cuts and pastes.)
+      if (takesText(event.target)) return;
+      openMenu(event, nodeSpec(depsAt(event), node));
+    },
+    [openMenu, depsAt],
+  );
+  const onEdgeContextMenu = useCallback(
+    (event: ReactMouseEvent, edge: PatchEdge) => {
+      openMenu(event, edgeSpec(depsAt(event), edge));
+    },
+    [openMenu, depsAt],
   );
 
   const onConnectStart = useCallback<OnConnectStart>(
@@ -265,7 +362,17 @@ export function PatchView() {
                 <ReactFlow
                   nodes={nodes}
                   edges={edges}
+                  onInit={(instance) => {
+                    canvasRef.current = instance;
+                  }}
                   onNodesChange={onNodesChange}
+                  onSelectionStart={() => {
+                    setBoxing(true);
+                  }}
+                  onPaneClick={forgetChosen}
+                  onPaneContextMenu={onPaneContextMenu}
+                  onNodeContextMenu={onNodeContextMenu}
+                  onEdgeContextMenu={onEdgeContextMenu}
                   onNodeDragStart={onNodeDragStart}
                   onNodeDragStop={onNodeDragStop}
                   nodeDragThreshold={DRAG_THRESHOLD}
@@ -282,18 +389,17 @@ export function PatchView() {
                   onConnectEnd={onConnectEnd}
                   onConnect={onConnect}
                   edgesFocusable={false}
-                  elementsSelectable={choosing}
+                  elementsSelectable={choosing || adding || boxing}
                   selectionOnDrag={choosing}
                   selectNodesOnDrag={false}
                   multiSelectionKeyCode={MULTI_SELECTION_KEYS}
-                  nodesDraggable={!choosing}
-                  panOnDrag={choosing ? [1, 2] : true}
+                  panOnDrag={choosing ? [1] : true}
                   deleteKeyCode={null}
                 >
                   <Background gap={24} />
                   <Controls showInteractive={false} />
                   <Panel position="top-right" className="tang-patch__tools">
-                    {choosing ? (
+                    {choosing || anyChosen ? (
                       <>
                         <span className="tang-patch__chosen" role="status">
                           {chosen.length === 0
@@ -306,7 +412,7 @@ export function PatchView() {
                     <button
                       type="button"
                       className="tang-patch__arrange"
-                      title="Choose nodes, with a box drawn round them or a click, to save them as a module with the cables that are between them"
+                      title="Choose nodes, with a box drawn round them or a click, to save them as a module with the cables that are between them (a box drawn with Shift held chooses at any time, and a click with Shift held adds a node)"
                       aria-label="Choose nodes to save as a module"
                       aria-pressed={choosing}
                       onClick={toggleChoosing}
@@ -332,7 +438,17 @@ export function PatchView() {
           </div>
         </ScopesContext.Provider>
         {inspected !== null ? <ParamPanel key={inspected} node={inspected} onClose={closePanel} /> : null}
+        {naming ? <ModuleNameDialog label={naming.label} at={naming.at} save={naming.save} onClose={closeNaming} /> : null}
       </InspectorContext.Provider>
     </div>
+  );
+}
+
+/** The canvas, with the menus that a right click opens on it. */
+export function PatchView() {
+  return (
+    <ContextMenuHost>
+      <PatchCanvas />
+    </ContextMenuHost>
   );
 }

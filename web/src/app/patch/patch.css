@@ -1108,3 +1108,10 @@
   border: 1px solid var(--tang-scale);
   background: rgb(110 195 215 / 0.1);
 }
+
+/* What is chosen has a frame round it (React Flow draws it), which is a picture and not a thing to press: the controls of the nodes in it are turned as they were, and a node in it is taken by the node. */
+.tang-patch .react-flow__nodesselection-rect {
+  border: 1px dashed var(--tang-scale);
+  background: none;
+  pointer-events: none;
+}

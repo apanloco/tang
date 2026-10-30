@@ -7,11 +7,11 @@ import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "r
 import type { ReactNode } from "react";
 
 import { effectItems, instrumentItems } from "../../client/catalog";
+import { keptWords, removalWords } from "../../client/removal";
 import { holdersOf } from "../../client/holders";
 import { inputsStoodFor } from "../../client/inputs";
 import { slotReader } from "../../client/readers";
 import { audibleAt, chainPlaceOf, envelopeStagesOf, nodeById, paramCountOf, presetsOf, removalOf, sameChainPlace, sameRemoval, sameStages } from "../../client/selectors";
-import type { Removal } from "../../client/selectors";
 import { NAME_LIMIT } from "../../protocol";
 import type { ModulatorKind, Node, NodeId, Preset } from "../../protocol";
 import { formatValue } from "../../ui/Knob";
@@ -280,23 +280,6 @@ function RemoveNodeButton({ node, name, focusTo }: { node: NodeId; name: string;
   );
 }
 
-/** "1 effect", "2 effects". */
-const counted = (n: number, word: string): string => `${String(n)} ${word}${n === 1 ? "" : "s"}`;
-
-/** What taking out a lane or a group comes to, in words: what goes with it, and what stays: for a group its lanes, and for either the modulators that hear it, which hear every note then. */
-function removalWords(removal: Removal): string {
-  const goes = removal.effects > 0 ? `its ${counted(removal.effects, "effect")} go${removal.effects === 1 ? "es" : ""} with it` : null;
-  const stays = removal.lanes > 0 ? `its ${counted(removal.lanes, "lane")} ${removal.lanes === 1 ? "stays" : "stay"}, in no group` : null;
-  const heard = removal.hearing > 0 ? `${counted(removal.hearing, "modulator")} that ${removal.hearing === 1 ? "hears it stays" : "hear it stay"}, hearing every note` : null;
-  const parts = [goes, stays, heard].filter((part) => part !== null);
-  return parts.length > 0 ? `: ${parts.join(", and ")}` : "";
-}
-
-/** What stays in a lane when its instrument is taken out of it, in words: its effects, or that it is left empty. */
-function keptWords(removal: Removal): string {
-  return removal.effects > 0 ? `: its ${counted(removal.effects, "effect")} stay${removal.effects === 1 ? "s" : ""} in the lane` : ": the lane stays, empty";
-}
-
 /**
  * The button of a lane or a group that takes it out of the session: a menu that asks, first for keeping (where the focus starts), and then for removing it with the words of what goes with it
  * and what stays. A lane that has an instrument is asked for twice over: for taking the instrument out alone, which leaves the lane with its effects and the rest (an empty lane,
@@ -425,7 +408,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
   const unheard = useUnheard(data.node);
   const held = data.heldIn;
   return (
-    <div className={`tang-node tang-node--${type}${unheard}`}>
+    <div className={`tang-node tang-node--${type}${unheard} nokey`}>
       {/* (An effect takes audio in, at two places if it has a second input, and a lane takes notes in, from the sources: but not a lane whose instrument takes no notes, an audio input.) */}
       {effect ? (
         data.side ? (
@@ -552,7 +535,7 @@ export function ModulatorNode({ data }: NodeProps<PatchNode>) {
   const heard = node?.kind === "modulator" ? node.hears : undefined;
   const addedBy = owner !== null ? addModulatorId(owner) : heard !== undefined ? addModulatorId(heard) : ADD_FREE_MODULATOR_ID;
   return (
-    <div className="tang-node tang-node--modulator">
+    <div className="tang-node tang-node--modulator nokey">
       <Header
         name={data.name}
         badge={kind === data.name || data.name.startsWith(`${kind ?? ""} `) ? null : kind}
@@ -590,7 +573,7 @@ export function GroupNode({ data }: NodeProps<PatchNode>) {
   const [editing, setEditing] = useState(false);
   const unheard = useUnheard(data.node);
   return (
-    <div className={`tang-node tang-node--group${unheard}`}>
+    <div className={`tang-node tang-node--group${unheard} nokey`}>
       <AudioPort node={data.node} direction="in" />
       <AudioPort node={data.node} direction="out" />
       <Header
@@ -648,7 +631,7 @@ export function MasterNode({ data }: NodeProps<PatchNode>) {
   const readScope = useCallback(() => client.telemetry.values("scope"), [client]);
   const readScopeFrames = useCallback(() => client.telemetry.framesOf("scope"), [client]);
   return (
-    <div className="tang-node tang-node--master">
+    <div className="tang-node tang-node--master nokey">
       <AudioPort node={data.node} direction="in" />
       <Header name={data.name} />
       <div className="tang-node__body">
@@ -676,7 +659,7 @@ export function SourceNode({ data }: NodeProps<PatchNode>) {
   const stands = device ? inputsStoodFor(device.name, inputs) : [];
   const detail = device ? (stands.length > 0 ? `Plugged in: ${stands.join(", ")}` : "Not plugged in") : "Computer keys and the piano";
   return (
-    <div className="tang-node tang-node--source">
+    <div className="tang-node tang-node--source nokey">
       <NotesPort node={data.node} direction="out" />
       <Header name={data.name} badge={device ? "MIDI input" : "Keyboard"} sub={<NotesToMenu node={data.node} name={data.name} />}>
         <span className="tang-node__actions">

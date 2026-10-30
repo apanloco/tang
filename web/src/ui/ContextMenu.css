@@ -1,0 +1,53 @@
+/* The context menu (step 107) looks as the menu of a button does (MenuButton.css); what it adds is room at the sides of its items for a check and for the arrow of a menu that opens, the rule between its sections, items that are greyed out
+   and items that take something away. The menu itself is not a control that is tabbed to: it has the focus when it opens and shows no outline. */
+.tang-context:focus {
+  outline: none;
+}
+
+.tang-context__section + .tang-context__section {
+  margin-top: var(--tang-space-1);
+  padding-top: var(--tang-space-1);
+  border-top: 1px solid var(--tang-border);
+}
+
+.tang-context__item {
+  position: relative;
+  padding-left: 22px;
+  padding-right: 22px;
+  white-space: nowrap;
+}
+
+/* (The check of a switch that is on, and of the choice a menu says is the one now, which MenuButton.css puts at 2px: a little more room here.) */
+.tang-context__item--checked::before,
+.tang-context .tang-menu__item[aria-current="true"]::before {
+  content: "✓";
+  position: absolute;
+  left: 7px;
+  font-size: 11px;
+  line-height: inherit;
+  color: var(--tang-scale);
+}
+
+.tang-context__item--submenu::after {
+  content: "▸";
+  position: absolute;
+  right: 8px;
+  color: var(--tang-text-muted);
+}
+
+.tang-menu__item--danger {
+  color: var(--tang-danger);
+}
+
+.tang-context__item[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tang-context__item[aria-disabled="true"]:hover {
+  background: none;
+}
+
+.tang-context__item[aria-disabled="true"]:focus {
+  background: var(--tang-border);
+}

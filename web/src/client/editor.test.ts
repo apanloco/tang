@@ -449,6 +449,69 @@ describe("adding an instrument", () => {
   });
 });
 
+// A menu on the canvas adds a node where the pointer was (step 107): the node is added, and then put there, which is a move of its own in the history, and the canvas, whose person is looking at the place, is not moved to show it.
+describe("adding a node where a menu on the canvas was opened", () => {
+  const place = { x: 120.5, y: -30 };
+  const intentsAsked = (server: MockServer): string[] => server.received.flatMap((message) => (message.type === "request" ? [message.intent.type] : []));
+
+  test("puts an instrument, an effect, a modulator and a source of notes at the place it is given, each by a move of its own after the add, and says nothing", async () => {
+    const { client, server, notices, editor } = await open();
+    const lane = await editor.addInstrument("builtin:osc", place);
+    const effect = await editor.addFreeEffect("builtin:reverb", place);
+    const modulator = await editor.addFreeModulator("lfo", null, place);
+    const keys = await editor.addSource({ type: "keys" }, place);
+    for (const [id, kind] of [
+      [lane, "instrument"],
+      [effect, "effect"],
+      [modulator, "modulator"],
+      [keys, "source"],
+    ] as const) {
+      expect(id).not.toBeNull();
+      const node = client.state.snapshot?.graph.nodes.find((candidate) => candidate.id === id);
+      expect(node?.kind).toBe(kind);
+      expect(node?.ui).toEqual(place);
+    }
+    expect(intentsAsked(server)).toEqual(["addInstrument", "setNodeUi", "addFreeEffect", "setNodeUi", "addFreeModulator", "setNodeUi", "addSource", "setNodeUi"]);
+    expect(said(notices)).toEqual([]);
+  });
+
+  test("does not ask the canvas to show a node that it put where the person is looking", async () => {
+    const { shown, editor } = await open();
+    await editor.addInstrument("builtin:osc", place);
+    await editor.addFreeEffect("builtin:reverb", place);
+    await editor.addFreeModulator("lfo", oscillator.id, place);
+    await editor.addSource({ type: "keys" }, place);
+    expect(shown).toEqual([]);
+  });
+
+  test("shows the node, as it does one that is given no place, when the place is refused, and says why the node could not be moved", async () => {
+    const { shown, notices, editor } = await open();
+    // (A number that is beyond the 32-bit floats of the engine: `NaN` goes over the wire as `null`, which is 0.)
+    const id = await editor.addInstrument("builtin:osc", { x: 1e39, y: 0 });
+    expect(id).toBe(3);
+    expect(shown).toEqual([3]);
+    expect(said(notices)).toHaveLength(1);
+    expect(said(notices)[0]).toMatch(/^Could not move /);
+  });
+
+  test("asks for no move of a node that is given no place, which is shown, and none of a node that was refused", async () => {
+    const { server, shown, editor } = await open();
+    expect(await editor.addFreeModulator("lfo", null)).not.toBeNull();
+    expect(intentsAsked(server)).toEqual(["addFreeModulator"]);
+    expect(shown).toHaveLength(1);
+    expect(await editor.addInstrument("builtin:reverb", place)).toBeNull();
+    expect(intentsAsked(server)).toEqual(["addFreeModulator", "addInstrument"]);
+  });
+
+  test("is as it was with no connection: it says so, and moves nothing", async () => {
+    const { client, notices, editor, server } = await open();
+    client.stop();
+    expect(await editor.addFreeEffect("builtin:reverb", place)).toBeNull();
+    expect(said(notices)).toEqual(["Could not add Reverb as an effect of its own: Not connected to the server."]);
+    expect(intentsAsked(server)).toEqual([]);
+  });
+});
+
 // The session of the groups fixture: three groups (0, 1 and 2, the last empty and called Lead; two modulators hear the first, 13 and 14, and one the second,
 // 15), four lanes (3 and 7 in the first group, 6 in the second, 4 in none; each has an instrument called Oscillator, and the canvas numbers what is called
 // alike across the session in the order of its graph), and the cables of the modulators that hear the groups and the lanes.

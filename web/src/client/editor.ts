@@ -103,13 +103,14 @@ export class Editor {
    * Add a modulator of `kind` (every modulator is the session's own since step 96: it is in no lane and no group): a cable from it can end at a parameter of any plugin, and at the settings of the other modulators. It hears the notes
    * of the lane or the group `hears` (the "+" of a lane and of a group asks it so), or every note for none (the bar's "+ Modulator"). Resolves with the id of the node it made, which the canvas is asked to show,
    * or with null if it was refused (the page says why). The node is the last modulator the session did not have before: two clients adding at once may be given each other's, which is as good.
+   * With `place` (a menu on the canvas, where the pointer was: the canvas's pixels) the node is put there, which is a move of its own in the history, and the canvas is not moved to show it.
    */
-  async addFreeModulator(kind: ModulatorKind, hears: NodeId | null = null): Promise<NodeId | null> {
+  async addFreeModulator(kind: ModulatorKind, hears: NodeId | null = null, place?: NodeUi): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
     const what = hears === null ? `add ${MODULATOR_LABELS[kind]} of its own` : `add ${MODULATOR_LABELS[kind]} that hears ${this.#name(hears)}`;
     if (!(await this.#attempt(what, { type: "addFreeModulator", kind, hears }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "modulator" && !before.has(node.id));
-    return this.#shown(added?.at(-1)?.id);
+    return this.#placed(added?.at(-1)?.id, place);
   }
 
   /**
@@ -117,10 +118,10 @@ export class Editor {
    * the server tidies the name). Every lane that no cable of notes ends at hears it. Resolves with the id of the node it made, which the canvas is asked to show, or with null if it was refused
    * (the page says why). The node is the last source there is (a source goes after the others): two clients adding at once may be given each other's, which is as good.
    */
-  async addSource(source: SourceInfo): Promise<NodeId | null> {
+  async addSource(source: SourceInfo, place?: NodeUi): Promise<NodeId | null> {
     const what = source.type === "keys" ? "add the keys as a source of notes" : `add ${quoted(trimmed(source.name))} as a source of notes`;
     if (!(await this.#attempt(what, { type: "addSource", source }))) return null;
-    return this.#shown(this.#graph?.nodes.findLast((node) => node.kind === "source")?.id);
+    return this.#placed(this.#graph?.nodes.findLast((node) => node.kind === "source")?.id, place);
   }
 
   /**
@@ -140,11 +141,11 @@ export class Editor {
    * what the effect is fed is what cables bring. Resolves with the id of the effect it made (the lane is the effect's holder, and the canvas draws no card for it), which the canvas is asked to show, or with null
    * if it was refused (the page says why). As for `addFreeModulator`: the node is the last effect the session did not have before.
    */
-  async addFreeEffect(plugin: string): Promise<NodeId | null> {
+  async addFreeEffect(plugin: string, place?: NodeUi): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
     if (!(await this.#attempt(`add ${this.#pluginName(plugin)} as an effect of its own`, { type: "addFreeEffect", plugin }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "effect" && !before.has(node.id));
-    return this.#shown(added?.at(-1)?.id);
+    return this.#placed(added?.at(-1)?.id, place);
   }
 
   /**
@@ -152,11 +153,11 @@ export class Editor {
    * Resolves with the id of the lane it made (its instrument's node), or with null if it was refused (the page says why). As for
    * `addFreeModulator`: the node is the last lane the session did not have before.
    */
-  async addInstrument(plugin: string): Promise<NodeId | null> {
+  async addInstrument(plugin: string, place?: NodeUi): Promise<NodeId | null> {
     const before = new Set(this.#graph?.nodes.map((node) => node.id));
     if (!(await this.#attempt(`add ${this.#pluginName(plugin)} as an instrument`, { type: "addInstrument", plugin }))) return null;
     const added = this.#graph?.nodes.filter((node) => node.kind === "instrument" && !before.has(node.id));
-    return this.#shown(added?.at(-1)?.id);
+    return this.#placed(added?.at(-1)?.id, place);
   }
 
   /**
@@ -490,6 +491,16 @@ export class Editor {
   /** Do again what was undone last. True if it was done (the page says why if it was not). */
   redo(): Promise<boolean> {
     return this.#attempt(DOING.redo, { type: "redo" });
+  }
+
+  /**
+   * The node the page added, put where `place` says if there is a place (a menu on the canvas adds it where the pointer was: it is where the person is looking, and the canvas is not asked to show it) and shown
+   * otherwise, or if the place was refused (the page says why). The node, or null if the page did not find it.
+   */
+  async #placed(node: NodeId | undefined, place: NodeUi | undefined): Promise<NodeId | null> {
+    if (node === undefined) return null;
+    if (place !== undefined && (await this.moveNode(node, place))) return node;
+    return this.#shown(node);
   }
 
   /** The node the page added, if it found it, which the canvas is asked to show (it is in the session by now); the node, or null. */

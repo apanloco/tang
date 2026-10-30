@@ -141,6 +141,14 @@ describe("the button that saves the chain of a lane as a module", () => {
     await screen.findByRole("dialog");
     fireEvent.pointerDown(document.body);
     expect(screen.queryByRole("dialog")).toBeNull();
+    // (The press is on something else that takes the focus: the focus is there, and not given back to the button.)
+    fireEvent.click(button);
+    await screen.findByRole("dialog");
+    const elsewhere = screen.getByRole("button", { name: "Choose nodes to save as a module" });
+    elsewhere.focus();
+    fireEvent.pointerDown(elsewhere);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(elsewhere);
     // (A press in the field itself is not away from it.)
     fireEvent.click(button);
     fireEvent.pointerDown(await screen.findByRole("textbox", { name: "Module name" }));
