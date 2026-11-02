@@ -8105,6 +8105,29 @@ depth = 0.5
     }
 
     #[test]
+    fn the_fart_example_is_a_module_as_well_and_is_added_whole_as_two_bare_lanes_with_every_cable_that_it_has() {
+        // (`examples/fart.toml` is a session that is heard and a module too: copied to the library it is added as the lane of the pulse, with its filter and its drive, and the lane of the noise, which has the cable into the filter, and the cables of its four modulators.)
+        let text = include_str!("../../examples/fart.toml");
+        let file = module::parse(text).unwrap();
+        assert_eq!((file.lanes.len(), file.plugin_count(), file.cables.len(), file.modulators.len()), (2, 4, 1, 4));
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut ctl) = a_graph(dir.path());
+        std::fs::write(dir.path().join("Fart.toml"), text).unwrap();
+        assert!(ctl.refresh_modules());
+        let (lanes, modulators, cables) = (ctl.model.instruments.len(), ctl.model.free_modulators.len(), ctl.model.cables.len());
+        add_free_effect(&mut ctl, "module:Fart").unwrap();
+        assert_eq!((ctl.model.instruments.len(), ctl.model.free_modulators.len(), ctl.model.cables.len()), (lanes + 2, modulators + 4, cables + 1));
+        let (pulse, noise) = (&ctl.model.instruments[lanes], &ctl.model.instruments[lanes + 1]);
+        assert_eq!(pulse.effects.iter().map(|effect| effect.name.as_str()).collect::<Vec<_>>(), ["Filter", "Drive"]);
+        assert!(pulse.instrument.is_some() && noise.instrument.is_some() && noise.effects.is_empty());
+        assert_eq!((pulse.route, noise.route), (Route::None, Route::None), "a module is added bare");
+        // Every cable of the file is made (a cable that cannot be is left out, and the log says so): the pressure drives the pitch and the cutoff, the first random LFO the pitch and the pulse, the second the volume of both lanes, the smooth one the cutoff.
+        assert_eq!((0..4).map(|m| cables_of(&ctl, modulators + m).len()).collect::<Vec<_>>(), [2, 2, 2, 1]);
+        assert_eq!(ctl.model.cables.last().map(|cable| (cable.from, cable.to)), Some((CableFrom::Instrument(noise.node), CableTo::Effect(pulse.effects[0].node))), "the noise goes into the filter");
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
     fn what_is_chosen_for_a_module_that_cannot_be_one_is_refused_and_nothing_is_written() {
         let dir = tempfile::tempdir().unwrap();
         let (_engine, mut ctl) = a_graph(dir.path());

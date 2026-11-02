@@ -1788,4 +1788,42 @@ mod tests {
         let (start, later) = (brightness(window(0.02)), brightness(window(1.0)));
         assert!(start > 1.2 * later, "{start} and {later}");
     }
+
+    #[test]
+    fn the_fart_example_starts_firm_and_bright_sputters_out_darker_and_is_over_by_itself_with_the_key_still_down() {
+        // C3 down at 0.1 s and held for four. The windows are counted from the key.
+        let out = play(&example("fart.toml"), &[48], 0.1, 4.0, 4.5);
+        let after = |from: f32, length: f32| &out[((0.1 + from) * 48_000.0) as usize..((0.1 + from + length) * 48_000.0) as usize];
+        let brightness = |x: &[f32]| (x.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / x.iter().map(|v| v * v).sum::<f32>()).sqrt();
+        // The pitch and the cutoff go down with the pressure: the puffs begin as a buzz and end as single flaps, which is a sound with far less in its changes.
+        let (start, late) = (brightness(after(0.02, 0.1)), brightness(after(0.8, 0.1)));
+        assert!(start > 2.0 * late, "the first moments are brighter than the last: {start} and {late}");
+        // It is firm at the start (no 10 ms of the first half second is far under the body of the sound: the quietest is 0.57 of it) and it sputters at the end (windows of 10 ms between 0.65 s and 0.95 s that
+        // are 20 dB under it: lips that did not quite close; five of them, with partial dips between, since the filter rings on after the volume has gone to nothing).
+        let body = rms(after(0.1, 0.4));
+        assert!(body > 0.02, "it is heard: {body}");
+        let under = |from: f32, length: f32, window: f32, fraction: f32| (0..(length / window) as usize).filter(|i| rms(after(from + *i as f32 * window, window)) < fraction * body).count();
+        assert_eq!(under(0.02, 0.48, 0.01, 0.3), 0, "firm at the start");
+        let gaps = under(0.65, 0.3, 0.01, 0.1);
+        assert!(gaps >= 3, "gaps at the end: {gaps}");
+        // It is over by itself, whatever the key does: nothing at all is left from 1.5 s, with the key down until 4.1 s.
+        assert!(after(1.5, 2.5).iter().all(|x| x.abs() < 1e-6), "{}", after(1.5, 2.5).iter().fold(0.0f32, |m, x| m.max(x.abs())));
+        // A chord of it is a choir, heard and not loud (as the chord of every sound example is).
+        let choir = play(&example("fart.toml"), &[48, 52, 55], 0.0, 5.0, 8.0);
+        let peak = choir.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(choir.iter().all(|x| x.is_finite()) && peak > 0.05 && peak < 0.6, "a chord is heard and is not loud: its loudest sample is {peak}");
+    }
+
+    #[test]
+    fn no_two_farts_of_the_fart_example_are_alike_since_the_random_lfos_go_on_between_the_keys() {
+        let session = example("fart.toml");
+        // The same key, the same way, two seconds after the first fart is over (the LFOs have gone round in the meantime: a key starts their fades again and not their waves): another fart.
+        let first = play(&session, &[48], 0.0, 1.5, 1.2);
+        let second = play(&session, &[48], 2.0, 1.5, 3.2);
+        let (a, b) = (&first[..57_600], &second[96_000..96_000 + 57_600]);
+        assert!(rms(a) > 0.02 && rms(b) > 0.02, "both are heard: {} and {}", rms(a), rms(b));
+        let correlation = a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() / (a.iter().map(|x| x * x).sum::<f32>() * b.iter().map(|x| x * x).sum::<f32>()).sqrt();
+        // (They share the key, the pressure and the start of the first puff, so that they are not unlike: 0.40 as it is measured.)
+        assert!(correlation.abs() < 0.6, "the second is not the first again: {correlation}");
+    }
 }
