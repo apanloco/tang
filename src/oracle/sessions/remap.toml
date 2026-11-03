@@ -1,0 +1,72 @@
+# A lane with a note remap and a pitch bend range, the controls that follow the notes (a velocity, a key) and a macro, and a lane with a pattern that is in key.
+[piano]
+scale = "C major"
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.4
+pitch_bend_range = 2.0
+[instrument.params]
+waveform = 1.0
+bend = 5.0
+[instrument.remap]
+"C3" = { note = "D3", detune = 0.5 }
+"E3" = { note = "F3", detune = -0.5 }
+
+[[instrument.modulator]]
+type = "midi"
+midi_velocity = true
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.4
+
+[[instrument.modulator]]
+type = "midi"
+midi_key = true
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.05
+
+[[instrument.modulator]]
+type = "macro"
+value = 0.6
+[[instrument.modulator.target]]
+param = "pan"
+depth = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.5
+[instrument.params]
+waveform = 3.0
+
+[instrument.pattern]
+bpm = 120.0
+length_beats = 2.0
+base_note = "C3"
+enabled = true
+transpose = "in_key"
+
+[[instrument.pattern.events]]
+frame = 0
+status = "on"
+note = "C3"
+velocity = 100
+
+[[instrument.pattern.events]]
+frame = 12000
+status = "off"
+note = "C3"
+velocity = 0
+
+[[instrument.pattern.events]]
+frame = 12000
+status = "on"
+note = "E3"
+velocity = 80
+
+[[instrument.pattern.events]]
+frame = 24000
+status = "off"
+note = "E3"
+velocity = 0

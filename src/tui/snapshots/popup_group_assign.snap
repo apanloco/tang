@@ -1,0 +1,79 @@
+---
+source: src/tui/golden_tests.rs
+---
+120x32
+── text ──
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
+┌ Chain ─────────────────────────────────────────┐┌ Oscillator ────────────────────────────────────────────────────────┐
+│▦ Pad  vol 0.80                                 ││  waveform                 ◂ sine ▸                                 │
+│  ♪ Oscillator  [Built-in]                      ││  detune                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│  ♪ Oscillator  [Built-in]  C4-                 ││  volume                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     1.00│
+│  ╰ fx Filter  [Built-in]                       ││  attack                   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
+│  fx Reverb  [Built-in]  (bus)                  ││  decay                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.10│
+│  ~ LFO 0.5Hz sine → M0 Oscillator: detune (40%)││  sustain                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     1.00│
+│  ~ ADSR → Mod 1 rate (30%)  (bus)              ││  release                  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.01│
+│♪ Oscillator  [Built-in]  -B3                   ││  pan                      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│├ fx Filter  [Built-in]         ┌ Assign to group ───────────────────────────────────┐                                │
+│╰ ~ LFO 0.2Hz triangle → Filter:│/                                                   │░░░░░░░░░░░░░░░░░░░░░░░     0.15│
+│                                │Group                                               │▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.50│
+│                                │New group                                           │▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.50│
+│                                │Pad                                                 │░░░░░░░░░░░░░░░░░░░░░░░     0.00│
+│                                │                                                    │                                │
+│                                │                                                    │░░░░░░░░░░░░░░░░░░░░░░░     0.00│
+│                                │                                                    │░░░░░░░░░░░░░░░░░░░░░░░     1.00│
+│                                │                                                    │░░░░░░░░░░░░░░░░░░░░░░░     0.00│
+│                                │                                                    │░░░░░░░░░░░░░░░░░░░░░░░     0.00│
+│                                │                                                    │                                │
+│                                └────────────────────────────────────────────────────┘                                │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
+ n  new instr  i  replace  R  range  v  vol  M  mute  S  solo  a  add fx  m  modulate  g  group  d  delete  p  presets
+── styles ('.' = default) ──
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
+ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cddddddddddddddd.................................cbccccccccccccccccccccccccccccccccccc.................................b
+cbbbbbbbbbbbbbbbbbbbbbbbbbb......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbbbb.......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeecb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee..............cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+caaaaaaaaaaaaaaaaaaaaaaaaaaaaa...................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbb.........ffffffffffffffffffffffffffffffffffffffffffffffffffffff................................b
+ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeefbbg.................................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................fhhhhh...............................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................faaaaaaaaa...........................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................f....................................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................f....................................................f................................b
+c................................f....................................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................f....................................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................f....................................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................f....................................................fbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................f....................................................f................................b
+c................................ffffffffffffffffffffffffffffffffffffffffffffffffffffff................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+gggcccccccccc.gggcccccccc.gggcccccc.gggcccc.gggccccc.gggccccc.gggccccccc.gggccccccccc.gggcccccc.gggccccccc.gggcccccccc
+── legend ──
+a  fg=White bg=Reset mod=BOLD
+b  fg=Indexed(245) bg=Reset mod=-
+c  fg=White bg=Reset mod=-
+d  fg=Cyan bg=Reset mod=DIM
+e  fg=Magenta bg=Reset mod=DIM
+f  fg=Cyan bg=Reset mod=-
+g  fg=Black bg=White mod=BOLD
+h  fg=Indexed(245) bg=Reset mod=UNDERLINED

@@ -1,0 +1,78 @@
+---
+source: src/tui/golden_tests.rs
+---
+120x32
+── text ──
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
+┌ Chain ─────────────────────────────────────────┐┌ Step sequencer ────────────────────────────────────────────────────┐
+│♪ Oscillator  [Built-in]                        ││  Rate (Hz)                ▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░     6.00│
+│├ fx Filter  [Built-in]                         ││  Sync                     ◂ free ▸                                 │
+│╰ ~ Steps 4 6.0Hz → Filter: cutoff (40%)        ││  Glide                    ▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░     0.25│
+│                                                ││  Length (steps)           ▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░     4.00│
+│                                                ││  Retrigger                ◂ off ▸                                  │
+│                                                ││  Step 1 ▶                 ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░     0.50│
+│                                                ││  Step 2                   ▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░    -0.25│
+│                                                ││  Step 3                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     1.00│
+│                                                ││  Step 4                   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    -1.00│
+│                                                ││  Step 5                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 6                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 7                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 8                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 9                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 10                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 11                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 12                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 13                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 14                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 15                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Step 16                  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░     0.00│
+│                                                ││  Targets                  ──────                                   │
+│                                                ││  cutoff depth             ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░     0.40│
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
+ F  new free  t  add target  h  hears  d  delete
+── styles ('.' = default) ──
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
+ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbbb........................cbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccb
+cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................................b
+cdddddddddddddddddddddddddddddddddddddddd........cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................b
+c................................................cb..eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................b
+c................................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+gggccccccccc.gggccccccccccc.gggcccccc.gggccccccc
+── legend ──
+a  fg=White bg=Reset mod=BOLD
+b  fg=Indexed(245) bg=Reset mod=-
+c  fg=White bg=Reset mod=-
+d  fg=Magenta bg=Reset mod=BOLD
+e  fg=Magenta bg=Reset mod=-
+f  fg=Indexed(245) bg=Reset mod=DIM
+g  fg=Black bg=White mod=BOLD

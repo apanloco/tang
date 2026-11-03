@@ -45,6 +45,13 @@ impl HeldNotes {
         self.bits[word].load(Ordering::Relaxed) & (1u64 << bit) != 0
     }
 
+    /// Let go of every note at once.
+    pub fn clear(&self) {
+        for word in &self.bits {
+            word.store(0, Ordering::Relaxed);
+        }
+    }
+
     /// Currently-held note numbers, sorted ascending.
     pub fn held(&self) -> Vec<u8> {
         let lo = self.bits[0].load(Ordering::Relaxed);
@@ -92,6 +99,20 @@ mod tests {
         h.note_off(60);
         assert!(!h.is_held(60));
         assert_eq!(h.held(), vec![72]);
+    }
+
+    #[test]
+    fn clear_lets_go_of_every_note() {
+        let h = HeldNotes::new();
+        for note in [0, 60, 64, 100, 127] {
+            h.note_on(note);
+        }
+        assert_eq!(h.count(), 5);
+        h.clear();
+        assert_eq!(h.count(), 0);
+        assert!(h.held().is_empty());
+        h.note_on(60);
+        assert_eq!(h.held(), [60], "and a note can be held again");
     }
 
     #[test]

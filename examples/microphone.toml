@@ -1,0 +1,31 @@
+# The computer's microphone through an echo and a reverb: open it, and speak. (An audio input, step 99.)
+#
+# USE HEADPHONES. Through speakers, the microphone hears what it plays and howls. That is why its lane has no way out of its own (`route = "none"`: an audio input starts so, and
+# is heard only through the cables that are drawn from it): what is heard is the two cables at the end of this file, which you can take out on the page (the x at the middle of a cable)
+# or turn down (their sliders). The first time it is played, macOS asks whether the terminal that runs Tang may use the microphone; the answer is the system's, and it is asked once.
+# Under `--audio-device none` there is no sound card to listen to, and the input plays a quiet tone of 220 Hz instead (so that the example can be tried, and tested, without one).
+[[instrument]]
+plugin = "builtin:input"
+route = "none"
+volume = 0.8
+
+# A lane that holds the effects only: a short echo, and a reverb after it.
+[[instrument]]
+[[instrument.effect]]
+plugin = "builtin:delay"
+preset = "Slapback"
+mix = 0.35
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 0.3
+
+# The microphone into the echo (and so into the reverb), ...
+[[cable]]
+from = "instrument[0]"
+to = "instrument[1].effect[0]"
+
+# ... and itself, at half its level, to the mix.
+[[cable]]
+from = "instrument[0]"
+to = "master"
+gain = 0.5

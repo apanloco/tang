@@ -1,0 +1,44 @@
+.tang-notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tang-space-1);
+  padding: 0 var(--tang-space-4);
+}
+
+.tang-notices:empty {
+  display: none;
+}
+
+.tang-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tang-space-3);
+  margin: 0;
+  padding: var(--tang-space-1) var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-left: 3px solid var(--tang-danger);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface);
+  font-size: var(--tang-text-small);
+}
+
+.tang-notice__dismiss {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--tang-radius);
+  background: none;
+  color: var(--tang-text-muted);
+  font: inherit;
+  font-size: var(--tang-text-size);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tang-notice__dismiss:hover {
+  border-color: var(--tang-border);
+  color: var(--tang-text);
+}

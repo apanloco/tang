@@ -1,0 +1,40 @@
+# Example: a pulse-width lead. A square whose pulse width an LFO moves (the
+# oscillator's `pulse`: how much of the cycle it is high, from 0.05 to 0.95), three
+# oscillators for each note, through a low-pass filter and a short echo. Play a line.
+# On the page, try the LFO's rate and the depth of its cable, and the oscillator's `pulse`.
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.35
+
+[instrument.params]
+waveform = 2.0 # square
+unison = 2.0   # three oscillators
+spread = 0.12
+width = 0.6
+pulse = 0.5
+attack = 0.01
+release = 0.3
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+cutoff = 0.72
+resonance = 1.5
+
+[[instrument.effect]]
+plugin = "builtin:delay"
+preset = "Slapback"
+mix = 0.2
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "triangle"
+rate = 0.35
+
+[[instrument.modulator.target]]
+slot = 0
+param = "pulse"
+depth = 0.3

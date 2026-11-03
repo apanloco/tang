@@ -1,0 +1,17 @@
+# An effect that stands by itself (step 87): a lane that has no instrument and a reverb, fed by a cable from an oscillator whose way out is cut, so that the oscillator is heard through the reverb alone.
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+route = "none"
+[instrument.params]
+waveform = 1.0
+
+[[instrument]]
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 0.6
+
+[[cable]]
+from = "instrument[0]"
+to = "instrument[1].effect[0]"
+gain = 0.8

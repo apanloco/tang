@@ -1,0 +1,87 @@
+.tang-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* (A window too narrow for all of it, with the field of Save as open, gives the bar a second row.) */
+.tang-app__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tang-space-1) var(--tang-space-4);
+  padding: var(--tang-space-2) var(--tang-space-4);
+  background: var(--tang-surface);
+  border-bottom: 1px solid var(--tang-border);
+}
+
+.tang-app__title {
+  margin: 0;
+  font-size: var(--tang-text-size);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tang-root);
+}
+
+/* (The button that adds a lane: wider than the glyphs of the nodes, and as tall as the session's Save.) */
+.tang-menu-button.tang-app__add-instrument {
+  height: auto;
+  padding: 2px var(--tang-space-3);
+}
+
+.tang-app__keys {
+  margin-left: auto;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-app__engine {
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-app__main {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tang-app__patch {
+  flex: 1;
+  min-height: 0;
+}
+
+.tang-raw {
+  max-height: 40%;
+  overflow: auto;
+  border-top: 1px solid var(--tang-border);
+  background: var(--tang-surface);
+}
+
+.tang-raw > summary {
+  padding: var(--tang-space-2) var(--tang-space-4);
+  cursor: pointer;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-app__problem {
+  margin: var(--tang-space-4);
+  max-width: 48em;
+  padding: var(--tang-space-3) var(--tang-space-4);
+  border: 1px solid var(--tang-danger);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface);
+}
+
+.tang-session {
+  margin: 0;
+  padding: var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface);
+  font: var(--tang-text-small) / 1.45 var(--tang-mono);
+  white-space: pre-wrap;
+}

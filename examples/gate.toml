@@ -1,0 +1,28 @@
+# Example: a gate. A saw with three oscillators for each note, whose volume a step sequencer opens
+# and shuts: the sixteen steps are the level of each sixteenth note, 1 for a step that is heard
+# and 0 for one that is not, and a key starts the pattern from its first step. The sequencer goes
+# by the tempo (a step is a sixteenth note), so that the stutter goes as fast as the tempo does:
+# change it in the bar of the page or in the terminal with `b`. Hold a chord.
+
+bpm = 120.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.25
+
+[instrument.params]
+waveform = 3.0 # saw
+unison = 2.0   # three oscillators for each note (a place in the list: 0 is one)
+volume = 0.0   # the sequencer opens it
+attack = 0.01
+release = 0.2
+
+[[instrument.modulator]]
+type = "steps"
+steps = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+sync = "1/16"
+retrigger = true
+
+[[instrument.modulator.target]]
+param = "volume"
+depth = 1.0

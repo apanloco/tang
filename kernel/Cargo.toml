@@ -1,0 +1,8 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2024"
+description = "The real-time kernel of Tang's patch graph: an arena of nodes, a compile from a patch to a plan, and the executor that runs a plan (docs/patch-graph.md section 11)"
+
+[dependencies]
+anyhow = "1"

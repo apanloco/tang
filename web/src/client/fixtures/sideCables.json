@@ -1,0 +1,6185 @@
+{
+  "rows": [
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is a cable between those two already",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that effect has no second input",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>4 @1"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>4 side @1"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>0 @1"
+      ]
+    },
+    {
+      "error": "a group has one input, its bus",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>1 @1"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>1 side @1"
+      ]
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>4294967295 @1"
+      ]
+    },
+    {
+      "error": "the mix has no second input",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 5>3 @1"
+      ]
+    },
+    {
+      "error": "that effect has no second input",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 5>4 @1"
+      ]
+    },
+    {
+      "error": "there is a cable between those two already",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 5>0 @1"
+      ]
+    },
+    {
+      "error": "a group has one input, its bus",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 5>1 @1"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 5>1 side @1"
+      ]
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio",
+          "5>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no second input",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that effect has no second input",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is a cable between those two already",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is a cable between those two already",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 3>0 @1"
+      ]
+    },
+    {
+      "error": "a group has one input, its bus",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 3>1 @1"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 3>1 side @1"
+      ]
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 3>4294967295 @1"
+      ]
+    },
+    {
+      "error": "the mix has no second input",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that effect has no second input",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a group has one input, its bus",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is a cable between those two already",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no second input",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 0>3 @1"
+      ]
+    },
+    {
+      "error": "that effect has no second input",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 0>4 @1"
+      ]
+    },
+    {
+      "error": "there is a cable between those two already",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a group has one input, its bus",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is a cable between those two already",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 0>4294967295 @1"
+      ]
+    },
+    {
+      "error": "the mix has no second input",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a lane has no input of audio: a cable ends at an effect, a group or the mix",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 1>3 @1"
+      ]
+    },
+    {
+      "error": "that effect has no second input",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 1>4 @1"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 1>4 side @1"
+      ]
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a group has one input, its bus",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "that cable would make the audio go round: it would feed what it comes from",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no input of audio",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is a cable between those two already",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no second input",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "a modulator has no output of audio",
+      "intent": {
+        "from": {
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "the mix has no output of audio",
+      "intent": {
+        "from": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 2,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 5,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 3,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 0,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 6,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 4294967295,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "from": {
+          "node": 9999,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 9999,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "an audio cable starts at an output of audio",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioIn"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "an audio cable starts at an output of audio",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "an audio cable starts at an output of audio",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "modOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "an audio cable starts at an output of audio",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "index": 0,
+            "type": "param"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "an audio cable ends at an input of audio",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "an audio cable ends at an input of audio",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "modOut"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "an audio cable ends at an input of audio",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "index": 0,
+            "type": "param"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "error": "an audio cable ends at an input of audio",
+      "intent": {
+        "from": {
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": null,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "rate"
+          }
+        },
+        "type": "addCable"
+      }
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": 0.0,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>1 side @0"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": 0.25,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>1 side @0.25"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": 1.0,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>1 side @1"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": 2.0,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>1 side @2"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": 2.5,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>1 side @2"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": 9.0,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>1 side @2"
+      ]
+    },
+    {
+      "intent": {
+        "from": {
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          }
+        },
+        "gain": -1.0,
+        "to": {
+          "node": 1,
+          "port": {
+            "type": "audioInSide"
+          }
+        },
+        "type": "addCable"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1",
+        "#3 2>1 side @0"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 0,
+        "gain": 0.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @0",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 0,
+        "gain": 0.25,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @0.25",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 0,
+        "gain": 2.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @2",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 0,
+        "gain": 9.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @2",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 0,
+        "gain": -3.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @0",
+        "#1 0>4 side @1",
+        "#2 3>4 side @1"
+      ]
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "edge": 0,
+        "type": "removeEdge"
+      }
+    },
+    {
+      "intent": {
+        "edge": 1,
+        "gain": 0.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @0",
+        "#2 3>4 side @1"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 1,
+        "gain": 0.25,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @0.25",
+        "#2 3>4 side @1"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 1,
+        "gain": 2.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @2",
+        "#2 3>4 side @1"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 1,
+        "gain": 9.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @2",
+        "#2 3>4 side @1"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 1,
+        "gain": -3.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @0",
+        "#2 3>4 side @1"
+      ]
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "edge": 1,
+        "type": "removeEdge"
+      }
+    },
+    {
+      "intent": {
+        "edge": 2,
+        "gain": 0.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @0"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 2,
+        "gain": 0.25,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @0.25"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 2,
+        "gain": 2.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @2"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 2,
+        "gain": 9.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @2"
+      ]
+    },
+    {
+      "intent": {
+        "edge": 2,
+        "gain": -3.0,
+        "type": "setCableGain"
+      },
+      "sends": [
+        "#0 5>4 side @1",
+        "#1 0>4 side @1",
+        "#2 3>4 side @0"
+      ]
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1"
+        ]
+      },
+      "intent": {
+        "edge": 2,
+        "type": "removeEdge"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ]
+      },
+      "intent": {
+        "node": 2,
+        "type": "removeNode"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "sends": [
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "node": 5,
+        "type": "removeNode"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1"
+        ]
+      },
+      "intent": {
+        "node": 3,
+        "type": "removeNode"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ]
+      },
+      "intent": {
+        "node": 4,
+        "type": "removeNode"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "node": 0,
+        "type": "removeNode"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "node": 1,
+        "type": "removeNode"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "node": 6,
+        "type": "removeNode"
+      }
+    },
+    {
+      "error": "there is no node 4294967295",
+      "intent": {
+        "node": 4294967295,
+        "type": "removeNode"
+      }
+    },
+    {
+      "error": "there is no node 9999",
+      "intent": {
+        "node": 9999,
+        "type": "removeNode"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "group": null,
+        "node": 2,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "putting that lane in that group would make the audio go round, by the cables there are",
+      "intent": {
+        "group": 0,
+        "node": 2,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "group": null,
+        "node": 5,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 0 Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "group": 0,
+        "node": 5,
+        "type": "setLaneGroup"
+      }
+    },
+    {
+      "error": "that effect is at that place already",
+      "intent": {
+        "index": 0,
+        "node": 3,
+        "type": "moveEffect"
+      }
+    },
+    {
+      "error": "moving that effect there would make the audio go round, by the cables there are",
+      "intent": {
+        "index": 1,
+        "node": 3,
+        "type": "moveEffect"
+      }
+    },
+    {
+      "error": "moving that effect there would make the audio go round, by the cables there are",
+      "intent": {
+        "index": 0,
+        "node": 4,
+        "type": "moveEffect"
+      }
+    },
+    {
+      "error": "that effect is at that place already",
+      "intent": {
+        "index": 1,
+        "node": 4,
+        "type": "moveEffect"
+      }
+    },
+    {
+      "error": "that effect is at that place already",
+      "intent": {
+        "index": 0,
+        "node": 1,
+        "type": "moveEffect"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio",
+          "7>8 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips",
+          "9 7 audioOut peak",
+          "10 7 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "7 - (empty)",
+          "8 7 Math",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none",
+          "7 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "plugin": "builtin:math",
+        "type": "addFreeEffect"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio",
+          "7>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips",
+          "9 7 audioOut peak",
+          "10 7 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "7 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "plugin": "builtin:osc",
+        "type": "addInstrument"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "7>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>7 member"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "9 7 audioOut peak",
+          "10 7 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "7 - Group 2",
+          "2 7 Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "members": [
+          2
+        ],
+        "type": "addGroup"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio",
+          "5>7 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "7 5 Math",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "parent": 5,
+        "plugin": "builtin:math",
+        "type": "addEffect"
+      }
+    },
+    {
+      "after": {
+        "audio": [
+          "0>1 audio",
+          "1>7 audio",
+          "7>4294967295 audio",
+          "2>3 audio",
+          "3>4 audio",
+          "4>4294967295 audio"
+        ],
+        "cables": [],
+        "meters": [
+          "0 4294967295 audioIn peak",
+          "1 4294967295 audioIn clips",
+          "4095 4294967295 audioIn reduction",
+          "2 0 audioOut peak",
+          "3 0 audioOut clips",
+          "4 2 audioOut peak",
+          "5 2 audioOut clips",
+          "6 5 audioOut peak",
+          "7 5 audioOut clips"
+        ],
+        "modulation": [
+          "8 6 modOut modOutput"
+        ],
+        "nodes": [
+          "0 - Group 1",
+          "1 0 Math",
+          "7 0 Filter",
+          "2 - Oscillator",
+          "3 2 Filter",
+          "4 2 Math",
+          "5 - Oscillator",
+          "6 - LFO",
+          "4294967295 - Master"
+        ],
+        "routes": [
+          "5 none"
+        ],
+        "sends": [
+          "#0 5>4 side @1",
+          "#1 0>4 side @1",
+          "#2 3>4 side @1"
+        ]
+      },
+      "intent": {
+        "parent": 0,
+        "plugin": "builtin:filter",
+        "type": "addEffect"
+      }
+    }
+  ],
+  "snapshot": {
+    "graph": {
+      "edges": [
+        {
+          "from": {
+            "node": 0,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 1,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 1,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 2,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 3,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 3,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 4,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 5,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "gain": 1.0,
+          "id": 0,
+          "kind": "cable",
+          "to": {
+            "node": 4,
+            "port": {
+              "type": "audioInSide"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 0,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "gain": 1.0,
+          "id": 1,
+          "kind": "cable",
+          "to": {
+            "node": 4,
+            "port": {
+              "type": "audioInSide"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 3,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "gain": 1.0,
+          "id": 2,
+          "kind": "cable",
+          "to": {
+            "node": 4,
+            "port": {
+              "type": "audioInSide"
+            }
+          }
+        }
+      ],
+      "nodes": [
+        {
+          "id": 0,
+          "kind": "group",
+          "muted": false,
+          "name": "Group 1",
+          "pan": 0.0,
+          "parent": null,
+          "route": "out",
+          "solo": false,
+          "volume": 1.0
+        },
+        {
+          "feed": "chain",
+          "id": 1,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Math",
+          "parent": 0,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:math",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "ring",
+                  "am",
+                  "fold",
+                  "warp",
+                  "compare",
+                  "min",
+                  "max",
+                  "xor",
+                  "and",
+                  "or",
+                  "hold",
+                  "follow"
+                ],
+                "max": 11.0,
+                "min": 0.0,
+                "name": "mode",
+                "stepCount": 11,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "amount",
+                "stepCount": 0,
+                "unit": null,
+                "usedWhen": {
+                  "condition": {
+                    "param": 0,
+                    "type": "choice",
+                    "values": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      10,
+                      11
+                    ]
+                  },
+                  "why": "only in the modes am, fold, warp, compare, hold, follow"
+                },
+                "value": 0.5
+              },
+              {
+                "default": 5.0,
+                "group": [
+                  "Logic"
+                ],
+                "index": 2,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7",
+                  "8",
+                  "9",
+                  "10",
+                  "11",
+                  "12"
+                ],
+                "max": 11.0,
+                "min": 0.0,
+                "name": "bits",
+                "stepCount": 11,
+                "unit": null,
+                "usedWhen": {
+                  "condition": {
+                    "param": 0,
+                    "type": "choice",
+                    "values": [
+                      7,
+                      8,
+                      9
+                    ]
+                  },
+                  "why": "only in the modes xor, and, or"
+                },
+                "value": 5.0
+              },
+              {
+                "default": 57.0,
+                "group": [
+                  "Carrier"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 120.0,
+                "min": -48.0,
+                "name": "pitch",
+                "stepCount": 0,
+                "unit": null,
+                "usedWhen": {
+                  "condition": {
+                    "type": "sideUnpatched"
+                  },
+                  "why": "only while nothing is patched at B"
+                },
+                "value": 57.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Carrier"
+                ],
+                "index": 4,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "saw",
+                  "square"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "wave",
+                "stepCount": 3,
+                "unit": null,
+                "usedWhen": {
+                  "condition": {
+                    "type": "sideUnpatched"
+                  },
+                  "why": "only while nothing is patched at B"
+                },
+                "value": 0.0
+              },
+              {
+                "default": 0.005,
+                "group": [
+                  "Follower"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 0.2,
+                "min": 0.0005,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "usedWhen": {
+                  "condition": {
+                    "param": 0,
+                    "type": "choice",
+                    "values": [
+                      11
+                    ]
+                  },
+                  "why": "only in the mode follow"
+                },
+                "value": 0.005
+              },
+              {
+                "default": 0.12,
+                "group": [
+                  "Follower"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 1.5,
+                "min": 0.005,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "usedWhen": {
+                  "condition": {
+                    "param": 0,
+                    "type": "choice",
+                    "values": [
+                      11
+                    ]
+                  },
+                  "why": "only in the mode follow"
+                },
+                "value": 0.12
+              },
+              {
+                "default": 0.7,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "level",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.7
+              }
+            ],
+            "pinned": [],
+            "presets": [
+              {
+                "id": "ring-bell",
+                "name": "Ring Bell"
+              },
+              {
+                "id": "tremolo",
+                "name": "Tremolo"
+              },
+              {
+                "id": "pump",
+                "name": "Pump"
+              },
+              {
+                "id": "xor-growl",
+                "name": "Xor Growl"
+              },
+              {
+                "id": "square-up",
+                "name": "Square Up"
+              },
+              {
+                "id": "fold-sweep",
+                "name": "Fold Sweep"
+              },
+              {
+                "id": "decimator",
+                "name": "Decimator"
+              },
+              {
+                "id": "vibrato",
+                "name": "Vibrato"
+              },
+              {
+                "id": "warp-metal",
+                "name": "Warp Metal"
+              }
+            ]
+          },
+          "side": {
+            "main": "A",
+            "side": "B"
+          }
+        },
+        {
+          "id": 2,
+          "kind": "instrument",
+          "muted": false,
+          "name": "Oscillator",
+          "parent": null,
+          "pattern": null,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw",
+                  "noise"
+                ],
+                "max": 4.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 4,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 8,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "unison",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.15,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "spread",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.15
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 10,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 11,
+                "labels": null,
+                "max": 0.95,
+                "min": 0.05,
+                "name": "pulse",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 12,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "fm",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 13,
+                "labels": [
+                  "×0.5",
+                  "×1",
+                  "×1.4",
+                  "×1.5",
+                  "×2",
+                  "×2.5",
+                  "×2.8",
+                  "×3",
+                  "×3.5",
+                  "×4",
+                  "×5",
+                  "×5.6",
+                  "×6",
+                  "×7",
+                  "×8",
+                  "×12"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "fm_ratio",
+                "stepCount": 15,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 14,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sub",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 15,
+                "labels": null,
+                "max": 8.0,
+                "min": 1.0,
+                "name": "sync",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 16,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "drift",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 17,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "velocity",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 2.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 18,
+                "labels": [
+                  "off",
+                  "±1",
+                  "±2",
+                  "±3",
+                  "±5",
+                  "±7",
+                  "±12",
+                  "±24",
+                  "±48"
+                ],
+                "max": 8.0,
+                "min": 0.0,
+                "name": "bend",
+                "stepCount": 8,
+                "unit": null,
+                "value": 2.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 19,
+                "labels": [
+                  "off",
+                  "major",
+                  "minor",
+                  "harm minor",
+                  "mel minor",
+                  "dorian",
+                  "phrygian",
+                  "lydian",
+                  "mixolydian",
+                  "locrian",
+                  "maj pent",
+                  "min pent",
+                  "blues",
+                  "whole tone",
+                  "diminished",
+                  "chromatic"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "quantize",
+                "stepCount": 15,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "route": "out",
+          "solo": false,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "feed": "chain",
+          "id": 3,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Filter",
+          "parent": 2,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:filter",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "cutoff",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.707,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.5,
+                "name": "resonance",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.707
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 2,
+                "labels": [
+                  "lowpass",
+                  "highpass",
+                  "bandpass",
+                  "notch",
+                  "ladder",
+                  "acid",
+                  "ms20"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "type",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 1.0,
+                "name": "drive",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          }
+        },
+        {
+          "feed": "chain",
+          "id": 4,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Math",
+          "parent": 2,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:math",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "ring",
+                  "am",
+                  "fold",
+                  "warp",
+                  "compare",
+                  "min",
+                  "max",
+                  "xor",
+                  "and",
+                  "or",
+                  "hold",
+                  "follow"
+                ],
+                "max": 11.0,
+                "min": 0.0,
+                "name": "mode",
+                "stepCount": 11,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "amount",
+                "stepCount": 0,
+                "unit": null,
+                "usedWhen": {
+                  "condition": {
+                    "param": 0,
+                    "type": "choice",
+                    "values": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      10,
+                      11
+                    ]
+                  },
+                  "why": "only in the modes am, fold, warp, compare, hold, follow"
+                },
+                "value": 0.5
+              },
+              {
+                "default": 5.0,
+                "group": [
+                  "Logic"
+                ],
+                "index": 2,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7",
+                  "8",
+                  "9",
+                  "10",
+                  "11",
+                  "12"
+                ],
+                "max": 11.0,
+                "min": 0.0,
+                "name": "bits",
+                "stepCount": 11,
+                "unit": null,
+                "usedWhen": {
+                  "condition": {
+                    "param": 0,
+                    "type": "choice",
+                    "values": [
+                      7,
+                      8,
+                      9
+                    ]
+                  },
+                  "why": "only in the modes xor, and, or"
+                },
+                "value": 5.0
+              },
+              {
+                "default": 57.0,
+                "group": [
+                  "Carrier"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 120.0,
+                "min": -48.0,
+                "name": "pitch",
+                "stepCount": 0,
+                "unit": null,
+                "usedWhen": {
+                  "condition": {
+                    "type": "sideUnpatched"
+                  },
+                  "why": "only while nothing is patched at B"
+                },
+                "value": 57.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Carrier"
+                ],
+                "index": 4,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "saw",
+                  "square"
+                ],
+                "max": 3.0,
+                "min": 0.0,
+                "name": "wave",
+                "stepCount": 3,
+                "unit": null,
+                "usedWhen": {
+                  "condition": {
+                    "type": "sideUnpatched"
+                  },
+                  "why": "only while nothing is patched at B"
+                },
+                "value": 0.0
+              },
+              {
+                "default": 0.005,
+                "group": [
+                  "Follower"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 0.2,
+                "min": 0.0005,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "usedWhen": {
+                  "condition": {
+                    "param": 0,
+                    "type": "choice",
+                    "values": [
+                      11
+                    ]
+                  },
+                  "why": "only in the mode follow"
+                },
+                "value": 0.005
+              },
+              {
+                "default": 0.12,
+                "group": [
+                  "Follower"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 1.5,
+                "min": 0.005,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "usedWhen": {
+                  "condition": {
+                    "param": 0,
+                    "type": "choice",
+                    "values": [
+                      11
+                    ]
+                  },
+                  "why": "only in the mode follow"
+                },
+                "value": 0.12
+              },
+              {
+                "default": 0.7,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "level",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.7
+              }
+            ],
+            "pinned": [],
+            "presets": [
+              {
+                "id": "ring-bell",
+                "name": "Ring Bell"
+              },
+              {
+                "id": "tremolo",
+                "name": "Tremolo"
+              },
+              {
+                "id": "pump",
+                "name": "Pump"
+              },
+              {
+                "id": "xor-growl",
+                "name": "Xor Growl"
+              },
+              {
+                "id": "square-up",
+                "name": "Square Up"
+              },
+              {
+                "id": "fold-sweep",
+                "name": "Fold Sweep"
+              },
+              {
+                "id": "decimator",
+                "name": "Decimator"
+              },
+              {
+                "id": "vibrato",
+                "name": "Vibrato"
+              },
+              {
+                "id": "warp-metal",
+                "name": "Warp Metal"
+              }
+            ]
+          },
+          "side": {
+            "main": "A",
+            "side": "B"
+          }
+        },
+        {
+          "id": 5,
+          "kind": "instrument",
+          "muted": false,
+          "name": "Oscillator",
+          "parent": null,
+          "pattern": null,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw",
+                  "noise"
+                ],
+                "max": 4.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 4,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 8,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "unison",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.15,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "spread",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.15
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 10,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 11,
+                "labels": null,
+                "max": 0.95,
+                "min": 0.05,
+                "name": "pulse",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 12,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "fm",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 13,
+                "labels": [
+                  "×0.5",
+                  "×1",
+                  "×1.4",
+                  "×1.5",
+                  "×2",
+                  "×2.5",
+                  "×2.8",
+                  "×3",
+                  "×3.5",
+                  "×4",
+                  "×5",
+                  "×5.6",
+                  "×6",
+                  "×7",
+                  "×8",
+                  "×12"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "fm_ratio",
+                "stepCount": 15,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 14,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sub",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 15,
+                "labels": null,
+                "max": 8.0,
+                "min": 1.0,
+                "name": "sync",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 16,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "drift",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 17,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "velocity",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 2.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 18,
+                "labels": [
+                  "off",
+                  "±1",
+                  "±2",
+                  "±3",
+                  "±5",
+                  "±7",
+                  "±12",
+                  "±24",
+                  "±48"
+                ],
+                "max": 8.0,
+                "min": 0.0,
+                "name": "bend",
+                "stepCount": 8,
+                "unit": null,
+                "value": 2.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 19,
+                "labels": [
+                  "off",
+                  "major",
+                  "minor",
+                  "harm minor",
+                  "mel minor",
+                  "dorian",
+                  "phrygian",
+                  "lydian",
+                  "mixolydian",
+                  "locrian",
+                  "maj pent",
+                  "min pent",
+                  "blues",
+                  "whole tone",
+                  "diminished",
+                  "chromatic"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "quantize",
+                "stepCount": 15,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "route": "none",
+          "solo": false,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 6,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 1.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "ceiling": -1.0,
+          "id": 4294967295,
+          "kind": "master",
+          "limiter": true,
+          "name": "Master",
+          "parent": null,
+          "volume": 1.0
+        }
+      ]
+    },
+    "meta": {
+      "bpm": 120.0,
+      "dirty": true,
+      "file": null,
+      "piano": {
+        "kind": "major",
+        "locked": false,
+        "notes": [
+          0,
+          2,
+          4,
+          5,
+          7,
+          9,
+          11
+        ],
+        "root": 0,
+        "scale": "C major"
+      },
+      "sampleRate": 48000.0
+    },
+    "rev": 3,
+    "telemetry": {
+      "meters": [
+        {
+          "kind": "peak",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 0
+        },
+        {
+          "kind": "clips",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 1
+        },
+        {
+          "kind": "reduction",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 4095
+        },
+        {
+          "kind": "peak",
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 2
+        },
+        {
+          "kind": "clips",
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 3
+        },
+        {
+          "kind": "peak",
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 4
+        },
+        {
+          "kind": "clips",
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 5
+        },
+        {
+          "kind": "peak",
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 6
+        },
+        {
+          "kind": "clips",
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 7
+        }
+      ],
+      "modulation": [
+        {
+          "kind": "modOutput",
+          "node": 6,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 8
+        }
+      ],
+      "rev": 1
+    }
+  }
+}

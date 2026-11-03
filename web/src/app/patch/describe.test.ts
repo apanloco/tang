@@ -1,0 +1,141 @@
+import { describe, expect, test } from "vitest";
+
+import type { ModulatorSource } from "../../protocol";
+import { cableWidth, controlDetail, kindOf, outputRange, outputScale, seconds, sendWidth, settingsOf } from "./describe";
+
+const lfo: ModulatorSource = { type: "lfo", waveform: "triangle", rate: 0.5, retrigger: false, fade: 0, sync: 0 };
+const envelope: ModulatorSource = { type: "envelope", attack: 0.01, decay: 0.3, sustain: 0.7, release: 2 };
+const macro: ModulatorSource = { type: "macro", value: 0.25 };
+const steps: ModulatorSource = { type: "steps", values: Array<number>(16).fill(0), length: 16, rate: 8, glide: 0, retrigger: true, sync: 0 };
+type Control = Extract<ModulatorSource, { type: "midiLearn" }>;
+const midi = (control: Control["control"], learning = false): Control => ({ type: "midiLearn", control, learning });
+
+describe("a modulator in words", () => {
+  test("is of a kind", () => {
+    expect(kindOf(lfo)).toBe("LFO");
+    expect(kindOf(envelope)).toBe("Envelope");
+    expect(kindOf(midi(null))).toBe("MIDI");
+    expect(kindOf(macro)).toBe("Macro");
+    expect(kindOf(steps)).toBe("Steps");
+  });
+
+  test("has the settings that its kind has, in the order they are shown", () => {
+    expect(settingsOf(lfo)).toEqual(["rate", "waveform", "retrigger", "fade"]);
+    expect(settingsOf(envelope)).toEqual(["attack", "decay", "sustain", "release"]);
+    expect(settingsOf(midi({ type: "cc", number: 74 }))).toEqual([]);
+    expect(settingsOf(macro)).toEqual(["value"]);
+    expect(settingsOf(steps)).toEqual(["rate", "glide", "length", "retrigger"]);
+  });
+
+  test("has no cell for the note length that a modulator follows the tempo by: it is chosen in the node's header, and a fifth cell would make the grid a row taller than the layout assumes", () => {
+    for (const source of [lfo, envelope, macro, steps, midi(null)]) {
+      expect((settingsOf(source) as readonly string[]).includes("sync"), source.type).toBe(false);
+      // (At most the four cells of a row: the layout counts one row of controls for a modulator.)
+      expect(settingsOf(source).length, source.type).toBeLessThanOrEqual(4);
+    }
+  });
+
+  test("says what a MIDI control is bound to, or that it is not", () => {
+    expect(controlDetail(midi({ type: "cc", number: 74 }))).toBe("CC 74");
+    expect(controlDetail(midi({ type: "pitchBend" }))).toBe("pitch bend");
+    expect(controlDetail(midi({ type: "aftertouch" }))).toBe("aftertouch");
+    expect(controlDetail(midi({ type: "velocity" }))).toBe("velocity of the last note");
+    expect(controlDetail(midi({ type: "key" }))).toBe("pitch of the last note");
+    expect(controlDetail(midi(null))).toBe("not bound");
+    expect(controlDetail(midi(null, true))).toBe("waiting for a control…");
+    // While it is learning it is waiting, whatever it was bound to.
+    expect(controlDetail(midi({ type: "cc", number: 1 }, true))).toBe("waiting for a control…");
+  });
+});
+
+describe("a time", () => {
+  test("is written in milliseconds below a second and in seconds from it", () => {
+    expect(seconds(0.01)).toBe("10 ms");
+    expect(seconds(0.3)).toBe("300 ms");
+    expect(seconds(0.999)).toBe("999 ms");
+    expect(seconds(1)).toBe("1 s");
+    expect(seconds(2.5)).toBe("2.5 s");
+    expect(seconds(10)).toBe("10 s");
+    expect(seconds(0.001)).toBe("1 ms");
+  });
+});
+
+describe("the scale of a modulator's output", () => {
+  test("goes both ways, from the middle, for a LFO", () => {
+    expect(outputScale(lfo)).toEqual({ min: -1, max: 1, centred: true });
+  });
+
+  test("goes from nothing up for an envelope, a CC, pressure, a velocity and a key, and a control that is not bound", () => {
+    expect(outputScale(envelope)).toEqual({ min: 0, max: 1, centred: false });
+    expect(outputScale(midi({ type: "cc", number: 74 }))).toEqual({ min: 0, max: 1, centred: false });
+    expect(outputScale(midi({ type: "aftertouch" }))).toEqual({ min: 0, max: 1, centred: false });
+    expect(outputScale(midi({ type: "velocity" }))).toEqual({ min: 0, max: 1, centred: false });
+    // (A key is the number of the note over 127, drawn as it is: middle C is a little under the middle of the picture, not on it.)
+    expect(outputScale(midi({ type: "key" }))).toEqual({ min: 0, max: 1, centred: false });
+    expect(outputScale(midi(null))).toEqual({ min: 0, max: 1, centred: false });
+  });
+
+  test("goes both ways, from the middle, for a step sequencer, whose steps are -1 to 1", () => {
+    expect(outputScale(steps)).toEqual({ min: -1, max: 1, centred: true });
+    expect(outputRange("steps")).toEqual({ min: -1, max: 1 });
+  });
+
+  test("goes from nothing up for a macro, which is a level", () => {
+    expect(outputScale(macro)).toEqual({ min: 0, max: 1, centred: false });
+  });
+
+  test("goes both ways from the middle of 0 to 1 for the pitch bend, which rests there", () => {
+    expect(outputScale(midi({ type: "pitchBend" }))).toEqual({ min: 0, max: 1, centred: true });
+  });
+});
+
+describe("how thick a cable is", () => {
+  test("is a thin line for no depth, and thicker for more, in either direction", () => {
+    expect(cableWidth(0)).toBe(1.5);
+    expect(cableWidth(0.5)).toBe(2.5);
+    expect(cableWidth(1)).toBe(3.5);
+    expect(cableWidth(-0.5)).toBe(2.5);
+    expect(cableWidth(-1)).toBe(3.5);
+  });
+
+  test("is no thicker for more than there can be", () => {
+    expect(cableWidth(5)).toBe(3.5);
+    expect(cableWidth(-5)).toBe(3.5);
+  });
+});
+
+describe("how thick an audio cable is", () => {
+  test("is a line a little thicker than the audio path's for no level, and thicker for more, up to the most a cable can carry", () => {
+    expect(sendWidth(0)).toBe(2);
+    expect(sendWidth(0.5)).toBe(2.5);
+    expect(sendWidth(1)).toBe(3);
+    expect(sendWidth(1.5)).toBe(3.5);
+    expect(sendWidth(2)).toBe(4);
+  });
+
+  test("is no thicker for more than there can be, and no thinner for less than nothing", () => {
+    expect(sendWidth(5)).toBe(4);
+    expect(sendWidth(-1)).toBe(2);
+  });
+
+  test("is not the width of a cable of modulation of the same number: a level goes to 2 and a depth to 1", () => {
+    expect(sendWidth(1)).not.toBe(cableWidth(1));
+    expect(sendWidth(2)).toBeGreaterThan(cableWidth(1));
+  });
+});
+
+describe("the range a modulator's output goes over", () => {
+  test("is from -1 to 1 for an LFO, which goes both ways, and from 0 to 1 for the rest", () => {
+    expect(outputRange("lfo")).toEqual({ min: -1, max: 1 });
+    expect(outputRange("envelope")).toEqual({ min: 0, max: 1 });
+    expect(outputRange("midiLearn")).toEqual({ min: 0, max: 1 });
+    expect(outputRange("macro")).toEqual({ min: 0, max: 1 });
+  });
+
+  test("is the range of the scale the output is drawn over, whatever the source is", () => {
+    for (const source of [lfo, envelope, macro, midi(null), midi({ type: "cc", number: 1 }), midi({ type: "pitchBend" }), midi({ type: "aftertouch" })]) {
+      const { min, max } = outputScale(source);
+      expect(outputRange(source.type), source.type).toEqual({ min, max });
+    }
+  });
+});

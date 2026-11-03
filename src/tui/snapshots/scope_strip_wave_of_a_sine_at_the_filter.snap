@@ -1,0 +1,78 @@
+---
+source: src/tui/golden_tests.rs
+---
+120x32
+── text ──
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
+┌ Chain ─────────────────────────────────────────┐┌ Filter ────────────────────────────────────────────────────────────┐
+│♪ Oscillator  [Built-in]                        ││  cutoff                   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     1.00│
+│├ fx Filter  [Built-in]                         ││  resonance                ▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.71│
+│├ fx Reverb  [Built-in]                         ││  type                     ◂ lowpass ▸                              │
+│╰ ~ LFO 0.5Hz sine → Filter: cutoff (40%), Rever││  drive                    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     1.00│
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
+┌ Scope: Filter   wave   Time: 21 ms   Peak: -1.9 dB ──────────────────────────────────────────────────────────────────┐
+│  ⢀⣀          ⣀⡀          ⣀⡀          ⣀          ⢀⣀          ⣀⡀          ⣀⡀          ⣀          ⢀⣀          ⢀⡀        │
+│ ⢰⠋⠈⢆        ⡰⠁⠙⡄        ⡜⠁⠱⡄       ⢀⠎⠈⢳        ⢠⠋⠈⢇        ⡰⠃⠘⣆        ⡜⠁⠹⡄       ⢀⠎⠈⢳        ⢠⠋⠈⢧        ⣰⠁⠙⣆       │
+│⢀⠇⠉⠉⠘⡆⠉⠉⠉⠉⠉⠉⢰⠁⠉⠉⠸⡄⠉⠉⠉⠉⠉⠉⡼⠉⠉⠉⢱⠉⠉⠉⠉⠉⠉⠉⡞⠉⠉⠉⢧⠉⠉⠉⠉⠉⠉⢀⠇⠉⠉⠈⡆⠉⠉⠉⠉⠉⠉⢰⠃⠉⠉⠸⡀⠉⠉⠉⠉⠉⠉⡸⠁⠉⠉⢱⠉⠉⠉⠉⠉⠉⠉⡜⠉⠉⠉⢣⠉⠉⠉⠉⠉⠉⢀⡏⠉⠉⠈⡇⠉⠉⠉⠉⠉⠉⢠⠃⠉⠉⠸⡄⠉⠉⠉⠉⠉⠉│
+│⡜    ⢸     ⢀⡏    ⢣     ⢠⠃    ⢇     ⢸    ⠘⡆     ⡜    ⢸⡀     ⡎    ⢣     ⢀⠇    ⢇     ⢰⠁   ⠈⡆     ⡼    ⠸⡀     ⡏    ⢱      │
+│⠉⠉⠉⠉⠉⠉⢇⠉⠉⠉⠉⡸⠉⠉⠉⠉⠉⠈⡆⠉⠉⠉⠉⡎⠉⠉⠉⠉⠉⠸⡀⠉⠉⠉⢀⠇⠉⠉⠉⠉⠉⢱⠉⠉⠉⠉⢰⠁⠉⠉⠉⠉⠉⢧⠉⠉⠉⠉⡸⠉⠉⠉⠉⠉⠈⡆⠉⠉⠉⠉⡜⠉⠉⠉⠉⠉⠸⡀⠉⠉⠉⢀⡇⠉⠉⠉⠉⠉⢱⠉⠉⠉⠉⢰⠃⠉⠉⠉⠉⠉⢣⠉⠉⠉⠉⣸⠁⠉⠉⠉⠉⠉⡇⠉⠉⠉⠉⡜│
+│⣀⣀⣀⣀⣀⣀⠘⡄⣀⣀⢠⠃⣀⣀⣀⣀⣀⣀⢸⡀⣀⣀⣸⣀⣀⣀⣀⣀⣀⣀⢣⣀⣀⣀⡜⣀⣀⣀⣀⣀⣀⣀⢇⣀⣀⢀⡎⣀⣀⣀⣀⣀⣀⠘⡆⣀⣀⢠⠇⣀⣀⣀⣀⣀⣀⠹⡀⣀⣀⢰⠁⣀⣀⣀⣀⣀⣀⢳⣀⣀⣀⡜⣀⣀⣀⣀⣀⣀⣀⢇⣀⣀⣀⡎⣀⣀⣀⣀⣀⣀⠘⡆⣀⣀⢀⠇⣀⣀⣀⣀⣀⣀⠸⡀⣀⣀⣰⠁│
+│       ⠱⣄⢀⠏        ⢳⡀⣰⠃       ⠈⢧ ⡴⠁       ⠘⣆⢀⡜        ⠹⡄⢠⠎        ⢳⡀⣠⠃        ⢧⡀⡸⠁       ⠘⢆⢀⡜        ⠘⣄⢀⠎        ⢱⡀⣠⠇ │
+│        ⠈⠁          ⠉⠁          ⠉          ⠈⠉          ⠈⠁          ⠉⠁          ⠉          ⠈⠉          ⠈⠉          ⠉⠁  │
+└ [o] hide  [O] wave/spectrum ─────────────────────────────────────────────────────────────────────────────────────────┘
+ n  new instr  a  add fx  m  modulate  x  mix  d  delete  p  presets
+── styles ('.' = default) ──
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
+ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbbb........................cbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccb
+caaaaaaaaaaaaaaaaaaaaaaa.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..............................b
+cddddddddddddddddddddddddddddddddddddddddddddddddcb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+bbbbbbbbbaaaaaabbbaaaabbbbbbbbbaaaaabbbbbbbbbaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+b..ee..........ee..........ee..........e..........ee..........ee..........ee..........e..........ee..........ee........b
+b.eeee........eeee........eeee.......eeee........eeee........eeee........eeee.......eeee........eeee........eeee.......b
+beeffeeffffffeeffeeffffffefffefffffffefffeffffffeeffeeffffffeeffeeffffffeeffefffffffefffeffffffeeffeeffffffeeffeeffffffb
+be....e.....ee....e.....ee....e.....e....ee.....e....ee.....e....e.....ee....e.....ee...ee.....e....ee.....e....e......b
+bffffffeffffefffffeeffffefffffeefffeefffffeffffeefffffeffffefffffeeffffefffffeefffeefffffeffffeefffffeffffeefffffeffffeb
+bffffffeeffeeffffffeeffefffffffefffefffffffeffeeffffffeeffeeffffffeeffeeffffffefffefffffffefffeffffffeeffeeffffffeeffeeb
+b.......eeee........eeee.......ee.ee.......eeee........eeee........eeee........eeee.......eeee........eeee........eeee.b
+b........ee..........ee..........e..........ee..........ee..........ee..........e..........ee..........ee..........ee..b
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+gggcccccccccc.gggccccccc.gggccccccccc.gggcccc.gggccccccc.gggcccccccc
+── legend ──
+a  fg=White bg=Reset mod=BOLD
+b  fg=Indexed(245) bg=Reset mod=-
+c  fg=White bg=Reset mod=-
+d  fg=Magenta bg=Reset mod=DIM
+e  fg=Rgb(120, 200, 215) bg=Reset mod=-
+f  fg=Rgb(70, 74, 88) bg=Reset mod=-
+g  fg=Black bg=White mod=BOLD

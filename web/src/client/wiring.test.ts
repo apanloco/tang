@@ -1,0 +1,447 @@
+import { describe, expect, test } from "vitest";
+
+import type { Edge, Endpoint, Graph, Intent, NodeId } from "../protocol";
+import { MASTER, audioCablesFixture, groupsFixture, reachFixture, tracerSnapshot } from "./fixtures";
+import { isLink } from "./cables";
+import { cableEnds, cableLoops, cableTakers, cablesOf, effectLoops, feedLoops, goesRound, laneLoops, linkOrCable, linksOf, routeLoops, templateLinks, wiringOf } from "./wiring";
+import type { Ends } from "./wiring";
+
+// The session of the fixture (`fixtures/audioCables.json`): group 0 ("Pad") has Filter 1, Reverb 2 and Delay 3 on its bus; lane 4 is in it and has Filter 5 and Delay 6 (and an LFO that hears it, 10); lane 7, in no group,
+// has Drive 8; lane 9 is empty. The cables: 1 from lane 7 to Filter 5, 2 from Filter 5 to Delay 6, 3 from the group's output to Drive 8, 4 from Filter 1 to Reverb 2, 5 from Delay 6 to the group's
+// bus and 6 from Reverb 2 to the mix.
+const graph: Graph = audioCablesFixture.snapshot.graph;
+const out = (node: NodeId): Endpoint => ({ node, port: { type: "audioOut" } });
+const into = (node: NodeId): Endpoint => ({ node, port: { type: "audioIn" } });
+const ends = (from: Ends["from"]["kind"], start: NodeId, to: Ends["to"]["kind"], end: NodeId): Ends => ({ from: { kind: from, node: start }, to: { kind: to, node: end } });
+
+/** The graph with the cables `drawn` (as ends: an effect, a group's bus or the mix) in place of those it has. */
+const withCables = (...drawn: [NodeId, NodeId][]): Graph => ({
+  ...graph,
+  edges: [
+    ...graph.edges.filter((e) => e.kind !== "cable"),
+    ...drawn.map(([from, to], i): Edge => ({ kind: "cable", id: 100 + i, gain: 1, from: out(from), to: into(to) })),
+  ],
+});
+
+/** The graph with the way out of the lanes and groups `cut` cut, and the links of the audio path that go with it taken out (as the controller's graph has them). */
+const withWaysOutCut = (base: Graph, ...cut: NodeId[]): Graph => {
+  const nodes = base.nodes.map((n) => ((n.kind === "instrument" || n.kind === "group") && cut.includes(n.id) ? { ...n, route: "none" as const } : n));
+  return { nodes, edges: [...linksOf(nodes), ...base.edges.filter((e) => !isLink(e))] };
+};
+
+/** The graph with the feed of the effects `cut` cut, and the links of the audio path that go with it taken out (as the controller's graph has them). */
+const withFeedsCut = (base: Graph, ...cut: NodeId[]): Graph => {
+  const nodes = base.nodes.map((n) => (n.kind === "effect" && cut.includes(n.id) ? { ...n, feed: "none" as const } : n));
+  return { nodes, edges: [...linksOf(nodes), ...base.edges.filter((e) => !isLink(e))] };
+};
+
+describe("the wiring of a graph", () => {
+  test("is its lanes, each with the effects of its chain in order and the group it is in, and its groups, each with the effects of its bus", () => {
+    expect(wiringOf(graph)).toEqual({
+      lanes: [
+        { node: 4, effects: [5, 6], cut: [], group: 0, route: "out" },
+        { node: 7, effects: [8], cut: [], group: null, route: "out" },
+        { node: 9, effects: [], cut: [], group: null, route: "out" },
+      ],
+      groups: [{ node: 0, effects: [1, 2, 3], cut: [], route: "out" }],
+    });
+  });
+
+  test("puts a lane whose group is not in the graph in no group, as the controller does for a group that is gone", () => {
+    const lanes = graph.nodes.map((n) => (n.id === 7 ? { ...n, parent: 77 } : n));
+    expect(wiringOf({ ...graph, nodes: lanes }).lanes[1]).toEqual({ node: 7, effects: [8], cut: [], group: null, route: "out" });
+  });
+
+  test("says which effects of each chain the stage before them does not feed", () => {
+    const cut = wiringOf(withFeedsCut(graph, 6, 2, 8));
+    expect(cut.lanes.map((lane) => lane.cut)).toEqual([[6], [8], []]);
+    expect(cut.groups.map((group) => group.cut)).toEqual([[2]]);
+    expect(cut.lanes.map((lane) => lane.effects)).toEqual([[5, 6], [8], []]);
+  });
+
+  test("says which way out each lane and each group has", () => {
+    const cut = wiringOf(withWaysOutCut(graph, 4, 0));
+    expect(cut.lanes.map((lane) => lane.route)).toEqual(["none", "out", "out"]);
+    expect(cut.groups.map((group) => group.route)).toEqual(["none"]);
+  });
+
+  test("has the audio cables of the graph, each by what its start and its end are, in the order of the graph", () => {
+    expect(cablesOf(graph)).toEqual([
+      ends("instrument", 7, "effect", 5),
+      ends("effect", 5, "effect", 6),
+      ends("group", 0, "effect", 8),
+      ends("effect", 1, "effect", 2),
+      ends("effect", 6, "groupBus", 0),
+      ends("effect", 2, "master", MASTER),
+    ]);
+  });
+
+  test("leaves out a cable with a node that is not in the graph, and what is not an audio cable", () => {
+    const stray: Edge[] = [
+      { kind: "cable", id: 50, gain: 1, from: out(77), to: into(5) },
+      { kind: "cable", id: 51, gain: 1, from: out(7), to: into(78) },
+      { kind: "cable", id: 52, gain: 1, from: out(10), to: into(5) },
+      { kind: "cable", id: 53, gain: 1, from: out(7), to: into(9) },
+    ];
+    expect(cablesOf({ ...graph, edges: [...graph.edges, ...stray] })).toEqual(cablesOf(graph));
+  });
+});
+
+describe("the ends of a cable", () => {
+  test("are an instrument's, an effect's or a group's output and an effect's, a group's bus or the mix's input, whichever of a lane's or a bus's the effect is in", () => {
+    expect(cableEnds(graph, out(4), into(5))).toEqual(ends("instrument", 4, "effect", 5));
+    expect(cableEnds(graph, out(5), into(1))).toEqual(ends("effect", 5, "effect", 1));
+    expect(cableEnds(graph, out(3), into(0))).toEqual(ends("effect", 3, "groupBus", 0));
+    expect(cableEnds(graph, out(0), into(MASTER))).toEqual(ends("group", 0, "master", MASTER));
+    expect(cableEnds(graph, out(9), into(8))).toEqual(ends("instrument", 9, "effect", 8));
+  });
+
+  test("are refused in the controller's words and in its order: the ports, the mix as a start, a start, a modulator, an end", () => {
+    const refused = (from: Endpoint, to: Endpoint): string => {
+      const result = cableEnds(graph, from, to);
+      return "error" in result ? `${result.error.code}: ${result.error.message}` : "taken";
+    };
+    expect(refused({ node: 4, port: { type: "audioIn" } }, into(5))).toBe("invalid: an audio cable starts at an output of audio");
+    expect(refused(out(4), { node: 5, port: { type: "audioOut" } })).toBe("invalid: an audio cable ends at an input of audio");
+    // (Both ports are wrong: the start is looked at first.)
+    expect(refused({ node: 4, port: { type: "modOut" } }, { node: 5, port: { type: "rate" } })).toBe("invalid: an audio cable starts at an output of audio");
+    expect(refused(out(MASTER), into(5))).toBe("invalid: the mix has no output of audio");
+    expect(refused(out(77), into(5))).toBe("notFound: there is no node 77");
+    expect(refused(out(10), into(5))).toBe("invalid: a modulator has no output of audio");
+    expect(refused(out(4), into(78))).toBe("notFound: there is no node 78");
+    expect(refused(out(4), into(9))).toBe("invalid: a lane has no input of audio: a cable ends at an effect, a group or the mix");
+    expect(refused(out(4), into(10))).toBe("invalid: a modulator has no input of audio");
+    // (The start is judged all the way before the end: a start that is not there is not found, whatever the end.)
+    expect(refused(out(77), into(78))).toBe("notFound: there is no node 77");
+    expect(refused(out(10), into(9))).toBe("invalid: a modulator has no output of audio");
+  });
+});
+
+describe("whether the audio goes round", () => {
+  test("is no in the wiring of the session with the cables it has", () => {
+    expect(goesRound(wiringOf(graph), cablesOf(graph))).toBe(false);
+    expect(goesRound(wiringOf(graph), [])).toBe(false);
+  });
+
+  test("is yes for a cable back along a chain, into the effect it starts at, and round through two cables that are none alone", () => {
+    expect(cableLoops(graph, ends("effect", 6, "effect", 5))).toBe(true);
+    expect(cableLoops(graph, ends("effect", 5, "effect", 5))).toBe(true);
+    // (A bus effect back to the one before it; the cable of Filter 1 to Reverb 2 is there already, so the other way round closes the circle.)
+    expect(cableLoops(graph, ends("effect", 2, "effect", 1))).toBe(true);
+    // Drive 8 to Filter 5 goes round by cable 3 (the group's output into Drive 8) and the lane's way into its group, and the chain of the group.
+    expect(cableLoops(graph, ends("effect", 8, "effect", 5))).toBe(true);
+    // Two cables that are none alone: Filter 5 to Drive 8, and Drive 8 to Filter 5, with no other cable in the session.
+    expect(cableLoops(withCables(), ends("effect", 5, "effect", 8))).toBe(false);
+    expect(cableLoops(withCables(), ends("effect", 8, "effect", 5))).toBe(false);
+    expect(cableLoops(withCables([5, 8]), ends("effect", 8, "effect", 5))).toBe(true);
+  });
+
+  test("tells the head of a group from its tail: its output cannot feed its own bus, nor a bus effect its own bus's head, and a lane that is not in it may send to its bus", () => {
+    expect(cableLoops(graph, ends("group", 0, "effect", 1))).toBe(true);
+    expect(cableLoops(graph, ends("group", 0, "effect", 3))).toBe(true);
+    expect(cableLoops(graph, ends("group", 0, "groupBus", 0))).toBe(true);
+    expect(cableLoops(graph, ends("effect", 3, "groupBus", 0))).toBe(true);
+    expect(cableLoops(graph, ends("effect", 1, "groupBus", 0))).toBe(true);
+    // (The head of a lane that is not in the group, and the head of one that is, may send into the bus: it is where they go anyway.)
+    expect(cableLoops(graph, ends("instrument", 7, "groupBus", 0))).toBe(false);
+    expect(cableLoops(graph, ends("instrument", 4, "groupBus", 0))).toBe(false);
+    expect(cableLoops(graph, ends("instrument", 4, "effect", 2))).toBe(false);
+    // The group's output into a lane that is in the group feeds itself; into a lane that is not, it does not.
+    expect(cableLoops(graph, ends("group", 0, "effect", 5))).toBe(true);
+    expect(cableLoops(graph, ends("group", 0, "master", MASTER))).toBe(false);
+  });
+
+  test("is no for a cable from the mix's side of the wiring: whatever ends at the mix does not come back", () => {
+    for (const start of [4, 7, 9]) expect(cableLoops(graph, ends("instrument", start, "master", MASTER)), `lane ${String(start)}`).toBe(false);
+    expect(cableLoops(graph, ends("effect", 8, "master", MASTER))).toBe(false);
+  });
+});
+
+describe("whether the audio would go round if a lane were put in a group or an effect moved", () => {
+  test("a lane put in a group whose output a cable takes into the lane would feed itself: lane 7, into Drive 8, and not the others", () => {
+    expect(laneLoops(graph, 7, 0)).toBe(true);
+    expect(laneLoops(graph, 9, 0)).toBe(false);
+    expect(laneLoops(graph, 4, 0)).toBe(false);
+    // Out of its group, or put in no group, a lane cannot make the audio go round, with these cables (and one that is in the group already is as it is).
+    expect(laneLoops(graph, 4, null)).toBe(false);
+    expect(laneLoops(graph, 7, null)).toBe(false);
+  });
+
+  test("an effect moved along its chain loops when a cable beside the chain's link would run the other way: Filter 5 to the end, Delay 6 to the start, and the same on the bus", () => {
+    expect(effectLoops(graph, 5, 1)).toBe(true);
+    expect(effectLoops(graph, 6, 0)).toBe(true);
+    expect(effectLoops(graph, 1, 1)).toBe(true);
+    expect(effectLoops(graph, 1, 2)).toBe(true);
+    expect(effectLoops(graph, 2, 0)).toBe(true);
+    // (Delay 3 to the front keeps Filter 1 before Reverb 2, and Reverb 2 to the end keeps it too.)
+    expect(effectLoops(graph, 3, 0)).toBe(false);
+    expect(effectLoops(graph, 3, 1)).toBe(false);
+    expect(effectLoops(graph, 2, 2)).toBe(false);
+  });
+
+  test("an effect that is not moved, a place the chain has not and a node that is no effect do not loop", () => {
+    expect(effectLoops(graph, 5, 0)).toBe(false);
+    expect(effectLoops(graph, 8, 0)).toBe(false);
+    expect(effectLoops(graph, 5, 2)).toBe(false);
+    expect(effectLoops(graph, 5, -1)).toBe(false);
+    expect(effectLoops(graph, 4, 0)).toBe(false);
+    expect(effectLoops(graph, 77, 0)).toBe(false);
+  });
+});
+
+describe("the links of the audio path that the nodes of a graph have", () => {
+  test("are those that the controller lists, in its order, for every session of the fixtures: the groups' chains, then the lanes', each ending in the mix or in its group", () => {
+    for (const [name, snapshot] of Object.entries({ audioCables: audioCablesFixture.snapshot, tracer: tracerSnapshot, groups: groupsFixture.snapshot, reach: reachFixture.snapshot })) {
+      expect(linksOf(snapshot.graph.nodes), name).toEqual(snapshot.graph.edges.filter(isLink));
+    }
+  });
+
+  test("end a chain whose way out is cut at its last node: no link leaves the tail of a lane or a group that goes nowhere", () => {
+    const links = (cut: NodeId[]): string[] => linksOf(withWaysOutCut(graph, ...cut).nodes).map((e) => `${String(e.from.node)}>${String(e.to.node)} ${e.kind}`);
+    const all = links([]);
+    // The fixture: group 0 has Filter 1, Reverb 2 and Delay 3 and goes to the mix; lane 4 (in it) has Filter 5 and Delay 6 and goes to the group; lane 7 has Drive 8 and lane 9 has nothing, and go to the mix.
+    expect(all).toEqual(["0>1 audio", "1>2 audio", "2>3 audio", "3>4294967295 audio", "4>5 audio", "5>6 audio", "6>0 member", "7>8 audio", "8>4294967295 audio", "9>4294967295 audio"]);
+    expect(links([0])).toEqual(all.filter((link) => link !== "3>4294967295 audio"));
+    expect(links([4])).toEqual(all.filter((link) => link !== "6>0 member"));
+    expect(links([7])).toEqual(all.filter((link) => link !== "8>4294967295 audio"));
+    expect(links([9])).toEqual(all.filter((link) => link !== "9>4294967295 audio"));
+    expect(links([0, 4, 7, 9])).toEqual(["0>1 audio", "1>2 audio", "2>3 audio", "4>5 audio", "5>6 audio", "7>8 audio"]);
+  });
+
+  test("leave out the link into an effect whose feed is cut, and the chain goes on from it: its output is linked to the next stage as it was", () => {
+    const links = (cut: NodeId[]): string[] => linksOf(withFeedsCut(graph, ...cut).nodes).map((e) => `${String(e.from.node)}>${String(e.to.node)} ${e.kind}`);
+    const all = links([]);
+    expect(links([5])).toEqual(all.filter((link) => link !== "4>5 audio"));
+    expect(links([6])).toEqual(all.filter((link) => link !== "5>6 audio"));
+    expect(links([1])).toEqual(all.filter((link) => link !== "0>1 audio"));
+    expect(links([8])).toEqual(all.filter((link) => link !== "7>8 audio"));
+    expect(links([1, 3, 5, 8])).toEqual(["1>2 audio", "3>4294967295 audio", "5>6 audio", "6>0 member", "8>4294967295 audio", "9>4294967295 audio"]);
+    // A chain whose way out is cut and whose last effect is not fed has no link out at all, and is still not its own.
+    const both = linksOf(withFeedsCut(withWaysOutCut(graph, 7), 8).nodes).map((e) => `${String(e.from.node)}>${String(e.to.node)}`);
+    expect(both).not.toContain("7>8");
+    expect(both).not.toContain("8>4294967295");
+  });
+
+  test("leave out the links that would go to a master that the nodes do not have", () => {
+    const nodes = graph.nodes.filter((n) => n.kind !== "master");
+    expect(linksOf(nodes).some((e) => e.to.node === MASTER)).toBe(false);
+    expect(linksOf(nodes).some((e) => e.kind === "member")).toBe(true);
+  });
+});
+
+describe("whether the audio would go round if a way out were given back", () => {
+  // The group's output into Filter 5, a lane that is in the group: the lane feeds the group, which feeds the lane, unless the lane's way out is cut.
+  const looped = (...cut: NodeId[]): Graph => withWaysOutCut(withCables([0, 5]), ...cut);
+
+  test("a lane whose way out is cut may be given it back unless a cable would then feed it from what it feeds", () => {
+    expect(routeLoops(looped(4), 4, "out")).toBe(true);
+    expect(routeLoops(looped(4), 4, "none")).toBe(false);
+    // (Lane 7 is in no group: its way out goes to the mix, which feeds nothing.)
+    expect(routeLoops(looped(4, 7), 7, "out")).toBe(false);
+    expect(routeLoops(looped(4, 9), 9, "out")).toBe(false);
+  });
+
+  test("a group's way out can not close a loop: it goes to the mix, which has no output", () => {
+    // (Lane 4 is cut too, so that the cable into it makes no loop of the session as it is.)
+    expect(routeLoops(looped(0, 4), 0, "out")).toBe(false);
+    expect(routeLoops(withWaysOutCut(graph, 0), 0, "out")).toBe(false);
+  });
+
+  test("a node that is no lane or group makes no loop, and the session as it is does not go round either", () => {
+    expect(routeLoops(looped(4), 5, "out")).toBe(false);
+    expect(routeLoops(graph, 77, "out")).toBe(false);
+    expect(routeLoops(graph, MASTER, "out")).toBe(false);
+  });
+
+  test("the audio goes round in the wiring of a lane that feeds its group, through the cable, and not when the lane has no way out", () => {
+    expect(goesRound(wiringOf(withWaysOutCut(withCables([0, 5]))), cablesOf(withCables([0, 5])))).toBe(true);
+    expect(goesRound(wiringOf(withWaysOutCut(withCables([0, 5]), 4)), cablesOf(withCables([0, 5])))).toBe(false);
+  });
+});
+
+describe("whether the audio would go round if the link into an effect were given back", () => {
+  // Delay 6 sent back to Filter 5, which feeds it: a loop through the link between them, unless the delay is not fed by the filter.
+  const looped = (...cut: NodeId[]): Graph => withFeedsCut(withCables([6, 5]), ...cut);
+
+  test("an effect whose link is cut may be given it back unless a cable would then feed it from what it feeds", () => {
+    expect(feedLoops(looped(6), 6, "chain")).toBe(true);
+    expect(feedLoops(looped(6), 6, "none")).toBe(false);
+    // (Filter 5 is the first of its chain: the cable goes into it from the delay after it, and the link into it comes from the instrument, which nothing feeds.)
+    expect(feedLoops(looped(6, 5), 5, "chain")).toBe(false);
+    expect(feedLoops(withFeedsCut(graph, 5), 5, "chain")).toBe(false);
+  });
+
+  test("a bus effect is its own: the cable from Reverb 2 to Filter 1 before it is a loop through the link between them, as a lane's is", () => {
+    const back = withFeedsCut(withCables([2, 1]), 2);
+    expect(feedLoops(back, 2, "chain")).toBe(true);
+    expect(feedLoops(back, 3, "chain")).toBe(false);
+    expect(feedLoops(back, 2, "none")).toBe(false);
+  });
+
+  test("a node that is no effect makes no loop, and the session as it is does not go round either", () => {
+    expect(feedLoops(looped(6), 4, "chain")).toBe(false);
+    expect(feedLoops(looped(6), 0, "chain")).toBe(false);
+    expect(feedLoops(graph, 77, "chain")).toBe(false);
+    expect(feedLoops(graph, MASTER, "chain")).toBe(false);
+  });
+
+  test("the audio goes round in the wiring of a lane whose delay feeds the filter before it, through the cable, and not when the delay has no link into it", () => {
+    expect(goesRound(wiringOf(withCables([6, 5])), cablesOf(withCables([6, 5])))).toBe(true);
+    expect(goesRound(wiringOf(withFeedsCut(withCables([6, 5]), 6)), cablesOf(withCables([6, 5])))).toBe(false);
+    // The effect after the cut is the one that is not fed: cutting the filter's link instead leaves the loop (delay to filter, filter to delay).
+    expect(goesRound(wiringOf(withFeedsCut(withCables([6, 5]), 5)), cablesOf(withCables([6, 5])))).toBe(true);
+  });
+});
+
+describe("the nodes that take a cable from an output", () => {
+  test("are the effects, the buses and the mix that the controller would draw it to: not where a cable between the two is already, and not where the audio would go round", () => {
+    // Lane 7: the cable to Filter 5 is drawn already, and so is the link to Drive 8 (a cable between the two ends of a link that is there is one that is drawn); every other end is free.
+    expect(cableTakers(graph, 7)).toEqual([0, 1, 2, 3, 6, MASTER]);
+    // The group's output feeds Drive 8 already, and what it comes from it cannot feed: only the mix is left.
+    expect(cableTakers(graph, 0)).toEqual([MASTER]);
+    // A lane's instrument may send to the effects of the bus and to the group and the mix, and to the second of its own effects, beside its chain's links: not to its first, which the instrument is linked to.
+    expect(cableTakers(graph, 4)).toEqual([0, 1, 2, 3, 6, 8, MASTER]);
+  });
+
+  test("have the links of the audio path that are cut: the end of a chain whose way out is cut can go to its group or the mix again, an effect whose feed is cut can be fed by the stage before it again", () => {
+    const cut = withFeedsCut(withWaysOutCut(graph, 0, 4, 7), 5, 8);
+    // Lane 4's instrument is linked to Filter 5 no longer, and can send to it; lane 7's to Drive 8, the same; Drive 8's way out to the mix is cut, so Drive 8 can send there, and so can Delay 3,
+    // the last effect of the group's bus, whose way out is cut with the group's. (Delay 6's way out to the group's bus is cut too, and a cable is drawn there: it is not listed again.)
+    expect(cableTakers(cut, 4)).toContain(5);
+    expect(cableTakers(cut, 7)).toContain(8);
+    expect(cableTakers(cut, 8)).toContain(MASTER);
+    expect(cableTakers(cut, 3)).toContain(MASTER);
+    expect(cableTakers(cut, 6)).not.toContain(0);
+    // The link that is cut is not given back where the audio would go round with it: the group's output into Drive 8 goes round if lane 7 is in the group, and lane 7 is in none; but the
+    // group's own link into its bus (Filter 1, which the group's output feeds by a cable) is not a loop as a link, whatever it would be as a cable.
+    const bus = withFeedsCut(graph, 1);
+    expect(cableTakers(bus, 0)).toContain(1);
+    expect(cableTakers(graph, 0)).not.toContain(1);
+  });
+
+  test("do not have a link that is cut where giving it back would make the audio go round, whatever kind of link it is, and have it where there is no loop", () => {
+    // The group's output into Filter 5, a lane that is in the group, with the lane's way out cut: Delay 6, the end of the lane's chain, is not offered the group's bus (its way out), which would close
+    // the loop through the lane; with no cable into the lane it is.
+    expect(cableTakers(withWaysOutCut(withCables([0, 5]), 4), 6)).not.toContain(0);
+    expect(cableTakers(withWaysOutCut(withCables(), 4), 6)).toContain(0);
+    // Delay 6 sent back to Filter 5 with the delay's feed cut: Filter 5 is not offered Delay 6 (its feed), which would close the loop through the cable; with no cable it is.
+    expect(cableTakers(withFeedsCut(withCables([6, 5]), 6), 5)).not.toContain(6);
+    expect(cableTakers(withFeedsCut(withCables(), 6), 5)).toContain(6);
+    // The same on the group's bus: Reverb 2 sent back to Filter 1 with the reverb's feed cut.
+    expect(cableTakers(withFeedsCut(withCables([2, 1]), 2), 1)).not.toContain(2);
+    expect(cableTakers(withFeedsCut(withCables(), 2), 1)).toContain(2);
+  });
+
+  test("are those of the controller's AddCable, for every start of the fixture: the ends that it takes with no level of its own are the takers", () => {
+    const starts = graph.nodes.filter((n) => n.kind === "instrument" || n.kind === "effect" || n.kind === "group").map((n) => n.id);
+    const taken = (from: NodeId): NodeId[] =>
+      audioCablesFixture.rows.flatMap((row) =>
+        row.intent.type === "addCable" && row.intent.gain === null && row.intent.from.node === from && row.intent.from.port.type === "audioOut" && row.intent.to.port.type === "audioIn" && !("error" in row)
+          ? [row.intent.to.node]
+          : [],
+      );
+    const byId = (a: NodeId, b: NodeId): number => a - b;
+    for (const start of starts) {
+      expect([...cableTakers(graph, start)].sort(byId), `from ${String(start)}`).toEqual(taken(start).sort(byId));
+    }
+  });
+
+  test("are those of the controller's AddCable on the session with every link cut, for every start: a link that is cut is given back where the audio would not go round, as a cable would not be", () => {
+    const cutGraph = audioCablesFixture.cutSnapshot.graph;
+    const starts = cutGraph.nodes.filter((n) => n.kind === "instrument" || n.kind === "effect" || n.kind === "group").map((n) => n.id);
+    const taken = (from: NodeId): NodeId[] =>
+      audioCablesFixture.cutRows.flatMap((row) =>
+        row.intent.type === "addCable" && row.intent.from.node === from && row.intent.from.port.type === "audioOut" && row.intent.to.port.type === "audioIn" && !("error" in row) ? [row.intent.to.node] : [],
+      );
+    const byId = (a: NodeId, b: NodeId): number => a - b;
+    let given = 0;
+    for (const start of starts) {
+      const takers = [...cableTakers(cutGraph, start)].sort(byId);
+      expect(takers, `from ${String(start)}`).toEqual(taken(start).sort(byId));
+      given += takers.length;
+    }
+    // (Every link is cut, and most of them can be given back: the fixture is not one that has none.)
+    expect(given).toBeGreaterThanOrEqual(50);
+  });
+
+  test("are none for what has no output of audio: a modulator, the mix and a node that is not there", () => {
+    expect(cableTakers(graph, 10)).toEqual([]);
+    expect(cableTakers(graph, MASTER)).toEqual([]);
+    expect(cableTakers(graph, 77)).toEqual([]);
+  });
+});
+
+describe("the links of the audio path that the lanes and the groups make by themselves", () => {
+  const words = (links: ReturnType<typeof templateLinks>): string[] => links.map((l) => `${l.of.kind} ${String(l.of.node)}: ${l.from.kind} ${String(l.from.node)} > ${l.to.kind} ${String(l.to.node)}${l.present ? "" : " (cut)"}`);
+
+  test("are those that the controller lists (`SessionModel::template_links`): the lanes' in the order of the graph and then the groups', each by the two ends that a cable between them has", () => {
+    expect(words(templateLinks(graph))).toEqual([
+      // Lane 4 is in the group: its chain ends at the group's bus.
+      "feed 5: instrument 4 > effect 5",
+      "feed 6: effect 5 > effect 6",
+      "wayOut 4: effect 6 > groupBus 0",
+      "feed 8: instrument 7 > effect 8",
+      `wayOut 7: effect 8 > master ${String(MASTER)}`,
+      `wayOut 9: instrument 9 > master ${String(MASTER)}`,
+      // The group's own link into its bus effects starts at the group's node.
+      "feed 1: group 0 > effect 1",
+      "feed 2: effect 1 > effect 2",
+      "feed 3: effect 2 > effect 3",
+      `wayOut 0: effect 3 > master ${String(MASTER)}`,
+    ]);
+  });
+
+  test("say which are cut, by the ways out and the feeds that the nodes say, and a lane whose group is not in the graph goes to the mix", () => {
+    const cut = withFeedsCut(withWaysOutCut(graph, 4, 0), 6, 2);
+    expect(words(templateLinks(cut)).filter((line) => line.endsWith("(cut)"))).toEqual(["feed 6: effect 5 > effect 6 (cut)", "wayOut 4: effect 6 > groupBus 0 (cut)", "feed 2: effect 1 > effect 2 (cut)", `wayOut 0: effect 3 > master ${String(MASTER)} (cut)`]);
+    const orphan: Graph = { ...graph, nodes: graph.nodes.map((n) => (n.id === 4 && n.kind === "instrument" ? { ...n, parent: 999 } : n)) };
+    expect(words(templateLinks(orphan))).toContain(`wayOut 4: effect 6 > master ${String(MASTER)}`);
+  });
+});
+
+describe("a cable that is asked for between the two ends of a link", () => {
+  const draw = (from: NodeId, to: NodeId, gain: number | null = null): Intent => ({ type: "addCable", from: out(from), to: into(to), gain });
+  // (The graph has cables of its own at three of the links' ends: Filter 5 to Delay 6, Filter 1 to Reverb 2, and Delay 6 to the group's bus. They are left alone.)
+  const cut = withFeedsCut(withWaysOutCut(graph, 7, 0), 8, 3);
+
+  test("gives the link back if it is cut: `setRoute` for a way out and `setFeed` for an input, which are the steps of the history that it is", () => {
+    expect(linkOrCable(cut, draw(8, MASTER))).toEqual({ type: "setRoute", node: 7, route: "out" });
+    expect(linkOrCable(cut, draw(7, 8))).toEqual({ type: "setFeed", node: 8, feed: "chain" });
+    // (The group's own link into a bus effect starts at the group, and is a link, not the cable that it would go round as.)
+    expect(linkOrCable(cut, draw(2, 3))).toEqual({ type: "setFeed", node: 3, feed: "chain" });
+    expect(linkOrCable(cut, draw(3, MASTER))).toEqual({ type: "setRoute", node: 0, route: "out" });
+    // At the plain level, said or not.
+    expect(linkOrCable(cut, draw(8, MASTER, 1))).toEqual({ type: "setRoute", node: 7, route: "out" });
+  });
+
+  test("is refused, in the words of a cable between the two, if the link is there", () => {
+    for (const [from, to] of [
+      [4, 5],
+      [7, 8],
+      [8, MASTER],
+      [9, MASTER],
+      [0, 1],
+      [2, 3],
+      [3, MASTER],
+    ] as const) {
+      expect(linkOrCable(graph, draw(from, to)), `${String(from)} to ${String(to)}`).toEqual({ error: { code: "invalid", message: "there is a cable between those two already" } });
+    }
+  });
+
+  test("is a cable as it was at a level that is not the link's, between two that a cable is between already, between the ends of no link and where the controller takes no cable", () => {
+    const asked = draw(8, MASTER, 0.5);
+    expect(linkOrCable(cut, asked)).toBe(asked);
+    // (A cable of the graph: 5 from Delay 6 to the group's bus is the way out of lane 4 drawn as a cable, and the link is cut under it.)
+    const beside = withWaysOutCut(graph, 4);
+    const drawn = draw(6, 0);
+    expect(linkOrCable(beside, drawn)).toBe(drawn);
+    const elsewhere = draw(8, 0);
+    expect(linkOrCable(graph, elsewhere)).toBe(elsewhere);
+    const lane = draw(7, 9);
+    expect(linkOrCable(graph, lane)).toBe(lane);
+    const notes: Intent = { type: "addCable", from: { node: 4, port: { type: "eventsOut" } }, to: { node: 7, port: { type: "eventsIn" } }, gain: null };
+    expect(linkOrCable(graph, notes)).toBe(notes);
+    const other: Intent = { type: "undo" };
+    expect(linkOrCable(graph, other)).toBe(other);
+  });
+});

@@ -1,0 +1,58 @@
+[
+  {
+    "id": "builtin:input",
+    "name": "Audio Input",
+    "format": "Built-in",
+    "isInstrument": true,
+    "params": 3,
+    "presets": 0
+  },
+  {
+    "id": "builtin:delay",
+    "name": "Delay",
+    "format": "Built-in",
+    "isInstrument": false,
+    "params": 6,
+    "presets": 7
+  },
+  {
+    "id": "builtin:drive",
+    "name": "Drive",
+    "format": "Built-in",
+    "isInstrument": false,
+    "params": 4,
+    "presets": 4
+  },
+  {
+    "id": "builtin:filter",
+    "name": "Filter",
+    "format": "Built-in",
+    "isInstrument": false,
+    "params": 4,
+    "presets": 0
+  },
+  {
+    "id": "builtin:math",
+    "name": "Math",
+    "format": "Built-in",
+    "isInstrument": false,
+    "params": 8,
+    "presets": 9
+  },
+  {
+    "id": "builtin:osc",
+    "name": "Oscillator",
+    "format": "Built-in",
+    "isInstrument": true,
+    "params": 20,
+    "presets": 0
+  },
+  {
+    "id": "builtin:reverb",
+    "name": "Reverb",
+    "format": "Built-in",
+    "isInstrument": false,
+    "params": 10,
+    "presets": 5
+  }
+]

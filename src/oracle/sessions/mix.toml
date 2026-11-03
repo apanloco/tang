@@ -1,0 +1,51 @@
+# A group that is muted with a lane in it, a group that is heard, a lane that is muted and one that is not: what is heard is the second group's lane and the plain lane,
+# and the muted ones are silent with their modulators and meters going on.
+[[group]]
+name = "Quiet"
+volume = 1.0
+mute = true
+
+[[group.effect]]
+plugin = "builtin:delay"
+mix = 0.4
+
+[[group]]
+name = "Bus"
+volume = 0.9
+pan = 0.3
+
+[[group.effect]]
+plugin = "builtin:reverb"
+mix = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+volume = 0.5
+[instrument.params]
+waveform = 2.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.5
+mute = true
+[instrument.params]
+waveform = 3.0
+
+[[instrument.modulator]]
+type = "lfo"
+rate = 3.0
+[[instrument.modulator.target]]
+param = "volume"
+depth = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.4
+[instrument.params]
+waveform = 1.0

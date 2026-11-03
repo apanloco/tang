@@ -1,0 +1,137 @@
+# Example: a fart, as a joke. A patch of the nodes that are there and nothing new: an oscillator that puts out
+# a narrow pulse (a train of little puffs), through a low-pass filter that rings at each puff and a little
+# drive; a second oscillator that puts out noise, the air, with no way out of its own and a cable into the
+# filter; and four modulators that do the rest.
+#
+# The pressure (an envelope that hears every key) falls over a second and takes the pitch and the cutoff
+# down with it: the pitch goes down two octaves, so that the puffs begin as a buzz and slow down until they
+# are single flaps. Two random LFOs (sample and hold: a new number for each cycle) make it irregular, and
+# each of them comes in over the first second of a key (`fade`), so that the fart begins firm and clean and
+# sputters out: one makes the pitch and the width of the puffs jump, and one turns the volume of both
+# oscillators up and down, down to nothing now and then, as lips that do not quite close. A slow smooth one
+# moves the cutoff, the wet part. No two are alike: the LFOs go on between the keys.
+#
+# Press a key and let it go on by itself (it ends when the pressure is gone, whatever the key does), tap
+# one for a short one, hit harder for a louder one. The pitch of the key is where it begins: C2 is a
+# rumble, C3 a trumpet, C5 a squeak, and a chord is a choir. On the page, try the oscillator's `pulse` and
+# `fm` (with `fm_ratio` of ×0.5), the filter's `resonance` and the decay of the pressure. It is a module as
+# well: copy it to `~/.config/tang/modules/Fart.toml` and the bar's "+ Effect" adds it (bare, like every
+# module: draw a cable from its Drive to the Master to hear it).
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.31
+
+[instrument.params]
+waveform = 2.0 # square, with a narrow pulse
+pulse = 0.12
+unison = 2.0   # three oscillators for a note (a place in the list: 0 is one), a little apart, which beat
+spread = 0.45
+width = 0.15
+sub = 0.35
+attack = 0.002
+decay = 1.1
+sustain = 0.0
+release = 0.08
+velocity = 0.5
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+cutoff = 0.58
+resonance = 4.0
+
+[[instrument.effect]]
+plugin = "builtin:drive"
+mix = 1.0
+
+[instrument.effect.params]
+type = 2.0 # tube
+drive = 0.45
+tone = 0.4
+level = 0.4
+
+# The air: noise, with no way out of its own, that is heard through the filter by the cable at the end.
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.25
+route = "none"
+
+[instrument.params]
+waveform = 4.0 # noise
+attack = 0.002
+decay = 0.8
+sustain = 0.0
+release = 0.06
+velocity = 0.5
+
+# The pressure.
+[[modulator]]
+type = "envelope"
+attack = 0.002
+decay = 1.1
+sustain = 0.0
+release = 0.1
+
+[[modulator.target]]
+to = "instrument[0]"
+param = "detune"
+depth = 0.9
+
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "cutoff"
+depth = 0.45
+
+# The pitch and the width of the puffs jump, more and more.
+[[modulator]]
+type = "lfo"
+waveform = "random"
+rate = 45.0
+fade = 0.9
+
+[[modulator.target]]
+to = "instrument[0]"
+param = "detune"
+depth = 0.06
+
+[[modulator.target]]
+to = "instrument[0]"
+param = "pulse"
+depth = 0.15
+
+# The volume sputters, more and more.
+[[modulator]]
+type = "lfo"
+waveform = "random"
+rate = 38.0
+fade = 0.7
+
+[[modulator.target]]
+to = "instrument[0]"
+gain = "volume"
+depth = 0.14
+
+[[modulator.target]]
+to = "instrument[1]"
+gain = "volume"
+depth = 0.12
+
+# The wet part.
+[[modulator]]
+type = "lfo"
+waveform = "smooth"
+rate = 9.0
+
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "cutoff"
+depth = 0.05
+
+# The air goes through the cavity as well.
+[[cable]]
+from = "instrument[1]"
+to = "instrument[0].effect[0]"
+gain = 0.7

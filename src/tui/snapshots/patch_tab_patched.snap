@@ -1,0 +1,80 @@
+---
+source: src/tui/golden_tests.rs
+---
+120x32
+── text ──
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
+┌ Patch ───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│outputs ↓  inputs →              L1   L1   L2   G1   G1   G1   G1  Mix                                                │
+│                               Filt Dela Driv  bus Filt Reve Dela                                                     │
+│▪G1     L1  ♪ Oscillator          ●    ·    ·    ·    ·    ·    ·    ·                                                │
+│        L1    fx Filter           × 0.75    ·    ·    ·    ·    ·    ·                                                │
+│        L1    fx Delay            ×    ×    · 1.00    ·    ·    ·    ·                                                │
+│▪Mix    L2  ♪ Oscillator       0.50    ·    ●    ·    ·    ·    ·    ·                                                │
+│        L2    fx Drive            ×    ×    ×    ×    ×    ×    ×    ●                                                │
+│▪Mix    L3  ♪ (empty)             ·    ·    ·    ·    ·    ·    ·    ●                                                │
+│▪Mix    G1  ▦ Pad                 ×    × 1.50    ×    ●    ×    ×    ·                                                │
+│        G1    fx Filter (bus)     ×    ×    ·    ×    × 1.00    ·    ·                                                │
+│        G1    fx Reverb (bus)     ×    ×    ·    ×    ×    ×    ● 0.50                                                │
+│        G1    fx Delay (bus)      ×    ×    ·    ×    ×    ×    ×    ●                                                │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────│
+│L1 Filter (the output of the effect)  ▸  L1 Delay                                                                     │
+│A cable at level 0.75: Enter takes it out, + and - turn it, e types a level                                           │
+│L1's way out goes to G1 (w cuts it)                                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ Enter  pin / unpin  +  louder  -  softer  e  type a level  d  remove  w  way out  M  mute  S  solo
+── styles ('.' = default) ──
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbaaaaaaaaaaa......................................................aaaaaaaa
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
+c...............................aaaaabbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaadddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbeeeeefffffaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeaaaaagggggaaaaaaaaaaaaaaaaaaaa...............................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaagggggaaaaadddddaaaaaaaaaaaaaaaaaaaaaaaaa...............................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeddddd...............................................c
+caaaaabbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaddddd...............................................c
+caaaaabbbhhhhhhhhhhhhhhhhhhhhhhheeeeeeeeeegggggeeeeedddddeeeeeeeeeeaaaaa...............................................c
+caaaaabbbhhhhhhhhhhhhhhhhhhhhhhheeeeeeeeeeaaaaaeeeeeeeeeegggggaaaaaaaaaa...............................................c
+caaaaabbbhhhhhhhhhhhhhhhhhhhhhhheeeeeeeeeeaaaaaeeeeeeeeeeeeeeedddddggggg...............................................c
+caaaaabbbhhhhhhhhhhhhhhhhhhhhhhheeeeeeeeeeaaaaaeeeeeeeeeeeeeeeeeeeeddddd...............................................c
+c......................................................................................................................c
+c......................................................................................................................c
+c......................................................................................................................c
+c......................................................................................................................c
+c......................................................................................................................c
+c......................................................................................................................c
+c......................................................................................................................c
+c......................................................................................................................c
+c......................................................................................................................c
+c......................................................................................................................c
+c......................................................................................................................c
+c......................................................................................................................c
+caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac
+cbbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbb.....................................................................c
+cddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd...........................................c
+caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...................................................................................c
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+iiiiiiicccccccccccc.iiiccccccc.iiiccccccc.iiiccccccccccccc.iiiccccccc.iiicccccccc.iiiccccc.iiiccccc
+── legend ──
+a  fg=Indexed(245) bg=Reset mod=-
+b  fg=White bg=Reset mod=BOLD
+c  fg=White bg=Reset mod=-
+d  fg=Yellow bg=Reset mod=-
+e  fg=Red bg=Reset mod=DIM
+f  fg=Yellow bg=Reset mod=BOLD | REVERSED
+g  fg=Yellow bg=Reset mod=BOLD
+h  fg=Cyan bg=Reset mod=DIM
+i  fg=Black bg=White mod=BOLD

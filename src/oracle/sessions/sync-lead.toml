@@ -1,0 +1,38 @@
+# Example: a hard-sync lead. A saw that is synced to the note (the oscillator's `sync`:
+# how many times as fast as the note the saw goes round before the note starts it over,
+# from 1, which is no sync, to 8). The pitch is the note's whatever the ratio is; the
+# ratio is the colour. An envelope opens the ratio as a note starts and lets it settle
+# while the note is held, so that each note tears open and then mellows; a little drift
+# moves the pitch of each note a few cents. Play a line.
+# On the page, try `sync` (the top of the sweep), the envelope's stages and the depth of its cable.
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+
+[instrument.params]
+waveform = 3.0 # saw
+sync = 6.0     # the top of the sweep
+drift = 0.15
+attack = 0.005
+release = 0.25
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+cutoff = 0.85
+resonance = 0.9
+
+[[instrument.modulator]]
+type = "envelope"
+attack = 0.4
+decay = 1.2
+sustain = 0.35
+release = 0.3
+
+[[instrument.modulator.target]]
+slot = 0
+param = "sync"
+depth = 1.0

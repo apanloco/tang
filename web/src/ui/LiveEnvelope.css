@@ -1,0 +1,27 @@
+/* The shape of an envelope: a line, the area under it faintly filled, and a dot where the envelope is. */
+.tang-envelope {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 272 / 56;
+}
+
+.tang-envelope__fill {
+  fill: var(--tang-modulation);
+  fill-opacity: 0.12;
+  stroke: none;
+}
+
+.tang-envelope__line {
+  fill: none;
+  stroke: var(--tang-modulation);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.tang-envelope__dot {
+  fill: var(--tang-modulation);
+  stroke: var(--tang-text);
+  stroke-width: 1;
+}

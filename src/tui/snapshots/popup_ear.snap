@@ -1,0 +1,80 @@
+---
+source: src/tui/golden_tests.rs
+---
+120x32
+── text ──
+(1) Session │ (2) Piano │ (3) Scope │ (4) Patch │ (5) Help                                                      120 BPM
+┌ Chain ─────────────────────────────────────────┐┌ LFO 0.5Hz sine ────────────────────────────────────────────────────┐
+│~ LFO 0.5Hz sine → L1 Oscillator: detune (30%), ││  Type                     ◂ LFO ▸                                  │
+│~ ADSR → L2 Filter: cutoff (50%), Mod 0 depth 0 ││  Waveform                 ◂ sine ▸                                 │
+│▦ Group 1                                       ││  Rate (Hz)                ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.50│
+│  ♪ Oscillator  [Built-in]                      ││  Sync                     ◂ free ▸                                 │
+│  ╰ fx Reverb  [Built-in]                       ││  Retrigger                ◂ off ▸                                  │
+│  fx Filter  [Built-in]  (bus)                  ││  Fade (s)                 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░     0.00│
+│♪ Oscillator  [Built-in]                        ││  Targets                  ──────                                   │
+│╰ fx Filter  [Built-in]                         ││  detune depth             ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░     0.30│
+│                                ┌ Whose notes it hears ──────────────────────────────┐▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░     0.20│
+│                                │/                                                   │▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░     0.40│
+│                                │Hears                                               │▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░     0.25│
+│                                │Every note (current)                                │                                │
+│                                │L1 Oscillator                                       │                                │
+│                                │L2 Oscillator                                       │                                │
+│                                │G1 Group 1                                          │                                │
+│                                │                                                    │                                │
+│                                │                                                    │                                │
+│                                │                                                    │                                │
+│                                │                                                    │                                │
+│                                └────────────────────────────────────────────────────┘                                │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
+ F  new free  t  add target  h  hears  d  delete
+── styles ('.' = default) ──
+aaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb......................................................bbbbbbbb
+ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cddddddddddddddddddddddddddddddddddddddddddddddddcbcccccccccccccccccccccccccccccccccc..................................b
+ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeecb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................................b
+cfffffffff.......................................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbbbbb......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.................................b
+cbbbbbbbbbbbbbbbbbbbbbbbbb.......................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................................b
+cbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+cbbbbbbbbbbbbbbbbbbbbbbbb........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...................................b
+cbbbbbbbbbbbbbbbbbbbbbbb.........................cb..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................ggggggggggggggggggggggggggggggggggggggggggggggggggggggbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................gbbh.................................................gbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................giiiii...............................................gbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+c................................gaaaaaaaaaaaaaaaaaaaa................................g................................b
+c................................g....................................................g................................b
+c................................g....................................................g................................b
+c................................g....................................................g................................b
+c................................g....................................................g................................b
+c................................g....................................................g................................b
+c................................g....................................................g................................b
+c................................g....................................................g................................b
+c................................gggggggggggggggggggggggggggggggggggggggggggggggggggggg................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+c................................................cb....................................................................b
+ccccccccccccccccccccccccccccccccccccccccccccccccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+hhhccccccccc.hhhccccccccccc.hhhcccccc.hhhccccccc
+── legend ──
+a  fg=White bg=Reset mod=BOLD
+b  fg=Indexed(245) bg=Reset mod=-
+c  fg=White bg=Reset mod=-
+d  fg=Magenta bg=Reset mod=BOLD
+e  fg=Magenta bg=Reset mod=DIM
+f  fg=Cyan bg=Reset mod=DIM
+g  fg=Magenta bg=Reset mod=-
+h  fg=Black bg=White mod=BOLD
+i  fg=Indexed(245) bg=Reset mod=UNDERLINED

@@ -1,0 +1,43 @@
+/* The light that says that the server is slow to answer: over the top of the canvas, in the middle, out of the flow of the page so that it moves nothing, and out of
+   the way of the pointer. */
+.tang-busy {
+  position: absolute;
+  top: var(--tang-space-2);
+  left: 50%;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+  padding: 2px var(--tang-space-3);
+  transform: translateX(-50%);
+  border: 1px solid var(--tang-border);
+  border-radius: 999px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font-size: var(--tang-text-small);
+  pointer-events: none;
+}
+
+.tang-busy__spinner {
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 2px solid var(--tang-border);
+  border-top-color: var(--tang-warn);
+  border-radius: 50%;
+  animation: tang-busy-spin 0.9s linear infinite;
+}
+
+@keyframes tang-busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* (A person who has asked for less motion is given a ring that does not turn.) */
+@media (prefers-reduced-motion: reduce) {
+  .tang-busy__spinner {
+    animation: none;
+    border-color: var(--tang-warn);
+  }
+}

@@ -1,5 +1,5 @@
 [workspace]
-members = ["view"]
+members = ["view", "kernel"]
 
 [package]
 name = "tang"
@@ -10,9 +10,13 @@ edition = "2024"
 default = ["lv2", "vst3"]
 lv2 = ["dep:livi"]
 vst3 = ["dep:vst3", "dep:libloading"]
+# The browser front-end (docs/web-ui.md). Off by default: the TypeScript
+# generated from the protocol types (`app::protocol`) and the web runtime (`web`).
+web = ["dep:ts-rs", "dep:getrandom", "dep:tokio", "dep:serde_json", "dep:axum", "dep:futures-util", "dep:tokio-tungstenite", "dep:ctrlc", "dep:rust-embed"]
 
 [dependencies]
 view = { path = "view" }
+kernel = { path = "kernel" }
 livi = { version = "0.7", optional = true }
 cpal = "0.15"
 midir = "0.10"
@@ -28,9 +32,25 @@ toml_edit = "0.22"
 serde = { version = "1", features = ["derive"] }
 clack-host = { git = "https://github.com/prokopyl/clack" }
 clack-finder = { git = "https://github.com/prokopyl/clack" }
-clack-extensions = { git = "https://github.com/prokopyl/clack", features = ["clack-host", "audio-ports", "note-ports", "params", "preset-discovery", "state"] }
+clack-extensions = { git = "https://github.com/prokopyl/clack", features = ["clack-host", "audio-ports", "latency", "note-ports", "params", "preset-discovery", "state"] }
 vst3 = { version = "0.3", optional = true }
 libloading = { version = "0.8", optional = true }
+ts-rs = { version = "12", optional = true }
+getrandom = { version = "0.4", optional = true }
+serde_json = { version = "1", optional = true }
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio", "ws"] }
+# The WebSocket client of the server's tests (`web::server`); axum's `ws` is built on
+# the same `tokio-tungstenite`, and these two are what its client needs.
+tokio-tungstenite = { version = "0.29", optional = true, default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
+# `tang serve` has no terminal to read Ctrl+C from: it stops on SIGINT / SIGTERM / SIGHUP
+# (the console's Ctrl+C and Ctrl+Break on Windows).
+ctrlc = { version = "3", optional = true, features = ["termination"] }
+# The interface the server serves: web/dist, as it was when the program was built (in a
+# debug build, as it is: no rebuild after `npm run build`). See docs/web-ui.md §9.2.
+rust-embed = { version = "8", optional = true }
+# One thread runs the server (a current-thread runtime), so no `rt-multi-thread`.
+tokio = { version = "1", optional = true, features = ["sync", "rt", "net", "time", "macros"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -39,8 +59,14 @@ libc = "0.2"
 cpal = { version = "0.15", features = ["jack"] }
 jack = "0.11"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# CoreMIDI only learns of a device that is plugged in or unplugged on the run loop of a thread (`midi::let_the_system_see_the_devices`): the version that cpal's CoreAudio has already.
+core-foundation = "0.9"
+
 [dev-dependencies]
 tempfile = "3"
+insta = "1"
+serde_json = "1"
 
 # lv2-sys upstream (RustAudio/rust-lv2) doesn't compile on macOS — its
 # unsupported.rs hits a compile_error! instead of using the Linux bindings.

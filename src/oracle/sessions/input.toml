@@ -1,0 +1,31 @@
+# An audio input (step 99): under the oracle, and under `--audio-device none`, it plays a quiet sine of 220 Hz instead of what a sound card hears. Its lane has no way out (it starts bare: a microphone that is
+# put in the mix by itself is heard through the speakers that it listens to), so it is heard through its cables alone: one into a reverb in a lane of its own, at 0.8, and one to the mix at 0.3, after the lane's
+# volume. The oscillator is the company (it is played by the chord, the wheel and the pedal; the input does not hear them).
+[[instrument]]
+plugin = "builtin:input"
+volume = 0.8
+route = "none"
+[instrument.params]
+gain = 1.5
+pan = -0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+[instrument.params]
+waveform = 1.0
+
+[[instrument]]
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 0.7
+
+[[cable]]
+from = "instrument[0]"
+to = "instrument[2].effect[0]"
+gain = 0.8
+
+[[cable]]
+from = "instrument[0]"
+to = "master"
+gain = 0.3

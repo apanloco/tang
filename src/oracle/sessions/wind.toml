@@ -1,0 +1,51 @@
+# Example: wind. White noise (the oscillator's fifth waveform) through a band-pass
+# filter that two slow random LFOs move (one the cutoff, the other the resonance),
+# into a big reverb. Hold a key: it swells in over a couple of seconds and goes out
+# over a few. The pitch of the key does nothing (noise has none); the filter and the
+# LFOs are the sound. On the page, try the LFOs' rates, and the filter's `type`.
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 1.0
+
+[instrument.params]
+waveform = 4.0 # noise
+attack = 2.5
+release = 4.0
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+type = 2.0 # band-pass
+cutoff = 0.55
+resonance = 4.0
+
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 0.4
+
+[instrument.effect.params]
+size = 0.9
+decay = 0.9
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "smooth"
+rate = 0.15
+
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.3
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "smooth"
+rate = 0.07
+
+[[instrument.modulator.target]]
+slot = 1
+param = "resonance"
+depth = 0.3

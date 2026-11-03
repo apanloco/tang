@@ -1,0 +1,484 @@
+{
+  "rows": [
+    {
+      "bpm": 20.0,
+      "name": "4 bars",
+      "place": 1,
+      "rate": 0.020833334
+    },
+    {
+      "bpm": 90.0,
+      "name": "4 bars",
+      "place": 1,
+      "rate": 0.09375
+    },
+    {
+      "bpm": 120.0,
+      "name": "4 bars",
+      "place": 1,
+      "rate": 0.125
+    },
+    {
+      "bpm": 133.0,
+      "name": "4 bars",
+      "place": 1,
+      "rate": 0.13854167
+    },
+    {
+      "bpm": 300.0,
+      "name": "4 bars",
+      "place": 1,
+      "rate": 0.3125
+    },
+    {
+      "bpm": 20.0,
+      "name": "2 bars",
+      "place": 2,
+      "rate": 0.041666668
+    },
+    {
+      "bpm": 90.0,
+      "name": "2 bars",
+      "place": 2,
+      "rate": 0.1875
+    },
+    {
+      "bpm": 120.0,
+      "name": "2 bars",
+      "place": 2,
+      "rate": 0.25
+    },
+    {
+      "bpm": 133.0,
+      "name": "2 bars",
+      "place": 2,
+      "rate": 0.27708334
+    },
+    {
+      "bpm": 300.0,
+      "name": "2 bars",
+      "place": 2,
+      "rate": 0.625
+    },
+    {
+      "bpm": 20.0,
+      "name": "1 bar",
+      "place": 3,
+      "rate": 0.083333336
+    },
+    {
+      "bpm": 90.0,
+      "name": "1 bar",
+      "place": 3,
+      "rate": 0.375
+    },
+    {
+      "bpm": 120.0,
+      "name": "1 bar",
+      "place": 3,
+      "rate": 0.5
+    },
+    {
+      "bpm": 133.0,
+      "name": "1 bar",
+      "place": 3,
+      "rate": 0.5541667
+    },
+    {
+      "bpm": 300.0,
+      "name": "1 bar",
+      "place": 3,
+      "rate": 1.25
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/2 dotted",
+      "place": 4,
+      "rate": 0.11111111
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/2 dotted",
+      "place": 4,
+      "rate": 0.5
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/2 dotted",
+      "place": 4,
+      "rate": 0.6666667
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/2 dotted",
+      "place": 4,
+      "rate": 0.73888886
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/2 dotted",
+      "place": 4,
+      "rate": 1.6666666
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/2",
+      "place": 5,
+      "rate": 0.16666667
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/2",
+      "place": 5,
+      "rate": 0.75
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/2",
+      "place": 5,
+      "rate": 1.0
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/2",
+      "place": 5,
+      "rate": 1.1083333
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/2",
+      "place": 5,
+      "rate": 2.5
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/2 triplet",
+      "place": 6,
+      "rate": 0.25
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/2 triplet",
+      "place": 6,
+      "rate": 1.125
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/2 triplet",
+      "place": 6,
+      "rate": 1.5
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/2 triplet",
+      "place": 6,
+      "rate": 1.6625
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/2 triplet",
+      "place": 6,
+      "rate": 3.75
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/4 dotted",
+      "place": 7,
+      "rate": 0.22222222
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/4 dotted",
+      "place": 7,
+      "rate": 1.0
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/4 dotted",
+      "place": 7,
+      "rate": 1.3333334
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/4 dotted",
+      "place": 7,
+      "rate": 1.4777777
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/4 dotted",
+      "place": 7,
+      "rate": 3.3333333
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/4",
+      "place": 8,
+      "rate": 0.33333334
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/4",
+      "place": 8,
+      "rate": 1.5
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/4",
+      "place": 8,
+      "rate": 2.0
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/4",
+      "place": 8,
+      "rate": 2.2166667
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/4",
+      "place": 8,
+      "rate": 5.0
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/4 triplet",
+      "place": 9,
+      "rate": 0.5
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/4 triplet",
+      "place": 9,
+      "rate": 2.25
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/4 triplet",
+      "place": 9,
+      "rate": 3.0
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/4 triplet",
+      "place": 9,
+      "rate": 3.325
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/4 triplet",
+      "place": 9,
+      "rate": 7.5
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/8 dotted",
+      "place": 10,
+      "rate": 0.44444445
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/8 dotted",
+      "place": 10,
+      "rate": 2.0
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/8 dotted",
+      "place": 10,
+      "rate": 2.6666667
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/8 dotted",
+      "place": 10,
+      "rate": 2.9555554
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/8 dotted",
+      "place": 10,
+      "rate": 6.6666665
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/8",
+      "place": 11,
+      "rate": 0.6666667
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/8",
+      "place": 11,
+      "rate": 3.0
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/8",
+      "place": 11,
+      "rate": 4.0
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/8",
+      "place": 11,
+      "rate": 4.4333334
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/8",
+      "place": 11,
+      "rate": 10.0
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/8 triplet",
+      "place": 12,
+      "rate": 1.0
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/8 triplet",
+      "place": 12,
+      "rate": 4.5
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/8 triplet",
+      "place": 12,
+      "rate": 6.0
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/8 triplet",
+      "place": 12,
+      "rate": 6.65
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/8 triplet",
+      "place": 12,
+      "rate": 15.0
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/16 dotted",
+      "place": 13,
+      "rate": 0.8888889
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/16 dotted",
+      "place": 13,
+      "rate": 4.0
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/16 dotted",
+      "place": 13,
+      "rate": 5.3333335
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/16 dotted",
+      "place": 13,
+      "rate": 5.911111
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/16 dotted",
+      "place": 13,
+      "rate": 13.333333
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/16",
+      "place": 14,
+      "rate": 1.3333334
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/16",
+      "place": 14,
+      "rate": 6.0
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/16",
+      "place": 14,
+      "rate": 8.0
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/16",
+      "place": 14,
+      "rate": 8.866667
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/16",
+      "place": 14,
+      "rate": 20.0
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/16 triplet",
+      "place": 15,
+      "rate": 2.0
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/16 triplet",
+      "place": 15,
+      "rate": 9.0
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/16 triplet",
+      "place": 15,
+      "rate": 12.0
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/16 triplet",
+      "place": 15,
+      "rate": 13.3
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/16 triplet",
+      "place": 15,
+      "rate": 30.0
+    },
+    {
+      "bpm": 20.0,
+      "name": "1/32",
+      "place": 16,
+      "rate": 2.6666667
+    },
+    {
+      "bpm": 90.0,
+      "name": "1/32",
+      "place": 16,
+      "rate": 12.0
+    },
+    {
+      "bpm": 120.0,
+      "name": "1/32",
+      "place": 16,
+      "rate": 16.0
+    },
+    {
+      "bpm": 133.0,
+      "name": "1/32",
+      "place": 16,
+      "rate": 17.733334
+    },
+    {
+      "bpm": 300.0,
+      "name": "1/32",
+      "place": 16,
+      "rate": 40.0
+    }
+  ]
+}

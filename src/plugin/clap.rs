@@ -1,6 +1,7 @@
 use std::ffi::CStr;
 use std::path::Path;
 
+use clack_extensions::latency::PluginLatency;
 use clack_extensions::audio_ports::{
     AudioPortInfoBuffer, HostAudioPorts, HostAudioPortsImpl, PluginAudioPorts, RescanType,
 };
@@ -332,6 +333,9 @@ pub struct ClapPlugin {
     sample_rate: f32,
     audio_in_channel_count: usize,
     audio_out_channel_count: usize,
+    /// How many frames late what the plugin makes is, as it said when it was activated (`Plugin::latency`). A plugin that changes it while it runs, and tells the host by
+    /// `clap_host_latency.changed`, is not followed: the plugin is on the audio thread by then, and the extension is the main thread's.
+    latency: u32,
     params_ext: Option<PluginParams>,
     params_cache: Vec<ParameterInfo>,
     param_ids: Vec<ClapId>,
@@ -632,6 +636,13 @@ pub fn load(
         .activate(|_, _| (), config)
         .map_err(|e| anyhow::anyhow!("Failed to activate CLAP plugin: {e}"))?;
 
+    // The latency, which a plugin has once it is active.
+    let latency_ext: Option<PluginLatency> = instance.plugin_shared_handle().get_extension();
+    let latency = latency_ext.map_or(0, |ext| ext.get(&mut instance.plugin_handle()));
+    if latency > 0 {
+        log::info!("CLAP plugin {name} has a latency of {latency} frames");
+    }
+
     let started = stopped
         .start_processing()
         .map_err(|e| anyhow::anyhow!("Failed to start CLAP processing: {e}"))?;
@@ -655,6 +666,7 @@ pub fn load(
         sample_rate,
         audio_in_channel_count,
         audio_out_channel_count,
+        latency,
         params_ext,
         params_cache,
         param_ids,
@@ -767,6 +779,10 @@ impl Plugin for ClapPlugin {
 
     fn audio_output_count(&self) -> usize {
         self.audio_out_channel_count
+    }
+
+    fn latency(&self) -> u32 {
+        self.latency
     }
 
     fn process(

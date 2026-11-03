@@ -1,0 +1,103 @@
+.tang-menu-button {
+  flex: none;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 var(--tang-space-1);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  font-size: var(--tang-text-small);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tang-menu-button:hover:not(:disabled),
+.tang-menu-button[aria-expanded="true"] {
+  border-color: var(--tang-modulation);
+}
+
+.tang-menu-button:focus-visible,
+.tang-menu__item:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-menu-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Over the canvas, whose nodes and cables have z-indexes of their own. */
+.tang-menu {
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  /* (An item that says a lot, as the one that asks to be sure of taking a group out, goes on a second line.) */
+  max-width: min(360px, 90vw);
+  padding: var(--tang-space-1);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.45);
+}
+
+/* The items and groups keep their height in a menu that is taller than it is allowed to be (it scrolls). */
+.tang-menu > *,
+.tang-menu__group > * {
+  flex: none;
+}
+
+.tang-menu__group {
+  display: flex;
+  flex-direction: column;
+}
+
+.tang-menu__group + .tang-menu__group,
+.tang-menu__item + .tang-menu__group {
+  margin-top: var(--tang-space-1);
+  padding-top: var(--tang-space-1);
+  border-top: 1px solid var(--tang-border);
+}
+
+.tang-menu__heading {
+  padding: 3px var(--tang-space-3) 1px;
+  color: var(--tang-text-muted);
+  font-size: var(--tang-text-small);
+  line-height: 1.3;
+}
+
+.tang-menu__item {
+  overflow-wrap: anywhere;
+  padding: 5px var(--tang-space-3);
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--tang-text);
+  font: inherit;
+  font-size: var(--tang-text-size);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tang-menu__item:hover,
+.tang-menu__item:focus {
+  background: var(--tang-border);
+}
+
+/* The one that is the choice now: bold, with a check in the room the items leave at the left. */
+.tang-menu__item[aria-current="true"] {
+  position: relative;
+  font-weight: 600;
+}
+
+.tang-menu__item[aria-current="true"]::before {
+  content: "✓";
+  position: absolute;
+  left: 2px;
+  font-size: 11px;
+  line-height: inherit;
+  color: var(--tang-scale);
+}

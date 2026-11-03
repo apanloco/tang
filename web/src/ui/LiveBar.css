@@ -1,0 +1,27 @@
+.tang-livebar {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+}
+
+/* A bar that fills from the middle has a mark there. */
+.tang-livebar[data-centred]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--tang-border);
+}
+
+.tang-livebar__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--from, 0) * 100%);
+  width: calc((var(--to, 0) - var(--from, 0)) * 100%);
+  background: var(--bar, var(--tang-modulation));
+}

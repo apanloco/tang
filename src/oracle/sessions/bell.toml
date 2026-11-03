@@ -1,0 +1,34 @@
+# Example: a bell. FM: a sine whose phase is swung by another sine 3.5 times as fast
+# (the oscillator's `fm` and `fm_ratio`), which makes partials that are not harmonics,
+# and an envelope that takes the swing down while the note rings, so that the bell
+# starts bright and ends as a plain tone (the value of `fm` is the envelope's peak). Play high notes. On the page, try
+# `fm_ratio` (a choice: ×1.4 and ×2.8 are other bells) and the envelope's decay.
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.5
+
+[instrument.params]
+waveform = 0.0 # sine
+attack = 0.001
+decay = 3.0
+sustain = 0.0
+release = 1.5
+fm = 0.45
+fm_ratio = 8.0 # a place in the list: 8 is ×3.5
+
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 0.3
+
+[[instrument.modulator]]
+type = "envelope"
+attack = 0.001
+decay = 2.0
+sustain = 0.0
+release = 1.0
+
+[[instrument.modulator.target]]
+slot = 0
+param = "fm"
+depth = 1.0
