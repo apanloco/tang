@@ -1,0 +1,3250 @@
+{
+  "fields": {
+    "10": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ],
+    "11": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ],
+    "12": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ],
+    "13": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ],
+    "14": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ],
+    "15": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      }
+    ],
+    "7": [
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ],
+    "8": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 9,
+        "port": {
+          "edge": 3,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ],
+    "9": [
+      {
+        "node": 7,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 7,
+        "port": {
+          "edge": 0,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 1,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 8,
+        "port": {
+          "edge": 2,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 10,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 11,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 12,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "type": "rate"
+        }
+      },
+      {
+        "node": 13,
+        "port": {
+          "edge": 4,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "attack"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "decay"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "sustain"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "type": "release"
+        }
+      },
+      {
+        "node": 14,
+        "port": {
+          "edge": 5,
+          "type": "depth"
+        }
+      },
+      {
+        "node": 15,
+        "port": {
+          "edge": 6,
+          "type": "depth"
+        }
+      }
+    ]
+  },
+  "snapshot": {
+    "graph": {
+      "edges": [
+        {
+          "from": {
+            "node": 0,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 1,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 1,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 2,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 3,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 0,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 4,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 0,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 5,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "audio",
+          "to": {
+            "node": 4294967295,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "from": {
+            "node": 6,
+            "port": {
+              "type": "audioOut"
+            }
+          },
+          "kind": "member",
+          "to": {
+            "node": 2,
+            "port": {
+              "type": "audioIn"
+            }
+          }
+        },
+        {
+          "amount": 0.1,
+          "from": {
+            "node": 7,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 0,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 1,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.2,
+          "from": {
+            "node": 8,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 1,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 2,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.7,
+          "from": {
+            "node": 8,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 2,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 1,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.3,
+          "from": {
+            "node": 9,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 3,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 7,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.4,
+          "from": {
+            "node": 13,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 4,
+          "kind": "modulation",
+          "to": {
+            "node": 3,
+            "port": {
+              "index": 1,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 0.25,
+          "from": {
+            "node": 14,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 5,
+          "kind": "modulation",
+          "to": {
+            "node": 1,
+            "port": {
+              "index": 2,
+              "type": "param"
+            }
+          }
+        },
+        {
+          "amount": 1.0,
+          "from": {
+            "node": 15,
+            "port": {
+              "type": "modOut"
+            }
+          },
+          "id": 6,
+          "kind": "modulation",
+          "to": {
+            "node": 4,
+            "port": {
+              "index": 2,
+              "type": "param"
+            }
+          }
+        }
+      ],
+      "nodes": [
+        {
+          "id": 0,
+          "kind": "group",
+          "muted": false,
+          "name": "Group 1",
+          "pan": 0.0,
+          "parent": null,
+          "route": "out",
+          "solo": false,
+          "volume": 1.0
+        },
+        {
+          "feed": "chain",
+          "id": 1,
+          "kind": "effect",
+          "mix": 1.0,
+          "name": "Reverb",
+          "parent": 0,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:reverb",
+            "isInstrument": false,
+            "params": [
+              {
+                "default": 0.88,
+                "group": [],
+                "index": 0,
+                "labels": null,
+                "max": 0.99,
+                "min": 0.1,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.88
+              },
+              {
+                "default": 0.85,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.3,
+                "name": "size",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.85
+              },
+              {
+                "default": 0.35,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "damping",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.35
+              },
+              {
+                "default": 0.04,
+                "group": [],
+                "index": 3,
+                "labels": null,
+                "max": 0.25,
+                "min": 0.0,
+                "name": "predelay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.04
+              },
+              {
+                "default": 0.7,
+                "group": [],
+                "index": 4,
+                "labels": null,
+                "max": 0.85,
+                "min": 0.0,
+                "name": "diffusion",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.7
+              },
+              {
+                "default": 0.3,
+                "group": [
+                  "Modulation"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 2.0,
+                "min": 0.05,
+                "name": "mod_rate",
+                "stepCount": 0,
+                "unit": "Hz",
+                "value": 0.3
+              },
+              {
+                "default": 0.5,
+                "group": [
+                  "Modulation"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "mod_depth",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 80.0,
+                "group": [],
+                "index": 8,
+                "labels": null,
+                "max": 500.0,
+                "min": 20.0,
+                "name": "lowcut",
+                "stepCount": 0,
+                "unit": "Hz",
+                "value": 80.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 2.0,
+                "min": 0.0,
+                "name": "level",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              }
+            ],
+            "pinned": [],
+            "presets": [
+              {
+                "id": "arcadia",
+                "name": "Arcadia Dream Hall"
+              },
+              {
+                "id": "cathedral",
+                "name": "Cathedral"
+              },
+              {
+                "id": "plate",
+                "name": "Vintage Plate"
+              },
+              {
+                "id": "room",
+                "name": "Small Room"
+              },
+              {
+                "id": "ambient",
+                "name": "Ambient Wash"
+              }
+            ]
+          }
+        },
+        {
+          "id": 2,
+          "kind": "group",
+          "muted": false,
+          "name": "Group 2",
+          "pan": 0.0,
+          "parent": null,
+          "route": "out",
+          "solo": false,
+          "volume": 1.0
+        },
+        {
+          "id": 3,
+          "kind": "instrument",
+          "muted": false,
+          "name": "Oscillator",
+          "parent": 0,
+          "pattern": null,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw",
+                  "noise"
+                ],
+                "max": 4.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 4,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 8,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "unison",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.15,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "spread",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.15
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 10,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 11,
+                "labels": null,
+                "max": 0.95,
+                "min": 0.05,
+                "name": "pulse",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 12,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "fm",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 13,
+                "labels": [
+                  "×0.5",
+                  "×1",
+                  "×1.4",
+                  "×1.5",
+                  "×2",
+                  "×2.5",
+                  "×2.8",
+                  "×3",
+                  "×3.5",
+                  "×4",
+                  "×5",
+                  "×5.6",
+                  "×6",
+                  "×7",
+                  "×8",
+                  "×12"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "fm_ratio",
+                "stepCount": 15,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 14,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sub",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 15,
+                "labels": null,
+                "max": 8.0,
+                "min": 1.0,
+                "name": "sync",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 16,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "drift",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 17,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "velocity",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 2.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 18,
+                "labels": [
+                  "off",
+                  "±1",
+                  "±2",
+                  "±3",
+                  "±5",
+                  "±7",
+                  "±12",
+                  "±24",
+                  "±48"
+                ],
+                "max": 8.0,
+                "min": 0.0,
+                "name": "bend",
+                "stepCount": 8,
+                "unit": null,
+                "value": 2.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 19,
+                "labels": [
+                  "off",
+                  "major",
+                  "minor",
+                  "harm minor",
+                  "mel minor",
+                  "dorian",
+                  "phrygian",
+                  "lydian",
+                  "mixolydian",
+                  "locrian",
+                  "maj pent",
+                  "min pent",
+                  "blues",
+                  "whole tone",
+                  "diminished",
+                  "chromatic"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "quantize",
+                "stepCount": 15,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "route": "out",
+          "solo": false,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 4,
+          "kind": "instrument",
+          "muted": false,
+          "name": "Oscillator",
+          "parent": 0,
+          "pattern": null,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw",
+                  "noise"
+                ],
+                "max": 4.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 4,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 8,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "unison",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.15,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "spread",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.15
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 10,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 11,
+                "labels": null,
+                "max": 0.95,
+                "min": 0.05,
+                "name": "pulse",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 12,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "fm",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 13,
+                "labels": [
+                  "×0.5",
+                  "×1",
+                  "×1.4",
+                  "×1.5",
+                  "×2",
+                  "×2.5",
+                  "×2.8",
+                  "×3",
+                  "×3.5",
+                  "×4",
+                  "×5",
+                  "×5.6",
+                  "×6",
+                  "×7",
+                  "×8",
+                  "×12"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "fm_ratio",
+                "stepCount": 15,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 14,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sub",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 15,
+                "labels": null,
+                "max": 8.0,
+                "min": 1.0,
+                "name": "sync",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 16,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "drift",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 17,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "velocity",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 2.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 18,
+                "labels": [
+                  "off",
+                  "±1",
+                  "±2",
+                  "±3",
+                  "±5",
+                  "±7",
+                  "±12",
+                  "±24",
+                  "±48"
+                ],
+                "max": 8.0,
+                "min": 0.0,
+                "name": "bend",
+                "stepCount": 8,
+                "unit": null,
+                "value": 2.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 19,
+                "labels": [
+                  "off",
+                  "major",
+                  "minor",
+                  "harm minor",
+                  "mel minor",
+                  "dorian",
+                  "phrygian",
+                  "lydian",
+                  "mixolydian",
+                  "locrian",
+                  "maj pent",
+                  "min pent",
+                  "blues",
+                  "whole tone",
+                  "diminished",
+                  "chromatic"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "quantize",
+                "stepCount": 15,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "route": "out",
+          "solo": false,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 5,
+          "kind": "instrument",
+          "muted": false,
+          "name": "Oscillator",
+          "parent": null,
+          "pattern": null,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw",
+                  "noise"
+                ],
+                "max": 4.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 4,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 8,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "unison",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.15,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "spread",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.15
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 10,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 11,
+                "labels": null,
+                "max": 0.95,
+                "min": 0.05,
+                "name": "pulse",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 12,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "fm",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 13,
+                "labels": [
+                  "×0.5",
+                  "×1",
+                  "×1.4",
+                  "×1.5",
+                  "×2",
+                  "×2.5",
+                  "×2.8",
+                  "×3",
+                  "×3.5",
+                  "×4",
+                  "×5",
+                  "×5.6",
+                  "×6",
+                  "×7",
+                  "×8",
+                  "×12"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "fm_ratio",
+                "stepCount": 15,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 14,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sub",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 15,
+                "labels": null,
+                "max": 8.0,
+                "min": 1.0,
+                "name": "sync",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 16,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "drift",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 17,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "velocity",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 2.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 18,
+                "labels": [
+                  "off",
+                  "±1",
+                  "±2",
+                  "±3",
+                  "±5",
+                  "±7",
+                  "±12",
+                  "±24",
+                  "±48"
+                ],
+                "max": 8.0,
+                "min": 0.0,
+                "name": "bend",
+                "stepCount": 8,
+                "unit": null,
+                "value": 2.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 19,
+                "labels": [
+                  "off",
+                  "major",
+                  "minor",
+                  "harm minor",
+                  "mel minor",
+                  "dorian",
+                  "phrygian",
+                  "lydian",
+                  "mixolydian",
+                  "locrian",
+                  "maj pent",
+                  "min pent",
+                  "blues",
+                  "whole tone",
+                  "diminished",
+                  "chromatic"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "quantize",
+                "stepCount": 15,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "route": "out",
+          "solo": false,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "id": 6,
+          "kind": "instrument",
+          "muted": false,
+          "name": "Oscillator",
+          "parent": 2,
+          "pattern": null,
+          "plugin": {
+            "currentPreset": null,
+            "format": "Built-in",
+            "id": "builtin:osc",
+            "isInstrument": true,
+            "params": [
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 0,
+                "labels": [
+                  "sine",
+                  "triangle",
+                  "square",
+                  "saw",
+                  "noise"
+                ],
+                "max": 4.0,
+                "min": 0.0,
+                "name": "waveform",
+                "stepCount": 4,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 1,
+                "labels": null,
+                "max": 24.0,
+                "min": -24.0,
+                "name": "detune",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [],
+                "index": 2,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "volume",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.004,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 3,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "attack",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.004
+              },
+              {
+                "default": 0.1,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 4,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "decay",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.1
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 5,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sustain",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.012,
+                "group": [
+                  "Envelope"
+                ],
+                "index": 6,
+                "labels": null,
+                "max": 10.0,
+                "min": 0.0,
+                "name": "release",
+                "stepCount": 0,
+                "unit": "s",
+                "value": 0.012
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 7,
+                "labels": null,
+                "max": 1.0,
+                "min": -1.0,
+                "name": "pan",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [],
+                "index": 8,
+                "labels": [
+                  "1",
+                  "2",
+                  "3",
+                  "4",
+                  "5",
+                  "6",
+                  "7"
+                ],
+                "max": 6.0,
+                "min": 0.0,
+                "name": "unison",
+                "stepCount": 6,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.15,
+                "group": [],
+                "index": 9,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "spread",
+                "stepCount": 0,
+                "unit": "st",
+                "value": 0.15
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 10,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.5,
+                "group": [],
+                "index": 11,
+                "labels": null,
+                "max": 0.95,
+                "min": 0.05,
+                "name": "pulse",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.5
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 12,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "fm",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "FM"
+                ],
+                "index": 13,
+                "labels": [
+                  "×0.5",
+                  "×1",
+                  "×1.4",
+                  "×1.5",
+                  "×2",
+                  "×2.5",
+                  "×2.8",
+                  "×3",
+                  "×3.5",
+                  "×4",
+                  "×5",
+                  "×5.6",
+                  "×6",
+                  "×7",
+                  "×8",
+                  "×12"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "fm_ratio",
+                "stepCount": 15,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 14,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "sub",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 1.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 15,
+                "labels": null,
+                "max": 8.0,
+                "min": 1.0,
+                "name": "sync",
+                "stepCount": 0,
+                "unit": null,
+                "value": 1.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 16,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "drift",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 17,
+                "labels": null,
+                "max": 1.0,
+                "min": 0.0,
+                "name": "velocity",
+                "stepCount": 0,
+                "unit": null,
+                "value": 0.0
+              },
+              {
+                "default": 2.0,
+                "group": [
+                  "Performance"
+                ],
+                "index": 18,
+                "labels": [
+                  "off",
+                  "±1",
+                  "±2",
+                  "±3",
+                  "±5",
+                  "±7",
+                  "±12",
+                  "±24",
+                  "±48"
+                ],
+                "max": 8.0,
+                "min": 0.0,
+                "name": "bend",
+                "stepCount": 8,
+                "unit": null,
+                "value": 2.0
+              },
+              {
+                "default": 0.0,
+                "group": [
+                  "Voice"
+                ],
+                "index": 19,
+                "labels": [
+                  "off",
+                  "major",
+                  "minor",
+                  "harm minor",
+                  "mel minor",
+                  "dorian",
+                  "phrygian",
+                  "lydian",
+                  "mixolydian",
+                  "locrian",
+                  "maj pent",
+                  "min pent",
+                  "blues",
+                  "whole tone",
+                  "diminished",
+                  "chromatic"
+                ],
+                "max": 15.0,
+                "min": 0.0,
+                "name": "quantize",
+                "stepCount": 15,
+                "unit": null,
+                "value": 0.0
+              }
+            ],
+            "pinned": [],
+            "presets": []
+          },
+          "range": null,
+          "route": "out",
+          "solo": false,
+          "transpose": 0,
+          "volume": 1.0
+        },
+        {
+          "hears": 3,
+          "id": 7,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 3.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 3,
+          "id": 8,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": null,
+          "source": {
+            "attack": 0.01,
+            "decay": 0.3,
+            "release": 0.5,
+            "sustain": 0.4,
+            "type": "envelope"
+          }
+        },
+        {
+          "hears": 3,
+          "id": 9,
+          "kind": "modulator",
+          "name": "CC 1",
+          "parent": null,
+          "source": {
+            "control": {
+              "number": 1,
+              "type": "cc"
+            },
+            "learning": false,
+            "type": "midiLearn"
+          }
+        },
+        {
+          "hears": 4,
+          "id": 10,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 1.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 5,
+          "id": 11,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 2.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 6,
+          "id": 12,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 4.0,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 0,
+          "id": 13,
+          "kind": "modulator",
+          "name": "LFO",
+          "parent": null,
+          "source": {
+            "fade": 0.0,
+            "rate": 0.5,
+            "retrigger": false,
+            "sync": 0,
+            "type": "lfo",
+            "waveform": "sine"
+          }
+        },
+        {
+          "hears": 0,
+          "id": 14,
+          "kind": "modulator",
+          "name": "ADSR",
+          "parent": null,
+          "source": {
+            "attack": 0.2,
+            "decay": 0.3,
+            "release": 0.5,
+            "sustain": 0.7,
+            "type": "envelope"
+          }
+        },
+        {
+          "hears": 0,
+          "id": 15,
+          "kind": "modulator",
+          "name": "CC 74",
+          "parent": null,
+          "source": {
+            "control": {
+              "number": 74,
+              "type": "cc"
+            },
+            "learning": false,
+            "type": "midiLearn"
+          }
+        },
+        {
+          "ceiling": -1.0,
+          "id": 4294967295,
+          "kind": "master",
+          "limiter": true,
+          "name": "Master",
+          "parent": null,
+          "volume": 1.0
+        }
+      ]
+    },
+    "meta": {
+      "bpm": 120.0,
+      "dirty": false,
+      "file": null,
+      "piano": {
+        "kind": "major",
+        "locked": false,
+        "notes": [
+          0,
+          2,
+          4,
+          5,
+          7,
+          9,
+          11
+        ],
+        "root": 0,
+        "scale": "C major"
+      },
+      "sampleRate": 48000.0
+    },
+    "rev": 0,
+    "telemetry": {
+      "meters": [
+        {
+          "kind": "peak",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 0
+        },
+        {
+          "kind": "clips",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 1
+        },
+        {
+          "kind": "reduction",
+          "node": 4294967295,
+          "port": {
+            "type": "audioIn"
+          },
+          "slot": 4095
+        },
+        {
+          "kind": "peak",
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 2
+        },
+        {
+          "kind": "clips",
+          "node": 0,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 3
+        },
+        {
+          "kind": "peak",
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 4
+        },
+        {
+          "kind": "clips",
+          "node": 2,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 5
+        },
+        {
+          "kind": "peak",
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 6
+        },
+        {
+          "kind": "clips",
+          "node": 3,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 7
+        },
+        {
+          "kind": "peak",
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 8
+        },
+        {
+          "kind": "clips",
+          "node": 4,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 9
+        },
+        {
+          "kind": "peak",
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 10
+        },
+        {
+          "kind": "clips",
+          "node": 5,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 11
+        },
+        {
+          "kind": "peak",
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 12
+        },
+        {
+          "kind": "clips",
+          "node": 6,
+          "port": {
+            "type": "audioOut"
+          },
+          "slot": 13
+        }
+      ],
+      "modulation": [
+        {
+          "kind": "modOutput",
+          "node": 7,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 14
+        },
+        {
+          "kind": "modOutput",
+          "node": 8,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 16
+        },
+        {
+          "kind": "modOutput",
+          "node": 9,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 19
+        },
+        {
+          "kind": "modOutput",
+          "node": 10,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 21
+        },
+        {
+          "kind": "modOutput",
+          "node": 11,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 22
+        },
+        {
+          "kind": "modOutput",
+          "node": 12,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 23
+        },
+        {
+          "kind": "modOutput",
+          "node": 13,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 24
+        },
+        {
+          "kind": "modOutput",
+          "node": 14,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 26
+        },
+        {
+          "kind": "modOutput",
+          "node": 15,
+          "port": {
+            "type": "modOut"
+          },
+          "slot": 28
+        },
+        {
+          "kind": "effective",
+          "node": 3,
+          "port": {
+            "index": 1,
+            "type": "param"
+          },
+          "slot": 15
+        },
+        {
+          "kind": "effective",
+          "node": 3,
+          "port": {
+            "index": 2,
+            "type": "param"
+          },
+          "slot": 17
+        },
+        {
+          "kind": "effective",
+          "node": 3,
+          "port": {
+            "index": 7,
+            "type": "param"
+          },
+          "slot": 20
+        },
+        {
+          "kind": "effective",
+          "node": 1,
+          "port": {
+            "index": 2,
+            "type": "param"
+          },
+          "slot": 27
+        },
+        {
+          "kind": "effective",
+          "node": 4,
+          "port": {
+            "index": 2,
+            "type": "param"
+          },
+          "slot": 29
+        }
+      ],
+      "rev": 1
+    }
+  }
+}

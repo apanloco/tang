@@ -67,11 +67,13 @@ fn max_kb_height(white_w: u8) -> u16 {
 }
 
 // Color palette. The keyboard reads as a natural piano (white/black bodies)
-// with one of three accent colors painted as a thin stripe at the bottom of
-// the key:
+// with a stripe painted along the bottom of each key for what it is in the
+// scale:
 //   - GOLD: root pitch class
 //   - TEAL: other scale tones
-//   - CORAL: held (overrides everything, fills the whole key)
+//   - none: not in the scale
+// A key that is held sinks (its body goes a shade grayer, the stripe stays),
+// and one that is held and not in the scale goes red all over (HELD_RED).
 const WHITE_BODY: Color = Color::Rgb(240, 240, 235);
 const BLACK_BODY: Color = Color::Rgb(25, 25, 30);
 /// Held in-scale, white keys: a subtle tone shift toward gray, like a piano

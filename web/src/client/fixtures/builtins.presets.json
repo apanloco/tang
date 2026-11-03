@@ -1,0 +1,780 @@
+{
+  "builtin:delay": {
+    "chorus": [
+      {
+        "param": 0,
+        "value": 0.02
+      },
+      {
+        "param": 1,
+        "value": 0.0
+      },
+      {
+        "param": 2,
+        "value": 1.0
+      },
+      {
+        "param": 3,
+        "value": 0.0
+      },
+      {
+        "param": 4,
+        "value": 0.8
+      },
+      {
+        "param": 5,
+        "value": 3.5
+      }
+    ],
+    "doubler": [
+      {
+        "param": 0,
+        "value": 0.035
+      },
+      {
+        "param": 1,
+        "value": 0.0
+      },
+      {
+        "param": 2,
+        "value": 0.8
+      },
+      {
+        "param": 3,
+        "value": 0.0
+      },
+      {
+        "param": 4,
+        "value": 0.3
+      },
+      {
+        "param": 5,
+        "value": 1.0
+      }
+    ],
+    "dub": [
+      {
+        "param": 0,
+        "value": 0.45
+      },
+      {
+        "param": 1,
+        "value": 0.78
+      },
+      {
+        "param": 2,
+        "value": 0.3
+      },
+      {
+        "param": 3,
+        "value": 0.35
+      },
+      {
+        "param": 4,
+        "value": 0.3
+      },
+      {
+        "param": 5,
+        "value": 0.8
+      }
+    ],
+    "flanger": [
+      {
+        "param": 0,
+        "value": 0.003
+      },
+      {
+        "param": 1,
+        "value": 0.6
+      },
+      {
+        "param": 2,
+        "value": 0.9
+      },
+      {
+        "param": 3,
+        "value": 0.0
+      },
+      {
+        "param": 4,
+        "value": 0.25
+      },
+      {
+        "param": 5,
+        "value": 2.5
+      }
+    ],
+    "pingpong": [
+      {
+        "param": 0,
+        "value": 0.3
+      },
+      {
+        "param": 1,
+        "value": 0.55
+      },
+      {
+        "param": 2,
+        "value": 0.7
+      },
+      {
+        "param": 3,
+        "value": 1.0
+      },
+      {
+        "param": 4,
+        "value": 0.5
+      },
+      {
+        "param": 5,
+        "value": 0.0
+      }
+    ],
+    "slapback": [
+      {
+        "param": 0,
+        "value": 0.09
+      },
+      {
+        "param": 1,
+        "value": 0.12
+      },
+      {
+        "param": 2,
+        "value": 0.85
+      },
+      {
+        "param": 3,
+        "value": 0.0
+      },
+      {
+        "param": 4,
+        "value": 0.5
+      },
+      {
+        "param": 5,
+        "value": 0.0
+      }
+    ],
+    "tape": [
+      {
+        "param": 0,
+        "value": 0.38
+      },
+      {
+        "param": 1,
+        "value": 0.5
+      },
+      {
+        "param": 2,
+        "value": 0.45
+      },
+      {
+        "param": 3,
+        "value": 0.0
+      },
+      {
+        "param": 4,
+        "value": 0.6
+      },
+      {
+        "param": 5,
+        "value": 1.5
+      }
+    ]
+  },
+  "builtin:drive": {
+    "crunch": [
+      {
+        "param": 0,
+        "value": 2.0
+      },
+      {
+        "param": 1,
+        "value": 0.5
+      },
+      {
+        "param": 2,
+        "value": 0.85
+      },
+      {
+        "param": 3,
+        "value": 0.29
+      }
+    ],
+    "fold": [
+      {
+        "param": 0,
+        "value": 3.0
+      },
+      {
+        "param": 1,
+        "value": 0.55
+      },
+      {
+        "param": 2,
+        "value": 1.0
+      },
+      {
+        "param": 3,
+        "value": 0.5
+      }
+    ],
+    "fuzz": [
+      {
+        "param": 0,
+        "value": 1.0
+      },
+      {
+        "param": 1,
+        "value": 0.85
+      },
+      {
+        "param": 2,
+        "value": 0.6
+      },
+      {
+        "param": 3,
+        "value": 0.25
+      }
+    ],
+    "warm": [
+      {
+        "param": 0,
+        "value": 0.0
+      },
+      {
+        "param": 1,
+        "value": 0.3
+      },
+      {
+        "param": 2,
+        "value": 0.75
+      },
+      {
+        "param": 3,
+        "value": 0.48
+      }
+    ]
+  },
+  "builtin:math": {
+    "decimator": [
+      {
+        "param": 0,
+        "value": 10.0
+      },
+      {
+        "param": 1,
+        "value": 0.1
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": 100.0
+      },
+      {
+        "param": 4,
+        "value": 2.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.7
+      }
+    ],
+    "fold-sweep": [
+      {
+        "param": 0,
+        "value": 2.0
+      },
+      {
+        "param": 1,
+        "value": 0.6
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": -12.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.7
+      }
+    ],
+    "pump": [
+      {
+        "param": 0,
+        "value": 11.0
+      },
+      {
+        "param": 1,
+        "value": 0.9
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": -36.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.2
+      },
+      {
+        "param": 7,
+        "value": 0.9
+      }
+    ],
+    "ring-bell": [
+      {
+        "param": 0,
+        "value": 0.0
+      },
+      {
+        "param": 1,
+        "value": 1.0
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": 64.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.7
+      }
+    ],
+    "square-up": [
+      {
+        "param": 0,
+        "value": 4.0
+      },
+      {
+        "param": 1,
+        "value": 0.9
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": -24.0
+      },
+      {
+        "param": 4,
+        "value": 1.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.6
+      }
+    ],
+    "tremolo": [
+      {
+        "param": 0,
+        "value": 1.0
+      },
+      {
+        "param": 1,
+        "value": 0.8
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": -5.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.9
+      }
+    ],
+    "vibrato": [
+      {
+        "param": 0,
+        "value": 3.0
+      },
+      {
+        "param": 1,
+        "value": 0.25
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": -5.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.9
+      }
+    ],
+    "warp-metal": [
+      {
+        "param": 0,
+        "value": 3.0
+      },
+      {
+        "param": 1,
+        "value": 1.0
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": 60.0
+      },
+      {
+        "param": 4,
+        "value": 0.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.7
+      }
+    ],
+    "xor-growl": [
+      {
+        "param": 0,
+        "value": 7.0
+      },
+      {
+        "param": 1,
+        "value": 0.5
+      },
+      {
+        "param": 2,
+        "value": 5.0
+      },
+      {
+        "param": 3,
+        "value": 40.0
+      },
+      {
+        "param": 4,
+        "value": 2.0
+      },
+      {
+        "param": 5,
+        "value": 0.005
+      },
+      {
+        "param": 6,
+        "value": 0.12
+      },
+      {
+        "param": 7,
+        "value": 0.55
+      }
+    ]
+  },
+  "builtin:reverb": {
+    "ambient": [
+      {
+        "param": 0,
+        "value": 0.96
+      },
+      {
+        "param": 1,
+        "value": 0.95
+      },
+      {
+        "param": 2,
+        "value": 0.2
+      },
+      {
+        "param": 3,
+        "value": 0.12
+      },
+      {
+        "param": 4,
+        "value": 0.78
+      },
+      {
+        "param": 5,
+        "value": 0.45
+      },
+      {
+        "param": 6,
+        "value": 0.85
+      },
+      {
+        "param": 7,
+        "value": 1.0
+      },
+      {
+        "param": 8,
+        "value": 100.0
+      },
+      {
+        "param": 9,
+        "value": 0.8
+      }
+    ],
+    "arcadia": [
+      {
+        "param": 0,
+        "value": 0.94
+      },
+      {
+        "param": 1,
+        "value": 0.95
+      },
+      {
+        "param": 2,
+        "value": 0.3
+      },
+      {
+        "param": 3,
+        "value": 0.06
+      },
+      {
+        "param": 4,
+        "value": 0.78
+      },
+      {
+        "param": 5,
+        "value": 0.25
+      },
+      {
+        "param": 6,
+        "value": 0.7
+      },
+      {
+        "param": 7,
+        "value": 1.0
+      },
+      {
+        "param": 8,
+        "value": 80.0
+      },
+      {
+        "param": 9,
+        "value": 0.85
+      }
+    ],
+    "cathedral": [
+      {
+        "param": 0,
+        "value": 0.96
+      },
+      {
+        "param": 1,
+        "value": 1.0
+      },
+      {
+        "param": 2,
+        "value": 0.55
+      },
+      {
+        "param": 3,
+        "value": 0.1
+      },
+      {
+        "param": 4,
+        "value": 0.72
+      },
+      {
+        "param": 5,
+        "value": 0.15
+      },
+      {
+        "param": 6,
+        "value": 0.55
+      },
+      {
+        "param": 7,
+        "value": 1.0
+      },
+      {
+        "param": 8,
+        "value": 60.0
+      },
+      {
+        "param": 9,
+        "value": 0.8
+      }
+    ],
+    "plate": [
+      {
+        "param": 0,
+        "value": 0.8
+      },
+      {
+        "param": 1,
+        "value": 0.55
+      },
+      {
+        "param": 2,
+        "value": 0.25
+      },
+      {
+        "param": 3,
+        "value": 0.02
+      },
+      {
+        "param": 4,
+        "value": 0.78
+      },
+      {
+        "param": 5,
+        "value": 0.18
+      },
+      {
+        "param": 6,
+        "value": 0.3
+      },
+      {
+        "param": 7,
+        "value": 0.85
+      },
+      {
+        "param": 8,
+        "value": 120.0
+      },
+      {
+        "param": 9,
+        "value": 1.0
+      }
+    ],
+    "room": [
+      {
+        "param": 0,
+        "value": 0.55
+      },
+      {
+        "param": 1,
+        "value": 0.4
+      },
+      {
+        "param": 2,
+        "value": 0.4
+      },
+      {
+        "param": 3,
+        "value": 0.01
+      },
+      {
+        "param": 4,
+        "value": 0.65
+      },
+      {
+        "param": 5,
+        "value": 0.4
+      },
+      {
+        "param": 6,
+        "value": 0.2
+      },
+      {
+        "param": 7,
+        "value": 0.9
+      },
+      {
+        "param": 8,
+        "value": 100.0
+      },
+      {
+        "param": 9,
+        "value": 1.0
+      }
+    ]
+  }
+}

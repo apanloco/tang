@@ -1,0 +1,97 @@
+.tang-session-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+  font-size: var(--tang-text-small);
+}
+
+.tang-session-bar__file {
+  color: var(--tang-text);
+}
+
+.tang-session-bar__state {
+  color: var(--tang-text-muted);
+}
+
+.tang-session-bar__state--unsaved {
+  color: var(--tang-modulation);
+}
+
+.tang-session-bar__button {
+  padding: 2px var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tang-session-bar__button:hover:not(:disabled) {
+  border-color: var(--tang-modulation);
+}
+
+.tang-session-bar__button:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-session-bar__button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* (Save as: the field that takes the place of its button, with its OK and Cancel.) */
+.tang-save-as {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+}
+
+.tang-save-as__field {
+  width: 16em;
+  height: 24px;
+  padding: 0 var(--tang-space-2);
+  border: 1px solid var(--tang-modulation);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+}
+
+.tang-save-as__field:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+/* (The tempo: a field of a few digits and its unit.) */
+.tang-tempo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+}
+
+.tang-tempo__unit {
+  color: var(--tang-text-muted);
+}
+
+.tang-tempo__field {
+  width: 4em;
+  height: 24px;
+  padding: 0 var(--tang-space-2);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  text-align: right;
+}
+
+.tang-tempo__field:hover {
+  border-color: var(--tang-modulation);
+}
+
+.tang-tempo__field:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}

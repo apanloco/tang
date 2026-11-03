@@ -1,0 +1,36 @@
+# Example: a wobble bass. A saw with a sine an octave under it, through a low-pass filter that
+# a triangle LFO opens and shuts. The LFO goes by the tempo: one cycle is an eighth note, so the
+# wobble is 4.67 Hz at 140 beats a minute and goes as fast as the tempo does (change it in the
+# bar of the page or in the terminal with `b`), always in time. A key starts the wobble from the
+# start of its wave. Play low notes.
+
+bpm = 140.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.28
+
+[instrument.params]
+waveform = 3.0 # saw
+sub = 0.5
+attack = 0.004
+release = 0.12
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+cutoff = 0.5
+resonance = 3.0
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "triangle"
+sync = "1/8"
+retrigger = true
+
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.2

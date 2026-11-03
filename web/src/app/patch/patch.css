@@ -1,0 +1,1117 @@
+/* The canvas, and the nodes on it. The sizes keep to what `toFlow` assumes (HEADER_HEIGHT,
+   CONTROL_ROW_HEIGHT, NODE_PADDING, NODE_WIDTH): a node is 304px wide, its header is 44px
+   and each row of four controls is 108px. */
+.tang-patch {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+/* The canvas takes what the panel of parameters, when it is open, leaves. */
+.tang-patch__canvas {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.tang-patch .react-flow {
+  --xy-background-color: var(--tang-bg);
+  --xy-background-pattern-dots-color-default: var(--tang-border);
+}
+
+/* React Flow gives a node that can be neither dragged nor selected `pointer-events: none`, which
+   would put the pane over its controls: the nodes are for turning knobs. */
+.tang-patch .react-flow__node {
+  pointer-events: all !important;
+}
+
+.tang-node {
+  position: relative;
+  width: 304px;
+  border: 1px solid var(--tang-border);
+  border-top: 3px solid var(--kind, var(--tang-border));
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface);
+  color: var(--tang-text);
+}
+
+/* The level of a lane or a group (step 100), drawn over the stripe of the colour of its kind that is the card's top border (3 px), so that no card is taller for it. */
+.tang-node__level {
+  position: absolute;
+  top: -3px;
+  left: -1px;
+  right: -1px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--tang-radius) var(--tang-radius) 0 0;
+  pointer-events: none;
+}
+
+.tang-node__level .tang-meter {
+  display: block;
+}
+
+.tang-node__level .tang-livebar {
+  height: 3px;
+  border-radius: 0;
+  background: transparent;
+}
+
+.tang-node--instrument {
+  --kind: var(--tang-instrument);
+}
+
+.tang-node--effect {
+  --kind: var(--tang-effect);
+}
+
+.tang-node--modulator {
+  --kind: var(--tang-modulation);
+}
+
+.tang-node--group {
+  --kind: var(--tang-group);
+}
+
+.tang-node--master {
+  --kind: var(--tang-root);
+}
+
+.tang-node--source {
+  --kind: var(--tang-notes);
+}
+
+.tang-node__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tang-space-2);
+  height: 40px;
+  padding: 0 var(--tang-space-3);
+  /* A node is moved by what is not a control (the controls are `nodrag`): the header, mostly. */
+  cursor: grab;
+}
+
+.react-flow__node.dragging .tang-node__header {
+  cursor: grabbing;
+}
+
+.tang-node__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/*
+ * The name, and under it, in small type, what kind of plugin it is (the badge) and the button that sends the node's audio: the buttons at the other end leave the name what is left of the header,
+ * which a badge beside it took 50 px of, and a lane's row of buttons has no room for one more. The name has the whole width; the badge and the button share the line under it.
+ */
+.tang-node__title {
+  display: grid;
+  flex: 1;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  align-content: center;
+  align-items: center;
+  column-gap: var(--tang-space-2);
+  min-width: 0;
+}
+
+.tang-node__title > .tang-node__name {
+  grid-column: 1 / -1;
+}
+
+.tang-node__title .tang-node__badge {
+  padding: 0;
+  background: none;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+/* (The one that sends the audio of the node, on the badge's line: small, in the colour of the cables it draws, and quiet until it is looked at.) */
+.tang-menu-button.tang-node__send {
+  min-width: 22px;
+  height: 16px;
+  padding: 0 5px;
+  border-color: transparent;
+  background: none;
+  color: var(--tang-send);
+  font-size: 11px;
+}
+
+.tang-menu-button.tang-node__send:hover:not(:disabled),
+.tang-menu-button.tang-node__send[aria-expanded="true"] {
+  border-color: var(--tang-send);
+}
+
+/* (The one that draws a cable of notes, from a source to a lane or into a lane from a source: on the same line, as small, in the colour of the notes, and not stretched to what is left of the line.) */
+.tang-menu-button.tang-node__notes {
+  justify-self: start;
+  min-width: 22px;
+  height: 16px;
+  padding: 0 5px;
+  border-color: transparent;
+  background: none;
+  color: var(--tang-notes);
+  font-size: 11px;
+}
+
+.tang-menu-button.tang-node__notes:hover:not(:disabled),
+.tang-menu-button.tang-node__notes[aria-expanded="true"],
+.tang-menu-button.tang-node__notes--set {
+  border-color: var(--tang-notes);
+}
+
+/* What a source says it is plugged in to: a line, cut at the end of the node (the whole of it is in the title). */
+.tang-node__detail--source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The note length that a modulator follows the tempo by, in its header before the button that takes it out: it keeps the width its chosen name needs, and the node's name is cut instead. */
+.tang-node__sync {
+  display: flex;
+  flex: none;
+}
+
+/* The buttons that add to a lane or a group, side by side at the end of its header. */
+.tang-node__actions {
+  display: flex;
+  flex: none;
+  gap: var(--tang-space-1);
+}
+
+/* (The one that puts an effect in the chain: wider than a glyph.) */
+.tang-menu-button.tang-node__fx {
+  min-width: 30px;
+  font-family: var(--tang-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+/* (The one that opens the parameters in the panel: a glyph too.) */
+.tang-menu-button.tang-node__params {
+  min-width: 26px;
+}
+
+/* (The one that shows the scope of what comes out of the node: a glyph too.) */
+.tang-menu-button.tang-node__scope {
+  min-width: 26px;
+}
+
+/* (The one that renames a group: a glyph too.) */
+.tang-menu-button.tang-node__rename {
+  min-width: 26px;
+}
+
+/* (The one that takes a lane or a group out, by a menu that asks: quiet until it is looked at, and then the colour of what it does.) */
+.tang-menu-button.tang-node__remove-menu {
+  color: var(--tang-text-muted);
+}
+
+.tang-menu-button.tang-node__remove-menu:hover:not(:disabled),
+.tang-menu-button.tang-node__remove-menu[aria-expanded="true"] {
+  border-color: var(--tang-danger);
+  color: var(--tang-text);
+}
+
+/* The name of a group, in a field in place of the name in its header. */
+.tang-node__name-field {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 var(--tang-space-2);
+  border: 1px solid var(--tang-modulation);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  font-weight: 600;
+}
+
+.tang-node__name-field:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+/* (The one that loads a preset: a glyph too.) */
+.tang-menu-button.tang-node__presets {
+  min-width: 26px;
+}
+
+/* (The two that move an effect along its chain: a glyph each. One that cannot go that way is dimmed, and does not answer the pointer's hover.) */
+.tang-menu-button.tang-node__move {
+  min-width: 22px;
+}
+
+.tang-node__move[aria-disabled="true"] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tang-node__move[aria-disabled="true"]:hover {
+  border-color: var(--tang-border);
+}
+
+/* (The one that changes the instrument of a lane: a glyph, as wide as the one of a modulator's "+".) */
+.tang-menu-button.tang-node__instrument {
+  min-width: 26px;
+}
+
+.tang-node__badge {
+  flex: none;
+  padding: 0 var(--tang-space-1);
+  border-radius: 3px;
+  background: var(--tang-surface-raised);
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-node__controls {
+  display: grid;
+  grid-template-columns: repeat(4, 72px);
+  grid-auto-rows: 108px;
+  justify-content: center;
+  padding: 0 0 12px;
+}
+
+.tang-node__body {
+  display: grid;
+  gap: var(--tang-space-2);
+  padding: 0 var(--tang-space-3) var(--tang-space-3);
+}
+
+/* What the master's scope shows and for how long: two choices side by side under it. */
+.tang-scope-choices {
+  display: flex;
+  gap: var(--tang-space-3);
+}
+
+.tang-node__detail {
+  min-height: 18px;
+  margin: 0;
+  font: var(--tang-text-small) / 1.5 var(--tang-mono);
+  color: var(--tang-text-muted);
+}
+
+/* A control in a node: a cell of the grid, which is where a cable arrives. */
+.tang-cell {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding-top: 10px;
+}
+
+/* A parameter that has no effect now (what its plugin says of when it has one: the Math's carrier while a cable is patched at B, its bits outside the logic modes) is dimmed, and still turns:
+   it keeps its value for when it has one. The pointer says why (the cell's title). */
+.tang-cell[data-unused] {
+  opacity: 0.45;
+}
+
+/* The keys of a lane, in a cell of the grid: a label over the two ends. */
+.tang-keys {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: 64px;
+}
+
+.tang-keys__label {
+  font-size: var(--tang-text-small);
+  text-align: center;
+  color: var(--tang-text-muted);
+}
+
+.tang-keys__select {
+  width: 100%;
+  padding: 2px;
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: 11px / 1.4 var(--tang-font);
+}
+
+.tang-keys__select:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+/* The limiter on the output mix, in the master's grid (step 102): one button over the width of the cell, in the colour of what is safe while it is pressed. */
+.tang-flag--limiter {
+  width: 100%;
+  flex: none;
+}
+
+.tang-flag--limiter[aria-pressed="true"] {
+  border-color: var(--tang-ok);
+  background: var(--tang-ok);
+}
+
+/* How far the limiter has brought the sound down, under the master's controls: a label, a bar that fills from the left, and the number. */
+.tang-reduction {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+  padding: 0 var(--tang-space-3) var(--tang-space-3);
+}
+
+.tang-reduction__label {
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-reduction .tang-livebar {
+  flex: 1;
+  --bar: var(--tang-warn);
+}
+
+.tang-reduction__value {
+  min-width: 52px;
+  text-align: right;
+  font: 11px / 1.4 var(--tang-mono);
+  color: var(--tang-text-muted);
+}
+
+/* The mute and the solo of a lane or a group, in a cell like the keys': two small buttons side by side, a pressed one in the colour of what it does. */
+.tang-flags {
+  display: flex;
+  gap: 2px;
+}
+
+.tang-flag {
+  flex: 1;
+  padding: 2px 0;
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text-muted);
+  font: 11px / 1.4 var(--tang-font);
+  cursor: pointer;
+}
+
+.tang-flag:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-flag[aria-pressed="true"] {
+  color: var(--tang-bg);
+  font-weight: 600;
+}
+
+.tang-flag--mute[aria-pressed="true"] {
+  border-color: var(--tang-danger);
+  background: var(--tang-danger);
+}
+
+.tang-flag--solo[aria-pressed="true"] {
+  border-color: var(--tang-warn);
+  background: var(--tang-warn);
+}
+
+/* The button that saves the chain of effects of a lane as a module: no switch, so nothing is pressed; lit while its field is open. */
+.tang-flag--module:hover,
+.tang-flag--module[aria-expanded="true"] {
+  border-color: var(--tang-modulation);
+  color: var(--tang-text);
+}
+
+/* A node that cannot be heard at the master (muted, not soloed while something is, or in the chain of one): dimmed, and as ready as it was. (It stays dimmed under the pointer: a press of its mute is seen at once.) */
+.tang-node--unheard {
+  opacity: 0.55;
+}
+
+/* The pattern of a lane, under its controls: record, clear and the length; the three switches; and a line that says what it is. It is as tall whatever it shows (`PATTERN_HEIGHT` in toFlow.ts). */
+.tang-pattern {
+  display: grid;
+  gap: var(--tang-space-2);
+  padding: var(--tang-space-2) var(--tang-space-3) var(--tang-space-3);
+  border-top: 1px solid var(--tang-border);
+}
+
+.tang-pattern__row {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+  min-width: 0;
+  height: 22px;
+}
+
+.tang-pattern__button {
+  box-sizing: border-box;
+  height: 22px;
+  padding: 0 var(--tang-space-2);
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: 11px / 20px var(--tang-font);
+  cursor: pointer;
+}
+
+.tang-pattern__button:hover:not(:disabled) {
+  border-color: var(--tang-instrument);
+}
+
+.tang-pattern__button:focus-visible,
+.tang-pattern__field:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-pattern__button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The record button: a red dot, and while a recording goes on, red all through, pulsing (a person who has looked away can see it). */
+.tang-pattern__record {
+  min-width: 70px;
+}
+
+.tang-pattern__record:not(.tang-pattern__record--going) {
+  color: var(--tang-danger);
+}
+
+.tang-pattern__record--going {
+  border-color: var(--tang-danger);
+  background: var(--tang-danger);
+  color: var(--tang-bg);
+  animation: tang-pattern-pulse 1s ease-in-out infinite;
+}
+
+@keyframes tang-pattern-pulse {
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tang-pattern__record--going {
+    animation: none;
+  }
+}
+
+/* A switch that is on is lit as a mode is. */
+.tang-pattern__switch[aria-pressed="true"] {
+  border-color: var(--tang-instrument);
+  color: var(--tang-instrument);
+}
+
+.tang-pattern__length {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+  margin-left: auto;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-pattern__field {
+  box-sizing: border-box;
+  width: 3em;
+  height: 22px;
+  padding: 0 var(--tang-space-1);
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: 11px / 1.4 var(--tang-mono);
+  text-align: right;
+}
+
+.tang-pattern__line {
+  margin: 0;
+  height: 16px;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+/* Ports: where a cable starts or ends. */
+.tang-port {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--tang-surface);
+  background: var(--tang-text-muted);
+}
+
+.tang-port--mod,
+.tang-port--param {
+  background: var(--tang-modulation);
+}
+
+/* A parameter's port is there for every control, and quiet until a cable ends at it. */
+.tang-port--param {
+  top: 4px;
+  width: 6px;
+  height: 6px;
+  opacity: 0.4;
+}
+
+.tang-port--driven {
+  width: 10px;
+  height: 10px;
+  opacity: 1;
+}
+
+/* An output of audio is where a cable of audio is started: it says so to the pointer. (A source's output of notes too.) */
+.tang-port--audio.tang-port--out,
+.tang-port--notes.tang-port--out {
+  cursor: crosshair;
+}
+
+.tang-port--notes {
+  background: var(--tang-notes);
+}
+
+/* Cables. */
+.tang-cable {
+  fill: none;
+}
+
+/* A link of the audio path that a lane or a group makes by itself: a cable like the ones that a person draws (the same colour, and the thickness of a send at the level of 1, since a link has no level of its own and no slider). */
+.tang-cable--audio {
+  stroke: var(--tang-send);
+  stroke-width: 3px;
+}
+
+/* An audio cable that a person has drawn, in the colour of audio that is sent, as thick as it is loud (the stroke's width is set from the level), over the links of the audio path. */
+.tang-cable--send {
+  stroke: var(--tang-send);
+}
+
+/* A cable of notes that a person has drawn, from a source to a lane: in the colour of notes, plain and as thick as the cables of audio are, over the links by which a lane hears a source... */
+.tang-cable--notes {
+  stroke: var(--tang-notes);
+  stroke-width: 2.5px;
+}
+
+/* ...which the session has by itself for a lane that no cable of notes ends at (it hears every source): the same colour, faint and dotted, so that what is drawn and what is there anyway are told apart. */
+.tang-cable--hears {
+  stroke: var(--tang-notes);
+  stroke-opacity: 0.4;
+  stroke-width: 1.5px;
+  stroke-dasharray: 2 6;
+  stroke-linecap: round;
+}
+
+/* A cable is as bright as what its modulator puts out is high (`--signal`, from 0 to 1, written on every frame the output
+   moves in; a cable that has none is as bright as it can be). */
+.tang-cable--modulation {
+  stroke: var(--tang-modulation);
+  stroke-dasharray: 7 5;
+  stroke-opacity: calc(0.3 + 0.7 * var(--signal, 1));
+}
+
+/* The depth of a modulation cable, as a slider at the middle of it: in the layer React Flow keeps
+   for what labels a cable, which is over the nodes and has to be told to take the pointer. */
+.tang-depth-anchor {
+  position: absolute;
+  z-index: 20;
+  pointer-events: all;
+}
+
+.tang-depth {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+  padding: 2px var(--tang-space-2);
+  border: 1px solid var(--tang-border);
+  border-radius: 999px;
+  background: var(--tang-surface);
+  color: var(--tang-text-muted);
+  font: var(--tang-text-small) / 1 var(--tang-mono);
+}
+
+/* The slider, and under it the bar of what the engine makes of the depth when another cable drives it. */
+.tang-depth__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tang-depth__slider {
+  width: 72px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--tang-modulation);
+}
+
+/* The level of an audio cable is the same slider, in the colour of the cable. */
+.tang-level__slider {
+  accent-color: var(--tang-send);
+}
+
+.tang-depth__body .tang-livebar {
+  height: 4px;
+}
+
+.tang-depth__value {
+  min-width: 4ch;
+  text-align: right;
+}
+
+/* The button that takes a modulator out, at the end of its header. */
+.tang-node__remove {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--tang-radius);
+  background: none;
+  color: var(--tang-text-muted);
+  font: inherit;
+  font-size: var(--tang-text-size);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tang-node__remove:hover,
+.tang-depth__remove:hover {
+  border-color: var(--tang-danger);
+  color: var(--tang-text);
+}
+
+.tang-node__remove:focus-visible,
+.tang-depth__remove:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+/* ...and the one on a cable, beside its depth. */
+.tang-depth-anchor {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+}
+
+.tang-depth__remove {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--tang-border);
+  border-radius: 50%;
+  background: var(--tang-surface);
+  color: var(--tang-text-muted);
+  font: inherit;
+  font-size: var(--tang-text-small);
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* The cables that start at a modulator, a row each, at the foot of its node: `CABLE_ROW_HEIGHT` and `CABLES_GAP` (toFlow) are these. The gap before
+   the list is the body's own. */
+.tang-node__cables {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tang-cable-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 20px;
+  color: var(--tang-text-muted);
+  font: var(--tang-text-small) / 20px var(--tang-mono);
+}
+
+.tang-cable-row--driven {
+  color: var(--tang-text);
+}
+
+.tang-cable-row__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tang-cable-row__label::before {
+  content: "→ ";
+}
+
+/* The port of a row is on the node's left edge (the body's padding is between it and the row), quiet until a cable ends at it. */
+.tang-port--cable {
+  left: calc(-1 * var(--tang-space-3) - 1px);
+  width: 6px;
+  height: 6px;
+  background: var(--tang-modulation);
+  opacity: 0.4;
+}
+
+.tang-port--cable.tang-port--driven {
+  width: 10px;
+  height: 10px;
+  opacity: 1;
+}
+
+/*
+ * While a cable is dragged, a row that takes it is where it can be let go, from one edge of the node to the other: the port grows from its dot on the
+ * node's edge to the whole row, as a control's port grows to its cell (the dot is drawn over it).
+ */
+.tang-port--cable.tang-port--takes {
+  top: 0;
+  left: calc(-1 * var(--tang-space-3) - 1px);
+  width: calc(100% + 2 * var(--tang-space-3) + 2px);
+  height: 100%;
+  transform: none;
+  border: 0;
+  border-radius: var(--tang-radius);
+  background: rgb(208 112 208 / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(208 112 208 / 0.35);
+  opacity: 1;
+}
+
+.tang-port--cable.tang-port--takes::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--tang-modulation);
+  box-shadow: 0 0 0 4px rgb(208 112 208 / 0.4);
+}
+
+.tang-port--cable.tang-port--takes.valid {
+  background: rgb(208 112 208 / 0.22);
+  box-shadow: inset 0 0 0 2px rgb(208 112 208 / 0.9);
+}
+
+/* The list at the foot of a modulator that draws a cable to a parameter. */
+.tang-node__drives {
+  display: flex;
+}
+
+/* (A menu button, drawn as a field of the node's width.) */
+.tang-menu-button.tang-drives {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  padding: 2px 6px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 11px / 1.4 var(--tang-font);
+}
+
+.tang-drives:disabled {
+  opacity: 0.7;
+}
+
+/*
+ * The button that modulates a control (`ModulateMenu`): a small tilde, quiet until the pointer or the focus is on what it modulates. On a knob it is in the
+ * corner of the cell, over nothing the knob draws; on the row of a cable it is at the end of the row; in the panel it is beside the pin.
+ */
+.tang-menu-button.tang-modulate {
+  min-width: 16px;
+  height: 16px;
+  padding: 0;
+  border-color: transparent;
+  background: none;
+  color: var(--tang-modulation);
+  font-size: 12px;
+}
+
+/* (Over the top right corner of the knob, which is 10px down the cell, and over nothing the control beside draws: it is in front of it.) */
+.tang-menu-button.tang-modulate--cell {
+  position: absolute;
+  top: 4px;
+  right: 0;
+  z-index: 1;
+  opacity: 0;
+}
+
+.tang-cell:hover .tang-modulate--cell,
+.tang-cell:focus-within .tang-modulate--cell,
+.tang-modulate--cell[aria-expanded="true"],
+.tang-modulate--cell:focus-visible {
+  opacity: 1;
+}
+
+/* (A screen with no pointer to hover has no other way to find it.) */
+@media (hover: none) {
+  .tang-menu-button.tang-modulate--cell {
+    opacity: 0.6;
+  }
+}
+
+.tang-menu-button.tang-modulate--cable {
+  margin-left: auto;
+  opacity: 0.6;
+}
+
+.tang-cable-row:hover .tang-modulate--cable,
+.tang-modulate--cable:hover,
+.tang-modulate--cable:focus-visible,
+.tang-modulate--cable[aria-expanded="true"] {
+  opacity: 1;
+}
+
+/* While a cable is dragged the buttons are not there to be let go on: the port under one takes the cable (a port grows to its cell, and a button in front of it would be what the pointer is over). */
+.tang-patch[data-connecting] .tang-menu-button.tang-modulate {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* While a cable is dragged: the ports that take it, and the one it is over. */
+.tang-port--takes {
+  width: 12px;
+  height: 12px;
+  opacity: 1;
+  box-shadow: 0 0 0 4px rgb(208 112 208 / 0.4);
+}
+
+.tang-port--param.valid {
+  width: 14px;
+  height: 14px;
+  box-shadow: 0 0 0 5px rgb(208 112 208 / 0.7);
+}
+
+/*
+ * The whole control of a parameter that takes the cable is where it can be let go: the port grows from the
+ * dot on the top edge of its cell to the cell (React Flow takes the port under the pointer, and otherwise the
+ * nearest one within the radius, and the nearest to the lower half of a knob is the dot of the knob below it).
+ * The dot is drawn over it. It is only there while a cable is dragged, so it does not stand between the
+ * pointer and the knob otherwise.
+ */
+.tang-port--param.tang-port--takes {
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  transform: none;
+  border: 0;
+  border-radius: var(--tang-radius);
+  background: rgb(208 112 208 / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(208 112 208 / 0.35);
+}
+
+.tang-port--param.tang-port--takes::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: var(--tang-modulation);
+  box-shadow: 0 0 0 4px rgb(208 112 208 / 0.4);
+}
+
+.tang-port--param.tang-port--takes.valid {
+  background: rgb(208 112 208 / 0.22);
+  box-shadow: inset 0 0 0 2px rgb(208 112 208 / 0.9);
+}
+
+/* A modulator's output is where a cable is started: it says so to the pointer. */
+.tang-port--mod {
+  cursor: crosshair;
+}
+
+/*
+ * While an audio cable is dragged, an input that takes it is where it can be let go, along the whole left edge of its node: the port grows from its dot to a strip, as a control's port grows
+ * to its cell (React Flow takes the port under the pointer, and otherwise the nearest one within the radius). The dot is drawn over it. It is only there while a cable is dragged.
+ */
+.tang-port--audio.tang-port--takes {
+  background: var(--tang-send);
+  box-shadow: 0 0 0 4px rgb(242 153 74 / 0.4);
+}
+
+.tang-port--audio.tang-port--in.tang-port--takes {
+  top: 0;
+  left: -14px;
+  width: 28px;
+  height: 100%;
+  transform: none;
+  border: 0;
+  border-radius: var(--tang-radius);
+  background: rgb(242 153 74 / 0.1);
+  box-shadow: inset 0 0 0 1px rgb(242 153 74 / 0.4);
+}
+
+.tang-port--audio.tang-port--in.tang-port--takes::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--tang-send);
+  box-shadow: 0 0 0 4px rgb(242 153 74 / 0.4);
+}
+
+.tang-port--audio.tang-port--in.tang-port--takes.valid {
+  background: rgb(242 153 74 / 0.22);
+  box-shadow: inset 0 0 0 2px rgb(242 153 74 / 0.9);
+}
+
+/*
+ * An effect that has a second input of audio (a Math) has its two inputs one above the other on the left edge, A a third of the way down and B two thirds, each with its name beside it, and while a cable is dragged
+ * the strip that takes it is half of the edge each (the first the upper half, the second the lower).
+ */
+.tang-port--audio.tang-port--pair-main {
+  top: 33%;
+}
+
+.tang-port--audio.tang-port--pair-side {
+  top: 67%;
+}
+
+.tang-port--audio.tang-port--in.tang-port--takes.tang-port--pair-main {
+  height: 50%;
+}
+
+.tang-port--audio.tang-port--in.tang-port--takes.tang-port--pair-side {
+  top: 50%;
+  height: 50%;
+}
+
+.tang-port-label {
+  position: absolute;
+  left: 9px;
+  transform: translateY(-50%);
+  font: 10px / 1 var(--tang-mono);
+  color: var(--tang-text-muted);
+  pointer-events: none;
+}
+
+.tang-port-label--main {
+  top: 33%;
+}
+
+.tang-port-label--side {
+  top: 67%;
+}
+
+/* The same for a cable of notes: the input of a lane that takes it is where it can be let go, along the whole left edge of the lane's node. */
+.tang-port--notes.tang-port--takes {
+  background: var(--tang-notes);
+  box-shadow: 0 0 0 4px rgb(156 140 255 / 0.4);
+}
+
+.tang-port--notes.tang-port--in.tang-port--takes {
+  top: 0;
+  left: -14px;
+  width: 28px;
+  height: 100%;
+  transform: none;
+  border: 0;
+  border-radius: var(--tang-radius);
+  background: rgb(156 140 255 / 0.1);
+  box-shadow: inset 0 0 0 1px rgb(156 140 255 / 0.4);
+}
+
+.tang-port--notes.tang-port--in.tang-port--takes::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--tang-notes);
+  box-shadow: 0 0 0 4px rgb(156 140 255 / 0.4);
+}
+
+.tang-port--notes.tang-port--in.tang-port--takes.valid {
+  background: rgb(156 140 255 / 0.22);
+  box-shadow: inset 0 0 0 2px rgb(156 140 255 / 0.9);
+}
+
+/* The cable that is being dragged: as a cable of modulation looks, or, for audio that is sent, as the audio cables look once they are drawn. */
+.tang-patch .react-flow__connection-path {
+  stroke: var(--tang-modulation);
+  stroke-width: 2;
+  stroke-dasharray: 7 5;
+}
+
+.tang-patch[data-connecting="audio"] .react-flow__connection-path {
+  stroke: var(--tang-send);
+  stroke-width: 3;
+  stroke-dasharray: none;
+}
+
+.tang-patch[data-connecting="notes"] .react-flow__connection-path {
+  stroke: var(--tang-notes);
+  stroke-width: 3;
+  stroke-dasharray: none;
+}
+
+/* The button that arranges the nodes again, at the corner of the canvas (it looks as the buttons of the bar do). */
+.tang-patch__arrange {
+  padding: 2px var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  font-size: var(--tang-text-small);
+  cursor: pointer;
+}
+
+.tang-patch__arrange:hover:not(:disabled) {
+  border-color: var(--tang-modulation);
+}
+
+.tang-patch__arrange:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-patch__arrange:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The bar at the corner of the canvas: what is chosen to make a module of (step 105), the button that saves it, the one that turns choosing on, and Arrange. */
+.tang-patch__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+}
+
+.tang-patch__chosen {
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-patch__arrange[aria-pressed="true"] {
+  border-color: var(--tang-scale);
+  color: var(--tang-scale);
+}
+
+/* A node that is chosen is outlined, and the box that is drawn to choose is in the colour of a note of the scale. */
+.react-flow__node.selected .tang-node {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 2px;
+}
+
+.tang-patch .react-flow__selection {
+  border: 1px solid var(--tang-scale);
+  background: rgb(110 195 215 / 0.1);
+}
+
+/* What is chosen has a frame round it (React Flow draws it), which is a picture and not a thing to press: the controls of the nodes in it are turned as they were, and a node in it is taken by the node. */
+.tang-patch .react-flow__nodesselection-rect {
+  border: 1px dashed var(--tang-scale);
+  background: none;
+  pointer-events: none;
+}

@@ -1,0 +1,64 @@
+# A patch with a cable of every kind of start and end: a lane's instrument (before its chain) into an effect of another lane, an effect of a lane's chain into the mix, an
+# effect into a group's bus effect, a group's output into the mix a second time, and a muted lane's instrument into a group's bus (a send goes with the mute of its lane,
+# so that one is not heard).
+[[group]]
+name = "Bus"
+volume = 0.9
+
+[[group.effect]]
+plugin = "builtin:delay"
+mix = 0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.3
+[instrument.params]
+waveform = 3.0
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+[instrument.effect.params]
+cutoff = 0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+[instrument.params]
+waveform = 1.0
+
+[[instrument.effect]]
+plugin = "builtin:drive"
+mix = 1.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+mute = true
+[instrument.params]
+waveform = 2.0
+
+[[cable]]
+from = "instrument[0]"
+to = "instrument[1].effect[0]"
+gain = 0.5
+
+[[cable]]
+from = "instrument[1].effect[0]"
+to = "group[0].effect[0]"
+gain = 0.7
+
+[[cable]]
+from = "group[0]"
+to = "master"
+gain = 0.25
+
+[[cable]]
+from = "instrument[0].effect[0]"
+to = "master"
+gain = 0.3
+
+[[cable]]
+from = "instrument[2]"
+to = "group[0]"
+gain = 1.0

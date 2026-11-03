@@ -1,0 +1,272 @@
+{
+  "names": [
+    {
+      "file": "mix.toml",
+      "given": "mix"
+    },
+    {
+      "file": "mix.toml",
+      "given": "mix.toml"
+    },
+    {
+      "file": "mix.toml",
+      "given": "  mix.toml  "
+    },
+    {
+      "file": "a.b.toml",
+      "given": "a.b"
+    },
+    {
+      "file": "my sound.toml",
+      "given": "my sound"
+    },
+    {
+      "file": ".hidden.toml",
+      "given": ".hidden"
+    },
+    {
+      "file": "Ünïcode ♪.toml",
+      "given": "Ünïcode ♪"
+    },
+    {
+      "file": "MIX.TOML.toml",
+      "given": "MIX.TOML"
+    },
+    {
+      "file": "a..b.toml",
+      "given": "a..b"
+    },
+    {
+      "file": "...toml",
+      "given": ".."
+    },
+    {
+      "file": "console.toml",
+      "given": "console"
+    },
+    {
+      "file": "com0.toml",
+      "given": "com0"
+    },
+    {
+      "file": "nul2.toml",
+      "given": "nul2"
+    },
+    {
+      "error": "a file name is needed",
+      "given": ""
+    },
+    {
+      "error": "a file name is needed",
+      "given": "   "
+    },
+    {
+      "error": "a file name is needed",
+      "given": "\t\n"
+    },
+    {
+      "error": "a file name is needed",
+      "given": ".toml"
+    },
+    {
+      "error": "a file name is needed",
+      "given": "  .toml "
+    },
+    {
+      "error": "a file name has no folder in it: `/` and `\\` are not allowed",
+      "given": "a/b"
+    },
+    {
+      "error": "a file name has no folder in it: `/` and `\\` are not allowed",
+      "given": "/etc/passwd"
+    },
+    {
+      "error": "a file name has no folder in it: `/` and `\\` are not allowed",
+      "given": "../x"
+    },
+    {
+      "error": "a file name has no folder in it: `/` and `\\` are not allowed",
+      "given": "..\\x"
+    },
+    {
+      "error": "a file name has no folder in it: `/` and `\\` are not allowed",
+      "given": "C:\\x"
+    },
+    {
+      "error": "a file name has no folder in it: `/` and `\\` are not allowed",
+      "given": "sub/"
+    },
+    {
+      "error": "a file name has no folder in it: `/` and `\\` are not allowed",
+      "given": "/"
+    },
+    {
+      "error": "a file name has no folder in it: `/` and `\\` are not allowed",
+      "given": "a\\b"
+    },
+    {
+      "error": "a file name has no folder in it: `/` and `\\` are not allowed",
+      "given": "./x"
+    },
+    {
+      "error": "a file name has no folder in it: `/` and `\\` are not allowed",
+      "given": "x/../y"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "c:x"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "a*b"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "a?b"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "a\"b"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "a<b"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "a>b"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "a|b"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "a\u0000b"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "a\nb"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "a\tb"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "ab"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "ab"
+    },
+    {
+      "error": "con is a name that Windows keeps for itself",
+      "given": "con"
+    },
+    {
+      "error": "CON is a name that Windows keeps for itself",
+      "given": "CON"
+    },
+    {
+      "error": "Nul is a name that Windows keeps for itself",
+      "given": "Nul.txt"
+    },
+    {
+      "error": "prn is a name that Windows keeps for itself",
+      "given": "prn"
+    },
+    {
+      "error": "aux is a name that Windows keeps for itself",
+      "given": "aux.toml"
+    },
+    {
+      "error": "com1 is a name that Windows keeps for itself",
+      "given": "com1"
+    },
+    {
+      "error": "COM9 is a name that Windows keeps for itself",
+      "given": "COM9"
+    },
+    {
+      "error": "lpt1 is a name that Windows keeps for itself",
+      "given": "lpt1"
+    },
+    {
+      "error": "Lpt9 is a name that Windows keeps for itself",
+      "given": "Lpt9.x.y"
+    },
+    {
+      "file": "x.toml",
+      "given": "x"
+    },
+    {
+      "file": "﻿x.toml",
+      "given": "﻿x"
+    },
+    {
+      "file": "x.toml",
+      "given": " 　x  "
+    },
+    {
+      "file": "x.toml",
+      "given": "x "
+    },
+    {
+      "file": "toml.toml",
+      "given": "toml"
+    },
+    {
+      "file": "atoml.toml",
+      "given": "atoml"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "a\u001fb"
+    },
+    {
+      "file": "a b.toml",
+      "given": "a b"
+    },
+    {
+      "file": "a~b.toml",
+      "given": "a~b"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "ab"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "ab"
+    },
+    {
+      "error": "a file name cannot have `:`, `*`, `?`, `\"`, `<`, `>`, `|` or a control character",
+      "given": "ab"
+    },
+    {
+      "file": "a b.toml",
+      "given": "a b"
+    },
+    {
+      "file": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.toml",
+      "given": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "error": "a file name is at most 255 bytes long",
+      "given": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "file": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé.toml",
+      "given": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+    },
+    {
+      "error": "a file name is at most 255 bytes long",
+      "given": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+    },
+    {
+      "file": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.toml",
+      "given": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.toml"
+    }
+  ]
+}

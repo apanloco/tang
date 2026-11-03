@@ -1,5 +1,6 @@
 use std::f32::consts::TAU;
 
+use super::soft_clip;
 use crate::plugin::{ParameterInfo, Plugin, Preset};
 
 pub const NAME: &str = "Reverb";
@@ -31,19 +32,21 @@ struct ParamSpec {
     min: f32,
     max: f32,
     default: f32,
+    unit: Option<&'static str>,
+    group: Option<&'static str>,
 }
 
 const PARAMS: &[ParamSpec] = &[
-    ParamSpec { name: "decay",     min: 0.1,  max: 0.99,             default: 0.88 },
-    ParamSpec { name: "size",      min: 0.3,  max: 1.0,              default: 0.85 },
-    ParamSpec { name: "damping",   min: 0.0,  max: 1.0,              default: 0.35 },
-    ParamSpec { name: "predelay",  min: 0.0,  max: MAX_PREDELAY_SEC, default: 0.04 },
-    ParamSpec { name: "diffusion", min: 0.0,  max: 0.85,             default: 0.70 },
-    ParamSpec { name: "mod_rate",  min: 0.05, max: 2.0,              default: 0.30 },
-    ParamSpec { name: "mod_depth", min: 0.0,  max: 1.0,              default: 0.50 },
-    ParamSpec { name: "width",     min: 0.0,  max: 1.0,              default: 1.00 },
-    ParamSpec { name: "lowcut",    min: 20.0, max: 500.0,            default: 80.0 },
-    ParamSpec { name: "level",     min: 0.0,  max: 2.0,              default: 1.00 },
+    ParamSpec { name: "decay",     min: 0.1,  max: 0.99,             default: 0.88, unit: None, group: None },
+    ParamSpec { name: "size",      min: 0.3,  max: 1.0,              default: 0.85, unit: None, group: None },
+    ParamSpec { name: "damping",   min: 0.0,  max: 1.0,              default: 0.35, unit: None, group: None },
+    ParamSpec { name: "predelay",  min: 0.0,  max: MAX_PREDELAY_SEC, default: 0.04, unit: Some("s"), group: None },
+    ParamSpec { name: "diffusion", min: 0.0,  max: 0.85,             default: 0.70, unit: None, group: None },
+    ParamSpec { name: "mod_rate",  min: 0.05, max: 2.0,              default: 0.30, unit: Some("Hz"), group: Some("Modulation") },
+    ParamSpec { name: "mod_depth", min: 0.0,  max: 1.0,              default: 0.50, unit: None, group: Some("Modulation") },
+    ParamSpec { name: "width",     min: 0.0,  max: 1.0,              default: 1.00, unit: None, group: None },
+    ParamSpec { name: "lowcut",    min: 20.0, max: 500.0,            default: 80.0, unit: Some("Hz"), group: None },
+    ParamSpec { name: "level",     min: 0.0,  max: 2.0,              default: 1.00, unit: None, group: None },
 ];
 
 pub const PRESETS: &[(&str, &str, [f32; 10])] = &[
@@ -118,23 +121,6 @@ impl Allpass {
     }
 }
 
-/// Soft-clip the wet output so a long, energetic reverb tail can't leave the
-/// [-1, 1] range the audio device expects. An FDN with a near-lossless feedback
-/// matrix and long `decay` builds up modal energy under sustained input
-/// (steady-state gain ~= 1/(1 - decay)); left unbounded that clips harshly at
-/// the DAC and crackles. This is the identity below ±KNEE and a C1-smooth
-/// saturation above, asymptoting to ±1 — transparent at normal levels, gentle
-/// compression when hot.
-#[inline]
-fn soft_clip(x: f32) -> f32 {
-    const KNEE: f32 = 0.8;
-    let a = x.abs();
-    if a <= KNEE {
-        x
-    } else {
-        x.signum() * (KNEE + (1.0 - KNEE) * ((a - KNEE) / (1.0 - KNEE)).tanh())
-    }
-}
 
 pub struct Reverb {
     sample_rate: f32,
@@ -357,6 +343,8 @@ impl Plugin for Reverb {
                 min: p.min,
                 max: p.max,
                 default: p.default,
+                unit: p.unit.map(String::from),
+                group: p.group.map(String::from).into_iter().collect(),
                 ..Default::default()
             })
             .collect()
@@ -546,18 +534,6 @@ mod tests {
         // Confirm it was actually driven into the limiter (so the test is
         // meaningful — without soft-clipping this tone builds up past 1.0).
         assert!(max_abs > 0.9, "expected a hot tail near the ceiling: {max_abs}");
-    }
-
-    #[test]
-    fn soft_clip_transparent_then_bounded() {
-        // Transparent below the knee.
-        assert_eq!(soft_clip(0.5), 0.5);
-        assert_eq!(soft_clip(-0.5), -0.5);
-        // C0-continuous at the knee.
-        assert!((soft_clip(0.8) - 0.8).abs() < 1e-6);
-        // Bounded to (-1, 1) no matter how hot.
-        assert!((0.99..=1.0).contains(&soft_clip(100.0)));
-        assert!((-1.0..=-0.99).contains(&soft_clip(-100.0)));
     }
 
     #[test]

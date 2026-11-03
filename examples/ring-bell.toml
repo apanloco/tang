@@ -1,0 +1,56 @@
+# Example: ring modulation, by the two inputs of a Math effect. A Math effect has two inputs, A and
+# B, and makes its sound of the two of them: in its `ring` mode the product, which is the sum and
+# the difference of the two pitches and neither of the pitches themselves: a bell. Here two sines (the
+# second a tritone above the first, `transpose = 6`) have no way to the mix of their own (`route =
+# "none"`) and are heard only through their cables, one into A and one into B of a Math effect that
+# stands by itself in a lane of its own (no instrument, the Math and a little reverb after it).
+# Take the second cable out and B is the Math's own carrier (a sine of the preset's `pitch`), so the
+# sound goes on, as another bell. The notes decay by themselves (the oscillators' sustain is 0), so
+# hold a single note, or a chord for a cluster of bells.
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 1.5
+route = "none"
+
+[instrument.params]
+waveform = 0.0 # sine
+attack = 0.002
+decay = 2.0
+sustain = 0.0
+release = 0.5
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 1.5
+transpose = 6
+route = "none"
+
+[instrument.params]
+waveform = 0.0 # sine
+attack = 0.002
+decay = 2.0
+sustain = 0.0
+release = 0.5
+
+# The lane that holds the effects: it has no `plugin`, so it has no sound of its own, and the cables
+# are what is fed to the Math.
+[[instrument]]
+
+[[instrument.effect]]
+plugin = "builtin:math"
+preset = "Ring Bell"
+mix = 1.0
+
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 0.2
+
+# A: the first oscillator. B (`.side`): the second.
+[[cable]]
+from = "instrument[0]"
+to = "instrument[2].effect[0]"
+
+[[cable]]
+from = "instrument[1]"
+to = "instrument[2].effect[0].side"

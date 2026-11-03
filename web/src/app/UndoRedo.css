@@ -1,0 +1,28 @@
+.tang-undo-redo {
+  display: inline-flex;
+  gap: var(--tang-space-1);
+}
+
+.tang-undo-redo__button {
+  padding: 2px var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tang-undo-redo__button:hover:not(:disabled) {
+  border-color: var(--tang-modulation);
+}
+
+.tang-undo-redo__button:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-undo-redo__button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

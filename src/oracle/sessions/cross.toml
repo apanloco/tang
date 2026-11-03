@@ -1,0 +1,128 @@
+# What the generator does not draw: a group's modulator that drives a member's modulator (its rate and the depth of one of its cables), a bus effect and a sibling
+# of its own, an envelope that drives an LFO's rate in a lane, a cable that drives the depth of another, and a lane that is in no group beside two groups.
+bpm = 100.0
+
+[[group]]
+name = "Pad"
+volume = 0.8
+pan = 0.2
+
+[[group.effect]]
+plugin = "builtin:delay"
+mix = 0.4
+[group.effect.params]
+time = 0.18
+feedback = 0.5
+
+[[group.modulator]]
+type = "lfo"
+rate = 0.7
+
+[[group.modulator.target]]
+member = 0
+mod_rate = 0
+depth = 0.4
+
+[[group.modulator.target]]
+member = 1
+param = "pulse"
+depth = 0.3
+
+[[group.modulator.target]]
+bus = 0
+param = "tone"
+depth = 0.25
+
+[[group.modulator.target]]
+mod_rate = 1
+depth = 0.2
+
+[[group.modulator]]
+type = "lfo"
+waveform = "triangle"
+rate = 0.3
+
+[[group]]
+name = "Lead"
+volume = 0.9
+pan = -0.25
+
+[[group.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+[group.effect.params]
+cutoff = 0.6
+
+[[group.modulator]]
+type = "envelope"
+attack = 0.05
+decay = 0.4
+sustain = 0.5
+release = 0.3
+
+[[group.modulator.target]]
+bus = 0
+param = "cutoff"
+depth = 0.6
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.6
+range = "C2-B4"
+[instrument.params]
+waveform = 2.0
+unison = 3.0
+spread = 0.3
+
+[[instrument.modulator]]
+type = "lfo"
+rate = 2.0
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.08
+
+[[instrument.modulator]]
+type = "envelope"
+attack = 0.2
+release = 0.5
+[[instrument.modulator.target]]
+mod_rate = 0
+depth = 0.5
+[[instrument.modulator.target]]
+mod_depth = [0, 0]
+depth = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.5
+range = "C3-"
+[instrument.params]
+waveform = 3.0
+pulse = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 1
+volume = 0.7
+transpose = 12
+[instrument.params]
+waveform = 1.0
+sustain = 0.6
+
+[[instrument.effect]]
+plugin = "builtin:drive"
+mix = 1.0
+[instrument.effect.params]
+drive = 0.5
+
+[[instrument.modulator]]
+type = "steps"
+steps = [0.0, 0.5, 0.25, -0.25]
+rate = 6.0
+glide = 0.3
+[[instrument.modulator.target]]
+param = "cutoff"
+slot = 0
+depth = 0.0

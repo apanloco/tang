@@ -55,3 +55,126 @@ jobs:
 
       - name: Test
         run: cargo test ${{ matrix.features }}
+
+      # The web runtime (the `web` feature, docs/web-ui.md): clippy over the tests too,
+      # and the tests, among them tests/serve.rs, which runs the real binary on
+      # `--audio-device none` (no sound card or MIDI port is needed or opened).
+      - name: Clippy (web)
+        run: cargo clippy ${{ matrix.features }} --features web --all-targets -- -D warnings
+
+      - name: Test (web)
+        run: cargo test ${{ matrix.features }} --features web
+
+  # The kernel of the patch graph (kernel/, docs/patch-graph.md section 11) has no plugin
+  # format, sound card or interface in it, so it builds and tests alone, on the three
+  # platforms, in debug and in release (its tests hold the executor to a reference
+  # interpreter bit for bit, and count the allocator's calls).
+  kernel:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy -p kernel --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p kernel
+
+      - name: Test (release)
+        run: cargo test -p kernel --release
+
+  # The TypeScript in web/src/protocol/generated/ is generated from the protocol
+  # types (docs/web-ui.md section 7) and committed. This fails when what is
+  # committed is not what the types generate now; the failure says how to
+  # rewrite it. It builds without the plugin formats: it needs none of them.
+  typescript:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install apt packages
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: The generated TypeScript is up to date
+        run: cargo test --no-default-features --features web typescript
+
+  # The browser front-end (web/, docs/web-ui.md): lint, types, unit tests and the production
+  # build. Its dependencies are in web/package-lock.json, so `npm ci` installs exactly those.
+  web:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Types
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Build Storybook
+        run: npm run build-storybook
+
+      # The browser tests drive a real browser against the real program on the null audio
+      # backend (no sound card or MIDI port is used): the page through Vite, and `tang serve`
+      # behind it. The debug build of tang, without the plugin formats the tests do not need.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install apt packages
+        working-directory: .
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-dev
+
+      - name: Build tang
+        working-directory: .
+        run: cargo build --no-default-features --features web
+
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        run: npm run e2e
+
+      - name: Keep the report of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report
+          retention-days: 7

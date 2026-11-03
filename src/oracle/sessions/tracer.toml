@@ -1,0 +1,29 @@
+# A saw oscillator through a low-pass filter, with an LFO sweeping the filter's
+# cutoff: the smallest session that shows modulation. It is quiet on purpose
+# (volume 0.1). The web UI's first scene (docs/web-ui.md, step 12), and the
+# known session of the snapshot's golden test.
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.1
+
+[instrument.params]
+waveform = 3.0 # saw
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+cutoff = 0.5
+resonance = 2.0
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "sine"
+rate = 0.5
+
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.4

@@ -35,6 +35,8 @@ pub struct Lv2Plugin {
     audio_in_count: usize,
     audio_out_count: usize,
     atom_seq_in_count: usize,
+    /// The control output port that the plugin says its latency on (`lv2:reportsLatency`), if it has one: its value, which the plugin sets as it runs, is the latency in frames.
+    latency_port: Option<livi::PortIndex>,
     instance: livi::Instance,
     /// Keep the World alive so the Instance's LV2 cleanup can access plugin data on drop.
     _world: Arc<livi::World>,
@@ -46,6 +48,11 @@ pub struct Lv2Plugin {
     silence_bufs: Vec<Vec<f32>>,
     preset_cache: Vec<Preset>,
     preset_data: Vec<Lv2PresetData>,
+}
+
+/// The latency in frames that a latency port's value says: a number of frames, so what is below 0 or not a number is none, and what is not whole is rounded.
+fn latency_frames(value: f32) -> u32 {
+    if value.is_nan() || value < 0.0 { 0 } else { value.round() as u32 }
 }
 
 /// Eagerly discover all presets for a plugin and cache their port values.
@@ -191,6 +198,7 @@ pub fn load(
     let control_input_ports: Vec<livi::Port> = lv2_plugin
         .ports_with_type(livi::PortType::ControlInput)
         .collect();
+    let latency_port = lv2_plugin.raw().latency_port_index().map(livi::PortIndex);
 
     let midi_urid = features.midi_urid();
     let event_buf = livi::event::LV2AtomSequence::new(&features, 4096);
@@ -212,6 +220,7 @@ pub fn load(
         audio_in_count,
         audio_out_count,
         atom_seq_in_count,
+        latency_port,
         instance,
         _world: world,
         midi_urid,
@@ -279,6 +288,11 @@ impl Plugin for Lv2Plugin {
 
     fn audio_output_count(&self) -> usize {
         self.audio_out_count
+    }
+
+    /// What the plugin's latency port says (it is set as the plugin runs, so it follows a latency that changes, and is 0 before the first block).
+    fn latency(&self) -> u32 {
+        self.latency_port.and_then(|port| self.instance.control_output(port)).map_or(0, latency_frames)
     }
 
     fn process(
@@ -394,5 +408,17 @@ impl Plugin for Lv2Plugin {
 
         log::info!("LV2: loaded preset {id}");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::latency_frames;
+
+    #[test]
+    fn a_latency_port_says_a_number_of_frames_and_what_is_not_one_is_none() {
+        assert_eq!([latency_frames(0.0), latency_frames(23.0), latency_frames(512.4), latency_frames(512.5)], [0, 23, 512, 513]);
+        assert_eq!([latency_frames(-3.0), latency_frames(f32::NAN), latency_frames(f32::NEG_INFINITY), latency_frames(-0.4)], [0, 0, 0, 0]);
+        assert_eq!([latency_frames(f32::INFINITY), latency_frames(1e20)], [u32::MAX, u32::MAX], "a number that is too big is held to the most there is: the host holds it to what it has room for");
     }
 }

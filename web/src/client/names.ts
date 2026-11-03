@@ -1,0 +1,117 @@
+// What the nodes of a session are called, wherever a person reads it: on the canvas, in what a screen
+// reader says of a control, in what the page says of a cable or of what it could not do.
+import type { EdgeId, Endpoint, Graph, Node, NodeId, Port } from "../protocol";
+import { holdersOf } from "./holders";
+
+/**
+ * What each node is called on the canvas. The server names a node by what it is (a plugin's name, a
+ * modulator's kind: its settings are not in the name, they change under a client), so two LFOs, or two
+ * filters, have the same name, and a person, or a screen reader, cannot tell which is which, nor which
+ * `Rate` is which. A name that more than one node has is numbered, from 1, in the order of the graph;
+ * a node that is alone with its name keeps it, and a number that would make a name that such a node has
+ * (two LFOs, and a plugin called "LFO 1") is skipped, so that no two nodes are called the same.
+ * The one exception is a lane that only holds effects (`holdersOf`), which the canvas does not draw: it is called
+ * by the first of its effects, as what is said of the lane as a whole ("Mute Reverb") is said by that effect's
+ * module, and it takes no number of its own and leaves none out.
+ */
+export function displayNames(graph: Graph): Map<NodeId, string> {
+  const holders = holdersOf(graph);
+  const drawn = graph.nodes.filter((node) => !holders.has(node.id));
+  const shared = new Map<string, number>();
+  for (const node of drawn) shared.set(node.name, (shared.get(node.name) ?? 0) + 1);
+  const kept = new Set(drawn.filter((node) => shared.get(node.name) === 1).map((node) => node.name));
+  const last = new Map<string, number>();
+  const names = new Map(
+    drawn.map((node): [NodeId, string] => {
+      if ((shared.get(node.name) ?? 0) < 2) return [node.id, node.name];
+      let number = last.get(node.name) ?? 0;
+      let name: string;
+      do {
+        number += 1;
+        name = `${node.name} ${String(number)}`;
+      } while (kept.has(name));
+      last.set(node.name, number);
+      return [node.id, name];
+    }),
+  );
+  return new Map(
+    graph.nodes.map((node): [NodeId, string] => {
+      const face = holders.get(node.id)?.[0];
+      return [node.id, names.get(face?.id ?? node.id) ?? node.name];
+    }),
+  );
+}
+
+/** What each node is called: `displayNames` has it for the nodes of a graph; a caller that has a word for a node that is not there passes what says it. */
+export type Names = Pick<ReadonlyMap<NodeId, string>, "get">;
+
+/**
+ * What a cable ends at, in words: the node and the port of it (`Filter: cutoff`, `LFO: rate`), or, for the depth of a cable, that cable's
+ * words (`depth of LFO → Filter: cutoff`: a modulator can have many cables, and the depth of one is told from the depth of another by where
+ * the cable goes). A cable that is being read (`reading`: the ids of the cables whose words are being told) is not read again, since cables can
+ * drive each other's depths: its depth is called after the node it is the port of, as the depth of a cable that is not there is. `names` is
+ * what each node is called (`displayNames`).
+ */
+export function endLabel(graph: Graph, names: Names, to: Endpoint, reading: ReadonlySet<EdgeId> = new Set()): string {
+  if (to.port.type === "depth") {
+    const { edge } = to.port;
+    const cable = reading.has(edge) ? undefined : graph.edges.find((found) => found.kind === "modulation" && found.id === edge);
+    if (cable) return `depth of ${cableWords(graph, names, cable, reading)}`;
+  }
+  const name = names.get(to.node) ?? "?";
+  const port = portName(graph, to.node, to.port);
+  return port ? `${name}: ${port}` : name;
+}
+
+/**
+ * A cable, in words: `LFO → Filter: cutoff`, `ADSR → depth of LFO → Filter: cutoff` (`endLabel` says how its end is told). A cable
+ * that is not made yet has no id, and is the same.
+ */
+export function cableWords(graph: Graph, names: Names, cable: { from: Endpoint; to: Endpoint; id?: EdgeId }, reading: ReadonlySet<EdgeId> = new Set()): string {
+  const now = cable.id === undefined ? reading : new Set([...reading, cable.id]);
+  return `${names.get(cable.from.node) ?? "?"} → ${endLabel(graph, names, cable.to, now)}`;
+}
+
+/**
+ * What a host-side value of `node` is called in a list of what can be driven and in the words of a cable (`Filter: mix`, `Pad: pan`). A lane's volume is its output volume, which is not the instrument's own
+ * `volume` parameter (a list has both); the others are what they are called.
+ */
+export const gainName = (node: Node | undefined, port: { type: "volume" | "mix" | "pan" }): string => (port.type === "volume" && node?.kind === "instrument" ? "output volume" : port.type);
+
+/**
+ * What the port of a node that a cable ends at is called, for the cable's words: a parameter is what its plugin calls it (by the
+ * plugin's own index), a setting of a modulator is `rate`, `attack`, `decay`, `sustain` or `release`, the depth of a cable is
+ * `depth`. The two inputs of an effect that has a second one are what its plugin calls them (`A` and `B`: `SideInfo`), so that the words of a cable say which it is; every other input of audio, a
+ * parameter the node has not, and the ports that no cable ends at (an output of audio, the ports of notes), have no name.
+ */
+export function portName(graph: Graph, node: NodeId, port: Port): string | null {
+  switch (port.type) {
+    case "param": {
+      const found = graph.nodes.find((n) => n.id === node);
+      const plugin = found?.kind === "instrument" || found?.kind === "effect" ? found.plugin : null;
+      return plugin?.params.find((param) => param.index === port.index)?.name ?? null;
+    }
+    case "rate":
+    case "attack":
+    case "decay":
+    case "sustain":
+    case "release":
+    case "depth":
+      return port.type;
+    case "volume":
+    case "mix":
+    case "pan":
+      return gainName(graph.nodes.find((n) => n.id === node), port);
+    case "audioIn":
+    case "audioInSide": {
+      const found = graph.nodes.find((n) => n.id === node);
+      const side = found?.kind === "effect" ? found.side : undefined;
+      return side === undefined ? null : port.type === "audioIn" ? side.main : side.side;
+    }
+    case "modOut":
+    case "eventsIn":
+    case "eventsOut":
+    case "audioOut":
+      return null;
+  }
+}

@@ -19,12 +19,75 @@ pub struct ParameterInfo {
     /// 0, max len-1), and the UI shows names and steps by 1 instead of
     /// rendering a continuous bar.
     pub labels: Option<Vec<String>>,
+    /// What the value is measured in (`"Hz"`, `"s"`, `"st"`, ...), for showing it.
+    /// `None` for a plain number, or when the plugin does not say.
+    pub unit: Option<String>,
+    /// The sections the plugin files the parameter under, outermost first
+    /// (`["Envelope"]`); empty for one at the top level. A client lays a big
+    /// plugin's parameters out by it.
+    pub group: Vec<String>,
+    /// How many steps there are between `min` and `max`: 0 for a continuous
+    /// parameter, 3 for one with four values (an enum with four labels).
+    pub step_count: u32,
+    /// When the parameter has an effect at all, for one that has it only sometimes; `None` for one that always does (and for every plugin that does not say).
+    pub used_when: Option<UsedWhen>,
 }
 
-#[derive(Clone)]
+/// When a parameter has an effect at all, for a parameter that has one only sometimes (step 95b): the Math's `bits` only in its logic modes, its carrier's `pitch` only while nothing is patched at
+/// its second input. A front-end shows a parameter that has none dimmed, and says why (`why`); it does not keep it from being turned, since the value is kept for when it has one. The plugin
+/// says the rule and does not work it out: the host does that where the values are (the model's `PluginSlot::unused_because`, the page's `unusedBecause`), from what the user set, so that the rule
+/// is data that any front-end reads, and a plugin's parameter that is turned is not a message to the plugin.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct UsedWhen {
+    /// What has to hold for the parameter to have an effect.
+    pub condition: UsedCondition,
+    /// The rule in words, for a front-end to say when it does not hold: `only while nothing is patched at B`, `only in the modes xor, and, or`.
+    pub why: String,
+}
+
+/// What it is that a parameter's having an effect depends on.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum UsedCondition {
+    /// The choice `param` (a `ParameterInfo::index` of the same plugin) is set to one of `values`, places in its list of labels.
+    Choice { param: u32, values: Vec<u32> },
+    /// Nothing is patched at the plugin's second input (`Plugin::side_input`): what the plugin makes of its own is what is heard there then.
+    SideUnpatched,
+}
+
+impl UsedCondition {
+    /// Whether it holds, with `value_of` saying what the user set each parameter of the plugin to (nothing for one it has not: a rule that names no parameter is no rule, and holds)
+    /// and `side_patched` whether a cable ends at the plugin's second input.
+    pub fn holds(&self, value_of: impl Fn(u32) -> Option<f32>, side_patched: bool) -> bool {
+        match self {
+            UsedCondition::Choice { param, values } => match value_of(*param) {
+                Some(value) => {
+                    // (A place below the list is not the first of it: a cast to a whole number would make it one.)
+                    let place = value.round();
+                    place >= 0.0 && values.contains(&(place as u32))
+                }
+                None => true,
+            },
+            UsedCondition::SideUnpatched => !side_patched,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Preset {
     pub name: String,
     pub id: String,
+}
+
+/// What an effect that takes a second audio input calls its two inputs (P3g of `docs/patch-graph.md` §11.6: the small half of "the ports that plugins have"): the main one, which is
+/// what its chain and the cables that end at its first input give it, and the *side* one, which the cables that end at its second input bring. A page names the two handles by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SideInput {
+    pub main: &'static str,
+    pub side: &'static str,
 }
 
 /// A loaded plugin instance ready to process audio.
@@ -49,6 +112,48 @@ pub trait Plugin: Send {
 
     fn presets(&self) -> Vec<Preset>;
     fn load_preset(&mut self, id: &str) -> anyhow::Result<()>;
+
+    /// How many frames later what comes out is than what went in (the look-ahead of a limiter, the filters of an oversampler), or, for an instrument, than the notes that made it.
+    /// The host puts the paths that are added up in step by it (P3f of `docs/patch-graph.md` §11.6: where two paths of different latency meet, the shorter is delayed; the dry part of an
+    /// effect that is blended with its output is as late as the output is), so it has to be what the plugin does: too little leaves a comb filter where the dry sound and the
+    /// plugin's meet, and too much puts them out of step the other way. It is asked once a block, so an adapter answers from what it already has and does not call into the plugin.
+    /// A plugin whose latency changes while it runs may say the new one: the host makes its plan again for it. The default is none.
+    fn latency(&self) -> u32 {
+        0
+    }
+
+    /// Whether the effect has a second audio input, and what its two inputs are called (the default is none: an effect has the one that the chain feeds, and a plugin of another format
+    /// that has a sidechain gets silence there, as it did). The host gives an effect that has one a second port in its plan, which cables can end at, and calls
+    /// [`Plugin::process_side`] for it.
+    fn side_input(&self) -> Option<SideInput> {
+        None
+    }
+
+    /// Whether a lane that is made for this instrument has its way out cut to begin with (`Route::None`: it is heard where audio cables are drawn from it, and nowhere before). A
+    /// plugin whose sound is not its own to put in the mix says so: the audio input is a microphone, which is heard through the speakers that it listens to. The default is a plugin that
+    /// is heard as it is.
+    fn starts_bare(&self) -> bool {
+        false
+    }
+
+    /// Whether the plugin does anything with the notes that it is given (step 99c): an instrument does, and an audio input has none to play. A lane whose instrument says no has no key
+    /// range, no pattern and no input of events on the canvas, hears no source and takes no cable of notes. The default is a plugin that takes notes.
+    fn takes_notes(&self) -> bool {
+        true
+    }
+
+    /// `process` for an effect that has a side input: `side` is the sound that the cables at its second input bring (a buffer for each channel, as `audio_in` has), or `None` while no
+    /// cable ends there, so that the plugin can have a sound of its own in its place. The default is a plugin that has no side input, and leaves it.
+    fn process_side(
+        &mut self,
+        midi_events: &[(u64, [u8; 3])],
+        audio_in: &[&[f32]],
+        side: Option<&[&[f32]]>,
+        audio_out: &mut [&mut [f32]],
+    ) -> anyhow::Result<()> {
+        let _ = side;
+        self.process(midi_events, audio_in, audio_out)
+    }
 }
 
 /// Summary info returned by plugin enumeration.
@@ -121,5 +226,32 @@ pub fn load(
         PluginType::Clap => clap::load(&resolved, sample_rate, max_block_size),
         #[cfg(feature = "vst3")]
         PluginType::Vst3 => vst3::load(&resolved, sample_rate, max_block_size),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_choice_holds_when_its_value_rounds_to_one_of_its_places_and_not_below_the_list() {
+        let choice = UsedCondition::Choice { param: 3, values: vec![0, 2] };
+        let at = |value: f32| choice.holds(|param| (param == 3).then_some(value), false);
+        assert!(at(0.0) && at(0.4) && at(2.0) && at(1.6), "a value is the place that it rounds to");
+        assert!(!at(1.0) && !at(0.6) && !at(3.0) && !at(7.0), "and a place that is not one of them is outside");
+        // (A place below the list is not the first of it: a cast to a whole number would make it one.)
+        assert!(!at(-1.0) && !at(-3.0) && !at(f32::NAN));
+        // It reads the parameter that it names and no other, and a rule that names one that is not there is no rule.
+        assert!(!choice.holds(|param| (param == 4).then_some(0.0).or((param == 3).then_some(1.0)), false));
+        assert!(choice.holds(|_| None, false));
+        assert!(choice.holds(|param| (param == 3).then_some(2.0), true), "(the cables do not matter to it)");
+    }
+
+    #[test]
+    fn a_carrier_is_used_while_nothing_is_patched_at_the_second_input_and_the_values_do_not_matter_to_it() {
+        let condition = UsedCondition::SideUnpatched;
+        assert!(condition.holds(|_| None, false));
+        assert!(!condition.holds(|_| None, true));
+        assert!(!condition.holds(|_| Some(0.0), true) && condition.holds(|_| Some(7.0), false));
     }
 }

@@ -1,0 +1,24 @@
+# The output mix (step 102): three oscillators at four times their volume, far over full scale, through the limiter on the output at a ceiling of -3 dB, with a master volume of 0.8 in front of it.
+# What the chord, the wheel and the pedal of the corpus make of it is held to a ceiling that is never gone over, and to the bit. (Every other session of the corpus is rendered with the limiter out of
+# the sound, as a file that was written before it is: the oracle puts `[master] limiter = false` to a session that has no table of its own.)
+[master]
+volume = 0.8
+ceiling = -3.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 4.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 4.0
+transpose = 7
+[instrument.params]
+waveform = 3.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 4.0
+transpose = 12
+[instrument.params]
+waveform = 2.0

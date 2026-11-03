@@ -1,0 +1,52 @@
+.tang-choice {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 72px;
+}
+
+.tang-choice__label {
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-choice__select {
+  width: 100%;
+  padding: 2px;
+  text-overflow: ellipsis;
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: 11px / 1.4 var(--tang-font);
+}
+
+.tang-choice__select:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-choice__select:disabled {
+  opacity: 0.7;
+}
+
+/* A choice in a line with other things: its label is not drawn (it is still the select's name), and it is as wide as its chosen name needs, up to a limit that cuts the longest. */
+.tang-choice--inline {
+  flex-direction: row;
+  min-width: 0;
+}
+
+.tang-choice--inline .tang-choice__label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.tang-choice--inline .tang-choice__select {
+  width: auto;
+  max-width: 112px;
+}

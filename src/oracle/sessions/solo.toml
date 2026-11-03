@@ -1,0 +1,28 @@
+# A lane in a group is soloed: its group's bus is heard for it, with the group's volume and effect, and nothing else is: not the other lane of the group, not the plain lane.
+[[group]]
+name = "Bus"
+volume = 0.8
+pan = -0.2
+
+[[group.effect]]
+plugin = "builtin:delay"
+mix = 0.3
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.5
+solo = true
+[instrument.params]
+waveform = 2.0
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.5
+[instrument.params]
+waveform = 3.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.5

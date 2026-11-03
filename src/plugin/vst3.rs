@@ -5,6 +5,7 @@
 #![cfg_attr(target_os = "windows", allow(clippy::unnecessary_cast))]
 
 use std::cell::UnsafeCell;
+use std::collections::HashSet;
 use std::ffi::{c_char, c_void};
 use std::path::{Path, PathBuf};
 
@@ -13,7 +14,7 @@ use vst3::Steinberg::Vst::Event_::EventTypes_::{
     kLegacyMIDICCOutEvent, kNoteOffEvent, kNoteOnEvent,
 };
 use vst3::Steinberg::Vst::MediaTypes_::{kAudio, kEvent};
-use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_::kIsProgramChange;
+use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_::{kCanAutomate, kIsHidden, kIsProgramChange, kIsReadOnly};
 use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_::kPlaying;
 use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_::kTempoValid;
 use vst3::Steinberg::Vst::ProcessModes_::kRealtime;
@@ -590,9 +591,14 @@ pub struct Vst3Plugin {
     audio_out_channel_count: usize,
     audio_in_bus_count: usize,
     audio_out_bus_count: usize,
+    /// How many frames late what the plugin makes is (`IAudioProcessor::getLatencySamples`), as it said when it was set up (`Plugin::latency`). A plugin that changes it while it
+    /// runs, and tells the host by `restartComponent(kLatencyChanged)`, is not followed: the plugin is on the audio thread by then, and the host's handler ignores the restart.
+    latency: u32,
     separate_controller: bool,
     params_cache: Vec<ParameterInfo>,
     param_ids: Vec<u32>,
+    /// For each parameter, how many steps it has as a list (0 for a number): the value that the page and the terminal give is the step, not the plain value.
+    param_steps: Vec<u32>,
     pending_param_changes: Vec<(u32, f64)>,
     preset_cache: Vec<Preset>,
     preset_param_id: Option<u32>,
@@ -754,6 +760,10 @@ impl Plugin for Vst3Plugin {
 
     fn audio_output_count(&self) -> usize {
         self.audio_out_channel_count
+    }
+
+    fn latency(&self) -> u32 {
+        self.latency
     }
 
     fn process(
@@ -954,8 +964,8 @@ impl Plugin for Vst3Plugin {
     fn get_parameter(&mut self, index: u32) -> Option<f32> {
         let param_id = *self.param_ids.get(index as usize)?;
         let normalized = unsafe { self.controller.getParamNormalized(param_id) };
-        let plain = unsafe { self.controller.normalizedParamToPlain(param_id, normalized) };
-        Some(plain as f32)
+        let steps = self.param_steps[index as usize];
+        Some(normalized_to_value(steps, normalized, |normalized| unsafe { self.controller.normalizedParamToPlain(param_id, normalized) }))
     }
 
     fn set_parameter(&mut self, index: u32, value: f32) -> anyhow::Result<()> {
@@ -963,10 +973,8 @@ impl Plugin for Vst3Plugin {
             .param_ids
             .get(index as usize)
             .ok_or_else(|| anyhow::anyhow!("Parameter index out of range: {index}"))?;
-        let normalized = unsafe {
-            self.controller
-                .plainParamToNormalized(param_id, value as f64)
-        };
+        let steps = self.param_steps[index as usize];
+        let normalized = value_to_normalized(steps, value, |plain| unsafe { self.controller.plainParamToNormalized(param_id, plain) });
         self.pending_param_changes.push((param_id, normalized));
         Ok(())
     }
@@ -1009,6 +1017,100 @@ impl Plugin for Vst3Plugin {
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
+
+/// How many MIDI channels and controllers a plugin can map to parameters: 16 channels, and 130 controllers (0-127 CC, 128 pitch bend, 129 aftertouch).
+const MIDI_CHANNELS: i16 = 16;
+const MIDI_CONTROLLERS: i16 = 130;
+
+/// Whether a person is shown a parameter of a plugin: not one that the plugin hides or says is read only, and not one that is only there so that a
+/// host can send MIDI controllers through the parameters (`midi_controller`: the plugin's MIDI mapping points at it) and that cannot be automated.
+/// A plugin that does the last has a parameter for each of 16 channels and 130 controllers, which is most of its list (2,080 of the 2,294 of
+/// Pianoteq 9, and of 2,089 of ROLI Airwave Player's); a real parameter that a controller is mapped to, a mod wheel to a depth, can be automated and stays.
+fn is_listed(flags: i32, midi_controller: bool) -> bool {
+    let hidden = flags & (kIsHidden | kIsReadOnly) != 0;
+    let only_for_midi = midi_controller && flags & kCanAutomate == 0;
+    !hidden && !only_for_midi
+}
+
+/// The most steps that a parameter can have and still be shown as a list of their names: one with more (a program number of 128) is a number.
+const MAX_LIST_STEPS: i32 = 64;
+
+/// Whether a parameter that has `steps` steps (VST3's `stepCount`: 0 for a continuous one, 1 for a switch) is a list: one that has steps, and not very many.
+/// A list is an enum to the page and the terminal (`ParameterInfo::labels`): its names are what the plugin says at each step ("Off" and "On", "C" to "B").
+fn is_list(steps: i32) -> bool {
+    (1..=MAX_LIST_STEPS).contains(&steps)
+}
+
+/// The normalized value of step `step` of a parameter with `steps` steps: the steps of a VST3 parameter are k/steps, whatever the plain range that the plugin
+/// says (Pianoteq's is 0 to 1 for all of them, a plugin that is made with a choice parameter has 0 to steps). The page and the terminal give the step.
+fn step_to_normalized(step: f32, steps: u32) -> f64 {
+    (step as f64 / steps as f64).clamp(0.0, 1.0)
+}
+
+/// The step of a parameter with `steps` steps that a normalized value is nearest.
+fn normalized_to_step(normalized: f64, steps: u32) -> f32 {
+    (normalized * steps as f64).round() as f32
+}
+
+/// The normalized value for the `value` that is given for a parameter with `steps` steps (0 for a number): the step, for a list, and the plugin's own
+/// conversion of a plain value (`plain_to_normalized`) for any other.
+fn value_to_normalized(steps: u32, value: f32, plain_to_normalized: impl FnOnce(f64) -> f64) -> f64 {
+    if steps == 0 { plain_to_normalized(value as f64) } else { step_to_normalized(value, steps) }
+}
+
+/// The value to give for a parameter with `steps` steps (0 for a number) that is at the normalized value `normalized`: the step, for a list, and the
+/// plugin's own conversion to a plain value (`normalized_to_plain`) for any other.
+fn normalized_to_value(steps: u32, normalized: f64, normalized_to_plain: impl FnOnce(f64) -> f64) -> f32 {
+    if steps == 0 { normalized_to_plain(normalized) as f32 } else { normalized_to_step(normalized, steps) }
+}
+
+/// What a step of a list is called: the plugin's own text for it, and the step's number where it says none.
+fn step_name(text: Option<String>, step: u32) -> String {
+    text.filter(|name| !name.is_empty()).unwrap_or_else(|| step.to_string())
+}
+
+/// What the plugin calls each of the `steps + 1` values of a list (`step_name`).
+fn step_names(controller: &ComPtr<IEditController>, id: u32, steps: u32) -> Vec<String> {
+    (0..=steps)
+        .map(|step| {
+            let mut text: String128 = [0u16; 128];
+            let result = unsafe { controller.getParamStringByValue(id, step_to_normalized(step as f32, steps), &mut text) };
+            step_name((result == kResultOk).then(|| string128_to_string(&text)), step)
+        })
+        .collect()
+}
+
+/// What a MIDI mapping points at, from what `assignment(channel, controller)` says of it (the plugin's mapping, for its first bus): the ids of the
+/// parameters that a controller on any channel is mapped to, and, for the controllers of channel 0 (which the adapter sends to: every channel's), the
+/// parameter of each, by the controller's number.
+fn midi_controller_assignments(assignment: impl Fn(i16, i16) -> Option<u32>) -> (HashSet<u32>, Vec<Option<u32>>) {
+    let mut targets = HashSet::new();
+    let mut by_controller = vec![None; MIDI_CONTROLLERS as usize];
+    for channel in 0..MIDI_CHANNELS {
+        for cc in 0..MIDI_CONTROLLERS {
+            if let Some(param_id) = assignment(channel, cc) {
+                targets.insert(param_id);
+                if channel == 0 {
+                    by_controller[cc as usize] = Some(param_id);
+                    log::debug!("VST3 MIDI mapping: CC{cc} → param {param_id}");
+                }
+            }
+        }
+    }
+    (targets, by_controller)
+}
+
+/// The parameters that the plugin's MIDI mapping points at, and the routing of the controllers of channel 0 (`midi_controller_assignments`).
+fn midi_controller_parameters(controller: &ComPtr<IEditController>) -> (HashSet<u32>, Vec<Option<u32>>) {
+    match controller.cast::<IMidiMapping>() {
+        Some(mapping) => midi_controller_assignments(|channel, cc| {
+            let mut param_id: u32 = 0;
+            let result = unsafe { mapping.getMidiControllerAssignment(0, channel, cc, &mut param_id) };
+            (result == kResultOk).then_some(param_id)
+        }),
+        None => midi_controller_assignments(|_, _| None),
+    }
+}
 
 pub fn load(
     source: &str,
@@ -1193,10 +1295,14 @@ pub fn load(
         }
     }
 
+    // Query MIDI CC → parameter mapping (which parameters exist only for it are not listed, below)
+    let (midi_controller_ids, cc_param_map) = midi_controller_parameters(&controller);
+
     // Query parameters
     let param_count = unsafe { controller.getParameterCount() };
     let mut params_cache = Vec::with_capacity(param_count as usize);
     let mut param_ids = Vec::with_capacity(param_count as usize);
+    let mut param_steps = Vec::with_capacity(param_count as usize);
     let mut preset_param_id: Option<u32> = None;
 
     for i in 0..param_count {
@@ -1212,22 +1318,34 @@ pub fn load(
             // Don't expose program change as a regular parameter
             continue;
         }
+        if !is_listed(info.flags, midi_controller_ids.contains(&info.id)) {
+            continue;
+        }
 
         let name_str = string128_to_string(&info.title);
         let default_normalized = info.defaultNormalizedValue;
-        let min = unsafe { controller.normalizedParamToPlain(info.id, 0.0) } as f32;
-        let max = unsafe { controller.normalizedParamToPlain(info.id, 1.0) } as f32;
-        let default =
-            unsafe { controller.normalizedParamToPlain(info.id, default_normalized) } as f32;
+        // A list is its steps: 0 to the last, with the names the plugin gives them. Any other parameter has the plain range that the plugin says.
+        let list_steps = if is_list(info.stepCount) { info.stepCount as u32 } else { 0 };
+        let (min, max, default, labels) = if list_steps > 0 {
+            (0.0, list_steps as f32, normalized_to_step(default_normalized, list_steps), Some(step_names(&controller, info.id, list_steps)))
+        } else {
+            let min = unsafe { controller.normalizedParamToPlain(info.id, 0.0) } as f32;
+            let max = unsafe { controller.normalizedParamToPlain(info.id, 1.0) } as f32;
+            let default = unsafe { controller.normalizedParamToPlain(info.id, default_normalized) } as f32;
+            (min, max, default, None)
+        };
 
         let param_index = params_cache.len() as u32;
         param_ids.push(info.id);
+        param_steps.push(list_steps);
         params_cache.push(ParameterInfo {
             index: param_index,
             name: name_str,
             min,
             max,
             default,
+            labels,
+            step_count: info.stepCount.max(0) as u32,
             ..Default::default()
         });
     }
@@ -1265,19 +1383,6 @@ pub fn load(
     }
     log::info!("VST3 plugin has {} presets", preset_count);
 
-    // Query MIDI CC → parameter mapping
-    let mut cc_param_map: Vec<Option<u32>> = vec![None; 130]; // 0-127 CC + 128 pitch bend + 129 aftertouch
-    if let Some(mapping) = controller.cast::<IMidiMapping>() {
-        for cc in 0i16..130 {
-            let mut param_id: u32 = 0;
-            let result = unsafe { mapping.getMidiControllerAssignment(0, 0, cc, &mut param_id) };
-            if result == kResultOk {
-                cc_param_map[cc as usize] = Some(param_id);
-                log::debug!("VST3 MIDI mapping: CC{cc} → param {param_id}");
-            }
-        }
-    }
-
     log::info!(
         "Loaded VST3 plugin: {name} (instrument={is_instrument}, \
          output_channels={audio_out_channel_count}, params={}, presets={})",
@@ -1310,6 +1415,12 @@ pub fn load(
     let result = unsafe { processor.setProcessing(1) };
     if result != kResultOk {
         log::warn!("VST3 setProcessing returned {result}");
+    }
+
+    // The latency, which a plugin knows once it is set up.
+    let latency = unsafe { processor.getLatencySamples() };
+    if latency > 0 {
+        log::info!("VST3 plugin {name} has a latency of {latency} frames");
     }
 
     // Pre-allocate buffers sized to capacity — never grow on audio thread.
@@ -1391,6 +1502,7 @@ pub fn load(
         audio_out_channel_count,
         audio_in_bus_count: audio_in_bus_count.max(0) as usize,
         audio_out_bus_count: audio_out_bus_count.max(0) as usize,
+        latency,
         _module: module,
         component,
         processor,
@@ -1400,6 +1512,7 @@ pub fn load(
         separate_controller,
         params_cache,
         param_ids,
+        param_steps,
         pending_param_changes: Vec::new(),
         preset_cache,
         preset_param_id,
@@ -1672,7 +1785,15 @@ fn brief_instantiate(
         (None, None)
     };
 
-    let param_count = unsafe { controller.getParameterCount() } as usize;
+    // Count the parameters a person is shown, as a load lists them (not the program change, nor those that are hidden, read only or only for MIDI)
+    let (midi_controller_ids, _) = midi_controller_parameters(&controller);
+    let param_count = (0..unsafe { controller.getParameterCount() })
+        .filter(|&i| {
+            let mut info: Vst3ParameterInfo = unsafe { std::mem::zeroed() };
+            let result = unsafe { controller.getParameterInfo(i, &mut info) };
+            result == kResultOk && info.flags & kIsProgramChange == 0 && is_listed(info.flags, midi_controller_ids.contains(&info.id))
+        })
+        .count();
 
     // Count presets via IUnitInfo
     let preset_count = if let Some(unit_info) = controller.cast::<IUnitInfo>() {
@@ -1706,4 +1827,147 @@ fn brief_instantiate(
     unsafe { component.terminate() };
 
     Some((param_count, preset_count))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_::{kCanAutomate, kIsBypass, kIsHidden, kIsList, kIsReadOnly, kNoFlags};
+
+    /// A person is shown the parameters that the plugin does not hide or say are read only, and none that is only there so that a host
+    /// can send MIDI controllers through the parameters (one that cannot be automated and is the target of the plugin's MIDI mapping).
+    #[test]
+    fn a_parameter_is_shown_unless_the_plugin_hides_it_or_it_is_only_there_for_midi_controllers() {
+        // (flags, whether the MIDI mapping points at it, whether it is shown)
+        for (flags, midi_controller, shown) in [
+            (kNoFlags, false, true),
+            (kCanAutomate, false, true),
+            (kCanAutomate | kIsBypass, false, true),
+            (kCanAutomate | kIsList, false, true),
+            (kIsHidden, false, false),
+            (kCanAutomate | kIsHidden, false, false),
+            (kIsReadOnly, false, false),
+            (kCanAutomate | kIsReadOnly, false, false),
+            (kNoFlags, true, false),
+            (kIsList, true, false),
+            // A real parameter that a controller is mapped to (a mod wheel to a depth) can be automated, and is shown.
+            (kCanAutomate, true, true),
+            (kCanAutomate | kIsList, true, true),
+            // What the plugin hides stays hidden whatever else is said of it.
+            (kCanAutomate | kIsHidden, true, false),
+        ] {
+            assert_eq!(is_listed(flags, midi_controller), shown, "flags {flags:#x}, mapped to a MIDI controller: {midi_controller}");
+        }
+    }
+
+    #[test]
+    fn a_parameter_with_steps_is_a_list_of_names_unless_it_has_very_many() {
+        for (steps, list) in [(-1, false), (0, false), (1, true), (2, true), (18, true), (64, true), (65, false), (127, false), (1000, false)] {
+            assert_eq!(is_list(steps), list, "{steps} steps");
+        }
+    }
+
+    /// A parameter with n steps has the normalized values k/n, and the page and the terminal give the step k: so that a switch is 0 or 1 and a list
+    /// of 12 root notes is 0 to 11, whatever the plain range that the plugin says (Pianoteq's is 0 to 1 for all of them).
+    #[test]
+    fn a_step_is_a_place_among_the_normalized_values_of_the_parameter_and_back() {
+        for (step, steps, normalized) in [(0.0, 1, 0.0), (1.0, 1, 1.0), (0.0, 29, 0.0), (10.0, 29, 10.0 / 29.0), (29.0, 29, 1.0), (11.0, 11, 1.0), (3.0, 4, 0.75)] {
+            assert!((step_to_normalized(step, steps) - normalized).abs() < 1e-12, "step {step} of {steps}");
+            assert_eq!(normalized_to_step(normalized, steps), step, "normalized {normalized} of {steps}");
+        }
+        // A step that is not one is the nearest, and one beyond the ends is the end.
+        assert_eq!(normalized_to_step(0.49, 4), 2.0);
+        assert_eq!(normalized_to_step(0.51, 4), 2.0);
+        assert_eq!(normalized_to_step(0.9, 4), 4.0);
+        assert_eq!(step_to_normalized(7.0, 3), 1.0);
+        assert_eq!(step_to_normalized(-2.0, 3), 0.0);
+    }
+
+    /// The value that is given for a parameter is its step for a list and its plain value for any other (`plain_to_normalized` and `normalized_to_plain` are
+    /// the plugin's own conversions, which a list does not use: here they are made up, ten times the normalized value, to tell the two apart).
+    #[test]
+    fn a_list_is_given_and_taken_by_its_step_and_any_other_parameter_by_the_plugins_own_plain_value() {
+        let (to_plain, to_normalized) = (|normalized: f64| normalized * 10.0, |plain: f64| plain / 10.0);
+        // A number: 5 is the plain value 5, which is the normalized 0.5.
+        assert_eq!(value_to_normalized(0, 5.0, to_normalized), 0.5);
+        assert_eq!(normalized_to_value(0, 0.5, to_plain), 5.0);
+        // A list of 4 steps: 3 is the step 3, which is the normalized 0.75, and the plugin's plain values are not asked.
+        assert_eq!(value_to_normalized(4, 3.0, to_normalized), 0.75);
+        assert_eq!(normalized_to_value(4, 0.75, to_plain), 3.0);
+        // The first step of a list of 29, which is the default of a parameter of Pianoteq's, is 1 and not 1/29 of its plain range.
+        assert_eq!(normalized_to_value(29, 1.0 / 29.0, to_plain), 1.0);
+    }
+
+    #[test]
+    fn a_step_that_the_plugin_gives_no_name_is_called_by_its_number() {
+        assert_eq!(step_name(Some("On".to_string()), 1), "On");
+        assert_eq!(step_name(Some(String::new()), 3), "3");
+        assert_eq!(step_name(None, 7), "7");
+    }
+
+    #[test]
+    fn the_parameters_a_midi_mapping_points_at_are_those_of_every_channel_and_the_routing_is_that_of_channel_0() {
+        // A plugin with a parameter for each channel and controller (the way the placeholders are made): the id says which.
+        let (targets, by_controller) = midi_controller_assignments(|channel, cc| Some(1000 + 130 * channel as u32 + cc as u32));
+        assert_eq!(targets.len(), 16 * 130);
+        assert!(targets.contains(&1000) && targets.contains(&(1000 + 16 * 130 - 1)));
+        assert_eq!(by_controller.len(), 130);
+        for (cc, param) in by_controller.iter().enumerate() {
+            assert_eq!(*param, Some(1000 + cc as u32), "controller {cc} goes to the parameter of channel 0");
+        }
+        // A plugin that maps the mod wheel, on every channel, to one parameter: that is the only target and the only route.
+        let (targets, by_controller) = midi_controller_assignments(|_, cc| (cc == 1).then_some(7));
+        assert_eq!(targets, HashSet::from([7]));
+        assert_eq!(by_controller.iter().filter(|param| param.is_some()).count(), 1);
+        assert_eq!(by_controller[1], Some(7));
+        // A mapping that only the channels after the first have: targets, and no route.
+        let (targets, by_controller) = midi_controller_assignments(|channel, cc| (channel > 0 && cc == 74).then_some(9));
+        assert_eq!(targets, HashSet::from([9]));
+        assert!(by_controller.iter().all(Option::is_none));
+        // No mapping at all.
+        let (targets, by_controller) = midi_controller_assignments(|_, _| None);
+        assert!(targets.is_empty() && by_controller.iter().all(Option::is_none));
+    }
+
+    /// Pianoteq 9 has 2,294 parameters besides its program change, and 2,080 of them are placeholders for MIDI controllers ("MIDI CC 3|47":
+    /// 16 channels of 130) that bury the 214 that are its own. Needs it installed: `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "needs Pianoteq 9 installed"]
+    fn pianoteq_lists_its_own_parameters_and_none_of_the_placeholders_for_midi_controllers() {
+        // (What the plugin list says of it, which is counted by another function than the load.)
+        let scanned = enumerate_plugins().into_iter().find(|info| info.name == "Pianoteq 9").expect("Pianoteq 9 is installed");
+        assert_eq!(scanned.param_count, 214);
+        let mut plugin = crate::plugin::load("vst3:Pianoteq 9", 48000.0, 512, &crate::plugin::Runtime::default()).expect("Pianoteq 9 is installed");
+        let listed = plugin.parameters();
+        assert!(listed.iter().all(|p| !p.name.starts_with("MIDI CC ")), "no placeholder is listed");
+        assert_eq!(listed.len(), 214);
+        // What its own parameters are, by name, and that an index reaches the parameter it says (they are places in the list, which a hidden one leaves out).
+        let volume = listed.iter().find(|p| p.name == "Volume").expect("a volume");
+        assert!(listed.iter().any(|p| p.name == "Dynamics"));
+        assert!(listed.iter().enumerate().all(|(place, p)| p.index as usize == place), "the indices are the places in the list");
+        // A switch has the names that the plugin gives its two ends, and is a list of two steps (0 and 1); a parameter with no steps is a number.
+        let switch = listed.iter().find(|p| p.name == "Equalizer Switch").expect("a switch");
+        assert_eq!((switch.step_count, switch.labels.clone(), switch.min, switch.max), (1, Some(vec!["Off".to_string(), "On".to_string()]), 0.0, 1.0));
+        assert_eq!((volume.step_count, volume.labels.clone()), (0, None));
+        // A list of 30 (the speeds of a bounce, "16d" to "1/32t"), whose default is the 14th, "1" (step 13): read as the step that it is, and not as 13/29 of a plain range.
+        let speed = listed.iter().find(|p| p.name == "Bounce Sync Speed").expect("a list of speeds");
+        assert_eq!((speed.step_count, speed.min, speed.max, speed.default), (29, 0.0, 29.0, 13.0));
+        assert_eq!(speed.labels.as_ref().map(|labels| (labels.len(), labels[0].as_str(), labels[13].as_str(), labels[29].as_str())), Some((30, "16d", "1", "1/32t")));
+        assert_eq!(plugin.get_parameter(speed.index), Some(13.0));
+        // Set to the step 5 ("8t"), which the plugin takes with the next blocks and says back as 5: the step goes through as the step it is.
+        plugin.set_parameter(speed.index, 5.0).unwrap();
+        let (mut left, mut right) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+        for _ in 0..4 {
+            let mut out: [&mut [f32]; 2] = [&mut left, &mut right];
+            plugin.process(&[], &[], &mut out).unwrap();
+        }
+        assert_eq!(plugin.get_parameter(speed.index), Some(5.0));
+        for name in ["Volume", "Dynamics"] {
+            let info = listed.iter().find(|p| p.name == name).expect("a parameter of its own");
+            // (A new instance is at its defaults: the index reads the parameter that its name says, and not one that was before it in the plugin's own list.)
+            let value = plugin.get_parameter(info.index).expect("a parameter that can be read");
+            assert!((value - info.default).abs() < 1e-4, "{name}: read {value}, its default is {}", info.default);
+        }
+        assert!(volume.default != listed.iter().find(|p| p.name == "Dynamics").map_or(volume.default, |p| p.default), "the two have defaults of their own");
+    }
 }

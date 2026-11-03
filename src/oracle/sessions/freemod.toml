@@ -1,0 +1,65 @@
+# Free modulators (P5b-2): modulators that are in no lane and no group. A free LFO drives an oscillator's detune, the cutoff of a lane's filter and the damping of a reverb on a group's bus;
+# a free envelope drives the resonance of the filter and the rate of the LFO (which it hears the chord for, whatever the lanes' ranges are); a free step sequencer drives the second
+# oscillator's detune.
+bpm = 100.0
+
+[[group]]
+[[group.effect]]
+plugin = "builtin:reverb"
+mix = 0.4
+
+[[modulator]]
+type = "lfo"
+waveform = "triangle"
+rate = 1.5
+[[modulator.target]]
+to = "instrument[0]"
+param = "detune"
+depth = 0.1
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "cutoff"
+depth = 0.3
+[[modulator.target]]
+to = "group[0].effect[0]"
+param = "damping"
+depth = 0.4
+
+[[modulator]]
+type = "envelope"
+attack = 0.2
+decay = 0.4
+sustain = 0.5
+release = 0.6
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "resonance"
+depth = 0.5
+[[modulator.target]]
+mod_rate = 0
+depth = 0.2
+
+[[modulator]]
+type = "steps"
+steps = [0.2, -0.1, 0.4, 0.0]
+length = 4
+rate = 6.0
+[[modulator.target]]
+to = "instrument[1]"
+param = "detune"
+depth = 0.05
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.3
+[instrument.params]
+waveform = 3.0
+[[instrument.effect]]
+plugin = "builtin:filter"
+[instrument.effect.params]
+cutoff = 0.7
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3

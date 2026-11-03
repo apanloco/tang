@@ -1,0 +1,26 @@
+.tang-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-status__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tang-text-muted);
+}
+
+.tang-status[data-tone="ok"] .tang-status__dot {
+  background: var(--tang-ok);
+}
+
+.tang-status[data-tone="busy"] .tang-status__dot {
+  background: var(--tang-warn);
+}
+
+.tang-status[data-tone="bad"] .tang-status__dot {
+  background: var(--tang-danger);
+}
