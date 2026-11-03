@@ -101,11 +101,21 @@ test("the limiter on the real program holds a sound that would clip under its ce
   const release = async (): Promise<void> => {
     for (const key of keys) await page.keyboard.up(key);
   };
-  /** A chord that is held for the better part of a second: the loudest the master's meter is while it is, and how far the limiter is bringing the sound down by then (the readout is read while the keys are down). */
+  /**
+   * A chord that is held for the better part of a second: the loudest the master's meter is while it is, and the most that the limiter brings the sound down by while it is. The readout is read all the while, as the meter is, and
+   * not once at the end: an LFO opens and shuts the tracer's filter in two seconds, so for about half a second of every turn the chord is 10 dB under the ceiling, the limiter has nothing to do and the readout, which falls
+   * 40 dB a second, is at 0 by the end of that stretch. One reading at the end of the window found it there for a quarter of the starting phases, and a runner that is slower than a person's computer found it there every time.
+   */
   const held = async (): Promise<{ level: number; down: number }> => {
     await press();
-    const level = await loudest(page, 800);
-    const down = await reduction(page);
+    let level = Number.NEGATIVE_INFINITY;
+    let down = 0;
+    const until = Date.now() + 800;
+    while (Date.now() < until) {
+      level = Math.max(level, await masterLevel(page));
+      down = Math.max(down, await reduction(page));
+      await page.waitForTimeout(25);
+    }
     await release();
     await expect.poll(() => masterLevel(page), { message: "the master is quiet again", timeout: 15_000 }).toBeLessThan(-50);
     return { level, down };

@@ -45,6 +45,8 @@ impl Drop for Process {
 
 /// A running `tang serve`.
 struct Tang {
+    /// (Where there is no Ctrl+C to send, nothing reads it: it is held so that the program is killed when this goes.)
+    #[cfg_attr(not(unix), allow(dead_code))]
     child: Process,
     addr: SocketAddr,
     /// What it has logged (its stderr), for the message of a test that fails.
@@ -137,6 +139,7 @@ impl Tang {
         assert!(status.success());
     }
 
+    #[cfg(unix)]
     fn exit_within(&mut self, within: Duration) -> Option<std::process::ExitStatus> {
         let deadline = Instant::now() + within;
         while Instant::now() < deadline {
@@ -424,19 +427,23 @@ async fn a_session_named_by_a_relative_path_is_saved_to_that_file_wherever_the_p
     // do), and a path that is relative to it then leads somewhere else: a save would write the
     // session into a plugin's directory. The program here stays where it is started, and says which file it writes.
     let dir = tempfile::tempdir().unwrap();
-    let here = dir.path().canonicalize().unwrap();
+    let here = dir.path();
     std::fs::copy(TRACER, here.join("jam.toml")).unwrap();
-    let tang = Tang::start_in(Some(&here), "jam.toml");
+    let tang = Tang::start_in(Some(here), "jam.toml");
     let (mut client, _, _) = listening(&tang).await;
 
     tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "save"}})).await;
     assert_eq!(answer(&mut client, 1).await["type"], "ack");
-    let wanted = format!("Session saved to {}", here.join("jam.toml").display());
+    let saved_to = || tang.log().lines().find_map(|line| line.split_once("Session saved to ").map(|(_, path)| path.to_string()));
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !tang.log().contains(&wanted) && Instant::now() < deadline {
+    while saved_to().is_none() && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(tang.log().contains(&wanted), "the file is named by where it is, not by how it was asked for:\n{}", tang.log());
+    let said = saved_to().unwrap_or_else(|| panic!("it did not say where it saved the session:\n{}", tang.log()));
+    // The path it says is an absolute one, and is the file that was asked for. (How a system spells the directory, `/private/var` for `/var` on a Mac and `\\?\C:\Users\runneradmin` for `C:\Users\RUNNER~1` on Windows, is
+    // not the point: the two are compared as the files they are.)
+    assert!(std::path::Path::new(&said).is_absolute(), "the file is named by where it is, not by how it was asked for: {said}\n{}", tang.log());
+    assert_eq!(std::fs::canonicalize(&said).unwrap(), std::fs::canonicalize(here.join("jam.toml")).unwrap(), "it is the file that was asked for:\n{}", tang.log());
 }
 
 /// The master's peak a moment after `wait` has passed, as the frames say (the frames are read all the while).
@@ -2100,7 +2107,6 @@ async fn pages_and_hosts_that_are_not_this_servers_are_refused() {
     let _ = client.close(None).await;
 }
 
-#[cfg(unix)]
 /// A port that is taken is found out at once, not after the session has loaded (which takes
 /// seconds with a heavy instrument): the session here is one that cannot be loaded, so what the
 /// program says first is what it found out first. `tang serve` and `tang --web` alike.
@@ -2124,7 +2130,9 @@ fn a_port_that_is_taken_is_reported_before_the_session_is_loaded() {
         assert!(!output.status.success(), "{args:?}: {said}");
         assert!(said.contains(&format!("cannot listen on {addr}")), "{args:?}: the program said: {said}");
         // (And why, the way an error that is returned from `main` says it: the whole chain.)
-        assert!(said.contains("Caused by:") && said.contains("Address already in use"), "{args:?}: the program said: {said}");
+        // (The words are the system's; Windows has others, which end in the same number whatever the language.)
+        let in_use = if cfg!(windows) { "os error 10048" } else { "Address already in use" };
+        assert!(said.contains("Caused by:") && said.contains(in_use), "{args:?}: the program said: {said}");
     }
 }
 
@@ -2132,6 +2140,7 @@ fn a_port_that_is_taken_is_reported_before_the_session_is_loaded() {
 /// thread (native code: a machine with plugins that take a while to scan shows it). It crashed at its end, with a signal, about
 /// one time in twenty: the process's exit ran what the plugins' libraries have to run at exit while the scan was still in them.
 /// It ends itself now (`main`). Forty runs take three seconds, and found the crash three times of three before that was done.
+#[cfg(unix)]
 #[test]
 fn interrupting_the_program_early_ends_it_with_status_0_every_time() {
     for run in 1..=40 {
@@ -2142,6 +2151,7 @@ fn interrupting_the_program_early_ends_it_with_status_0_every_time() {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn ctrl_c_closes_the_browsers_and_stops_the_program() {
     let mut tang = Tang::start();
