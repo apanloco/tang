@@ -23,5 +23,7 @@ export default defineConfig({
     environment: "node",
     include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["src/test-setup.ts"],
+    // A runner of CI has a few slow cores for 135 files at a time: arranging the sessions of the fixtures takes up to 7 s there, where it takes a second or two on a laptop.
+    testTimeout: process.env.CI ? 30_000 : 5_000,
   },
 });

@@ -2155,7 +2155,14 @@ fn write_session(
         }
     }
     if create_new {
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+        let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(file) => file,
+            // Where the path is a folder, Windows says that access is denied and not, as the other systems do, that the path is taken: whatever is there is taken, whatever the error says.
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied && std::fs::symlink_metadata(path).is_ok() => {
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, error).into());
+            }
+            Err(error) => return Err(error.into()),
+        };
         std::io::Write::write_all(&mut file, content.as_bytes())?;
     } else {
         std::fs::write(path, content)?;
@@ -2211,7 +2218,9 @@ mod tests {
             let path = absolute_path(given);
             assert!(path.is_absolute(), "{given}: {path:?}");
             assert_eq!(path.file_name(), Path::new(given).file_name(), "{given}: it is the same file");
-            assert!(path.starts_with(&here), "{given}: relative to where the program was started: {path:?}");
+            // (Windows takes a `..` out of the path where the other systems leave it in, so that `../jam.toml` is a file of the folder above there.)
+            let anchor = if given.starts_with("..") { here.parent().unwrap() } else { here.as_path() };
+            assert!(path.starts_with(anchor), "{given}: relative to where the program was started: {path:?}");
         }
         assert_eq!(absolute_path("sub/jam.toml"), here.join("sub/jam.toml"));
         // One that is absolute already is left as it is.

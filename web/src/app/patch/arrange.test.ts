@@ -582,7 +582,8 @@ describe("arranging the nodes", () => {
     for (let i = 1; i < 90; i += 7) wires.push(modulation(i, i + 10));
     const started = performance.now();
     const arranged = moved(blocks, arrange(blocks, wires));
-    expect(performance.now() - started).toBeLessThan(4000);
+    // (It takes a second on a laptop and 5 s on a runner of CI, which has a few slow cores for all the tests at once: the search is held to a number of places that it prices, and not to a time, so that this is only for a search that has run away.)
+    expect(performance.now() - started).toBeLessThan(20_000);
     expect(measure(arranged, wires).crowded).toBe(0);
     expect(measure(arranged, wires).length).toBeLessThan(measure(blocks, wires).length);
   });
