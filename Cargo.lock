@@ -2584,6 +2584,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.1",
  "insta",
+ "jack",
  "kernel",
  "libc",
  "libloading 0.8.9",

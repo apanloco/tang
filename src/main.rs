@@ -119,6 +119,7 @@ fn run() -> anyhow::Result<()> {
     let Cli {
         session,
         audio_device,
+        jack,
         midi_device,
         buffer_size,
         sample_rate,
@@ -138,7 +139,7 @@ fn run() -> anyhow::Result<()> {
             if let Some(args) = &tui_web {
                 web::preflight(args)?;
             }
-            run_session(session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Tui(tui_web))
+            run_session(session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, Mode::Tui(tui_web))
         }
         Some(Command::Enumerate(target)) => {
             env_logger::init();
@@ -210,12 +211,12 @@ fn run() -> anyhow::Result<()> {
             plugin::builtin::listen_to_the_input(device.as_deref(), seconds, sample_rate)
         }
         Some(Command::Play { session: play_session }) => {
-            run_session(play_session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Play)
+            run_session(play_session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, Mode::Play)
         }
         #[cfg(feature = "web")]
         Some(Command::Serve { session: serve_session, web }) => {
             web::preflight(&web)?;
-            run_session(serve_session, audio_device, midi_device, buffer_size, sample_rate, debug, Mode::Serve(web))
+            run_session(serve_session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, Mode::Serve(web))
         }
         #[cfg(not(feature = "web"))]
         Some(Command::Serve { .. }) => {
@@ -355,6 +356,7 @@ fn dirs_config() -> anyhow::Result<std::path::PathBuf> {
 fn run_session(
     session: Option<String>,
     audio_device: Option<String>,
+    jack: bool,
     midi_device: Option<String>,
     buffer_size: u32,
     sample_rate: u32,
@@ -364,6 +366,8 @@ fn run_session(
     let use_tui = matches!(mode, Mode::Tui(_));
     // With no sound card (`--audio-device none`: CI, headless runs) there is no microphone to listen to either: the audio input plays a quiet test tone, so that what a cable does to it is heard.
     plugin::builtin::use_test_tone(audio_device.as_deref() == Some(audio::NULL_DEVICE));
+    // The audio input (a plugin, made far from here) opens its stream on the host that the output uses.
+    audio::use_jack(jack);
     #[cfg(feature = "web")]
     let serving = matches!(mode, Mode::Serve(_));
     #[cfg(not(feature = "web"))]
@@ -507,6 +511,7 @@ fn run_session(
         graph,
         midi_rx,
         audio_device.as_deref(),
+        jack,
         sample_rate,
         buffer_size,
     )?;

@@ -13,5 +13,19 @@ plugin = "lv2:https://www.modartt.com/lv2/Pianoteq9"
 
 [[instrument.effect]]
 plugin = "builtin:reverb"
-preset = "Arcadia Dream Hall"
 mix = 0.25
+preset = "Arcadia Dream Hall"
+
+[instrument.effect.params]
+damping = 0.29999983
+decay = 0.901
+diffusion = 0.59499997
+level = 2.0
+lowcut = 68.0
+mod_depth = 0.5999999
+mod_rate = 0.5375
+predelay = 0.06249996
+size = 0.8949999
+
+[piano]
+scale = "C major"

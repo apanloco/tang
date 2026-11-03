@@ -33,6 +33,7 @@ none`):
 |------|---------|--------|
 | `--midi-device <name>` | all inputs | Open only the named MIDI input |
 | `--audio-device <name>` | system default | Use the named audio output; `none` opens no device and renders the engine on a timer (for CI, headless runs and tests: the audio thread's work happens, nothing is heard) |
+| `--jack` | off | Linux: play through PipeWire's JACK bridge instead of ALSA (see "Audio host selection") |
 | `--buffer-size <frames>` | 1024 (Linux), 256 (macOS/Windows) | Audio buffer size in frames |
 | `--sample-rate <hz>` | 48000 | Sample rate |
 | `--debug` | off | Show a live incoming-MIDI monitor at the bottom of the TUI (diagnoses what a controller actually sends) |
@@ -797,7 +798,7 @@ The computer's microphone, or another input of the sound card, as an instrument 
 
 - **The plugin** (`src/plugin/builtin/input.rs`: `builtin:input`, "Audio Input"; an instrument with two audio outputs and none in, no presets and no latency of its own, which `tang describe builtin:input` says). Parameters: `gain` (0 to 4, linear, default 1), `pan` (a balance, −1 to 1: the middle leaves both sides as they are) and `device` (a choice: "Default input", and then each input that the system had when the plugin was made, by its place in that list; `tang enumerate audio` lists them). `gain` and `pan` are gone to over 5 ms (in 64 bits: a one-pole in 32 stops short of what it follows), and a value that was set before the first block is the first block's, with no glide from the defaults. A device of one channel is put in both sides, one of more channels has its first two, and a device that runs at another rate than the engine is resampled, linearly (`Resampler`: the user's webcam microphone is at 16 kHz).
 - **It starts bare** (`Plugin::starts_bare`: false by default, true for the input). `Controller::place_instrument_in_new_lane`, which `AddInstrument` ends in, cuts the new lane's way out when the plugin says so (`route = "none"` in the model and `SetLaneRoute` to the engine, before the instrument is in, as `AddFreeEffect` makes its lane), so that **nothing of it is heard until a cable is drawn from it** to an effect, a group's bus or the mix: a microphone that went to the mix by itself would be heard through the speakers that it listens to, and howl. A cable from it to the mix is the way out given back (`link_or_cable`: "give the lane of Audio Input its way out", a link, with no `[[cable]]` of its own); one to an effect is an audio cable. There is no new intent: `AddInstrument { plugin: "builtin:input" }` adds it, from the page's "+ Instrument" menu and the terminal's selector. **`ReplaceInstrument` leaves the lane's way out as it was** (an input that is put in a lane that has its way out is heard at once: the lane is the user's), `ClearInstrument` leaves the lane as it is, and undo and redo keep bare what was bare; the file has `route = "none"` while the lane is bare, and a program that loads it has the lane bare (`an_audio_input_is_added_in_a_lane_whose_way_out_is_cut_…`, `an_audio_input_that_replaces_the_instrument_of_a_lane_leaves_the_way_out_as_it_was`).
-- **Where the sound comes from.** A thread of its own (`tang-audio-input`, `Capture`) owns the cpal input stream (which is not `Send`) and fills a lock-free ring of 32,768 stereo frames (`InputRing`: one writer and one reader, a cell an atomic of its own, nothing allocated after it is made); the audio thread reads a block at a time (`RingReader::pull`). It waits for a backlog of two blocks (768 frames at least) before it begins, and again after a dropout, so that the clocks of two devices, which are never the same, do not make a crackle of every block; a backlog of more than 8,192 frames is skipped to the prime, so that the delay stays short (a clock that runs fast is a skipped stretch now and then and one that runs slow a dropout: a click either way, rare). **The microphone is not opened until the first block has been rendered** (`Capture::start`, sent by the plugin's first `process`: a catalog scan, `tang describe` and `tang enumerate` make the plugin and do not open it, so that macOS does not ask a person for a permission that nobody asked for), **and is closed when no block has been rendered for a second** (a heartbeat, `beats`: a lane that was taken out and is kept by the history, or an engine that is stopped, does not keep the microphone open) and opened again when blocks come back; one that cannot be opened, or whose stream fails, is tried again every 3 s (the log says why: `Audio input: …`). The thread's loop is `listen`, generic over what it opens and over its clock (`Timing`), and is held with a fake card and a clock in milliseconds (`nothing_is_opened_until_the_first_block_has_been_rendered_…`, `the_stream_is_closed_when_no_block_is_rendered_…`, `another_device_closes_the_stream_…`, `a_stream_that_says_it_has_failed_…`, `an_input_that_cannot_be_opened_…`, `the_thread_ends_and_the_stream_is_closed_…`). A change of `device` is told to the thread once, by name (`Command::Device`), and the stream is opened on the new one. **The host** is `audio::input_host()`: JACK where the system has it and it has an input device (Linux, where the output prefers it), else the system's default host; it sets nothing in the environment (`select_audio_host` does that, once, at startup).
+- **Where the sound comes from.** A thread of its own (`tang-audio-input`, `Capture`) owns the cpal input stream (which is not `Send`) and fills a lock-free ring of 32,768 stereo frames (`InputRing`: one writer and one reader, a cell an atomic of its own, nothing allocated after it is made); the audio thread reads a block at a time (`RingReader::pull`). It waits for a backlog of two blocks (768 frames at least) before it begins, and again after a dropout, so that the clocks of two devices, which are never the same, do not make a crackle of every block; a backlog of more than 8,192 frames is skipped to the prime, so that the delay stays short (a clock that runs fast is a skipped stretch now and then and one that runs slow a dropout: a click either way, rare). **The microphone is not opened until the first block has been rendered** (`Capture::start`, sent by the plugin's first `process`: a catalog scan, `tang describe` and `tang enumerate` make the plugin and do not open it, so that macOS does not ask a person for a permission that nobody asked for), **and is closed when no block has been rendered for a second** (a heartbeat, `beats`: a lane that was taken out and is kept by the history, or an engine that is stopped, does not keep the microphone open) and opened again when blocks come back; one that cannot be opened, or whose stream fails, is tried again every 3 s (the log says why: `Audio input: …`). The thread's loop is `listen`, generic over what it opens and over its clock (`Timing`), and is held with a fake card and a clock in milliseconds (`nothing_is_opened_until_the_first_block_has_been_rendered_…`, `the_stream_is_closed_when_no_block_is_rendered_…`, `another_device_closes_the_stream_…`, `a_stream_that_says_it_has_failed_…`, `an_input_that_cannot_be_opened_…`, `the_thread_ends_and_the_stream_is_closed_…`). A change of `device` is told to the thread once, by name (`Command::Device`), and the stream is opened on the new one. **The host** is `audio::input_host()`: the system's default host, or JACK if `--jack` was given and it has an input device (the output's host: see "Audio host selection"); it sets nothing in the environment (`select_audio_host` does that, once, at startup).
 - **No device (`--audio-device none`, the tests, CI): a tone.** There is no sound card to listen to, so the plugin plays a sine of 220 Hz at a level of 0.25 in both sides (`TONE_HZ`, `TONE_LEVEL`): in the tests (`cfg!(test)`) and under `--audio-device none` (`plugin::builtin::use_test_tone`, which `run_session` sets before any plugin is made: the TUI, `play` and `serve` alike). It is what the oracle's session and scenario, the real-program test and the browser spec hear and measure.
 - **The terminal, `enumerate` and `listen`.** `tang enumerate audio` lists the inputs after the outputs (`=== Audio Input Devices ===`, the default marked `*`, with channels, rate and format; it opens nothing); `tang listen` opens one and says what it hears (see "Subcommands"). The instrument selector lists "Audio Input" first (the catalog is by name) and **starts on the instrument that the lane has**, as the preset selector starts on the preset that is loaded, so that `n` and Enter, and `i` and Enter, still keep the oscillator that a hand has always chosen (on a lane that has no instrument it starts at the first row): `the_instrument_selector_starts_on_the_instrument_that_the_lane_has_so_that_enter_keeps_it`. **In the terminal `n` adds an oscillator lane and the selector then replaces it, so an Audio Input chosen there is in a lane that has its way out and is heard at once** (`w` cuts it; the Patch tab has its row: `an_audio_input_chosen_in_the_selector_is_in_a_lane_that_has_its_way_out_and_w_cuts_it`).
 - **The page.** "+ Instrument" (and "Change the instrument of X") lists "Audio Input" with the oscillator; the lane is a card with the input's three knobs (`gain`, `pan`, `device`), its volume, its group, its mute and solo, and no link out and (step 99c, below) no key range, no pattern and no input of events, and (step 100) its level along the top edge of the card, which reads the tone before any cable is drawn. The mock engine makes the lane bare as the controller does, from what its fixture says (`builtins.instruments.json` has `route: "none"` for the input, written by Rust: `the_web_clients_fixture_of_the_builtin_instruments_is_current`), pinned by a script of `history.json` (the input added, a cable to the mix that gives the way out back, a cable to an effect, the way out cut again, all of it undone and redone) and by a test of its own in `connection.test.ts`. `web/e2e/input.spec.ts` runs it on the mock (the lane is bare, its knobs, the cable gives the way out back, undo and redo keep it) and on the real program (silent until the cable, the tone at -12 dB through it, the gain, the mute, the file, a page opened again).
@@ -2912,29 +2913,55 @@ one that is plugged in again is opened again and heard.
 
 ## Audio host selection
 
-Tang uses cpal for audio output. The host backend is selected at startup with
-automatic fallback:
+Tang uses cpal for audio output.
 
-| Platform | Preferred | Fallback | Notes |
-|----------|-----------|----------|-------|
-| Linux | JACK (via PipeWire) | ALSA | JACK avoids PipeWire's ALSA compatibility layer, which can destabilize the global audio quantum at small buffer sizes |
-| macOS | CoreAudio | — | Native, no fallback needed |
-| Windows | WASAPI | — | Native, no fallback needed |
+| Platform | Default | Opt-in | Notes |
+|----------|---------|--------|-------|
+| Linux | ALSA (served by PipeWire) | JACK (`--jack`, via PipeWire) | See below |
+| macOS | CoreAudio | — | Native |
+| Windows | WASAPI | — | Native |
 
-On Linux, the JACK host is only used if it can find an output device. This
-requires PipeWire's JACK bridge — either via `pw-jack tang` or by installing
-the system-wide `ld.so.conf` redirect:
+On Linux both hosts go through PipeWire; they differ in how Tang joins its
+graph:
 
-```bash
-sudo cp /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-x86_64-linux-gnu.conf /etc/ld.so.conf.d/
-sudo ldconfig
-```
+- **ALSA (default).** ALSA's `default` device is PipeWire's ALSA plugin, so
+  Tang is an ordinary stream with its own buffer, like Spotify or YouTube. If
+  Tang misses a deadline (heavy plugin, CPU spike), only Tang glitches, and
+  WirePlumber moves it to the new default device when headphones connect or
+  disconnect. The cost is that buffer: roughly one extra `--buffer-size` of
+  latency.
+- **JACK (`--jack`).** Tang runs inside PipeWire's graph cycle, so there is
+  no extra buffer, but PipeWire waits for Tang every cycle: a late Tang cycle
+  glitches every app (YouTube, Teams, …). Requires PipeWire's JACK bridge,
+  either via `pw-jack tang` or the system-wide `ld.so.conf` redirect;
+  `--jack` errors out if it is missing:
 
-Without this, Tang falls back to ALSA transparently.
+  ```bash
+  sudo cp /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-x86_64-linux-gnu.conf /etc/ld.so.conf.d/
+  sudo ldconfig
+  ```
 
-The audio input (step 99) opens its stream on `audio::input_host()`: JACK where the system has it and it has an input device (the host that the output prefers on Linux), else the default host; unlike
-`select_audio_host` it sets nothing in the environment. `tang enumerate audio` lists the inputs of that host, and the outputs of the default host (not of `select_audio_host`'s, which on Linux, where JACK
-is preferred, is another: an older difference that is not mended).
+Both set `PIPEWIRE_LATENCY=<buffer-size>/<sample-rate>`, a per-client hint
+(PipeWire runs the global quantum at the smallest latency any client asks
+for). Without it, the ALSA route requests cpal's period size, a quarter of
+the buffer (cpal splits an ALSA buffer into four periods), which would drag
+the whole system down to a 256-frame quantum at the default buffer size.
+
+**Following the default sink (JACK).** cpal links Tang's output ports to
+`system:playback_*` once at stream start. PipeWire's JACK bridge resolves that
+alias to the current default sink, but the links are fixed, and WirePlumber
+does not move JACK clients to a new default. So with `--jack` and no
+`--audio-device`, a watcher thread (`follow_default_sink` in `src/audio.rs`)
+re-resolves `system:playback_*` about once a second through its own JACK
+client and relinks Tang's ports when the default changes. It only removes the
+links it made, so extra manual links (qpwgraph) survive.
+
+TODO: follow the default device on macOS/Windows (cpal binds the stream to one
+device, so this would mean rebuilding the stream).
+
+The audio input (step 99) opens its stream on `audio::input_host()`: the output's host, which is the system's default host (ALSA on Linux) unless `--jack` was given (`audio::use_jack`, which
+`run_session` calls once at startup, before any plugin is made: the input is a plugin, made far from the command line), and then JACK if it has an input device. Unlike `select_audio_host` it sets nothing in
+the environment. `tang enumerate audio` lists the inputs of that host and the outputs of the default host, which are the same host (`enumerate` takes no `--jack`).
 
 On Linux, the audio callback thread is promoted to `SCHED_FIFO` real-time
 scheduling (priority 50) on its first invocation. This requires the user to

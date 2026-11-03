@@ -5,8 +5,8 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 
 /// Default audio buffer size in frames.
 ///
-/// On Linux, audio goes through PipeWire's JACK bridge, which runs every client
-/// on one driver graph at a single global quantum equal to the *smallest* latency
+/// On Linux, audio goes through PipeWire (via ALSA or the JACK bridge), which runs
+/// every client on one driver graph at a single global quantum equal to the *smallest* latency
 /// any active client requests. A small buffer here would drag the whole system's
 /// quantum down and make other apps (YouTube, etc.) chop. 1024 matches PipeWire's
 /// typical default global quantum, so Tang doesn't disturb anything else; pass
@@ -32,6 +32,11 @@ pub struct Cli {
     /// engine on a timer without a sound card, for CI and headless use.
     #[arg(long, global = true)]
     pub audio_device: Option<String>,
+
+    /// Linux: play through PipeWire's JACK bridge instead of ALSA. Lower
+    /// latency, but a late tang cycle glitches every other app's audio.
+    #[arg(long, global = true)]
+    pub jack: bool,
 
     /// MIDI input device name filter (default: open all)
     #[arg(long, global = true)]
@@ -172,13 +177,13 @@ mod tests {
 
     #[test]
     fn the_flags_of_the_session_commands_work_wherever_they_are_written() {
-        let flags = ["--audio-device", "none", "--midi-device", "keys", "--buffer-size", "128", "--sample-rate", "44100", "--debug"];
+        let flags = ["--audio-device", "none", "--midi-device", "keys", "--buffer-size", "128", "--sample-rate", "44100", "--debug", "--jack"];
         for subcommand in [["play", "x.toml"], ["serve", "x.toml"]] {
             for args in placements(&subcommand, &flags) {
                 let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
                 assert_eq!(cli.audio_device.as_deref(), Some("none"), "{args:?}");
                 assert_eq!(cli.midi_device.as_deref(), Some("keys"), "{args:?}");
-                assert_eq!((cli.buffer_size, cli.sample_rate, cli.debug), (128, 44100, true), "{args:?}");
+                assert_eq!((cli.buffer_size, cli.sample_rate, cli.debug, cli.jack), (128, 44100, true, true), "{args:?}");
             }
         }
     }
@@ -272,7 +277,7 @@ mod tests {
     #[test]
     fn the_flags_are_as_before_when_they_are_not_given() {
         let cli = Cli::try_parse_from(["tang", "play", "x.toml"]).unwrap();
-        assert_eq!((cli.audio_device, cli.midi_device, cli.sample_rate, cli.debug), (None, None, 48000, false));
+        assert_eq!((cli.audio_device, cli.midi_device, cli.sample_rate, cli.debug, cli.jack), (None, None, 48000, false, false));
         assert_eq!(cli.buffer_size.to_string(), DEFAULT_BUFFER_SIZE);
         assert!(Cli::try_parse_from(["tang", "x.toml", "--audio-device", "none"]).is_ok(), "and without a subcommand");
     }

@@ -4359,7 +4359,7 @@ plugin = "builtin:reverb"
         handles.recovery_wait = Duration::from_secs(5);
         let model = testutil::load_onto(EFFECTS, &handles.cmd_tx);
         let graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
-        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), 48_000, 256).unwrap();
+        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), false, 48_000, 256).unwrap();
         let mut ctl = Controller::new(model, handles, None);
         audio.play().unwrap();
         ctl.model.instruments[0].effects[1].id = "builtin:nothing".to_string();
@@ -5133,7 +5133,7 @@ depth = 0.6
         handles.recovery_wait = Duration::from_secs(5);
         let model = testutil::load_onto(LANES, &handles.cmd_tx);
         let graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
-        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), 48_000, 256).unwrap();
+        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), false, 48_000, 256).unwrap();
         let mut ctl = Controller::new(model, handles, None);
         audio.play().unwrap();
         for plugin in ["builtin:nothing", "builtin:nothing"] {
@@ -5457,7 +5457,7 @@ plugin = "builtin:osc"
         handles.recovery_wait = Duration::from_secs(5);
         let model = testutil::load_onto(GROUPS_AMONG_LANES, &handles.cmd_tx);
         let graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
-        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), 48_000, 256).unwrap();
+        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), false, 48_000, 256).unwrap();
         let mut ctl = Controller::new(model, handles, None);
         audio.play().unwrap();
         for effect in &mut ctl.model.groups[0].effects {
@@ -6029,7 +6029,7 @@ size = 0.5
         handles.recovery_wait = Duration::from_secs(5);
         let model = testutil::load_onto(INSTRUMENTS, &handles.cmd_tx);
         let graph = AudioGraph::new(2, engine.cmd_rx.clone(), engine.return_tx.clone());
-        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), 48_000, 256).unwrap();
+        let mut audio = AudioEngine::build(graph, engine.midi_rx.clone(), Some(NULL_DEVICE), false, 48_000, 256).unwrap();
         let mut ctl = Controller::new(model, handles, None);
         ctl.catalog.add(crate::plugin::builtin::enumerate_plugins());
         audio.play().unwrap();

@@ -62,59 +62,65 @@ impl<E: Engine + ?Sized> Engine for Box<E> {
     }
 }
 
-/// Select the best audio host for the current platform.
-/// On Linux, prefer JACK (PipeWire exposes a JACK interface) to avoid the
-/// ALSA compatibility layer which can destabilize PipeWire's global quantum.
+/// Select the audio host for the current platform.
+/// On Linux the default is ALSA, which PipeWire serves as an ordinary stream
+/// with its own buffer: if tang misses a deadline only tang glitches, and
+/// WirePlumber moves it to a new default device like any other app. `--jack`
+/// instead runs tang inside PipeWire's graph cycle through the JACK bridge,
+/// which avoids that extra buffer but lets a late tang cycle glitch every app.
 #[cfg(target_os = "linux")]
-fn select_audio_host(buffer_size: u32, sample_rate: u32) -> cpal::Host {
-    let available = cpal::available_hosts();
-    if available.contains(&cpal::HostId::Jack) {
-        // Request our latency from PipeWire as a cooperative hint. PIPEWIRE_LATENCY
-        // is per-client: PipeWire negotiates the global quantum as the min across
-        // active clients, and other apps recover when ours is paused or xruns.
-        // PIPEWIRE_QUANTUM, by contrast, would force the global quantum and make
-        // tang's xruns crackle YouTube and every other PipeWire client.
-        let latency = format!("{buffer_size}/{sample_rate}");
-        // SAFETY: called once at startup before other threads read env vars.
-        unsafe { std::env::set_var("PIPEWIRE_LATENCY", &latency) };
-        log::info!("Set PIPEWIRE_LATENCY={latency}");
+fn select_audio_host(jack: bool, buffer_size: u32, sample_rate: u32) -> anyhow::Result<cpal::Host> {
+    // Request our latency from PipeWire as a cooperative hint. PIPEWIRE_LATENCY
+    // is per-client: PipeWire negotiates the global quantum as the min across
+    // active clients, and other apps recover when ours is paused or xruns.
+    // PIPEWIRE_QUANTUM, by contrast, would force the global quantum. Without
+    // the hint, PipeWire's ALSA plugin requests cpal's period size, which is a
+    // quarter of the buffer, and drags the global quantum down with it.
+    let latency = format!("{buffer_size}/{sample_rate}");
+    // SAFETY: called once at startup before other threads read env vars.
+    unsafe { std::env::set_var("PIPEWIRE_LATENCY", &latency) };
+    log::info!("Set PIPEWIRE_LATENCY={latency}");
 
-        match cpal::host_from_id(cpal::HostId::Jack) {
-            Ok(h) => {
-                // Verify JACK can actually find an output device before committing.
-                // Without PipeWire's JACK bridge (pw-jack or ld.so.conf), the host
-                // object is created but cannot connect to any server.
-                if h.default_output_device().is_some() {
-                    log::info!("Using JACK audio host (PipeWire)");
-                    return h;
-                }
-                log::warn!("JACK host has no output devices, falling back to ALSA");
-            }
-            Err(_) => {
-                log::warn!("JACK host unavailable, falling back to ALSA");
-            }
-        }
-        // SAFETY: same single-threaded startup context.
-        unsafe { std::env::remove_var("PIPEWIRE_LATENCY") };
+    if !jack {
+        log::info!("Using ALSA audio host");
+        return Ok(cpal::default_host());
     }
-    log::info!("Using default audio host (ALSA)");
-    cpal::default_host()
+
+    let host = cpal::host_from_id(cpal::HostId::Jack)
+        .map_err(|e| anyhow::anyhow!("JACK host unavailable: {e}"))?;
+    // Without PipeWire's JACK bridge (pw-jack or ld.so.conf), the host object
+    // is created but cannot connect to any server.
+    if host.default_output_device().is_none() {
+        anyhow::bail!("JACK host has no output devices (run with pw-jack, or install PipeWire's JACK ld.so.conf)");
+    }
+    log::info!("Using JACK audio host (PipeWire)");
+    Ok(host)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn select_audio_host(_buffer_size: u32, _sample_rate: u32) -> cpal::Host {
+fn select_audio_host(_jack: bool, _buffer_size: u32, _sample_rate: u32) -> anyhow::Result<cpal::Host> {
     log::info!("Using default audio host");
-    cpal::default_host()
+    Ok(cpal::default_host())
 }
 
-/// The audio host an input stream is opened on (the audio input, `builtin:input`): JACK where the system has it and it has an input device (on Linux, where the output
-/// prefers it, so that the input does not go through the ALSA layer of PipeWire that choice avoids), and the system's default host everywhere else. It sets nothing in the
-/// environment (`select_audio_host` does that once, at startup, before other threads read it), and it is asked by name, so that it is the same code on every platform.
+/// Whether `--jack` was given (set once, at startup, before any plugin is made: the audio input is a plugin, which is made far from the command line).
+static JACK_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Say whether `--jack` was given, so that the audio input opens its stream on the host that the output does.
+pub fn use_jack(jack: bool) {
+    JACK_REQUESTED.store(jack, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The audio host an input stream is opened on (the audio input, `builtin:input`): the output's host, which is the system's default host (ALSA on Linux) unless `--jack` was given,
+/// and then JACK if it has an input device (so that the input goes where the output goes: through PipeWire's JACK bridge and not through the ALSA layer). It sets nothing in the
+/// environment (`select_audio_host` does that once, at startup, before other threads read it), and JACK is asked for by name, so that it is the same code on every platform.
 pub fn input_host() -> cpal::Host {
-    let jack = cpal::available_hosts().into_iter().find(|id| id.name() == "JACK");
-    if let Some(host) = jack.and_then(|id| cpal::host_from_id(id).ok()) {
-        if host.default_input_device().is_some() {
-            return host;
+    if JACK_REQUESTED.load(std::sync::atomic::Ordering::Relaxed) {
+        let jack = cpal::available_hosts().into_iter().find(|id| id.name() == "JACK");
+        if let Some(host) = jack.and_then(|id| cpal::host_from_id(id).ok()) {
+            if host.default_input_device().is_some() {
+                return host;
+            }
         }
     }
     cpal::default_host()
@@ -446,8 +452,59 @@ fn render_on_a_timer(mut renderer: Renderer, frames: usize, period: Duration, st
     renderer
 }
 
+/// Keep our JACK output ports linked to the system default sink as it changes.
+/// cpal links them to `system:playback_*` once; PipeWire's JACK bridge resolves
+/// that alias to the current default sink, but the links themselves are fixed
+/// and WirePlumber does not move JACK clients the way it moves regular streams.
+/// Dropping the returned sender stops the watcher.
+#[cfg(target_os = "linux")]
+fn follow_default_sink(client_name: String, num_channels: usize) -> Option<crossbeam_channel::Sender<()>> {
+    use jack::PortSpec;
+
+    let client = match jack::Client::new("tang_follow_default", jack::ClientOptions::NO_START_SERVER) {
+        Ok((client, _)) => client,
+        Err(e) => {
+            log::warn!("Cannot follow the default audio sink: {e}");
+            return None;
+        }
+    };
+    let audio_type = jack::AudioIn.jack_port_type().to_owned();
+    let default_sink = move |client: &jack::Client| {
+        client.ports(Some("system:playback_.*"), Some(&audio_type), jack::PortFlags::IS_INPUT)
+    };
+    let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(0);
+    let mut linked = default_sink(&client);
+    std::thread::Builder::new()
+        .name("follow-default-sink".into())
+        .spawn(move || {
+            while stop_rx.recv_timeout(std::time::Duration::from_secs(1))
+                == Err(crossbeam_channel::RecvTimeoutError::Timeout)
+            {
+                let sinks = default_sink(&client);
+                if sinks.is_empty() || sinks == linked {
+                    continue;
+                }
+                log::info!("Default audio sink changed, relinking to {sinks:?}");
+                for ch in 0..num_channels {
+                    let port = format!("{client_name}:out_{ch}");
+                    if !linked.is_empty() {
+                        client.disconnect_ports_by_name(&port, &linked[ch % linked.len()]).ok();
+                    }
+                    if let Err(e) = client.connect_ports_by_name(&port, &sinks[ch % sinks.len()]) {
+                        log::warn!("Failed to link {port}: {e}");
+                    }
+                }
+                linked = sinks;
+            }
+        })
+        .ok()?;
+    Some(stop_tx)
+}
+
 pub struct AudioEngine {
     backend: Backend,
+    #[cfg(target_os = "linux")]
+    _follow_default_sink: Option<crossbeam_channel::Sender<()>>,
 }
 
 enum Backend {
@@ -492,6 +549,7 @@ impl AudioEngine {
         graph: impl Engine + 'static,
         midi_rx: Receiver<MidiEvent>,
         device_name: Option<&str>,
+        jack: bool,
         sample_rate: u32,
         buffer_size: u32,
     ) -> anyhow::Result<Self> {
@@ -504,9 +562,11 @@ impl AudioEngine {
                     period: block_period(buffer_size, sample_rate),
                     running: None,
                 })),
+                #[cfg(target_os = "linux")]
+                _follow_default_sink: None,
             });
         }
-        let host = select_audio_host(buffer_size, sample_rate);
+        let host = select_audio_host(jack, buffer_size, sample_rate)?;
 
         let device = if let Some(name) = device_name {
             host.output_devices()?
@@ -565,7 +625,15 @@ impl AudioEngine {
             None,
         )?;
 
-        Ok(AudioEngine { backend: Backend::Cpal(stream) })
+        Ok(AudioEngine {
+            backend: Backend::Cpal(stream),
+            #[cfg(target_os = "linux")]
+            _follow_default_sink: if host.id() == cpal::HostId::Jack && device_name.is_none() {
+                follow_default_sink(dev_name, num_channels)
+            } else {
+                None
+            },
+        })
     }
 }
 
@@ -1023,7 +1091,7 @@ mod tests {
         let mut graph = AudioGraph::new(2, cmd_rx, return_tx);
         let telemetry = Arc::new(Telemetry::new());
         graph.set_telemetry(telemetry.clone());
-        let engine = AudioEngine::build(graph, midi_rx, Some(NULL_DEVICE), 48_000, buffer_size).expect("the null backend needs no device");
+        let engine = AudioEngine::build(graph, midi_rx, Some(NULL_DEVICE), false, 48_000, buffer_size).expect("the null backend needs no device");
         NullRig { engine, midi_tx, cmd_tx, telemetry, _return_rx: return_rx }
     }
 

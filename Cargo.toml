@@ -57,6 +57,7 @@ libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.15", features = ["jack"] }
+jack = "0.11"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CoreMIDI only learns of a device that is plugged in or unplugged on the run loop of a thread (`midi::let_the_system_see_the_devices`): the version that cpal's CoreAudio has already.
