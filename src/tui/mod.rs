@@ -44,6 +44,7 @@ use crate::app::model::{
     ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, SYNC_DIVISIONS, SessionModel, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
     modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
 };
+use crate::note_input::Delivery;
 use crate::piano_filter::PianoMode;
 use crate::plugin;
 use crate::plugin::chain::{GraphCommand, ModulatorLocation};
@@ -418,6 +419,12 @@ struct SaveAsState {
     error: Option<String>,
 }
 
+/// State for the "send CC" popup.
+struct SendCcState {
+    input: TextInputState,
+    error: Option<String>,
+}
+
 /// State for the popup that names the module that a chain of effects is saved as (step 104).
 struct SaveModuleState {
     /// The lane whose chain is saved (`Intent::SaveModule` takes a lane or an effect of its chain).
@@ -487,6 +494,9 @@ struct State {
     gain_editing: Option<GainEditState>,
     save_as: Option<SaveAsState>,
     save_module: Option<SaveModuleState>,
+    send_cc: Option<SendCcState>,
+    /// Prefills the next send-CC popup.
+    last_cc: String,
     // Piano tab state.
     /// Center MIDI octave for the piano view (0..=8). Default 4.
     piano_view_octave: i8,
@@ -546,6 +556,8 @@ impl State {
             gain_editing: None,
             save_as: None,
             save_module: None,
+            send_cc: None,
+            last_cc: String::new(),
             piano_view_octave: 4,
             scale_selector: None,
             scope: scope_view::Scope::new(),
@@ -1906,6 +1918,7 @@ fn popup_is_open(s: &State) -> bool {
         || s.cable_editing.is_some()
         || s.save_as.is_some()
         || s.save_module.is_some()
+        || s.send_cc.is_some()
         || s.editing.is_some()
         || s.range_edit.is_some()
         || s.rename_group.is_some()
@@ -1976,6 +1989,8 @@ fn handle_event(s: &mut State, ev: Event) {
                 handle_save_as_key(s, key.code);
             } else if s.save_module.is_some() {
                 handle_save_module_key(s, key.code);
+            } else if s.send_cc.is_some() {
+                handle_send_cc_key(s, key.code);
             } else if s.editing.is_some() {
                 handle_edit_key(s, key.code);
             } else if s.range_edit.is_some() {
@@ -2004,6 +2019,7 @@ fn handle_event(s: &mut State, ev: Event) {
                 || s.cable_editing.is_some()
                 || s.save_as.is_some()
                 || s.save_module.is_some()
+                || s.send_cc.is_some()
             {
                 if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                     s.selector = None;
@@ -2021,6 +2037,7 @@ fn handle_event(s: &mut State, ev: Event) {
                     s.cable_editing = None;
                     s.save_as = None;
                     s.save_module = None;
+                    s.send_cc = None;
                 }
                 return;
             }
@@ -2333,6 +2350,61 @@ fn handle_cable_edit_key(s: &mut State, code: KeyCode) {
         KeyCode::Home => ce.edit.input.home(),
         KeyCode::End => ce.edit.input.end(),
         KeyCode::Char(ch) => ce.edit.input.insert(ch),
+        _ => {}
+    }
+}
+
+/// Parses `<cc> <value> [channel]` into a Control Change message. Channel is
+/// 1-based and defaults to 1, which the router duplicates to every instrument.
+fn parse_cc_message(input: &str) -> Result<[u8; 3], String> {
+    let fields: Vec<&str> = input.split_whitespace().collect();
+    if fields.len() < 2 || fields.len() > 3 {
+        return Err("expected: <cc> <value> [channel]".into());
+    }
+    let num = |s: &str, name: &str, min: u8, max: u8| match s.parse::<u8>() {
+        Ok(n) if (min..=max).contains(&n) => Ok(n),
+        _ => Err(format!("{name} must be {min}-{max}")),
+    };
+    let cc = num(fields[0], "CC", 0, 127)?;
+    let value = num(fields[1], "value", 0, 127)?;
+    let channel = match fields.get(2) {
+        Some(f) => num(f, "channel", 1, 16)?,
+        None => 1,
+    };
+    Ok([0xB0 | (channel - 1), cc, value])
+}
+
+fn handle_send_cc_key(s: &mut State, code: KeyCode) {
+    let Some(sc) = s.send_cc.as_mut() else { return };
+    match code {
+        KeyCode::Esc => s.send_cc = None,
+        KeyCode::Enter => match parse_cc_message(&sc.input.value) {
+            Ok(bytes) => match s.ctl.note_input().send(&bytes) {
+                Delivery::Sent => {
+                    s.ctl.midi_monitor.record(&bytes);
+                    s.last_cc = sc.input.value.trim().to_string();
+                    s.send_cc = None;
+                }
+                other => sc.error = Some(format!("not sent: {other:?}")),
+            },
+            Err(e) => sc.error = Some(e),
+        },
+        KeyCode::Backspace => {
+            sc.error = None;
+            sc.input.backspace();
+        }
+        KeyCode::Delete => {
+            sc.error = None;
+            sc.input.delete();
+        }
+        KeyCode::Left => sc.input.move_left(),
+        KeyCode::Right => sc.input.move_right(),
+        KeyCode::Home => sc.input.home(),
+        KeyCode::End => sc.input.end(),
+        KeyCode::Char(ch) => {
+            sc.error = None;
+            sc.input.insert(ch);
+        }
         _ => {}
     }
 }
@@ -2738,6 +2810,12 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 // (A recording is stopped by a second `r`; the tempo and the length are sent first when it starts.)
                 s.apply(Intent::SetRecording { node, recording: !going });
             }
+        }
+
+        KeyCode::Char('c') if s.active_tab == TAB_SESSION => {
+            let mut input = TextInputState::new(&s.last_cc);
+            input.end();
+            s.send_cc = Some(SendCcState { input, error: None });
         }
 
         // 'b' — edit BPM.
@@ -3423,6 +3501,9 @@ fn draw(frame: &mut ratatui::Frame, s: &mut State) {
             if let Some(sm) = &s.save_module {
                 render_save_module_popup(frame, area, sm);
             }
+            if let Some(sc) = &s.send_cc {
+                render_send_cc_popup(frame, area, sc);
+            }
         }
         TAB_PIANO => {
             render_piano_tab(frame, content_area, s);
@@ -3947,6 +4028,30 @@ fn render_loading_popup(frame: &mut ratatui::Frame, area: Rect, name: &str) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     frame.render_widget(Paragraph::new(text).alignment(ratatui::layout::Alignment::Center), inner);
+}
+
+fn render_send_cc_popup(frame: &mut ratatui::Frame, area: Rect, sc: &SendCcState) {
+    let popup = centered_rect(40, 5, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Send CC ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.height >= 2 {
+        let hint = match &sc.error {
+            Some(e) => Paragraph::new(e.as_str()).style(Style::default().fg(Color::Red)),
+            None => Paragraph::new("<cc> <value> [channel=1], e.g. 64 80")
+                .style(Style::default().fg(DIM)),
+        };
+        frame.render_widget(hint, Rect::new(inner.x, inner.y, inner.width, 1));
+        frame.render_widget(
+            TextInput::new(&sc.input),
+            Rect::new(inner.x, inner.y + 1, inner.width, 1),
+        );
+    }
 }
 
 fn render_save_as_popup(frame: &mut ratatui::Frame, area: Rect, sa: &SaveAsState) {
@@ -4877,6 +4982,7 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
         "  r          Record/stop pattern".into(),
         "  Ctrl+R     Clear pattern".into(),
         "  b          Set BPM".into(),
+        "  c          Send a MIDI CC (e.g. 64 80 = sustain), any focus".into(),
         "  L          Put the limiter on the output in the sound, or take it out (it holds the mix under its ceiling and does not let it clip)".into(),
         "  C          Set the limiter's ceiling (dB below full scale)".into(),
         "  V          Set the master volume (before the limiter)".into(),
@@ -4937,6 +5043,16 @@ fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_cc_message_defaults_to_channel_1() {
+        assert_eq!(parse_cc_message("64 80"), Ok([0xB0, 64, 80]));
+        assert_eq!(parse_cc_message(" 1 127 16 "), Ok([0xBF, 1, 127]));
+        assert!(parse_cc_message("64").is_err());
+        assert!(parse_cc_message("128 0").is_err());
+        assert!(parse_cc_message("64 80 0").is_err());
+        assert!(parse_cc_message("64 80 1 2").is_err());
+    }
 
     #[test]
     fn truncate_is_char_boundary_safe() {

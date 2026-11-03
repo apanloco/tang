@@ -2098,6 +2098,7 @@ A parameter that has an effect only sometimes (`ParameterInfo::used_when`: see "
 | `r` | Record/stop pattern for current instrument |
 | `Ctrl+R` | Clear the pattern of the selected instrument or pattern (chain focus; `d` on the pattern does the same) |
 | `b` | Set the tempo patterns are recorded at, in BPM (opens value entry popup; the `SetBpm` intent: held to 20–300, a step of the history, saved as `bpm`) |
+| `c` | Send a MIDI CC message (any focus; popup takes `<cc> <value> [channel]`, channel defaults to 1, which reaches every instrument; prefilled with the last message sent). E.g. `64 80` presses the sustain pedal, `64 0` releases it. Sent as the keys' source (`Source::KEYS`), like the virtual piano, so an armed MIDI-learn modulator captures it and a lane wired to hear only some devices does not get it |
 | `o` | Show / hide the scope of the node under the chain cursor, in a strip under the chain and the parameters (see "Scope tab"; a terminal of 24 rows or more) |
 | `O` | Wave or spectrum of that scope |
 | `Ctrl+S` | Save session (to the file it was loaded from) |
