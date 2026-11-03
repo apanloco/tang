@@ -1,199 +1,73 @@
+mod clip;
+#[cfg(test)]
+mod golden_tests;
+mod patch_view;
 mod piano_view;
+mod scope_view;
 pub mod splash;
+mod terminal_input;
+mod web;
 
 use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::Sender;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Terminal;
 
+use crossbeam_channel::Receiver;
+use terminal_input::TerminalReader;
 use view::DIM;
+use web::{Web, WebStatus};
 use view::filter_list::{FilterListItem, FilterListState};
 use view::list::{ListItem, ListSpan, ListState};
 use view::scroll_view::ScrollLine;
 use view::text_input::TextInputState;
 use view::{FilterList, List, ScrollView, TabBar, TextInput, centered_rect};
 
-use crate::audio;
-use crate::held_notes::HeldNotes;
-use crate::piano_filter::{PianoFilter, PianoMode};
+use crate::app::controller::Controller;
+use crate::app::graph::NoteRange;
+use crate::cli::WebArgs;
+use crate::app::intent::{self, Applied, Gain, Intent, ModulatorField, ModulatorKind, PatternField, Taper};
+use crate::app::module;
+use crate::app::model::{
+    AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, DEPTH_MAX, DEPTH_MIN, Driven, EdgeId, FREE, GroupNode, InstrumentNode, MAX_NAME, ModSourceSlot, ModTargetSlot, ModulatorRow, ModulatorSlot, NodeId, NodePath,
+    ParamKind, ParamSlot, PluginSlot, STEP_MAX, STEP_MIN, SYNC_DIVISIONS, SessionModel, format_from_id, mod_source_slot_to_graph, modulator_param_is_enum,
+    modulator_param_len, modulator_param_range, modulator_row, modulator_row_to_cross_mod,
+};
+use crate::piano_filter::PianoMode;
 use crate::plugin;
-use crate::plugin::chain::GraphCommand;
-use crate::plugin::PluginInfo;
+use crate::plugin::chain::{GraphCommand, ModulatorLocation};
 use crate::scale::{ScaleSetting, NOTE_NAMES};
+use crate::session::{Feed, Route};
+use crate::telemetry;
 
-const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Help"];
+const TAB_NAMES: &[&str] = &["(1) Session", "(2) Piano", "(3) Scope", "(4) Patch", "(5) Help"];
+/// The tabs by their place in `TAB_NAMES`, which is what `State::active_tab` is.
+const TAB_SESSION: usize = 0;
+const TAB_PIANO: usize = 1;
+const TAB_SCOPE: usize = 2;
+const TAB_PATCH: usize = 3;
+const TAB_HELP: usize = 4;
 const TAB_SEP: &str = " │ ";
 
-/// Default dry/wet mix for a newly added effect. Half-wet suits blend/parallel
-/// effects (reverb, delay), the common DAW default for sends.
-const DEFAULT_EFFECT_MIX: f32 = 0.5;
-
-/// Default dry/wet mix for a freshly added effect, by plugin. Filters and
-/// other tone-shaping inserts must be fully wet — at 50% the dry path passes
-/// the very frequencies the filter removes, so e.g. a highpass barely changes
-/// the sound. Blend effects (reverb) keep the half-wet default.
-fn default_effect_mix(id: &str) -> f32 {
-    if id == "builtin:filter" {
-        1.0
-    } else {
-        DEFAULT_EFFECT_MIX
+/// What the tab bar says on each tab: the names, and the mark on the Session tab while the session has changes that are not saved. What a click hits is
+/// worked out from the same words, so that it is the tab that is drawn where it is clicked.
+fn tab_labels(dirty: bool) -> Vec<&'static str> {
+    let mut labels = TAB_NAMES.to_vec();
+    if dirty {
+        labels[TAB_SESSION] = "(1) Session *";
     }
-}
-
-// ---------------------------------------------------------------------------
-// Plugin slot — main-thread mirror of what the audio thread has
-// ---------------------------------------------------------------------------
-
-struct PluginSlot {
-    name: String,
-    format: String,
-    #[allow(dead_code)]
-    id: String,
-    #[allow(dead_code)]
-    is_instrument: bool,
-    params: Vec<ParamSlot>,
-    /// All presets the plugin reports, cached at load time. Used by the
-    /// preset selector popup.
-    presets: Vec<plugin::Preset>,
-    /// Name of the currently-loaded preset (if any). Tracked for save
-    /// round-trip and display.
-    current_preset: Option<String>,
-    /// Effect dry/wet mix (1.0 = full wet). Only meaningful for effect slots;
-    /// instrument slots leave this at 1.0 and don't read it.
-    mix: f32,
-}
-
-enum ParamKind {
-    Float,
-    Enum(Vec<String>),
-    Separator,
-}
-
-struct ParamSlot {
-    name: String,
-    index: u32,
-    min: f32,
-    max: f32,
-    default: f32,
-    value: f32,
-    kind: ParamKind,
-}
-
-// ---------------------------------------------------------------------------
-// Instrument tree model
-// ---------------------------------------------------------------------------
-
-/// Main-thread mirror of pattern state for an instrument.
-struct PatternState {
-    bpm: f32,
-    length_beats: f32,
-    looping: bool,
-    base_note: Option<u8>,
-    events: Vec<(u64, u8, u8, u8)>, // (frame, status, note, velocity)
-    enabled: bool,
-    recording: bool,
-    /// Transpose playback by scale degrees (in-key) instead of semitones.
-    in_key: bool,
-}
-
-struct InstrumentNode {
-    range: Option<(u8, u8)>,
-    transpose: i8,
-    /// Host-side output gain, applied before effects (1.0 = unity).
-    volume: f32,
-    instrument: Option<PluginSlot>,
-    effects: Vec<PluginSlot>,
-    /// Lane-scoped modulators. Each target addresses a plugin in this chain by
-    /// slot (0 = instrument, 1..N = effects).
-    modulators: Vec<ModulatorSlot>,
-    pattern: Option<PatternState>,
-    /// Carried through from session config; not editable in the TUI.
-    pitch_bend_range: f64,
-    remap: std::collections::HashMap<String, crate::session::RemapTarget>,
-    /// Submix group membership: index into `State.groups`, or None.
-    group: Option<usize>,
-}
-
-/// A submix group in the TUI model: members are the instruments whose `group`
-/// points here; it sums them and runs its own effect chain + volume.
-struct GroupNode {
-    name: Option<String>,
-    volume: f32,
-    /// Stereo balance pan for the group bus (-1 left … 0 center … +1 right).
-    pan: f32,
-    effects: Vec<PluginSlot>,
-    /// Group-scoped modulators. Each target addresses a member instrument
-    /// (`GroupMember`), a bus effect (`GroupBus`), or a sibling group modulator.
-    modulators: Vec<ModulatorSlot>,
-}
-
-enum ModSourceSlot {
-    Lfo {
-        waveform: crate::plugin::chain::LfoWaveform,
-        rate: f32,
-    },
-    Envelope {
-        attack: f32,
-        decay: f32,
-        sustain: f32,
-        release: f32,
-    },
-    /// A MIDI-learned control (CC or pitch bend). `source` is None while
-    /// `learning` (armed for the next incoming control).
-    MidiLearn {
-        source: Option<crate::plugin::chain::MidiBindSource>,
-        learning: bool,
-    },
-}
-
-impl ModSourceSlot {
-    /// A short label for the source (used in the tree and param pane).
-    fn label(&self) -> String {
-        use crate::plugin::chain::MidiBindSource;
-        match self {
-            ModSourceSlot::Lfo { waveform, rate } => format!("LFO {:.1}Hz {}", rate, waveform.name()),
-            ModSourceSlot::Envelope { .. } => "ADSR".to_string(),
-            ModSourceSlot::MidiLearn { source, learning } => match source {
-                Some(MidiBindSource::Cc(n)) => format!("CC {n}"),
-                Some(MidiBindSource::PitchBend) => "Pitch Bend".to_string(),
-                Some(MidiBindSource::Aftertouch) => "Aftertouch".to_string(),
-                None if *learning => "MIDI (learning…)".to_string(),
-                None => "MIDI (unbound)".to_string(),
-            },
-        }
-    }
-}
-
-struct ModulatorSlot {
-    source: ModSourceSlot,
-    targets: Vec<ModTargetSlot>,
-}
-
-struct ModTargetSlot {
-    /// Slot the target lives on: 0 = instrument, 1..N = effects. Used to label
-    /// the target with its plugin and to resolve cross-mod vs plugin params.
-    slot: usize,
-    param_name: String,
-    kind: crate::plugin::chain::ModTargetKind,
-    depth: f32,
-    #[allow(dead_code)]
-    param_min: f32,
-    #[allow(dead_code)]
-    param_max: f32,
+    labels
 }
 
 /// Addresses a specific node in the instrument tree.
@@ -202,16 +76,12 @@ enum TreeAddress {
     Instrument(usize),
     Effect { inst: usize, index: usize },
     Pattern(usize),
-    /// A lane-scoped modulator. `index` is its position in the instrument's
-    /// modulator list.
-    Modulator { inst: usize, index: usize },
     /// A submix group header node.
     Group(usize),
     /// An effect on a group's bus chain.
     GroupEffect { group: usize, index: usize },
-    /// A group-scoped modulator. `index` is its position in the group's
-    /// modulator list.
-    GroupModulator { group: usize, index: usize },
+    /// A modulator, wherever the tree lists it (under the lane or the group it hears, or first, if it hears every note). `index` is its position in the session's own rack.
+    FreeModulator { index: usize },
 }
 
 impl TreeAddress {
@@ -221,35 +91,30 @@ impl TreeAddress {
             TreeAddress::Instrument(inst) => Some(inst),
             TreeAddress::Effect { inst, .. } => Some(inst),
             TreeAddress::Pattern(inst) => Some(inst),
-            TreeAddress::Modulator { inst, .. } => Some(inst),
-            TreeAddress::Group(_)
-            | TreeAddress::GroupEffect { .. }
-            | TreeAddress::GroupModulator { .. } => None,
+            TreeAddress::Group(_) | TreeAddress::GroupEffect { .. } | TreeAddress::FreeModulator { .. } => None,
         }
     }
 
-    /// Get the audio thread slot index (0 = instrument, 1..N = effects).
-    /// Modulators are lane-scoped (not tied to a slot), so they report 0.
-    fn slot(&self) -> usize {
-        match *self {
-            TreeAddress::Instrument(_) => 0,
-            TreeAddress::Effect { index, .. } => index + 1,
-            TreeAddress::Pattern(_) => 0,
-            TreeAddress::Modulator { .. } => 0,
-            TreeAddress::Group(_) => 0,
-            TreeAddress::GroupEffect { index, .. } => index + 1,
-            TreeAddress::GroupModulator { .. } => 0,
-        }
-    }
 }
 
 struct TreeEntry {
     label: String,
     address: TreeAddress,
-    #[allow(dead_code)]
-    color: Color,
+    /// The node of the session the entry is of (a lane's, for its pattern). An address is a
+    /// position, and what is at it changes as nodes come and go; this does not.
+    node: NodeId,
+    /// What the tree says of the kind of entry by its colour: a group's header is cyan and a modulator magenta; the rest have none of their own.
+    color: Option<Color>,
     #[allow(dead_code)]
     indent: usize,
+}
+
+/// What an entry of the tree is made of, whatever place it has: the kind of entry (a lane's pattern is an entry of
+/// the lane's node, as its instrument is) and the id of the node.
+type EntryKey = (std::mem::Discriminant<TreeAddress>, NodeId);
+
+fn entry_key(entry: &TreeEntry) -> EntryKey {
+    (std::mem::discriminant(&entry.address), entry.node)
 }
 
 // ---------------------------------------------------------------------------
@@ -259,12 +124,15 @@ struct TreeEntry {
 /// Build the action bar items for the current tree selection.
 fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> {
     match addr {
+        // (As long as a terminal of 120 columns shows: M and S are what made it too long, and "replace", "vol" and "add fx" are what it was shortened by.)
         Some(TreeAddress::Instrument(_)) => vec![
             ("n", "new instr"),
-            ("i", "instrument"),
+            ("i", "replace"),
             ("R", "range"),
-            ("v", "volume"),
-            ("a", "add effect"),
+            ("v", "vol"),
+            ("M", "mute"),
+            ("S", "solo"),
+            ("a", "add fx"),
             ("m", "modulate"),
             ("g", "group"),
             ("d", "delete"),
@@ -272,7 +140,7 @@ fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> 
         ],
         Some(TreeAddress::Effect { .. }) => vec![
             ("n", "new instr"),
-            ("a", "add effect"),
+            ("a", "add fx"),
             ("m", "modulate"),
             ("x", "mix"),
             ("d", "delete"),
@@ -282,14 +150,19 @@ fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> 
             ("r", "record"),
             ("d", "clear"),
         ],
-        Some(TreeAddress::Modulator { .. }) => vec![
+        // (A modulator is in no lane: `F` makes another, and is only said here.)
+        Some(TreeAddress::FreeModulator { .. }) => vec![
+            ("F", "new free"),
             ("t", "add target"),
+            ("h", "hears"),
             ("d", "delete"),
         ],
         Some(TreeAddress::Group(_)) => vec![
             ("a", "add fx"),
             ("m", "modulate"),
-            ("v", "volume"),
+            ("v", "vol"),
+            ("M", "mute"),
+            ("S", "solo"),
             ("R", "rename"),
             ("d", "delete group"),
         ],
@@ -299,10 +172,6 @@ fn actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static str)> 
             ("x", "mix"),
             ("d", "delete"),
             ("p", "presets"),
-        ],
-        Some(TreeAddress::GroupModulator { .. }) => vec![
-            ("t", "add target"),
-            ("d", "delete"),
         ],
         None => vec![("n", "new instr")],
     }
@@ -324,7 +193,7 @@ fn param_actions_for(addr: Option<&TreeAddress>) -> Vec<(&'static str, &'static 
         ],
         // Modulator pseudo-params (rate/ADSR/depth): edit, cross-modulate, or
         // MIDI-learn the row.
-        Some(TreeAddress::Modulator { .. }) | Some(TreeAddress::GroupModulator { .. }) => {
+        Some(TreeAddress::FreeModulator { .. }) => {
             vec![("Enter", "edit"), ("m", "modulate"), ("l", "learn")]
         }
         // Group Volume/Pan and pattern settings: edit only.
@@ -342,6 +211,22 @@ fn action_bar_items(addr: Option<&TreeAddress>, focus_params: bool) -> Vec<(&'st
     }
 }
 
+/// What the action bar of the Patch tab says, with the key that a click on each presses: the key as it is written, what it does and the key.
+const PATCH_ACTIONS: &[(&str, &str, KeyCode)] = &[
+    ("Enter", "pin / unpin", KeyCode::Enter),
+    ("+", "louder", KeyCode::Char('+')),
+    ("-", "softer", KeyCode::Char('-')),
+    ("e", "type a level", KeyCode::Char('e')),
+    ("d", "remove", KeyCode::Char('d')),
+    ("w", "way out", KeyCode::Char('w')),
+    ("M", "mute", KeyCode::Char('M')),
+    ("S", "solo", KeyCode::Char('S')),
+];
+
+/// `PATCH_ACTIONS` as the action bar draws them.
+fn patch_action_items() -> Vec<(&'static str, &'static str)> {
+    PATCH_ACTIONS.iter().map(|&(key, what, _)| (key, what)).collect()
+}
 // ---------------------------------------------------------------------------
 // Popup state types
 // ---------------------------------------------------------------------------
@@ -350,6 +235,8 @@ fn action_bar_items(addr: Option<&TreeAddress>, focus_params: bool) -> Vec<(&'st
 enum SelectorMode {
     Instrument,
     Effect,
+    /// Add an effect that stands by itself, in a lane of its own (step 87).
+    FreeEffect,
     /// Add an effect to a group's bus chain.
     GroupEffect(usize),
 }
@@ -367,80 +254,103 @@ struct EditState {
     param_max: f32,
 }
 
-/// Which host-side gain a `GainEditState` is editing.
-enum GainTarget {
-    /// Dry/wet mix of the effect at `effects[index]`.
-    Mix { index: usize },
-    /// Instrument output volume (applied before effects).
-    Volume,
-    /// A group's output volume.
-    GroupVolume { group: usize },
-    /// Dry/wet mix of a group bus effect.
-    GroupMix { group: usize, index: usize },
-}
-
 /// Editing a host-side gain (effect mix or instrument/group volume) via the
 /// value popup. These live outside the plugin parameter list.
 struct GainEditState {
-    /// Instrument index for instrument-scoped targets (ignored for group ones).
-    inst: usize,
-    target: GainTarget,
+    node: NodeId,
+    gain: Gain,
     edit: EditState,
+}
+
+impl GainEditState {
+    /// A popup for `gain` of `node`, starting at its `current` value.
+    fn new(node: NodeId, gain: Gain, current: f32, label: &str) -> Self {
+        let (param_min, param_max) = gain.range();
+        GainEditState {
+            node,
+            gain,
+            edit: EditState {
+                input: TextInputState::new(&format!("{current:.2}")),
+                param_name: label.to_string(),
+                param_min,
+                param_max,
+            },
+        }
+    }
+}
+
+/// Editing the level of an audio cable (`e` on the Patch tab) via the value popup.
+struct CableEditState {
+    edge: EdgeId,
+    edit: EditState,
+}
+
+impl CableEditState {
+    /// A popup for the level of the cable `edge`, which is at `current` now.
+    fn new(edge: EdgeId, current: f32) -> Self {
+        CableEditState {
+            edge,
+            edit: EditState { input: TextInputState::new(&format!("{current:.2}")), param_name: "level of the cable".to_string(), param_min: 0.0, param_max: CABLE_GAIN_MAX },
+        }
+    }
 }
 
 /// One entry in the target selector popup.
 struct TargetEntry {
-    label: String,
-    /// Chain slot for plugin-param entries (0 = instrument, 1..N = effect);
-    /// 0 and unused for cross-mod entries.
-    slot: usize,
     kind: crate::plugin::chain::ModTargetKind,
-    param_min: f32,
-    param_max: f32,
-    base_value: f32,
 }
 
 struct TargetSelectorState {
     filter: FilterListState,
     items: Vec<FilterListItem>,
     entries: Vec<TargetEntry>,
-    /// Which modulator rack this selector targets (lane or group).
-    scope: ModScope,
+    /// The modulator (its place in the session's own rack) that the chosen target is drawn from.
     mod_index: usize,
 }
 
-/// Which modulator list a target selector / modulate popup operates on:
-/// an instrument lane's rack or a group's rack.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ModScope {
-    Lane(usize),
-    Group(usize),
-}
-
 /// A choice in the "modulate this parameter" popup (`m` on a parameter):
-/// create a new lane modulator bound to the parameter, or attach the
-/// parameter to one of the instrument's existing lane modulators.
+/// create a new modulator bound to the parameter, or attach the
+/// parameter to one of the session's modulators.
 #[derive(Clone, Copy)]
 enum ModulateChoice {
-    NewLfo,
-    NewEnvelope,
+    New(ModulatorKind),
+    Existing(usize),
+}
+
+/// The kinds of modulator the popup makes, in the order it lists them, and what each is called there.
+const NEW_MODULATORS: [(ModulatorKind, &str); 6] = [
+    (ModulatorKind::Lfo, "New LFO"),
+    (ModulatorKind::Envelope, "New envelope"),
+    (ModulatorKind::Macro, "New macro"),
+    (ModulatorKind::Velocity, "New velocity"),
+    (ModulatorKind::Key, "New key"),
+    (ModulatorKind::Steps, "New step sequencer"),
+];
+
+/// The first choices of the popup for driving `param_name`: a new modulator of each kind, which `Existing` ones follow.
+fn new_modulator_choices(param_name: &str) -> (Vec<ModulateChoice>, Vec<FilterListItem>) {
+    let choices = NEW_MODULATORS.iter().map(|&(kind, _)| ModulateChoice::New(kind)).collect();
+    let items = NEW_MODULATORS
+        .iter()
+        .enumerate()
+        .map(|(index, (_, name))| FilterListItem { cells: vec![format!("{name} → {param_name}")], index })
+        .collect();
+    (choices, items)
+}
+
+/// The modulator that drives something: one that is made for it, with the depth its cable has if it is not the depth a new cable has, or one that
+/// is there (its place in its rack).
+#[derive(Clone, Copy)]
+enum Driver {
+    New(ModulatorKind, Option<f32>),
     Existing(usize),
 }
 
 /// State for the "modulate <param>" popup.
 struct ModulateState {
-    /// Which modulator rack a created/attached modulator lives in.
-    scope: ModScope,
-    /// Chain slot the parameter lives on (0 = instrument, 1..N = effect);
-    /// used for the model's display label only.
-    slot: usize,
-    /// The target kind to bind (PluginParam for lanes, GroupBus for groups).
+    /// The target kind to bind: a parameter of a plugin, or a setting of a modulator.
     target_kind: crate::plugin::chain::ModTargetKind,
     param_name: String,
-    param_min: f32,
-    param_max: f32,
-    /// Current value of the parameter, used as the modulation base.
-    base_value: f32,
     choices: Vec<ModulateChoice>,
     filter: FilterListState,
     items: Vec<FilterListItem>,
@@ -452,6 +362,14 @@ enum GroupAssignChoice {
     New,
     Ungroup,
     Existing(usize),
+}
+
+/// State for the "what a free modulator hears" popup (`h` on a free modulator): every note, or the notes of a lane or of a group. `choices` is the ear that each row stands for.
+struct EarState {
+    modulator: NodeId,
+    choices: Vec<Option<NodeId>>,
+    filter: FilterListState,
+    items: Vec<FilterListItem>,
 }
 
 /// State for the "assign <instrument> to group" popup.
@@ -478,6 +396,14 @@ struct RangeEditState {
     input: TextInputState,
 }
 
+/// A plugin that is to be loaded once a frame has said so: it can take a while (about a third of a second for Pianoteq 9 here), and the loop is blocked for as long as it takes (`run_pending`).
+struct PendingLoad {
+    /// The plugin's name, for the frame.
+    name: String,
+    /// What asks the controller to load it.
+    intent: Intent,
+}
+
 /// State for the "rename group" popup.
 struct RenameGroupState {
     /// The group whose display name is being edited.
@@ -489,6 +415,15 @@ struct RenameGroupState {
 struct SaveAsState {
     input: TextInputState,
     /// Error from the last failed save attempt, shown in the popup.
+    error: Option<String>,
+}
+
+/// State for the popup that names the module that a chain of effects is saved as (step 104).
+struct SaveModuleState {
+    /// The lane whose chain is saved (`Intent::SaveModule` takes a lane or an effect of its chain).
+    node: NodeId,
+    input: TextInputState,
+    /// Why the last attempt was refused, shown in the popup.
     error: Option<String>,
 }
 
@@ -514,9 +449,13 @@ struct Areas {
 // ---------------------------------------------------------------------------
 
 struct State {
+    /// The session and the engine handles; the view only holds what it shows.
+    ctl: Controller,
+    /// The CLIP light of the status bar, fed by the master meter.
+    clip: clip::ClipLight,
+    /// The web interface this TUI serves, if it does (`tang --web`).
+    web: Option<WebStatus>,
     active_tab: usize,
-    instruments: Vec<InstrumentNode>,
-    groups: Vec<GroupNode>,
     tree_entries: Vec<TreeEntry>,
     chain_state: ListState,
     param_state: ListState,
@@ -533,63 +472,161 @@ struct State {
     target_selector: Option<TargetSelectorState>,
     modulate: Option<ModulateState>,
     group_assign: Option<GroupAssignState>,
+    ear_popup: Option<EarState>,
     preset_selector: Option<PresetSelectorState>,
-    catalog: Vec<PluginInfo>,
-    /// Receives per-format catalog batches from the background scan thread.
-    catalog_rx: crossbeam_channel::Receiver<Vec<PluginInfo>>,
-    /// True until the background catalog scan finishes (channel disconnects).
-    catalog_scanning: bool,
+    /// A plugin chosen in the selector, which waits for the frame that says it is loading.
+    pending_load: Option<PendingLoad>,
     areas: Areas,
     quit: bool,
-    session_path: Option<PathBuf>,
-    dirty: bool,
     // Parameter filter (search bar in param pane).
     param_filter_input: TextInputState,
     param_filtering: bool,
     param_filtered: Vec<usize>,
-    // Connections to the audio engine.
-    cmd_tx: Sender<GraphCommand>,
-    #[allow(dead_code)]
-    midi_tx: Sender<audio::MidiEvent>,
-    runtime: plugin::Runtime,
-    sample_rate: f32,
-    max_block_size: usize,
     // Pattern state.
-    global_bpm: f32,
     bpm_editing: Option<EditState>,
     gain_editing: Option<GainEditState>,
     save_as: Option<SaveAsState>,
-    pattern_rx: crossbeam_channel::Receiver<crate::plugin::chain::PatternNotification>,
-    /// Receives MIDI-learn captures from the audio thread.
-    learn_rx: crossbeam_channel::Receiver<crate::plugin::chain::MidiLearnedNotification>,
+    save_module: Option<SaveModuleState>,
     // Piano tab state.
-    held: Arc<HeldNotes>,
-    piano_filter: Arc<PianoFilter>,
     /// Center MIDI octave for the piano view (0..=8). Default 4.
     piano_view_octave: i8,
     scale_selector: Option<ScaleSelectorState>,
-    /// Live incoming-MIDI monitor, shown at the bottom under `--debug`.
-    midi_monitor: Arc<crate::midi_monitor::MidiMonitor>,
+    // Scope tab state: the view, the time base and the frames of the output that the last frame was drawn from.
+    scope: scope_view::Scope,
+    /// The scope of the node under the chain cursor, under the Session tab (`o`): its own view, and the node whose signal is asked for.
+    strip: scope_view::Strip,
+    // Patch tab state: the matrix of the audio cables with its cursor, and the level of a cable that is being typed.
+    patch: patch_view::Patch,
+    cable_editing: Option<CableEditState>,
 }
 
 impl State {
-    fn rebuild_tree(&mut self) {
-        self.tree_entries = build_tree_entries(&self.instruments, &self.groups);
-        self.chain_state.set_len(self.tree_entries.len());
-        self.sync_param_state();
+    /// Build the TUI state around a controller holding a loaded session. Pure
+    /// construction: no engine commands are sent and no threads are spawned, so
+    /// tests can build a `State` around stub channels.
+    fn new(ctl: Controller) -> State {
+        let tree_entries = build_tree_entries(&ctl.model);
+        let param_len = ctl.model.instruments.first()
+            .and_then(|n| n.instrument.as_ref())
+            .map_or(0, |p| p.params.len());
+
+        let help_lines = build_help_lines(None);
+        let clip = clip::ClipLight::new(ctl.telemetry.count(telemetry::MASTER.clips));
+
+        State {
+            ctl,
+            clip,
+            web: None,
+            active_tab: TAB_SESSION,
+            chain_state: ListState::new(tree_entries.len()),
+            param_state: ListState::new(param_len),
+            tree_entries,
+            focus_params: false,
+            help_lines,
+            help_offset: 0,
+            scrollbar_dragging: false,
+            param_dragging: false,
+            param_scrollbar_dragging: false,
+            editing: None,
+            range_edit: None,
+            rename_group: None,
+            selector: None,
+            target_selector: None,
+            modulate: None,
+            group_assign: None,
+            ear_popup: None,
+            preset_selector: None,
+            pending_load: None,
+            areas: Areas::default(),
+            quit: false,
+            param_filter_input: TextInputState::new(""),
+            param_filtering: false,
+            param_filtered: (0..param_len).collect(),
+            bpm_editing: None,
+            gain_editing: None,
+            save_as: None,
+            save_module: None,
+            piano_view_octave: 4,
+            scale_selector: None,
+            scope: scope_view::Scope::new(),
+            strip: scope_view::Strip::new(),
+            patch: patch_view::Patch::new(),
+            cable_editing: None,
+        }
     }
 
+    /// The web interface is up: say so in the tab bar and on the Help tab. (After this
+    /// only the number of browsers changes, in `self.web`.)
+    fn set_web(&mut self, web: WebStatus) {
+        self.help_lines = build_help_lines(Some(&web));
+        self.web = Some(web);
+    }
+
+    /// Build the tree again from the model. What is typed into the parameter filter stays if the
+    /// node the cursor is on is the same one (a value changed under it, by a browser, say), and goes
+    /// if it is not.
+    fn rebuild_tree(&mut self) {
+        let was_on = self.node_under_cursor();
+        self.tree_entries = build_tree_entries(&self.ctl.model);
+        self.chain_state.set_len(self.tree_entries.len());
+        // The cursor stays on the node it was on, wherever the tree has put it now: what came or went above it
+        // (a browser added a modulator to an earlier lane, say) has moved its place, and what the person does
+        // next (`d`, a value typed in) would be for whatever is at the old one.
+        if let Some(on) = was_on {
+            if let Some(position) = self.tree_entries.iter().position(|entry| entry_key(entry) == on) {
+                self.chain_state.selected = position;
+            }
+        }
+        if self.node_under_cursor() == was_on {
+            self.sync_param_len();
+        } else {
+            self.sync_param_state();
+        }
+    }
+
+    /// What the cursor is on. It does not change as the nodes around it come and go, as its address does.
+    fn node_under_cursor(&self) -> Option<EntryKey> {
+        self.tree_entries.get(self.chain_state.selected).map(entry_key)
+    }
+
+    /// Every entry of the tree, in the order they are shown.
+    fn tree_places(&self) -> Vec<EntryKey> {
+        self.tree_entries.iter().map(entry_key).collect()
+    }
+
+    /// Close what is open and holds a place in the tree (a lane's, a modulator's, a group's) that has moved, or is
+    /// not there any more: it would act on what is at the place now. What is typed in as the value of a parameter
+    /// goes to the node under the cursor, which follows its node (`rebuild_tree`), so it stays unless that node is
+    /// gone; a host-side gain has the id of its node.
+    fn close_popups_that_hold_places(&mut self, cursor_node_is_there: bool) {
+        self.range_edit = None;
+        self.rename_group = None;
+        self.selector = None;
+        self.target_selector = None;
+        self.modulate = None;
+        self.group_assign = None;
+        self.ear_popup = None;
+        self.preset_selector = None;
+        if !cursor_node_is_there {
+            self.editing = None;
+        }
+    }
+
+    /// The cursor is on another node: what was typed into the parameter filter was for the other one.
     fn sync_param_state(&mut self) {
-        // Clear filter when selected node changes.
         self.param_filter_input = TextInputState::new("");
         self.param_filtering = false;
+        self.sync_param_len();
+    }
 
+    /// The parameter pane has as many rows as the node the cursor is on has parameters.
+    fn sync_param_len(&mut self) {
         let sel = self.chain_state.selected;
         if sel < self.tree_entries.len() {
             let addr = &self.tree_entries[sel].address;
             let param_len = match *addr {
                 TreeAddress::Pattern(inst) => {
-                    self.instruments.get(inst)
+                    self.ctl.model.instruments.get(inst)
                         .and_then(|n| n.pattern.as_ref())
                         .map_or(0, |p| {
                             let mut n = 4; // Length + Enabled + Loop + Transpose
@@ -597,12 +634,7 @@ impl State {
                             n
                         })
                 }
-                TreeAddress::Modulator { inst, index } => {
-                    self.modulator(inst, index).map_or(0, modulator_param_len)
-                }
-                TreeAddress::GroupModulator { group, index } => {
-                    self.group_modulator(group, index).map_or(0, modulator_param_len)
-                }
+                TreeAddress::FreeModulator { index } => self.free_modulator(index).map_or(0, modulator_param_len),
                 // A group's bus pane shows two host-side params: Volume + Pan.
                 TreeAddress::Group(_) => 2,
                 _ => self.plugin_at(addr).map_or(0, |p| p.params.len()),
@@ -674,12 +706,8 @@ impl State {
         }
         let addr = self.tree_entries[sel].address;
         match addr {
-            TreeAddress::Modulator { inst, index } => {
-                let m = self.modulator(inst, index)?;
-                modulator_param_range(m, self.param_state.selected)
-            }
-            TreeAddress::GroupModulator { group, index } => {
-                let m = self.group_modulator(group, index)?;
+            TreeAddress::FreeModulator { index } => {
+                let m = self.free_modulator(index)?;
                 modulator_param_range(m, self.param_state.selected)
             }
             TreeAddress::Group(_) => match self.param_state.selected {
@@ -703,12 +731,8 @@ impl State {
         }
         let addr = self.tree_entries[sel].address;
         match addr {
-            TreeAddress::Modulator { inst, index } => {
-                let Some(m) = self.modulator(inst, index) else { return false };
-                modulator_param_is_enum(m, self.param_state.selected)
-            }
-            TreeAddress::GroupModulator { group, index } => {
-                let Some(m) = self.group_modulator(group, index) else { return false };
+            TreeAddress::FreeModulator { index } => {
+                let Some(m) = self.free_modulator(index) else { return false };
                 modulator_param_is_enum(m, self.param_state.selected)
             }
             _ => {
@@ -726,37 +750,15 @@ impl State {
     /// Get a reference to the PluginSlot at the given tree address.
     fn plugin_at(&self, addr: &TreeAddress) -> Option<&PluginSlot> {
         match *addr {
-            TreeAddress::Pattern(_)
-            | TreeAddress::Modulator { .. }
-            | TreeAddress::Group(_)
-            | TreeAddress::GroupModulator { .. } => None,
+            TreeAddress::Pattern(_) | TreeAddress::Group(_) | TreeAddress::FreeModulator { .. } => None,
             TreeAddress::Instrument(inst) => {
-                self.instruments.get(inst)?.instrument.as_ref()
+                self.ctl.model.instruments.get(inst)?.instrument.as_ref()
             }
             TreeAddress::Effect { inst, index } => {
-                self.instruments.get(inst)?.effects.get(index)
+                self.ctl.model.instruments.get(inst)?.effects.get(index)
             }
             TreeAddress::GroupEffect { group, index } => {
-                self.groups.get(group)?.effects.get(index)
-            }
-        }
-    }
-
-    /// Get a mutable reference to the PluginSlot at the given tree address.
-    fn plugin_at_mut(&mut self, addr: &TreeAddress) -> Option<&mut PluginSlot> {
-        match *addr {
-            TreeAddress::Pattern(_)
-            | TreeAddress::Modulator { .. }
-            | TreeAddress::Group(_)
-            | TreeAddress::GroupModulator { .. } => None,
-            TreeAddress::Instrument(inst) => {
-                self.instruments.get_mut(inst)?.instrument.as_mut()
-            }
-            TreeAddress::Effect { inst, index } => {
-                self.instruments.get_mut(inst)?.effects.get_mut(index)
-            }
-            TreeAddress::GroupEffect { group, index } => {
-                self.groups.get_mut(group)?.effects.get_mut(index)
+                self.ctl.model.groups.get(group)?.effects.get(index)
             }
         }
     }
@@ -765,31 +767,57 @@ impl State {
         self.tree_entries.get(self.chain_state.selected).map(|e| &e.address)
     }
 
-    /// A lane modulator by instrument + lane-global index.
-    fn modulator(&self, inst: usize, mod_index: usize) -> Option<&ModulatorSlot> {
-        self.instruments.get(inst)?.modulators.get(mod_index)
+    /// The step that the step sequencer under the chain cursor is at: the whole part of the position that the audio thread last published for it, brought round at the length
+    /// the model has (`step_at`, which the engine's own output is made by). `None` for any other node, and for a step sequencer that has no slot to publish to.
+    fn selected_playhead(&self) -> Option<usize> {
+        let m = self.modulator_at(*self.selected_address()?)?;
+        let ModSourceSlot::Steps { length, .. } = m.source else { return None };
+        Some(crate::plugin::chain::step_at(length, self.ctl.telemetry.load(m.position?)))
     }
 
-    /// A group-scoped modulator by group + index.
-    fn group_modulator(&self, group: usize, mod_index: usize) -> Option<&ModulatorSlot> {
-        self.groups.get(group)?.modulators.get(mod_index)
-    }
-
-    /// The modulator list for a scope (lane rack or group rack).
-    fn scoped_modulators_mut(&mut self, scope: ModScope) -> Option<&mut Vec<ModulatorSlot>> {
-        match scope {
-            ModScope::Lane(inst) => self.instruments.get_mut(inst).map(|n| &mut n.modulators),
-            ModScope::Group(group) => self.groups.get_mut(group).map(|g| &mut g.modulators),
+    /// The node under the chain cursor if it has a signal to look at, and what to call it: an instrument that has a plugin, an effect, a group or an effect of its bus. A modulator
+    /// and a pattern put out no sound, and a lane that has no instrument puts out none.
+    fn selected_signal(&self) -> Option<(NodeId, String)> {
+        let model = &self.ctl.model;
+        match *self.selected_address()? {
+            TreeAddress::Instrument(inst) => {
+                let lane = model.instruments.get(inst)?;
+                lane.instrument.as_ref().map(|plugin| (lane.node, plugin.name.clone()))
+            }
+            TreeAddress::Effect { inst, index } => model.instruments.get(inst)?.effects.get(index).map(|fx| (fx.node, fx.name.clone())),
+            TreeAddress::Group(group) => {
+                let g = model.groups.get(group)?;
+                Some((g.node, g.name.clone().unwrap_or_else(|| format!("Group {}", group + 1))))
+            }
+            TreeAddress::GroupEffect { group, index } => model.groups.get(group)?.effects.get(index).map(|fx| (fx.node, fx.name.clone())),
+            TreeAddress::Pattern(_) | TreeAddress::FreeModulator { .. } => None,
         }
     }
 
+    /// Keep what the scope under the Session tab asks the audio thread to listen to where the chain cursor is. The loop's every turn begins with a tick, which does it, after the
+    /// events of the terminal and the requests of the browsers (which can take the node away): there is no frame between them and it. (The tests' keys do it in `process_event`.)
+    fn sync_strip(&mut self) {
+        let selected = self.selected_signal().map(|(node, _)| node);
+        self.strip.sync(&mut self.ctl, self.active_tab == TAB_SESSION, selected);
+    }
+
+    /// A modulator by its place in the session's own rack.
+    fn free_modulator(&self, index: usize) -> Option<&ModulatorSlot> {
+        self.ctl.model.free_modulators.get(index)
+    }
+
+    /// What the selectors list, and the places that a row of one names: the modules of the library and then the plugins (`Catalog::listed`). Only the selector of an effect that stands by itself
+    /// lists the modules: a chain of effects goes in a lane of its own, whole, and not in a chain.
     fn selector_items(&self, mode: SelectorMode) -> Vec<FilterListItem> {
-        self.catalog
-            .iter()
+        self.ctl
+            .catalog
+            .listed()
+            .into_iter()
             .enumerate()
             .filter(|(_, e)| match mode {
                 SelectorMode::Instrument => e.is_instrument,
-                SelectorMode::Effect | SelectorMode::GroupEffect(_) => !e.is_instrument,
+                SelectorMode::FreeEffect => !e.is_instrument,
+                SelectorMode::Effect | SelectorMode::GroupEffect(_) => !e.is_instrument && module::name_of(&e.id).is_none(),
             })
             .map(|(i, e)| {
                 let fmt = format_from_id(&e.id);
@@ -812,6 +840,15 @@ impl State {
 
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
+        // An instrument is chosen for a lane that has one (the oscillator that `n` has just put in a new lane, say): the list starts on it, so that Enter keeps it, as the preset
+        // selector starts on the preset that is loaded. (With the audio input in the list, which sorts before the oscillator, the first row is not the one that was always there.)
+        if matches!(mode, SelectorMode::Instrument) {
+            let current = self.selected_inst().and_then(|inst| self.ctl.model.instruments.get(inst)).and_then(|lane| lane.instrument.as_ref()).map(|slot| slot.id.as_str());
+            let plugins = self.ctl.catalog.listed();
+            if let Some(at) = current.and_then(|id| items.iter().position(|item| plugins.get(item.index).is_some_and(|entry| entry.id == id))) {
+                filter.list.selected = at;
+            }
+        }
 
         self.selector = Some(SelectorState {
             mode,
@@ -820,75 +857,15 @@ impl State {
         });
     }
 
-    /// Fold newly scanned plugins into the catalog and refresh an open
-    /// selector popup (keeping its filter text) so rows appear as the
-    /// background scan progresses.
-    fn extend_catalog(&mut self, batch: Vec<PluginInfo>) {
-        if batch.is_empty() {
-            return;
-        }
-        self.catalog.extend(batch);
-        self.catalog.sort_by_key(|a| a.name.to_lowercase());
+    /// Rebuild the rows of an open selector popup from the catalog, keeping its
+    /// filter text, so that rows appear as the background scan progresses.
+    fn refresh_selector(&mut self) {
         if let Some(mode) = self.selector.as_ref().map(|sel| sel.mode) {
             let items = self.selector_items(mode);
             if let Some(sel) = self.selector.as_mut() {
                 sel.items = items;
                 sel.filter.apply_filter(&sel.items);
             }
-        }
-    }
-
-    /// Load `source` and build its session-model `PluginSlot`. Returns the
-    /// live plugin (to hand to the audio thread) alongside the slot, or None
-    /// on load failure.
-    fn load_plugin_slot(&self, source: &str) -> Option<(Box<dyn plugin::Plugin>, PluginSlot)> {
-        let loaded = match plugin::load(source, self.sample_rate, self.max_block_size, &self.runtime) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("Failed to load plugin '{source}': {e}");
-                return None;
-            }
-        };
-        let params: Vec<ParamSlot> = loaded
-            .parameters()
-            .into_iter()
-            .filter(|p| !p.name.starts_with("(locked)"))
-            .map(|p| ParamSlot {
-                kind: p.labels.map_or(ParamKind::Float, ParamKind::Enum),
-                name: p.name,
-                index: p.index,
-                min: p.min,
-                max: p.max,
-                default: p.default,
-                value: p.default,
-            })
-            .collect();
-        let presets = loaded.presets();
-        let slot = PluginSlot {
-            name: loaded.name().to_string(),
-            format: format_from_id(source),
-            id: source.to_string(),
-            is_instrument: loaded.is_instrument(),
-            params,
-            presets,
-            current_preset: None,
-            mix: 1.0,
-        };
-        Some((loaded, slot))
-    }
-
-    /// Install `loaded`/`slot` as the instrument plugin for lane `inst`, on
-    /// both the audio thread and the session model.
-    fn set_instrument(&mut self, inst: usize, loaded: Box<dyn plugin::Plugin>, slot: PluginSlot) {
-        let inst_buf = (0..loaded.audio_output_count()).map(|_| Vec::new()).collect();
-        let _ = self.cmd_tx.send(GraphCommand::SwapInstrument {
-            inst,
-            instrument: loaded,
-            inst_buf,
-            remapper: None,
-        });
-        if let Some(inst_node) = self.instruments.get_mut(inst) {
-            inst_node.instrument = Some(slot);
         }
     }
 
@@ -904,149 +881,112 @@ impl State {
                 return;
             }
         };
-        let entry = &self.catalog[chosen];
+        let Some(entry) = self.ctl.catalog.listed().get(chosen).copied() else { return };
 
         // Determine which instrument to operate on from current selection.
         let inst = self.selected_inst().unwrap_or(0);
 
-        // Load the real plugin.
+        // Load the real plugin, and put it where it goes: the intents that a browser asks for too, so that an effect that is
+        // added is a step of the history. (An effect that cannot be added, because it will not load or its outputs are not
+        // the chain's, leaves the session as it was: the controller says why.)
         let source = entry.id.clone();
+        let name = entry.name.clone();
+        // (A module is not made of one plugin but of the plugins that its file names, any of which can be slow to load: it waits for a frame that says so, as a plugin that is not built in does.)
+        let built_in = source.starts_with("builtin:");
         log::info!("Loading plugin '{}' (id={}) into inst={}", entry.name, source, inst);
-        let (loaded, slot) = match self.load_plugin_slot(&source) {
-            Some(x) => x,
-            None => return,
-        };
-
-        match sel.mode {
+        let intent = match sel.mode {
             SelectorMode::Instrument => {
-                self.set_instrument(inst, loaded, slot);
+                let Some(lane) = self.ctl.model.instruments.get(inst) else { return };
+                Intent::ReplaceInstrument { node: lane.node, plugin: source }
             }
             SelectorMode::Effect => {
-                let mut slot = slot;
-                let mix = default_effect_mix(&source);
-                slot.mix = mix;
-                if let Some(inst_node) = self.instruments.get_mut(inst) {
-                    let insert_at = inst_node.effects.len();
-                    let _ = self.cmd_tx.send(GraphCommand::InsertEffect {
-                        inst,
-                        index: insert_at,
-                        effect: loaded,
-                        mix: mix as f64,
-                    });
-                    inst_node.effects.push(slot);
-                }
+                let Some(lane) = self.ctl.model.instruments.get(inst) else { return };
+                Intent::AddEffect { parent: lane.node, plugin: source }
             }
+            SelectorMode::FreeEffect => Intent::AddFreeEffect { plugin: source },
             SelectorMode::GroupEffect(group) => {
-                let mut slot = slot;
-                let mix = default_effect_mix(&source);
-                slot.mix = mix;
-                if let Some(g) = self.groups.get_mut(group) {
-                    let insert_at = g.effects.len();
-                    let _ = self.cmd_tx.send(GraphCommand::InsertGroupEffect {
-                        group,
-                        index: insert_at,
-                        effect: loaded,
-                        mix: mix as f64,
-                    });
-                    g.effects.push(slot);
-                }
+                let Some(bus) = self.ctl.model.groups.get(group) else { return };
+                Intent::AddEffect { parent: bus.node, plugin: source }
             }
-        }
-
-        self.dirty = true;
-        self.rebuild_tree();
-    }
-
-    /// Get the instrument index for the currently selected tree entry.
-    fn selected_inst(&self) -> Option<usize> {
-        self.selected_address()?.inst()
-    }
-
-    fn open_target_selector(&mut self, inst: usize, mod_index: usize) {
-        let inst_node = match self.instruments.get(inst) {
-            Some(n) => n,
-            None => return,
         };
-
-        let mut entries = Vec::new();
-        let mut items = Vec::new();
-
-        // Plugin parameters across the whole chain (instrument + effects),
-        // labelled by plugin and routed by slot.
-        let chain: Vec<(usize, &PluginSlot)> = std::iter::once(inst_node.instrument.as_ref())
-            .chain(inst_node.effects.iter().map(Some))
-            .enumerate()
-            .filter_map(|(slot, p)| p.map(|p| (slot, p)))
-            .collect();
-        for (slot, plugin) in &chain {
-            for p in &plugin.params {
-                let idx = entries.len();
-                // `label` is the bare param name (stored on the target and
-                // serialized); the selector list shows plugin + param columns.
-                entries.push(TargetEntry {
-                    label: p.name.clone(),
-                    slot: *slot,
-                    kind: crate::plugin::chain::ModTargetKind::PluginParam {
-                        slot: *slot,
-                        param_index: p.index,
-                    },
-                    param_min: p.min,
-                    param_max: p.max,
-                    base_value: p.value,
-                });
-                items.push(FilterListItem {
-                    cells: vec![plugin.name.clone(), p.name.clone()],
-                    index: idx,
-                });
-            }
+        // A built-in is there at once. Any other plugin can take a while, with the loop blocked: it waits for a frame that says so (`run_pending`).
+        if built_in {
+            self.apply(intent);
+        } else {
+            self.pending_load = Some(PendingLoad { name, intent });
         }
+    }
 
-        // Sibling lane modulators (cross-mod).
-        for (sib_idx, sib) in inst_node.modulators.iter().enumerate() {
-            if sib_idx == mod_index {
-                continue; // Skip self.
-            }
-            let prefix = format!("Mod {sib_idx} ");
-            let push = |entries: &mut Vec<TargetEntry>, items: &mut Vec<FilterListItem>, label: String, kind, min, max, base| {
-                let idx = entries.len();
-                entries.push(TargetEntry { label: label.clone(), slot: 0, kind, param_min: min, param_max: max, base_value: base });
-                items.push(FilterListItem { cells: vec!["Mod".into(), label], index: idx });
-            };
-            match &sib.source {
-                ModSourceSlot::Lfo { rate, .. } => {
-                    push(&mut entries, &mut items, format!("{prefix}rate"),
-                        crate::plugin::chain::ModTargetKind::ModulatorRate { mod_index: sib_idx }, 0.01, 50.0, *rate);
-                }
-                ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                    push(&mut entries, &mut items, format!("{prefix}attack"),
-                        crate::plugin::chain::ModTargetKind::ModulatorAttack { mod_index: sib_idx }, 0.001, 10.0, *attack);
-                    push(&mut entries, &mut items, format!("{prefix}decay"),
-                        crate::plugin::chain::ModTargetKind::ModulatorDecay { mod_index: sib_idx }, 0.001, 10.0, *decay);
-                    push(&mut entries, &mut items, format!("{prefix}sustain"),
-                        crate::plugin::chain::ModTargetKind::ModulatorSustain { mod_index: sib_idx }, 0.0, 1.0, *sustain);
-                    push(&mut entries, &mut items, format!("{prefix}release"),
-                        crate::plugin::chain::ModTargetKind::ModulatorRelease { mod_index: sib_idx }, 0.001, 10.0, *release);
-                }
-                // MidiLearn has no editable source params — only its target
-                // depths (added below) can be cross-modded.
-                ModSourceSlot::MidiLearn { .. } => {}
-            }
-            for (tgt_idx, tgt) in sib.targets.iter().enumerate() {
-                push(&mut entries, &mut items, format!("{prefix}{} depth", tgt.param_name),
-                    crate::plugin::chain::ModTargetKind::ModulatorDepth { mod_index: sib_idx, target_index: tgt_idx }, 0.0, 1.0, tgt.depth);
-            }
+    /// Move an effect to place `to` of its chain (a lane's or a group's bus), by the intent that a browser's buttons ask for: a step of the
+    /// history. The cursor follows the effect it was on.
+    fn move_effect_to(&mut self, node: Option<NodeId>, to: usize) {
+        if let Some(node) = node {
+            self.apply(Intent::MoveEffect { node, index: to as u32 });
         }
+    }
 
-        let mut filter = FilterListState::new();
-        filter.apply_filter(&items);
+    /// Take a node out, by the intent that a browser's "x" asks for: nothing puts it back yet, so the history is forgotten. (A
+    /// session keeps a lane: the last one is refused.)
+    fn remove_node(&mut self, node: Option<NodeId>) {
+        if let Some(node) = node {
+            self.apply(Intent::RemoveNode { node });
+        }
+    }
 
-        self.target_selector = Some(TargetSelectorState {
-            filter,
-            items,
-            entries,
-            scope: ModScope::Lane(inst),
-            mod_index,
-        });
+    /// Get the instrument index for the currently selected tree entry: the lane that the entry is of (`lane_of`).
+    fn selected_inst(&self) -> Option<usize> {
+        self.lane_of(*self.selected_address()?)
+    }
+
+    /// What a modulator of the session's own hears, as the place of the lane or the group (`SessionModel::ear_of`: a lane or a group that is not there is not heard): the tree lists the modulator
+    /// with it, and the keys that are of "the lane or the group that the entry is of" go to it.
+    fn heard_by(&self, index: usize) -> Option<NodePath> {
+        let model = &self.ctl.model;
+        model.locate(model.ear_of(self.free_modulator(index)?)?)
+    }
+
+    /// The lane that the tree entry at `address` is of: an instrument, its effects and its pattern, and a modulator that hears the lane. None for a group's entries and for a modulator that hears
+    /// a group or every note.
+    fn lane_of(&self, address: TreeAddress) -> Option<usize> {
+        match address {
+            TreeAddress::FreeModulator { index } => match self.heard_by(index)? {
+                NodePath::Instrument(inst) => Some(inst),
+                _ => None,
+            },
+            address => address.inst(),
+        }
+    }
+
+    /// The group that the tree entry at `address` is of: its header, its bus effects, and a modulator that hears the group.
+    fn group_of(&self, address: TreeAddress) -> Option<usize> {
+        match address {
+            TreeAddress::Group(group) | TreeAddress::GroupEffect { group, .. } => Some(group),
+            TreeAddress::FreeModulator { index } => match self.heard_by(index)? {
+                NodePath::Group(group) => Some(group),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The lane or the group that the selected entry of the tree is of, with whether it is muted, whether it is soloed and which way out it has: what `M`, `S` and
+    /// `w` ask the intents for.
+    fn selected_lane_or_group(&self) -> Option<(NodeId, bool, bool, Route)> {
+        let address = self.selected_address().copied()?;
+        if let Some(group) = self.group_of(address) {
+            return self.ctl.model.groups.get(group).map(|bus| (bus.node, bus.muted, bus.solo, bus.route));
+        }
+        self.lane_of(address).and_then(|inst| self.ctl.model.instruments.get(inst)).map(|lane| (lane.node, lane.muted, lane.solo, lane.route))
+    }
+
+    /// The effect that the selected entry of the tree is (a lane's or a bus's), with whether the stage before it feeds it: what `f` asks the intent `SetFeed` for. None for any other entry.
+    fn selected_effect_feed(&self) -> Option<(NodeId, bool)> {
+        let slot = match self.selected_address().copied()? {
+            TreeAddress::Effect { inst, index } => self.ctl.model.instruments.get(inst)?.effects.get(index)?,
+            TreeAddress::GroupEffect { group, index } => self.ctl.model.groups.get(group)?.effects.get(index)?,
+            _ => return None,
+        };
+        Some((slot.node, slot.fed))
     }
 
     fn confirm_target_selector(&mut self) {
@@ -1059,113 +999,64 @@ impl State {
             None => return,
         };
         let entry = &ts.entries[chosen];
-
-        let target = crate::plugin::chain::ModTarget {
-            kind: entry.kind.clone(),
-            depth: 0.5,
-            base_value: entry.base_value,
-            param_min: entry.param_min,
-            param_max: entry.param_max,
-        };
-        match ts.scope {
-            ModScope::Lane(inst) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddModTarget {
-                    inst,
-                    mod_index: ts.mod_index,
-                    target,
-                });
-            }
-            ModScope::Group(group) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddGroupModTarget {
-                    group,
-                    mod_index: ts.mod_index,
-                    target,
-                });
-            }
-        }
-
-        let slot = entry.slot;
-        let label = entry.label.clone();
-        let kind = entry.kind.clone();
-        let (min, max) = (entry.param_min, entry.param_max);
-        let mod_index = ts.mod_index;
-        if let Some(mods) = self.scoped_modulators_mut(ts.scope) {
-            if let Some(m) = mods.get_mut(mod_index) {
-                m.targets.push(ModTargetSlot {
-                    slot,
-                    param_name: label,
-                    kind,
-                    depth: 0.5,
-                    param_min: min,
-                    param_max: max,
-                });
-            }
-        }
-        self.dirty = true;
-        self.rebuild_tree();
+        self.bind(Driver::Existing(ts.mod_index), &entry.kind);
     }
 
-    /// Open the "modulate <param>" popup for the parameter currently selected
-    /// in the param pane (a plugin parameter on the Instrument/Effect node).
+    /// Open the "modulate <param>" popup for the parameter currently selected in the param pane (a plugin parameter on the Instrument, Effect or bus-effect node).
     fn open_modulate(&mut self) {
         let sel = self.chain_state.selected;
         if sel >= self.tree_entries.len() {
             return;
         }
         let addr = self.tree_entries[sel].address;
-        let (inst, slot) = match addr {
-            TreeAddress::Instrument(inst) => (inst, 0),
-            TreeAddress::Effect { inst, index } => (inst, index + 1),
-            _ => return,
-        };
+        // A group's rows are its volume and its pan, which no plugin has: the cable goes to the group (a new modulator hears it).
+        if let TreeAddress::Group(group) = addr {
+            let Some((node, gain)) = self.group_row_gain(group) else { return };
+            let param_name = gain.name().to_string();
+            let (mut choices, mut items) = new_modulator_choices(&param_name);
+            self.push_the_sessions_own_modulators(&mut choices, &mut items);
+            let mut filter = FilterListState::new();
+            filter.apply_filter(&items);
+            self.modulate = Some(ModulateState { target_kind: crate::plugin::chain::ModTargetKind::Gain { node, gain }, param_name, choices, filter, items });
+            return;
+        }
         let pa = match self.real_param_index() {
             Some(i) => i,
             None => return,
         };
-        let param = match self.plugin_at(&addr).and_then(|p| p.params.get(pa)) {
-            Some(p) => p,
-            None => return,
-        };
-        let (param_index, param_name, param_min, param_max, base_value) =
-            (param.index, param.name.clone(), param.min, param.max, param.value);
+        let Some(plugin) = self.plugin_at(&addr) else { return };
+        let Some(param) = plugin.params.get(pa) else { return };
+        let (plugin, param_index, param_name) = (plugin.node, param.index, param.name.clone());
 
-        // Choices: new LFO, new envelope, then each existing lane modulator.
-        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope];
-        let mut items = vec![
-            FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
-            FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
-        ];
-        if let Some(node) = self.instruments.get(inst) {
-            for (i, m) in node.modulators.iter().enumerate() {
-                let label = m.source.label();
-                let idx = choices.len();
-                choices.push(ModulateChoice::Existing(i));
-                items.push(FilterListItem { cells: vec![format!("attach → {label}")], index: idx });
-            }
-        }
+        // Choices: the new ones (made for the parameter: one of the session's own that hears the lane, or the group of a bus effect), then each modulator of the session's own, which can drive any plugin.
+        let (mut choices, mut items) = new_modulator_choices(&param_name);
+        self.push_the_sessions_own_modulators(&mut choices, &mut items);
 
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
         self.modulate = Some(ModulateState {
-            scope: ModScope::Lane(inst),
-            slot,
-            target_kind: crate::plugin::chain::ModTargetKind::PluginParam {
-                slot,
-                param_index,
-            },
+            target_kind: crate::plugin::chain::ModTargetKind::FreeParam { plugin, param_index },
             param_name,
-            param_min,
-            param_max,
-            base_value,
             choices,
             filter,
             items,
         });
     }
 
+    /// The group's node and the value of the group's own that the row under the cursor of its pane is (0 is its volume, 1 its pan).
+    fn group_row_gain(&self, group: usize) -> Option<(NodeId, crate::app::model::ModGain)> {
+        use crate::app::model::ModGain;
+        let node = self.ctl.model.groups.get(group)?.node;
+        match self.param_state.selected {
+            0 => Some((node, ModGain::Volume)),
+            1 => Some((node, ModGain::Pan)),
+            _ => None,
+        }
+    }
+
     /// Open the "modulate" popup for a parameter of a *modulator* (its rate /
     /// ADSR stage / a target depth) — i.e. cross-modulation: a sibling modulator
-    /// (new or existing, in the same lane or group rack) drives this field. The
+    /// (new or existing) drives this field. The
     /// inverse of picking this modulator as a target via `t`. Enum / separator
     /// rows aren't modulatable, and the modulator can't modulate itself.
     fn open_modulate_cross_mod(&mut self) {
@@ -1173,43 +1064,23 @@ impl State {
         if sel >= self.tree_entries.len() {
             return;
         }
-        let (scope, mod_index) = match self.tree_entries[sel].address {
-            TreeAddress::Modulator { inst, index } => (ModScope::Lane(inst), index),
-            TreeAddress::GroupModulator { group, index } => (ModScope::Group(group), index),
-            _ => return,
-        };
+        let TreeAddress::FreeModulator { index: mod_index } = self.tree_entries[sel].address else { return };
         let pa = self.param_state.selected;
         // Resolve the cross-mod target kind (+ range / base / label) for this row.
-        let resolved = {
-            let m = match scope {
-                ModScope::Lane(inst) => self.modulator(inst, mod_index),
-                ModScope::Group(group) => self.group_modulator(group, mod_index),
-            };
-            m.and_then(|m| modulator_row_to_cross_mod(m, mod_index, pa))
-        };
-        let Some((kind, param_min, param_max, base_value, param_name)) = resolved else {
+        let resolved = self.free_modulator(mod_index).and_then(|m| modulator_row_to_cross_mod(m, mod_index, pa));
+        let Some((kind, _, _, _, param_name)) = resolved else {
             return;
         };
 
         // Choices: new LFO / envelope, then each sibling modulator in the same
         // rack except this one (no self-modulation).
-        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope];
-        let mut items = vec![
-            FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
-            FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
-        ];
-        let rack_len = match scope {
-            ModScope::Lane(inst) => self.instruments.get(inst).map_or(0, |n| n.modulators.len()),
-            ModScope::Group(group) => self.groups.get(group).map_or(0, |g| g.modulators.len()),
-        };
+        let (mut choices, mut items) = new_modulator_choices(&param_name);
+        let rack_len = self.ctl.model.free_modulators.len();
         for i in 0..rack_len {
             if i == mod_index {
                 continue; // can't modulate itself
             }
-            let label = match scope {
-                ModScope::Lane(inst) => self.modulator(inst, i).map(|m| m.source.label()),
-                ModScope::Group(group) => self.group_modulator(group, i).map(|m| m.source.label()),
-            };
+            let label = self.free_modulator(i).map(|m| m.source.label());
             if let Some(label) = label {
                 let idx = choices.len();
                 choices.push(ModulateChoice::Existing(i));
@@ -1220,13 +1091,8 @@ impl State {
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
         self.modulate = Some(ModulateState {
-            scope,
-            slot: 0, // unused for cross-mod target kinds
             target_kind: kind,
             param_name,
-            param_min,
-            param_max,
-            base_value,
             choices,
             filter,
             items,
@@ -1243,298 +1109,87 @@ impl State {
             None => return,
         };
 
-        // Resolve the target modulator index, creating one in the right rack if
-        // requested.
-        let mod_index = match choice {
-            ModulateChoice::NewLfo | ModulateChoice::NewEnvelope => {
-                let (graph_source, slot_source) = match choice {
-                    ModulateChoice::NewEnvelope => (
-                        crate::plugin::chain::ModSource::Envelope {
-                            attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5,
-                            state: crate::plugin::chain::EnvState::Idle,
-                            level: 0.0,
-                            notes_held: 0,
-                        },
-                        ModSourceSlot::Envelope { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5 },
-                    ),
-                    _ => (
-                        crate::plugin::chain::ModSource::Lfo {
-                            waveform: crate::plugin::chain::LfoWaveform::Sine,
-                            rate: 1.0,
-                            phase: 0.0,
-                        },
-                        ModSourceSlot::Lfo { waveform: crate::plugin::chain::LfoWaveform::Sine, rate: 1.0 },
-                    ),
-                };
-                let mod_index = match self.scoped_modulators_mut(ms.scope) {
-                    Some(mods) => mods.len(),
-                    None => return,
-                };
-                match ms.scope {
-                    ModScope::Lane(inst) => {
-                        let _ = self.cmd_tx.send(GraphCommand::InsertModulator {
-                            inst,
-                            index: mod_index,
-                            source: graph_source,
-                        });
-                    }
-                    ModScope::Group(group) => {
-                        let _ = self.cmd_tx.send(GraphCommand::InsertGroupModulator {
-                            group,
-                            index: mod_index,
-                            source: graph_source,
-                        });
-                    }
-                }
-                if let Some(mods) = self.scoped_modulators_mut(ms.scope) {
-                    mods.push(ModulatorSlot { source: slot_source, targets: vec![] });
-                }
-                mod_index
-            }
-            ModulateChoice::Existing(i) => i,
+        // The modulator that drives the parameter: a new one, or one that is there.
+        let driver = match choice {
+            ModulateChoice::New(kind) => Driver::New(kind, None),
+            ModulateChoice::Existing(i) => Driver::Existing(i),
         };
-
-        // Bind the parameter as a target of that modulator.
-        let kind = ms.target_kind.clone();
-        let target = crate::plugin::chain::ModTarget {
-            kind: kind.clone(),
-            depth: 0.5,
-            base_value: ms.base_value,
-            param_min: ms.param_min,
-            param_max: ms.param_max,
-        };
-        match ms.scope {
-            ModScope::Lane(inst) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddModTarget { inst, mod_index, target });
-            }
-            ModScope::Group(group) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddGroupModTarget { group, mod_index, target });
-            }
-        }
-        if let Some(mods) = self.scoped_modulators_mut(ms.scope) {
-            if let Some(m) = mods.get_mut(mod_index) {
-                m.targets.push(ModTargetSlot {
-                    slot: ms.slot,
-                    param_name: ms.param_name,
-                    kind,
-                    depth: 0.5,
-                    param_min: ms.param_min,
-                    param_max: ms.param_max,
-                });
-            }
-        }
-        self.dirty = true;
-        self.rebuild_tree();
+        self.bind(driver, &ms.target_kind);
     }
 
-    /// Open the target selector for a group modulator. Candidate targets span
-    /// the group's world: every member instrument's chain (`GroupMember`), the
-    /// group's own bus effects (`GroupBus`), and sibling group modulators.
-    fn open_group_target_selector(&mut self, group: usize, mod_index: usize) {
-        use crate::plugin::chain::ModTargetKind;
-        let group_node = match self.groups.get(group) {
-            Some(g) => g,
-            None => return,
-        };
-        let mut entries = Vec::new();
-        let mut items = Vec::new();
-
-        // Member instruments' params (instrument slot 0 + effects 1..N), labelled
-        // by member ordinal and plugin.
-        let members: Vec<&InstrumentNode> =
-            self.instruments.iter().filter(|n| n.group == Some(group)).collect();
-        for (ord, member) in members.iter().enumerate() {
-            let chain: Vec<(usize, &PluginSlot)> = std::iter::once(member.instrument.as_ref())
-                .chain(member.effects.iter().map(Some))
-                .enumerate()
-                .filter_map(|(slot, p)| p.map(|p| (slot, p)))
-                .collect();
-            for (slot, plugin) in &chain {
-                for p in &plugin.params {
-                    let idx = entries.len();
-                    entries.push(TargetEntry {
-                        label: p.name.clone(),
-                        slot: *slot,
-                        kind: ModTargetKind::GroupMember {
-                            member: ord,
-                            slot: *slot,
-                            param_index: p.index,
-                        },
-                        param_min: p.min,
-                        param_max: p.max,
-                        base_value: p.value,
-                    });
-                    items.push(FilterListItem {
-                        cells: vec![format!("M{ord} {}", plugin.name), p.name.clone()],
-                        index: idx,
-                    });
-                }
-            }
-        }
-
-        // Member instruments' modulators (cross-mod a member's LFO/envelope).
-        for (ord, member) in members.iter().enumerate() {
-            for (mk, mm) in member.modulators.iter().enumerate() {
-                let prefix = format!("M{ord} Mod{mk}");
-                let mut push_mm = |fname: &str,
-                                   field: crate::plugin::chain::CrossModField,
-                                   min: f32,
-                                   max: f32,
-                                   base: f32| {
-                    let idx = entries.len();
-                    entries.push(TargetEntry {
-                        label: format!("{prefix} {fname}"),
-                        slot: 0,
-                        kind: ModTargetKind::GroupMemberMod { member: ord, mod_index: mk, field },
-                        param_min: min,
-                        param_max: max,
-                        base_value: base,
-                    });
-                    items.push(FilterListItem {
-                        cells: vec![prefix.clone(), fname.to_string()],
-                        index: idx,
-                    });
-                };
-                use crate::plugin::chain::CrossModField;
-                match &mm.source {
-                    ModSourceSlot::Lfo { rate, .. } => {
-                        push_mm("rate", CrossModField::Rate, 0.01, 50.0, *rate);
-                    }
-                    ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                        push_mm("attack", CrossModField::Attack, 0.001, 10.0, *attack);
-                        push_mm("decay", CrossModField::Decay, 0.001, 10.0, *decay);
-                        push_mm("sustain", CrossModField::Sustain, 0.0, 1.0, *sustain);
-                        push_mm("release", CrossModField::Release, 0.001, 10.0, *release);
-                    }
-                    ModSourceSlot::MidiLearn { .. } => {} // only its target depths below
-                }
-                for (ti, t) in mm.targets.iter().enumerate() {
-                    push_mm(&format!("{} depth", t.param_name), CrossModField::Depth(ti), 0.0, 1.0, t.depth);
-                }
-            }
-        }
-
-        // The group's own bus effects.
-        for (eff_idx, plugin) in group_node.effects.iter().enumerate() {
-            for p in &plugin.params {
-                let idx = entries.len();
-                entries.push(TargetEntry {
-                    label: p.name.clone(),
-                    slot: 0,
-                    kind: ModTargetKind::GroupBus {
-                        effect_index: eff_idx,
-                        param_index: p.index,
-                    },
-                    param_min: p.min,
-                    param_max: p.max,
-                    base_value: p.value,
-                });
-                items.push(FilterListItem {
-                    cells: vec![format!("Bus {}", plugin.name), p.name.clone()],
-                    index: idx,
-                });
-            }
-        }
-
-        // Sibling group modulators (cross-mod).
-        for (sib_idx, sib) in group_node.modulators.iter().enumerate() {
-            if sib_idx == mod_index {
-                continue;
-            }
-            let prefix = format!("Mod {sib_idx} ");
-            let push = |entries: &mut Vec<TargetEntry>, items: &mut Vec<FilterListItem>, label: String, kind, min, max, base| {
-                let idx = entries.len();
-                entries.push(TargetEntry { label: label.clone(), slot: 0, kind, param_min: min, param_max: max, base_value: base });
-                items.push(FilterListItem { cells: vec!["Mod".into(), label], index: idx });
+    /// Put each modulator of the session's own among the choices of a modulate popup, as "attach → LFO 0.5Hz sine (hears L2)" (a modulator that hears no lane and no group says nothing of it).
+    fn push_the_sessions_own_modulators(&self, choices: &mut Vec<ModulateChoice>, items: &mut Vec<FilterListItem>) {
+        let model = &self.ctl.model;
+        for (i, m) in model.free_modulators.iter().enumerate() {
+            let hears = match model.ear_of(m).and_then(|ear| model.locate(ear)) {
+                Some(NodePath::Instrument(inst)) => format!(" (hears L{})", inst + 1),
+                Some(NodePath::Group(group)) => format!(" (hears G{})", group + 1),
+                _ => String::new(),
             };
-            match &sib.source {
-                ModSourceSlot::Lfo { rate, .. } => {
-                    push(&mut entries, &mut items, format!("{prefix}rate"),
-                        ModTargetKind::ModulatorRate { mod_index: sib_idx }, 0.01, 50.0, *rate);
-                }
-                ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                    push(&mut entries, &mut items, format!("{prefix}attack"),
-                        ModTargetKind::ModulatorAttack { mod_index: sib_idx }, 0.001, 10.0, *attack);
-                    push(&mut entries, &mut items, format!("{prefix}decay"),
-                        ModTargetKind::ModulatorDecay { mod_index: sib_idx }, 0.001, 10.0, *decay);
-                    push(&mut entries, &mut items, format!("{prefix}sustain"),
-                        ModTargetKind::ModulatorSustain { mod_index: sib_idx }, 0.0, 1.0, *sustain);
-                    push(&mut entries, &mut items, format!("{prefix}release"),
-                        ModTargetKind::ModulatorRelease { mod_index: sib_idx }, 0.001, 10.0, *release);
-                }
-                ModSourceSlot::MidiLearn { .. } => {} // only its target depths below
-            }
-            for (tgt_idx, tgt) in sib.targets.iter().enumerate() {
-                push(&mut entries, &mut items, format!("{prefix}{} depth", tgt.param_name),
-                    ModTargetKind::ModulatorDepth { mod_index: sib_idx, target_index: tgt_idx }, 0.0, 1.0, tgt.depth);
-            }
+            let idx = choices.len();
+            choices.push(ModulateChoice::Existing(i));
+            items.push(FilterListItem { cells: vec![format!("attach → {}{hears}", m.source.label())], index: idx });
         }
-
-        let mut filter = FilterListState::new();
-        filter.apply_filter(&items);
-        self.target_selector = Some(TargetSelectorState {
-            filter,
-            items,
-            entries,
-            scope: ModScope::Group(group),
-            mod_index,
-        });
     }
 
-    /// Open the "modulate <param>" popup for a group bus-effect parameter.
-    /// Lets the user create a new group modulator or attach to an existing one.
-    fn open_group_modulate(&mut self) {
-        let sel = self.chain_state.selected;
-        if sel >= self.tree_entries.len() {
+    /// A modulator, a new one or one of the session's own that is there, drives what `kind` names (the parameter of a plugin, or the setting of another modulator): by the intents a browser asks
+    /// for, a new modulator and the cable to it being the one intent that makes both (`Modulate`: one step, in its words, and one that hears the lane or the group) and a modulator that is there a cable
+    /// (`AddModEdge`).
+    fn bind(&mut self, driver: Driver, kind: &crate::plugin::chain::ModTargetKind) {
+        let Some(to) = self.ctl.model.endpoint_of(ModulatorLocation::Free, kind) else { return };
+        match driver {
+            Driver::New(modulator, depth) => {
+                self.apply(Intent::Modulate { to, kind: modulator, depth });
+            }
+            Driver::Existing(index) => {
+                let Some(modulator) = self.free_modulator(index).map(|m| m.node) else { return };
+                self.apply(Intent::AddModEdge { modulator, to });
+            }
+        }
+    }
+
+    /// Open the target selector for a modulator. It reaches the whole session: every parameter of every plugin (each labelled by the lane or the group the plugin is in, as the
+    /// Patch tab tags them, and by its name), and the settings of the other modulators and the depths of their cables (cross-mod).
+    fn open_free_target_selector(&mut self, mod_index: usize) {
+        if self.free_modulator(mod_index).is_none() {
             return;
         }
-        let addr = self.tree_entries[sel].address;
-        let (group, eff_idx) = match addr {
-            TreeAddress::GroupEffect { group, index } => (group, index),
-            _ => return,
-        };
-        let pa = match self.real_param_index() {
-            Some(i) => i,
-            None => return,
-        };
-        let param = match self.plugin_at(&addr).and_then(|p| p.params.get(pa)) {
-            Some(p) => p,
-            None => return,
-        };
-        let (param_index, param_name, param_min, param_max, base_value) =
-            (param.index, param.name.clone(), param.min, param.max, param.value);
-
-        let mut choices = vec![ModulateChoice::NewLfo, ModulateChoice::NewEnvelope];
-        let mut items = vec![
-            FilterListItem { cells: vec![format!("New LFO → {param_name}")], index: 0 },
-            FilterListItem { cells: vec![format!("New envelope → {param_name}")], index: 1 },
-        ];
-        if let Some(node) = self.groups.get(group) {
-            for (i, m) in node.modulators.iter().enumerate() {
-                let label = m.source.label();
-                let idx = choices.len();
-                choices.push(ModulateChoice::Existing(i));
-                items.push(FilterListItem { cells: vec![format!("attach → {label}")], index: idx });
-            }
+        let mut entries = Vec::new();
+        let mut items = Vec::new();
+        for t in self.ctl.model.param_targets(ModulatorLocation::Free) {
+            let idx = entries.len();
+            let owner = plugin_tag(&self.ctl.model, t.node);
+            items.push(FilterListItem { cells: vec![format!("{owner} {}", t.plugin_name), t.param_name], index: idx });
+            entries.push(TargetEntry { kind: t.kind });
         }
-
+        // The host-side values: a lane's volume, an effect's mix, a group's volume and pan.
+        for t in self.ctl.model.gain_targets(ModulatorLocation::Free) {
+            let idx = entries.len();
+            let owner = plugin_tag(&self.ctl.model, t.node);
+            items.push(FilterListItem { cells: vec![format!("{owner} {}", t.owner_name), t.gain.label().to_string()], index: idx });
+            entries.push(TargetEntry { kind: t.kind });
+        }
+        for t in self.ctl.model.field_targets(ModulatorLocation::Free, mod_index) {
+            let idx = entries.len();
+            items.push(FilterListItem { cells: vec!["Mod".into(), t.label], index: idx });
+            entries.push(TargetEntry { kind: t.kind });
+        }
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
-        self.modulate = Some(ModulateState {
-            scope: ModScope::Group(group),
-            slot: 0,
-            target_kind: crate::plugin::chain::ModTargetKind::GroupBus {
-                effect_index: eff_idx,
-                param_index,
-            },
-            param_name,
-            param_min,
-            param_max,
-            base_value,
-            choices,
-            filter,
-            items,
-        });
+        self.target_selector = Some(TargetSelectorState { filter, items, entries, mod_index });
+    }
+
+    /// Add a free modulator (an LFO) at the end of the session's own rack, hearing the lane or the group `hears` (every note if none), and put the cursor on it. It is made by the intent that a browser's
+    /// "+ Modulator" (none) and the "+" of a lane or a group (that one) ask, a step of the history.
+    fn add_free_modulator(&mut self, hears: Option<NodeId>) {
+        if self.apply(Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears }).is_none() {
+            return;
+        }
+        let last = self.ctl.model.free_modulators.len().saturating_sub(1);
+        if let Some(position) = self.tree_entries.iter().position(|e| matches!(e.address, TreeAddress::FreeModulator { index } if index == last)) {
+            self.chain_state.selected = position;
+            self.sync_param_state();
+        }
     }
 
     /// MIDI-learn: create an armed `MidiLearn` modulator bound to the parameter
@@ -1543,130 +1198,52 @@ impl State {
     /// control to an LFO's rate, an envelope stage, or a target depth). The
     /// audio thread captures the next CC / pitch-bend and notifies back.
     fn learn_selected_param(&mut self) {
-        use crate::plugin::chain::{ModSource, ModTarget, ModTargetKind};
+        use crate::plugin::chain::ModTargetKind;
         let sel = self.chain_state.selected;
         if sel >= self.tree_entries.len() {
             return;
         }
         let addr = self.tree_entries[sel].address;
 
-        // (scope, target kind, min, max, base value, label)
-        let (scope, kind, min, max, base, label): (ModScope, ModTargetKind, f32, f32, f32, String) =
-            match addr {
-                TreeAddress::Instrument(inst) | TreeAddress::Effect { inst, .. } => {
-                    let pa = match self.real_param_index() {
-                        Some(i) => i,
-                        None => return,
-                    };
-                    let Some(p) = self.plugin_at(&addr).and_then(|p| p.params.get(pa)) else {
-                        return;
-                    };
-                    (
-                        ModScope::Lane(inst),
-                        ModTargetKind::PluginParam { slot: addr.slot(), param_index: p.index },
-                        p.min, p.max, p.value, p.name.clone(),
-                    )
-                }
-                TreeAddress::GroupEffect { group, index } => {
-                    let pa = match self.real_param_index() {
-                        Some(i) => i,
-                        None => return,
-                    };
-                    let Some(p) = self.plugin_at(&addr).and_then(|p| p.params.get(pa)) else {
-                        return;
-                    };
-                    (
-                        ModScope::Group(group),
-                        ModTargetKind::GroupBus { effect_index: index, param_index: p.index },
-                        p.min, p.max, p.value, p.name.clone(),
-                    )
-                }
-                TreeAddress::Modulator { inst, index } => {
-                    let Some(m) = self.modulator(inst, index) else { return };
-                    let Some((kind, min, max, base, label)) =
-                        modulator_row_to_cross_mod(m, index, self.param_state.selected)
-                    else {
-                        return;
-                    };
-                    (ModScope::Lane(inst), kind, min, max, base, label)
-                }
-                TreeAddress::GroupModulator { group, index } => {
-                    let Some(m) = self.group_modulator(group, index) else { return };
-                    let Some((kind, min, max, base, label)) =
-                        modulator_row_to_cross_mod(m, index, self.param_state.selected)
-                    else {
-                        return;
-                    };
-                    (ModScope::Group(group), kind, min, max, base, label)
-                }
-                _ => return,
-            };
-
-        // Create an armed MidiLearn modulator in the right rack.
-        let mod_index = match self.scoped_modulators_mut(scope) {
-            Some(ms) => ms.len(),
-            None => return,
+        let kind: ModTargetKind = match addr {
+            TreeAddress::Instrument(_) | TreeAddress::Effect { .. } | TreeAddress::GroupEffect { .. } => {
+                let pa = match self.real_param_index() {
+                    Some(i) => i,
+                    None => return,
+                };
+                let Some(plugin) = self.plugin_at(&addr) else { return };
+                let Some(p) = plugin.params.get(pa) else { return };
+                ModTargetKind::FreeParam { plugin: plugin.node, param_index: p.index }
+            }
+            TreeAddress::FreeModulator { index } => {
+                let Some(m) = self.free_modulator(index) else { return };
+                let Some((kind, ..)) = modulator_row_to_cross_mod(m, index, self.param_state.selected) else {
+                    return;
+                };
+                kind
+            }
+            TreeAddress::Group(group) => {
+                let Some((node, gain)) = self.group_row_gain(group) else { return };
+                ModTargetKind::Gain { node, gain }
+            }
+            _ => return,
         };
-        match scope {
-            ModScope::Lane(inst) => {
-                let _ = self.cmd_tx.send(GraphCommand::InsertModulator {
-                    inst,
-                    index: mod_index,
-                    source: ModSource::MidiLearn { source: None, value: 0.0, learning: true },
-                });
-            }
-            ModScope::Group(group) => {
-                let _ = self.cmd_tx.send(GraphCommand::InsertGroupModulator {
-                    group,
-                    index: mod_index,
-                    source: ModSource::MidiLearn { source: None, value: 0.0, learning: true },
-                });
-            }
-        }
-        if let Some(ms) = self.scoped_modulators_mut(scope) {
-            ms.push(ModulatorSlot {
-                source: ModSourceSlot::MidiLearn { source: None, learning: true },
-                targets: vec![],
-            });
-        }
 
-        // Bind the target (depth 1.0 = full-range absolute control).
-        let target = ModTarget { kind: kind.clone(), depth: 1.0, base_value: base, param_min: min, param_max: max };
-        match scope {
-            ModScope::Lane(inst) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddModTarget { inst, mod_index, target });
-            }
-            ModScope::Group(group) => {
-                let _ = self.cmd_tx.send(GraphCommand::AddGroupModTarget { group, mod_index, target });
-            }
-        }
-        if let Some(ms) = self.scoped_modulators_mut(scope) {
-            if let Some(m) = ms.get_mut(mod_index) {
-                m.targets.push(ModTargetSlot {
-                    slot: addr.slot(),
-                    param_name: label,
-                    kind,
-                    depth: 1.0,
-                    param_min: min,
-                    param_max: max,
-                });
-            }
-        }
-        self.dirty = true;
-        self.rebuild_tree();
+        // An armed MidiLearn modulator, bound to the target (depth 1.0 = full-range absolute control).
+        self.bind(Driver::New(ModulatorKind::MidiLearn, Some(1.0)), &kind);
     }
 
     /// Open the "assign to group" popup for instrument `inst`.
     fn open_group_assign(&mut self, inst: usize) {
-        let current = self.instruments.get(inst).and_then(|n| n.group);
+        let current = self.ctl.model.instruments.get(inst).and_then(|n| n.group);
         let mut choices = vec![GroupAssignChoice::New];
         let mut items = vec![FilterListItem { cells: vec!["New group".into()], index: 0 }];
         if current.is_some() {
             choices.push(GroupAssignChoice::Ungroup);
             items.push(FilterListItem { cells: vec!["Ungroup".into()], index: 1 });
         }
-        for (g_idx, group) in self.groups.iter().enumerate() {
-            let name = group.name.clone().unwrap_or_else(|| format!("Group {}", g_idx + 1));
+        for (g_idx, group) in self.ctl.model.groups.iter().enumerate() {
+            let name = group.display_name(g_idx);
             let marker = if current == Some(g_idx) { " (current)" } else { "" };
             let idx = choices.len();
             choices.push(GroupAssignChoice::Existing(g_idx));
@@ -1675,6 +1252,35 @@ impl State {
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
         self.group_assign = Some(GroupAssignState { inst, choices, filter, items });
+    }
+
+    /// Open the "what it hears" popup for the free modulator at `mod_index`: every note, the notes that a lane's instrument is given (`L1 Oscillator`), or those of a group's members
+    /// (`G1 Group 1`), the one it hears now marked.
+    fn open_ear_popup(&mut self, mod_index: usize) {
+        let Some(modulator) = self.free_modulator(mod_index) else { return };
+        let (node, current) = (modulator.node, self.ctl.model.ear_of(modulator));
+        let mark = |ear: Option<NodeId>| if ear == current { " (current)" } else { "" };
+        let mut choices: Vec<Option<NodeId>> = vec![None];
+        let mut items = vec![FilterListItem { cells: vec![format!("Every note{}", mark(None))], index: 0 }];
+        for (i, lane) in self.ctl.model.instruments.iter().enumerate() {
+            let name = lane.instrument.as_ref().map_or("(empty)", |plugin| plugin.name.as_str());
+            items.push(FilterListItem { cells: vec![format!("L{} {name}{}", i + 1, mark(Some(lane.node)))], index: choices.len() });
+            choices.push(Some(lane.node));
+        }
+        for (g, group) in self.ctl.model.groups.iter().enumerate() {
+            items.push(FilterListItem { cells: vec![format!("G{} {}{}", g + 1, group.display_name(g), mark(Some(group.node)))], index: choices.len() });
+            choices.push(Some(group.node));
+        }
+        let mut filter = FilterListState::new();
+        filter.apply_filter(&items);
+        self.ear_popup = Some(EarState { modulator: node, choices, filter, items });
+    }
+
+    fn confirm_ear_popup(&mut self) {
+        let Some(state) = self.ear_popup.take() else { return };
+        let Some(item) = state.filter.selected_item(&state.items) else { return };
+        let ear = state.choices[item.index];
+        self.apply(Intent::SetModulatorEar { node: state.modulator, ear });
     }
 
     fn confirm_group_assign(&mut self) {
@@ -1686,41 +1292,16 @@ impl State {
             Some(item) => gs.choices[item.index],
             None => return,
         };
-        let inst = gs.inst;
-        let new_group = match choice {
-            GroupAssignChoice::Ungroup => None,
-            GroupAssignChoice::Existing(g) => Some(g),
-            GroupAssignChoice::New => {
-                let g = self.groups.len();
-                let _ = self.cmd_tx.send(GraphCommand::AddGroup);
-                self.groups.push(GroupNode { name: None, volume: 1.0, pan: 0.0, effects: vec![], modulators: vec![] });
-                Some(g)
-            }
+        let Some(lane) = self.ctl.model.instruments.get(gs.inst).map(|lane| lane.node) else { return };
+        let intent = match choice {
+            GroupAssignChoice::Ungroup => Intent::SetLaneGroup { node: lane, group: None },
+            GroupAssignChoice::Existing(g) => match self.ctl.model.groups.get(g) {
+                Some(group) => Intent::SetLaneGroup { node: lane, group: Some(group.node) },
+                None => return,
+            },
+            GroupAssignChoice::New => Intent::AddGroup { members: vec![lane] },
         };
-        let _ = self.cmd_tx.send(GraphCommand::SetLaneGroup { inst, group: new_group });
-        // Keep group-modulator member ordinals in sync with membership (mirrors
-        // the audio thread's SetLaneGroup fixups).
-        let old = tui_lane_member_ordinal(&self.instruments, inst);
-        if let Some(node) = self.instruments.get_mut(inst) {
-            node.group = new_group;
-        }
-        let new = tui_lane_member_ordinal(&self.instruments, inst);
-        let old_group = old.map(|(g, _)| g);
-        let new_group_idx = new.map(|(g, _)| g);
-        if old_group != new_group_idx {
-            if let Some((og, oo)) = old {
-                if let Some(g) = self.groups.get_mut(og) {
-                    fixup_tui_group_member_after_remove(&mut g.modulators, oo);
-                }
-            }
-            if let Some((ng, no)) = new {
-                if let Some(g) = self.groups.get_mut(ng) {
-                    shift_tui_group_member_after_insert(&mut g.modulators, no);
-                }
-            }
-        }
-        self.dirty = true;
-        self.rebuild_tree();
+        self.apply(intent);
     }
 
     /// Open the preset selector for the selected plugin slot. inst+slot
@@ -1737,7 +1318,7 @@ impl State {
         let mut filter = FilterListState::new();
         filter.apply_filter(&items);
         // Pre-select the current scale if it's in the list.
-        let current = self.piano_filter.scale();
+        let current = self.ctl.piano_filter.scale();
         if let Some(i) = entries
             .iter()
             .position(|(_, r, s)| *r == current.root && *s == current.scale_idx)
@@ -1761,12 +1342,12 @@ impl State {
             None => return,
         };
         let (root, scale_idx) = ss.entries[item.index];
-        let current = self.piano_filter.scale();
+        let current = self.ctl.piano_filter.scale();
         if current.root != root || current.scale_idx != scale_idx {
             let new_scale = ScaleSetting { root, scale_idx };
-            self.piano_filter.set_scale(new_scale);
-            self.dirty = true;
-            log::info!("Scale set to {}", new_scale.display());
+            if self.apply(Intent::SetScale { scale: new_scale.short() }).is_some() {
+                log::info!("Scale set to {}", new_scale.display());
+            }
         }
     }
 
@@ -1774,9 +1355,9 @@ impl State {
     /// slot=1..N = effects.
     fn open_preset_selector(&mut self, inst: usize, slot: usize) {
         let plugin = if slot == 0 {
-            self.instruments.get(inst).and_then(|n| n.instrument.as_ref())
+            self.ctl.model.instruments.get(inst).and_then(|n| n.instrument.as_ref())
         } else {
-            self.instruments.get(inst).and_then(|n| n.effects.get(slot - 1))
+            self.ctl.model.instruments.get(inst).and_then(|n| n.effects.get(slot - 1))
         };
         let plugin = match plugin {
             Some(p) => p,
@@ -1814,150 +1395,72 @@ impl State {
     }
 
     fn confirm_preset_selector(&mut self) {
-        let ps = match self.preset_selector.take() {
-            Some(s) => s,
-            None => return,
-        };
-        let chosen_idx = match ps.filter.selected_item(&ps.items) {
-            Some(item) => item.index,
-            None => return,
-        };
-        let chosen = &ps.presets[chosen_idx];
-        let preset_name = chosen.name.clone();
-        let preset_id = chosen.id.clone();
-
-        // Look up the slot's plugin source id so we can build a temporary
-        // plugin to query post-preset parameter values for the UI mirror.
-        let source = {
-            let plugin = if ps.slot == 0 {
-                self.instruments.get(ps.inst).and_then(|n| n.instrument.as_ref())
-            } else {
-                self.instruments.get(ps.inst).and_then(|n| n.effects.get(ps.slot - 1))
-            };
-            match plugin {
-                Some(p) => p.id.clone(),
-                None => return,
-            }
-        };
-
-        // Drive the audio thread first — that's what actually changes the sound.
-        let _ = self.cmd_tx.send(GraphCommand::LoadPreset {
-            inst: ps.inst,
-            slot: ps.slot,
-            preset_id: preset_id.clone(),
-        });
-
-        // Mirror the preset's parameter values into the TUI slot. We do this
-        // via a throwaway plugin instance because the live plugin is owned by
-        // the audio thread; loading twice is acceptable at preset-switch time.
-        let mut new_values: Option<Vec<f32>> = None;
-        match plugin::load(&source, self.sample_rate, self.max_block_size, &self.runtime) {
-            Ok(mut temp) => {
-                crate::session::apply_preset(&mut temp, &preset_name);
-                let params = temp.parameters();
-                let mut values = Vec::with_capacity(params.len());
-                for p in &params {
-                    values.push(temp.get_parameter(p.index).unwrap_or(p.default));
-                }
-                new_values = Some(values);
-            }
-            Err(e) => {
-                log::warn!("Failed to mirror preset values for {source}: {e}");
-            }
-        }
-
-        // Update mirror. Set both `value` and `default` (the save-filter
-        // baseline) so the new preset's parameters aren't written as overrides.
-        let plugin_mut = if ps.slot == 0 {
-            self.instruments.get_mut(ps.inst).and_then(|n| n.instrument.as_mut())
+        let Some(ps) = self.preset_selector.take() else { return };
+        let Some(item) = ps.filter.selected_item(&ps.items) else { return };
+        let preset = ps.presets[item.index].id.clone();
+        let lane = self.ctl.model.instruments.get(ps.inst);
+        let plugin = if ps.slot == 0 {
+            lane.and_then(|n| n.instrument.as_ref())
         } else {
-            self.instruments.get_mut(ps.inst).and_then(|n| n.effects.get_mut(ps.slot - 1))
+            lane.and_then(|n| n.effects.get(ps.slot - 1))
         };
-        if let Some(p) = plugin_mut {
-            p.current_preset = Some(preset_name);
-            if let Some(values) = new_values {
-                for (i, slot) in p.params.iter_mut().enumerate() {
-                    let v = values
-                        .get(slot.index as usize)
-                        .copied()
-                        .or_else(|| values.get(i).copied());
-                    if let Some(v) = v {
-                        slot.value = v;
-                        slot.default = v;
-                    }
-                }
-            }
-        }
-
-        self.dirty = true;
-        self.rebuild_tree();
+        let Some(plugin) = plugin else { return };
+        let intent = Intent::LoadPreset { node: plugin.node, preset };
+        self.apply(intent);
     }
 
-    /// Update a group's host-side bus param (0 = volume, 1 = pan) by applying
-    /// `f` to its current value, clamping to that param's range and mirroring
-    /// the change to the audio thread.
+    /// Set a group's host-side bus param (0 = volume, 1 = pan) to what `f` makes
+    /// of its value now; the controller clamps it to the param's range.
     fn set_group_bus_param(&mut self, group: usize, pa: usize, f: impl FnOnce(f32) -> f32) {
-        let Some(g) = self.groups.get_mut(group) else {
+        let Some(g) = self.ctl.model.groups.get(group) else {
             return;
         };
-        match pa {
-            0 => {
-                g.volume = f(g.volume).clamp(0.0, 4.0);
-                let value = g.volume;
-                let _ = self.cmd_tx.send(GraphCommand::SetGroupVolume { group, value });
-            }
-            1 => {
-                g.pan = f(g.pan).clamp(-1.0, 1.0);
-                let value = g.pan;
-                let _ = self.cmd_tx.send(GraphCommand::SetGroupPan { group, value });
-            }
+        let (gain, current) = match pa {
+            0 => (Gain::GroupVolume, g.volume),
+            1 => (Gain::GroupPan, g.pan),
             _ => return,
-        }
-        self.dirty = true;
+        };
+        let intent = Intent::SetGain { node: g.node, gain, value: f(current) };
+        self.apply(intent);
     }
 
-    fn adjust_param(&mut self, delta: f32) {
+    /// Take the pattern of lane `inst` out: the audio thread forgets it and the model has none (`ClearPattern`). (What `d` on a pattern does, and Ctrl+R.)
+    fn clear_pattern(&mut self, inst: usize) {
+        if let Some(node) = self.ctl.model.instruments.get(inst).map(|lane| lane.node) {
+            self.apply(Intent::ClearPattern { node });
+        }
+    }
+
+    /// Step the selected row up (`direction` 1) or down (-1) by what `modifiers` say: a plugin's parameter by that fraction of its range, a modulator's
+    /// setting by the law of its scale (`stepped`).
+    fn adjust_param(&mut self, direction: f32, modifiers: KeyModifiers) {
         let sel = self.chain_state.selected;
         if sel >= self.tree_entries.len() {
             return;
         }
         let addr = self.tree_entries[sel].address;
+        let delta = direction * param_step(self, modifiers);
 
         // Group bus effect params take a dedicated command (no instrument).
-        if let TreeAddress::GroupEffect { group, index } = addr {
+        if let TreeAddress::GroupEffect { .. } = addr {
             let pa = match self.real_param_index() {
                 Some(i) => i,
                 None => return,
             };
-            if let Some(param) = self.plugin_at_mut(&addr).and_then(|p| p.params.get_mut(pa)) {
-                param.value = (param.value + delta).clamp(param.min, param.max);
-                if matches!(param.kind, ParamKind::Enum(_)) {
-                    param.value = param.value.round();
-                }
-                let (value, param_index) = (param.value, param.index);
-                let _ = self.cmd_tx.send(GraphCommand::SetGroupParameter {
-                    group,
-                    index,
-                    param_index,
-                    value,
-                });
-                self.dirty = true;
-            }
+            self.set_plugin_param(&addr, pa, |v| v + delta);
             return;
         }
 
-        // Group modulator params (no instrument) take dedicated group commands.
-        if let TreeAddress::GroupModulator { group, index } = addr {
-            let pa = self.param_state.selected;
-            self.adjust_group_modulator_param(group, index, pa, delta);
+        // The rows of a modulator.
+        if let TreeAddress::FreeModulator { .. } = addr {
+            self.step_modulator_row(addr, self.param_state.selected, direction, step_fraction(modifiers));
             return;
         }
 
         // A group's host-side bus params (Volume + Pan).
         if let TreeAddress::Group(group) = addr {
             let pa = self.param_state.selected;
-            let range = self.selected_param_range().unwrap_or((0.0, 1.0));
-            self.set_group_bus_param(group, pa, |v| (v + delta).clamp(range.0, range.1));
+            self.set_group_bus_param(group, pa, |v| v + delta);
             return;
         }
 
@@ -1973,192 +1476,182 @@ impl State {
             return;
         }
 
-        // Handle modulator params separately.
-        if let TreeAddress::Modulator { index, .. } = addr {
-            let pa = self.param_state.selected;
-            self.adjust_modulator_param(inst, index, pa, delta);
-            return;
-        }
-
         let pa = match self.real_param_index() {
             Some(i) => i,
             None => return,
         };
-        let slot = addr.slot();
-        if let Some(param) = self.plugin_at_mut(&addr).and_then(|p| p.params.get_mut(pa)) {
-            param.value = (param.value + delta).clamp(param.min, param.max);
-            // Enum params snap to whole values.
-            if matches!(param.kind, ParamKind::Enum(_)) {
-                param.value = param.value.round();
+        self.set_plugin_param(&addr, pa, |v| v + delta);
+    }
+
+    /// Set the parameter in row `row` of the plugin at `addr` to what `f` makes of
+    /// its value now; the controller clamps it (and rounds an enum to a label).
+    fn set_plugin_param(&mut self, addr: &TreeAddress, row: usize, f: impl FnOnce(f32) -> f32) {
+        let Some(plugin) = self.plugin_at(addr) else { return };
+        let Some(param) = plugin.params.get(row) else { return };
+        let intent = Intent::SetParam { node: plugin.node, param: param.index, value: f(param.value) };
+        self.apply(intent);
+    }
+
+    /// Hand an intent to the controller. A refusal is logged and the view
+    /// carries on as it was.
+    fn apply(&mut self, intent: Intent) -> Option<Applied> {
+        match self.try_apply(intent) {
+            Ok(applied) => Some(applied),
+            Err(e) => {
+                log::warn!("{e}");
+                None
             }
-            let new_value = param.value;
-            let idx = param.index;
-            let _ = self.cmd_tx.send(GraphCommand::SetParameter {
-                inst,
-                slot,
-                param_index: idx,
-                value: new_value,
-            });
-            self.dirty = true;
         }
     }
 
-    fn adjust_pattern_param(&mut self, inst: usize, pa: usize, delta: f32) {
-        let pat = match self.instruments.get_mut(inst)
-            .and_then(|n| n.pattern.as_mut())
-        {
-            Some(p) => p,
-            None => return,
-        };
-        match pa {
-            0 => {
-                // Length (beats)
-                pat.length_beats = (pat.length_beats + delta).clamp(1.0, 32.0);
-                let _ = self.cmd_tx.send(GraphCommand::SetPatternLength {
-                    inst, beats: pat.length_beats,
-                });
-                self.dirty = true;
-                self.rebuild_tree();
-            }
-            1 => {
-                // Enabled (enum toggle)
-                pat.enabled = !pat.enabled;
-                let _ = self.cmd_tx.send(GraphCommand::SetPatternEnabled {
-                    inst, enabled: pat.enabled,
-                });
-                self.dirty = true;
-                self.rebuild_tree();
-            }
-            2 => {
-                // Loop (enum toggle)
-                pat.looping = !pat.looping;
-                let _ = self.cmd_tx.send(GraphCommand::SetPatternLooping {
-                    inst, looping: pat.looping,
-                });
-                self.dirty = true;
-            }
-            3 => {
-                // Transpose (enum toggle: chromatic / in-key)
-                pat.in_key = !pat.in_key;
-                let _ = self.cmd_tx.send(GraphCommand::SetPatternInKey {
-                    inst, in_key: pat.in_key,
-                });
-                self.dirty = true;
-            }
-            _ => {} // Notes row is informational
-        }
+    /// Hand an intent to the controller, and the view reacts to what it did; a refusal is the caller's to say (the Patch tab says it in the tab).
+    fn try_apply(&mut self, intent: Intent) -> Result<Applied, intent::IntentError> {
+        let applied = self.ctl.apply(intent)?;
+        self.react_to(&applied);
+        Ok(applied)
     }
 
-    fn adjust_modulator_param(&mut self, inst: usize, mod_index: usize, pa: usize, delta: f32) {
-        // Direct field access (not the modulator_mut helper) so the modulator
-        // borrow stays disjoint from self.cmd_tx for the command sends below.
-        let m = match self.instruments.get_mut(inst).and_then(|n| n.modulators.get_mut(mod_index)) {
-            Some(m) => m,
-            None => return,
-        };
-        // Type row (0) switches LFO/Envelope — but MidiLearn's row 0 is a
-        // read-only source-info row, so it doesn't switch.
-        let is_midi = matches!(m.source, ModSourceSlot::MidiLearn { .. });
-        if pa == 0 && !is_midi {
-            let new_source = match &m.source {
-                ModSourceSlot::Lfo { .. } => ModSourceSlot::Envelope {
-                    attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5,
-                },
-                _ => ModSourceSlot::Lfo {
-                    waveform: crate::plugin::chain::LfoWaveform::Sine,
-                    rate: 1.0,
-                },
-            };
-            let graph_source = mod_source_slot_to_graph(&new_source);
-            m.source = new_source;
-            let _ = self.cmd_tx.send(GraphCommand::SetModulatorSource {
-                inst, mod_index,
-                source: graph_source,
-            });
-            self.param_state.selected = 0;
+    /// Bring what the view derives from the model up to date with what `applied` did.
+    fn react_to(&mut self, applied: &Applied) {
+        // Nodes or cables came or went: the tree is built from the model again, and what is open that is for a
+        // place in it is closed if the places have moved.
+        if applied.restructured {
+            let places = self.tree_places();
+            let on = self.node_under_cursor();
             self.rebuild_tree();
-        } else {
-            match &mut m.source {
-                ModSourceSlot::Lfo { waveform, rate } => {
-                    if pa == 1 {
-                        // Waveform (enum).
-                        *waveform = if delta > 0.0 { waveform.next() } else { waveform.prev() };
-                        let _ = self.cmd_tx.send(GraphCommand::SetModulatorWaveform {
-                            inst, mod_index,
-                            waveform: *waveform,
-                        });
-                        self.rebuild_tree();
-                    } else if pa == 2 {
-                        // Rate.
-                        *rate = (*rate + delta).clamp(0.01, 50.0);
-                        let _ = self.cmd_tx.send(GraphCommand::SetModulatorRate {
-                            inst, mod_index,
-                            rate: *rate,
-                        });
-                        self.rebuild_tree();
-                    } else if pa == 3 {
-                        // Separator row — no-op.
-                    } else if let Some(t) = m.targets.get_mut(pa - 4) {
-                        t.depth = (t.depth + delta).clamp(0.0, 1.0);
-                        let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                            inst, mod_index,
-                            target_index: pa - 4,
-                            depth: t.depth,
-                        });
-                    }
-                }
-                ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                    match pa {
-                        1 => {
-                            *attack = (*attack + delta).clamp(0.001, 10.0);
-                        }
-                        2 => {
-                            *decay = (*decay + delta).clamp(0.001, 10.0);
-                        }
-                        3 => {
-                            *sustain = (*sustain + delta).clamp(0.0, 1.0);
-                        }
-                        4 => {
-                            *release = (*release + delta).clamp(0.001, 10.0);
-                        }
-                        5 => {
-                            // Separator row — no-op.
-                        }
-                        _ => {
-                            let target_idx = pa - 6;
-                            if let Some(t) = m.targets.get_mut(target_idx) {
-                                t.depth = (t.depth + delta).clamp(0.0, 1.0);
-                                let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                                    inst, mod_index,
-                                    target_index: target_idx,
-                                    depth: t.depth,
-                                });
-                            }
-                        }
-                    }
-                    if (1..=4).contains(&pa) {
-                        let _ = self.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam {
-                            inst, mod_index,
-                            attack: *attack, decay: *decay, sustain: *sustain, release: *release,
-                        });
-                    }
-                }
-                ModSourceSlot::MidiLearn { .. } => {
-                    // Rows: 0 = source info, 1 = Targets separator, 2+ = depths.
-                    if pa >= 2 {
-                        if let Some(t) = m.targets.get_mut(pa - 2) {
-                            t.depth = (t.depth + delta).clamp(0.0, 1.0);
-                            let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                                inst, mod_index,
-                                target_index: pa - 2,
-                                depth: t.depth,
-                            });
-                        }
-                    }
-                }
+            if self.tree_places() != places {
+                let cursor_node_is_there = self.node_under_cursor() == on;
+                self.close_popups_that_hold_places(cursor_node_is_there);
             }
         }
-        self.dirty = true;
+        for event in &applied.events {
+            match event {
+                // The group header shows the volume.
+                intent::Event::GainSet { gain: Gain::GroupVolume, .. } => self.rebuild_tree(),
+                // A lane's label shows its keys, and a lane's and a group's whether it is muted or soloed.
+                intent::Event::RangeSet { .. } | intent::Event::MuteSet { .. } | intent::Event::SoloSet { .. } => self.rebuild_tree(),
+                // (The Piano tab reads the scale and the lock from the shared filter, on every frame.)
+                intent::Event::ScaleSet { .. } | intent::Event::LockedSet { .. } => {}
+                // (The status bar reads the tempo and the limiter from the model, on every frame.)
+                intent::Event::BpmSet { .. } | intent::Event::LimiterSet { .. } => {}
+                // The tree has the pattern of a lane, as a line of its own while it is recorded or has notes.
+                intent::Event::PatternSet { .. } => self.rebuild_tree(),
+                // (The TUI does not draw where a node is, nor which of its parameters are its knobs.)
+                intent::Event::NodeUiSet { .. } | intent::Event::PinnedSet { .. } => {}
+                // The group's header and its parameter pane's title are its name.
+                intent::Event::GroupRenamed { .. } => self.rebuild_tree(),
+                // The tree shows a modulator's rate and waveform, and its cables' depths.
+                intent::Event::ModulatorFieldSet { .. } | intent::Event::EdgeDepthSet { .. } => self.rebuild_tree(),
+                // (The pane shows the steps of a step sequencer from the model on every frame: the tree's line has no room for them.)
+                intent::Event::StepsSet { .. } => {}
+                // (The Patch tab reads the audio cables from the model on every frame.)
+                intent::Event::CableGainSet { .. } => {}
+                intent::Event::ParamSet { .. }
+                | intent::Event::GainSet { .. }
+                | intent::Event::PresetLoaded { .. }
+                // (The tab shows what the controller says is unsaved, which is not the case now.)
+                | intent::Event::Saved { .. }
+                // (The library is not part of the session: the selectors read the catalog when they open.)
+                | intent::Event::ModuleSaved { .. } => {}
+            }
+        }
+    }
+
+    /// The modulator at `addr`, if the address is one.
+    fn modulator_at(&self, addr: TreeAddress) -> Option<&ModulatorSlot> {
+        match addr {
+            TreeAddress::FreeModulator { index } => self.free_modulator(index),
+            _ => None,
+        }
+    }
+
+    /// Left or Right on row `row` of the modulator at `addr`: a step of `delta` in the
+    /// number or the depth the row is, one waveform along, or, on the Type row, the other
+    /// kind of source. What a row is, its range and the commands the engine gets are the
+    /// intents'; a row that is none of these does nothing.
+    fn step_modulator_row(&mut self, addr: TreeAddress, row: usize, direction: f32, fraction: f32) {
+        let Some(m) = self.modulator_at(addr) else { return };
+        let intent = match modulator_row(m, row) {
+            Some(ModulatorRow::Type) => return self.switch_modulator_source(addr),
+            Some(ModulatorRow::Waveform) => {
+                let ModSourceSlot::Lfo { waveform, .. } = m.source else { return };
+                let next = if direction > 0.0 { waveform.next() } else { waveform.prev() };
+                Intent::SetModulatorField { node: m.node, field: ModulatorField::Waveform, value: next.to_index() as f32 }
+            }
+            // A switch has two places: either key goes to the other.
+            Some(ModulatorRow::Retrigger) => match m.row_intent(row, |on| 1.0 - on) {
+                Some(intent) => intent,
+                None => return,
+            },
+            // The note lengths are a list that has ends, as the choices of a plugin's enum have: one along, and no further than the first and the last.
+            Some(ModulatorRow::Sync) => {
+                let Some(now) = m.source.setting(ModulatorField::Sync) else { return };
+                let (min, max) = ModulatorField::Sync.range();
+                let next = (now + direction.signum()).clamp(min, max);
+                if next == now {
+                    return;
+                }
+                Intent::SetModulatorField { node: m.node, field: ModulatorField::Sync, value: next }
+            }
+            // A step goes by a fraction of the range it can be set over, -1 to 1.
+            Some(ModulatorRow::Step(_)) => match m.row_intent(row, |value| value + direction * fraction * (STEP_MAX - STEP_MIN)) {
+                Some(intent) => intent,
+                None => return,
+            },
+            row_kind => {
+                let field = match row_kind {
+                    Some(ModulatorRow::Setting(field)) => Some(field),
+                    _ => None,
+                };
+                match m.row_intent(row, |value| stepped(field, value, direction, fraction)) {
+                    Some(intent) => intent,
+                    None => return,
+                }
+            }
+        };
+        self.apply(intent);
+    }
+
+    /// A number typed for row `row` of the modulator at `addr`.
+    fn set_modulator_row(&mut self, addr: TreeAddress, row: usize, value: f32) {
+        let Some(intent) = self.modulator_at(addr).and_then(|m| m.row_intent(row, |_| value)) else { return };
+        self.apply(intent);
+    }
+
+    /// The Type row: an LFO becomes an envelope with the defaults of one, and an envelope
+    /// an LFO. A change of what kind of node it is, which no intent makes yet (a browser
+    /// is told by the next `resync`).
+    fn switch_modulator_source(&mut self, addr: TreeAddress) {
+        let TreeAddress::FreeModulator { index } = addr else { return };
+        let at = ModulatorLocation::Free;
+        let Some(m) = self.ctl.model.modulators_mut(at).and_then(|rack| rack.get_mut(index)) else { return };
+        let new_source = match m.source {
+            ModSourceSlot::Lfo { .. } => ModSourceSlot::new_envelope(),
+            _ => ModSourceSlot::new_lfo(),
+        };
+        let source = mod_source_slot_to_graph(&new_source);
+        m.source = new_source;
+        let command = GraphCommand::SetModulatorSource { location: at, mod_index: index, source };
+        let _ = self.ctl.cmd_tx.send(command);
+        self.ctl.dirty = true;
+        self.param_state.selected = 0;
+        self.rebuild_tree();
+    }
+
+    /// Turn row `pa` of the pattern pane of lane `inst`: its length by `delta` beats, and a switch over (`SetPatternField`).
+    fn adjust_pattern_param(&mut self, inst: usize, pa: usize, delta: f32) {
+        let Some(lane) = self.ctl.model.instruments.get(inst) else { return };
+        let Some(pattern) = lane.pattern.as_ref() else { return };
+        let node = lane.node;
+        let switched = |on: bool| f32::from(u8::from(!on));
+        let (field, value) = match pa {
+            0 => (PatternField::Length, pattern.length_beats + delta),
+            1 => (PatternField::Enabled, switched(pattern.enabled)),
+            2 => (PatternField::Looping, switched(pattern.looping)),
+            3 => (PatternField::Transpose, switched(pattern.in_key)),
+            _ => return, // Notes row is informational
+        };
+        self.apply(Intent::SetPatternField { node, field, value });
     }
 
     fn set_param_value(&mut self, value: f32) {
@@ -2169,29 +1662,18 @@ impl State {
         let addr = self.tree_entries[sel].address;
 
         // Group bus effect params take a dedicated command (no instrument).
-        if let TreeAddress::GroupEffect { group, index } = addr {
+        if let TreeAddress::GroupEffect { .. } = addr {
             let pa = match self.real_param_index() {
                 Some(i) => i,
                 None => return,
             };
-            if let Some(param) = self.plugin_at_mut(&addr).and_then(|p| p.params.get_mut(pa)) {
-                param.value = value.clamp(param.min, param.max);
-                let (value, param_index) = (param.value, param.index);
-                let _ = self.cmd_tx.send(GraphCommand::SetGroupParameter {
-                    group,
-                    index,
-                    param_index,
-                    value,
-                });
-                self.dirty = true;
-            }
+            self.set_plugin_param(&addr, pa, |_| value);
             return;
         }
 
-        // Group modulator params (no instrument) take dedicated group commands.
-        if let TreeAddress::GroupModulator { group, index } = addr {
-            let pa = self.param_state.selected;
-            self.set_group_modulator_param_value(group, index, pa, value);
+        // The rows of a modulator.
+        if let TreeAddress::FreeModulator { .. } = addr {
+            self.set_modulator_row(addr, self.param_state.selected, value);
             return;
         }
 
@@ -2209,28 +1691,13 @@ impl State {
 
         // Handle pattern params.
         if let TreeAddress::Pattern(_) = addr {
-            let pa = self.param_state.selected;
-            if pa == 0 {
-                // Length (beats) — set directly.
-                let clamped = value.clamp(1.0, 32.0);
-                if let Some(pat) = self.instruments.get_mut(inst)
-                    .and_then(|n| n.pattern.as_mut())
-                {
-                    pat.length_beats = clamped;
-                    let _ = self.cmd_tx.send(GraphCommand::SetPatternLength {
-                        inst, beats: clamped,
-                    });
-                    self.dirty = true;
-                    self.rebuild_tree();
+            // (Only the length is a number: the other rows are switches, and the notes are not a setting.)
+            if self.param_state.selected == 0 {
+                if let Some(lane) = self.ctl.model.instruments.get(inst).filter(|lane| lane.pattern.is_some()) {
+                    let node = lane.node;
+                    self.apply(Intent::SetPatternField { node, field: PatternField::Length, value });
                 }
             }
-            return;
-        }
-
-        // Handle modulator params.
-        if let TreeAddress::Modulator { index, .. } = addr {
-            let pa = self.param_state.selected;
-            self.set_modulator_param_value(inst, index, pa, value);
             return;
         }
 
@@ -2238,411 +1705,7 @@ impl State {
             Some(i) => i,
             None => return,
         };
-        let slot = addr.slot();
-        if let Some(param) = self.plugin_at_mut(&addr).and_then(|p| p.params.get_mut(pa)) {
-            param.value = value.clamp(param.min, param.max);
-            let new_value = param.value;
-            let idx = param.index;
-            let _ = self.cmd_tx.send(GraphCommand::SetParameter {
-                inst,
-                slot,
-                param_index: idx,
-                value: new_value,
-            });
-            self.dirty = true;
-        }
-    }
-
-    fn set_modulator_param_value(&mut self, inst: usize, mod_index: usize, pa: usize, value: f32) {
-        // Direct field access (not the modulator_mut helper) so the modulator
-        // borrow stays disjoint from self.cmd_tx for the command sends below.
-        let m = match self.instruments.get_mut(inst).and_then(|n| n.modulators.get_mut(mod_index)) {
-            Some(m) => m,
-            None => return,
-        };
-        if pa == 0 {
-            // Type enum — not settable via numeric value entry, skip.
-            return;
-        }
-        match &mut m.source {
-            ModSourceSlot::Lfo { waveform: _, rate } => {
-                if pa == 1 {
-                    // Waveform enum — not settable via numeric value entry.
-                    return;
-                } else if pa == 2 {
-                    *rate = value.clamp(0.01, 50.0);
-                    let _ = self.cmd_tx.send(GraphCommand::SetModulatorRate {
-                        inst, mod_index, rate: *rate,
-                    });
-                    self.rebuild_tree();
-                } else if pa == 3 {
-                    // Separator — not settable.
-                    return;
-                } else if let Some(t) = m.targets.get_mut(pa - 4) {
-                    t.depth = value.clamp(0.0, 1.0);
-                    let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                        inst, mod_index,
-                        target_index: pa - 4,
-                        depth: t.depth,
-                    });
-                }
-            }
-            ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                match pa {
-                    1 => *attack = value.clamp(0.001, 10.0),
-                    2 => *decay = value.clamp(0.001, 10.0),
-                    3 => *sustain = value.clamp(0.0, 1.0),
-                    4 => *release = value.clamp(0.001, 10.0),
-                    5 => return, // Separator — not settable.
-                    _ => {
-                        let target_idx = pa - 6;
-                        if let Some(t) = m.targets.get_mut(target_idx) {
-                            t.depth = value.clamp(0.0, 1.0);
-                            let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                                inst, mod_index,
-                                target_index: target_idx,
-                                depth: t.depth,
-                            });
-                        }
-                        self.dirty = true;
-                        return;
-                    }
-                }
-                let _ = self.cmd_tx.send(GraphCommand::SetModulatorEnvelopeParam {
-                    inst, mod_index,
-                    attack: *attack, decay: *decay, sustain: *sustain, release: *release,
-                });
-            }
-            ModSourceSlot::MidiLearn { .. } => {
-                // Rows: 0 = source info, 1 = Targets separator, 2+ = depths.
-                if pa >= 2 {
-                    if let Some(t) = m.targets.get_mut(pa - 2) {
-                        t.depth = value.clamp(0.0, 1.0);
-                        let _ = self.cmd_tx.send(GraphCommand::SetModTargetDepth {
-                            inst, mod_index,
-                            target_index: pa - 2,
-                            depth: t.depth,
-                        });
-                    }
-                } else {
-                    return; // source info / separator — not settable
-                }
-            }
-        }
-        self.dirty = true;
-    }
-
-    /// Group-rack mirror of `adjust_modulator_param`: edits the group modulator
-    /// at `group`/`mod_index` and emits the corresponding `SetGroupModulator*`.
-    fn adjust_group_modulator_param(&mut self, group: usize, mod_index: usize, pa: usize, delta: f32) {
-        let m = match self.groups.get_mut(group).and_then(|g| g.modulators.get_mut(mod_index)) {
-            Some(m) => m,
-            None => return,
-        };
-        let is_midi = matches!(m.source, ModSourceSlot::MidiLearn { .. });
-        if pa == 0 && !is_midi {
-            // Type (enum) — switch between LFO and Envelope.
-            let new_source = match &m.source {
-                ModSourceSlot::Lfo { .. } => ModSourceSlot::Envelope {
-                    attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.5,
-                },
-                _ => ModSourceSlot::Lfo {
-                    waveform: crate::plugin::chain::LfoWaveform::Sine,
-                    rate: 1.0,
-                },
-            };
-            let graph_source = mod_source_slot_to_graph(&new_source);
-            m.source = new_source;
-            let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorSource {
-                group, mod_index,
-                source: graph_source,
-            });
-            self.param_state.selected = 0;
-            self.rebuild_tree();
-        } else {
-            match &mut m.source {
-                ModSourceSlot::Lfo { waveform, rate } => {
-                    if pa == 1 {
-                        *waveform = if delta > 0.0 { waveform.next() } else { waveform.prev() };
-                        let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorWaveform {
-                            group, mod_index,
-                            waveform: *waveform,
-                        });
-                        self.rebuild_tree();
-                    } else if pa == 2 {
-                        *rate = (*rate + delta).clamp(0.01, 50.0);
-                        let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorRate {
-                            group, mod_index,
-                            rate: *rate,
-                        });
-                        self.rebuild_tree();
-                    } else if pa == 3 {
-                        // Separator row — no-op.
-                    } else if let Some(t) = m.targets.get_mut(pa - 4) {
-                        t.depth = (t.depth + delta).clamp(0.0, 1.0);
-                        let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                            group, mod_index,
-                            target_index: pa - 4,
-                            depth: t.depth,
-                        });
-                    }
-                }
-                ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                    match pa {
-                        1 => *attack = (*attack + delta).clamp(0.001, 10.0),
-                        2 => *decay = (*decay + delta).clamp(0.001, 10.0),
-                        3 => *sustain = (*sustain + delta).clamp(0.0, 1.0),
-                        4 => *release = (*release + delta).clamp(0.001, 10.0),
-                        5 => {} // Separator row — no-op.
-                        _ => {
-                            let target_idx = pa - 6;
-                            if let Some(t) = m.targets.get_mut(target_idx) {
-                                t.depth = (t.depth + delta).clamp(0.0, 1.0);
-                                let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                                    group, mod_index,
-                                    target_index: target_idx,
-                                    depth: t.depth,
-                                });
-                            }
-                        }
-                    }
-                    if (1..=4).contains(&pa) {
-                        let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorEnvelopeParam {
-                            group, mod_index,
-                            attack: *attack, decay: *decay, sustain: *sustain, release: *release,
-                        });
-                    }
-                }
-                ModSourceSlot::MidiLearn { .. } => {
-                    // Rows: 0 = source info, 1 = Targets separator, 2+ = depths.
-                    if pa >= 2 {
-                        if let Some(t) = m.targets.get_mut(pa - 2) {
-                            t.depth = (t.depth + delta).clamp(0.0, 1.0);
-                            let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                                group, mod_index,
-                                target_index: pa - 2,
-                                depth: t.depth,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        self.dirty = true;
-    }
-
-    /// Group-rack mirror of `set_modulator_param_value`.
-    fn set_group_modulator_param_value(&mut self, group: usize, mod_index: usize, pa: usize, value: f32) {
-        let m = match self.groups.get_mut(group).and_then(|g| g.modulators.get_mut(mod_index)) {
-            Some(m) => m,
-            None => return,
-        };
-        if pa == 0 {
-            return; // Type enum — not settable via numeric entry.
-        }
-        match &mut m.source {
-            ModSourceSlot::Lfo { waveform: _, rate } => {
-                if pa == 1 {
-                    return; // Waveform enum.
-                } else if pa == 2 {
-                    *rate = value.clamp(0.01, 50.0);
-                    let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorRate {
-                        group, mod_index, rate: *rate,
-                    });
-                    self.rebuild_tree();
-                } else if pa == 3 {
-                    return; // Separator.
-                } else if let Some(t) = m.targets.get_mut(pa - 4) {
-                    t.depth = value.clamp(0.0, 1.0);
-                    let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                        group, mod_index,
-                        target_index: pa - 4,
-                        depth: t.depth,
-                    });
-                }
-            }
-            ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                match pa {
-                    1 => *attack = value.clamp(0.001, 10.0),
-                    2 => *decay = value.clamp(0.001, 10.0),
-                    3 => *sustain = value.clamp(0.0, 1.0),
-                    4 => *release = value.clamp(0.001, 10.0),
-                    5 => return, // Separator.
-                    _ => {
-                        let target_idx = pa - 6;
-                        if let Some(t) = m.targets.get_mut(target_idx) {
-                            t.depth = value.clamp(0.0, 1.0);
-                            let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                                group, mod_index,
-                                target_index: target_idx,
-                                depth: t.depth,
-                            });
-                        }
-                        self.dirty = true;
-                        return;
-                    }
-                }
-                let _ = self.cmd_tx.send(GraphCommand::SetGroupModulatorEnvelopeParam {
-                    group, mod_index,
-                    attack: *attack, decay: *decay, sustain: *sustain, release: *release,
-                });
-            }
-            ModSourceSlot::MidiLearn { .. } => {
-                // Rows: 0 = source info, 1 = Targets separator, 2+ = depths.
-                if pa >= 2 {
-                    if let Some(t) = m.targets.get_mut(pa - 2) {
-                        t.depth = value.clamp(0.0, 1.0);
-                        let _ = self.cmd_tx.send(GraphCommand::SetGroupModTargetDepth {
-                            group, mod_index,
-                            target_index: pa - 2,
-                            depth: t.depth,
-                        });
-                    }
-                } else {
-                    return;
-                }
-            }
-        }
-        self.dirty = true;
-    }
-
-    fn save_session(&mut self) {
-        let path = match &self.session_path {
-            Some(p) => p.clone(),
-            None => {
-                log::warn!("No session path — cannot save");
-                return;
-            }
-        };
-        if let Err(e) = self.save_session_to(&path) {
-            log::error!("Failed to save session: {e}");
-        }
-    }
-
-    /// Save the session to `path`. Does not touch `session_path` — callers
-    /// decide what a failed save means for the current path.
-    fn save_session_to(&mut self, path: &Path) -> anyhow::Result<()> {
-        // Ensure parent directory exists (e.g. ~/.config/tang/sessions/).
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    anyhow::anyhow!("failed to create directory {}: {e}", parent.display())
-                })?;
-            }
-        }
-
-        let mods_to_save = |mods: &[ModulatorSlot]| -> Vec<crate::session::SaveModulator> {
-            mods.iter()
-                .map(|m| {
-                    let source = match &m.source {
-                        ModSourceSlot::Lfo { waveform, rate } => {
-                            crate::session::SaveModSource::Lfo {
-                                waveform: waveform.name().to_string(),
-                                rate: *rate,
-                            }
-                        }
-                        ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                            crate::session::SaveModSource::Envelope {
-                                attack: *attack,
-                                decay: *decay,
-                                sustain: *sustain,
-                                release: *release,
-                            }
-                        }
-                        ModSourceSlot::MidiLearn { source, .. } => {
-                            use crate::plugin::chain::MidiBindSource;
-                            crate::session::SaveModSource::MidiLearn {
-                                cc: match source {
-                                    Some(MidiBindSource::Cc(n)) => Some(*n),
-                                    _ => None,
-                                },
-                                pitch_bend: matches!(source, Some(MidiBindSource::PitchBend)),
-                                aftertouch: matches!(source, Some(MidiBindSource::Aftertouch)),
-                            }
-                        }
-                    };
-                    crate::session::SaveModulator {
-                        source,
-                        targets: m
-                            .targets
-                            .iter()
-                            .map(|t| crate::session::SaveModTarget {
-                                kind: t.kind.clone(),
-                                label: t.param_name.clone(),
-                                depth: t.depth,
-                                slot: t.slot,
-                            })
-                            .collect(),
-                    }
-                })
-                .collect()
-        };
-        let to_save_effect = |fx: &PluginSlot| crate::session::SaveEffect {
-            plugin: fx.id.clone(),
-            mix: fx.mix,
-            preset: fx.current_preset.clone(),
-            params: fx
-                .params
-                .iter()
-                .filter(|p| (p.value - p.default).abs() > f32::EPSILON)
-                .map(|p| (p.name.clone(), p.value))
-                .collect(),
-        };
-        let save_groups: Vec<crate::session::SaveGroup> = self
-            .groups
-            .iter()
-            .map(|g| crate::session::SaveGroup {
-                name: g.name.clone(),
-                volume: g.volume,
-                pan: g.pan,
-                effects: g.effects.iter().map(&to_save_effect).collect(),
-                modulators: mods_to_save(&g.modulators),
-            })
-            .collect();
-        let save_instruments: Vec<crate::session::SaveInstrumentSlot> = self
-            .instruments
-            .iter()
-            .map(|sp| crate::session::SaveInstrumentSlot {
-                range: sp.range,
-                transpose: sp.transpose,
-                group: sp.group,
-                modulators: mods_to_save(&sp.modulators),
-                instrument: sp.instrument.as_ref().map(|inst| {
-                    crate::session::SaveInstrument {
-                        plugin: inst.id.clone(),
-                        volume: sp.volume,
-                        preset: inst.current_preset.clone(),
-                        params: inst
-                            .params
-                            .iter()
-                            .filter(|p| (p.value - p.default).abs() > f32::EPSILON)
-                            .map(|p| (p.name.clone(), p.value))
-                            .collect(),
-                        pitch_bend_range: sp.pitch_bend_range,
-                        remap: sp.remap.clone(),
-                    }
-                }),
-                effects: sp.effects.iter().map(&to_save_effect).collect(),
-                pattern: sp.pattern.as_ref().map(|p| crate::session::SavePattern {
-                    bpm: p.bpm,
-                    length_beats: p.length_beats,
-                    looping: p.looping,
-                    base_note: p.base_note,
-                    events: p.events.clone(),
-                    enabled: p.enabled,
-                    in_key: p.in_key,
-                }),
-            })
-            .collect();
-
-        let piano_config = crate::session::PianoConfig {
-            scale: Some(self.piano_filter.scale().short()),
-            locked: matches!(self.piano_filter.mode(), PianoMode::Locked),
-        };
-        crate::session::save(path, &save_instruments, &save_groups, Some(&piano_config))?;
-        self.dirty = false;
-        log::info!("Session saved to {}", path.display());
-        Ok(())
+        self.set_plugin_param(&addr, pa, |_| value);
     }
 }
 
@@ -2650,113 +1713,7 @@ impl State {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Information about a loaded instrument slot for the TUI.
-pub struct LoadedInstrument {
-    pub range: Option<(u8, u8)>,
-    pub transpose: i8,
-    /// Host-side output gain from the session (1.0 = unity).
-    pub volume: f32,
-    pub instrument: Option<LoadedPlugin>,
-    pub effects: Vec<LoadedPlugin>,
-    /// Lane-scoped modulators (targets address the chain by slot).
-    pub modulators: Vec<LoadedModulator>,
-    pub pattern: Option<LoadedPattern>,
-    /// Carried through from session config; not editable in the TUI.
-    pub pitch_bend_range: f64,
-    pub remap: std::collections::HashMap<String, crate::session::RemapTarget>,
-    /// Submix group membership (index into the loaded groups), or None.
-    pub group: Option<usize>,
-}
-
-/// A submix group loaded from session config, passed to the TUI.
-pub struct LoadedGroup {
-    pub name: Option<String>,
-    pub volume: f32,
-    pub pan: f32,
-    pub effects: Vec<LoadedPlugin>,
-    /// Group-scoped modulators loaded from the session.
-    pub modulators: Vec<LoadedModulator>,
-}
-
-/// Pattern data loaded from session config, passed to the TUI.
-pub struct LoadedPattern {
-    pub bpm: f32,
-    pub length_beats: f32,
-    pub looping: bool,
-    pub base_note: Option<u8>,
-    pub events: Vec<(u64, u8, u8, u8)>, // (frame, status, note, velocity)
-    pub enabled: bool,
-    pub in_key: bool,
-}
-
-pub enum LoadedModSource {
-    Lfo {
-        waveform: crate::plugin::chain::LfoWaveform,
-        rate: f32,
-    },
-    Envelope {
-        attack: f32,
-        decay: f32,
-        sustain: f32,
-        release: f32,
-    },
-    MidiLearn {
-        source: Option<crate::plugin::chain::MidiBindSource>,
-        learning: bool,
-    },
-}
-
-pub struct LoadedModulator {
-    pub source: LoadedModSource,
-    pub targets: Vec<LoadedModTarget>,
-}
-
-pub struct LoadedModTarget {
-    /// Chain slot for plugin-param targets (0 = instrument, 1..N = effect);
-    /// 0 for cross-mod targets.
-    pub slot: usize,
-    pub param_name: String,
-    pub kind: crate::plugin::chain::ModTargetKind,
-    pub depth: f32,
-    pub param_min: f32,
-    pub param_max: f32,
-}
-
-/// Information about a loaded plugin slot, passed from play() to the TUI.
-pub struct LoadedPlugin {
-    pub name: String,
-    pub id: String,
-    pub is_instrument: bool,
-    pub params: Vec<plugin::ParameterInfo>,
-    /// Post-preset baseline value per parameter, before any session-file
-    /// overrides are applied. The TUI uses this as `ParamSlot.default` so
-    /// the save filter only writes parameters the user has actually changed
-    /// relative to the active preset.
-    pub param_defaults: Vec<f32>,
-    pub param_values: Vec<f32>,
-    pub presets: Vec<plugin::Preset>,
-    pub current_preset: Option<String>,
-    /// Effect dry/wet mix. 1.0 = full wet. Carried through from session
-    /// config so it round-trips on save. Ignored for instrument slots.
-    pub mix: f32,
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn run(
-    loaded_instruments: Vec<LoadedInstrument>,
-    loaded_groups: Vec<LoadedGroup>,
-    cmd_tx: Sender<GraphCommand>,
-    midi_tx: Sender<audio::MidiEvent>,
-    runtime: plugin::Runtime,
-    sample_rate: f32,
-    max_block_size: usize,
-    session_path: Option<PathBuf>,
-    pattern_rx: crossbeam_channel::Receiver<crate::plugin::chain::PatternNotification>,
-    learn_rx: crossbeam_channel::Receiver<crate::plugin::chain::MidiLearnedNotification>,
-    held: Arc<HeldNotes>,
-    piano_filter: Arc<PianoFilter>,
-    midi_monitor: Arc<crate::midi_monitor::MidiMonitor>,
-) -> anyhow::Result<()> {
+pub fn run(mut ctl: Controller, web: Option<&WebArgs>) -> anyhow::Result<Controller> {
     // Suppress Rust logging for the whole TUI lifetime when stderr is the
     // terminal: the background catalog scan and plugin loads log verbosely and
     // would corrupt the alternate screen. Must be set BEFORE the scan spawns,
@@ -2779,158 +1736,28 @@ pub fn run(
         None
     };
 
-    // Scan the plugin catalog on a background thread so the TUI can draw
-    // immediately — a full scan instantiates every installed plugin and can
-    // take seconds. Results arrive per-format on `catalog_rx` and are drained
-    // in the event loop. The catalog is only needed by the selector popup.
-    let catalog_rx = spawn_catalog_scan();
-
-    let groups: Vec<GroupNode> = loaded_groups
-        .into_iter()
-        .map(|g| GroupNode {
-            name: g.name,
-            volume: g.volume,
-            pan: g.pan,
-            effects: g.effects.into_iter().map(to_plugin_slot).collect(),
-            modulators: g.modulators.into_iter().map(to_modulator_slot).collect(),
-        })
-        .collect();
-
-    // Convert loaded instruments into flat InstrumentNode list.
-    let instruments: Vec<InstrumentNode> = loaded_instruments
-        .into_iter()
-        .map(|li| {
-            let instrument = li.instrument.map(to_plugin_slot);
-            let effects = li.effects.into_iter().map(to_plugin_slot).collect();
-            let modulators = li.modulators.into_iter().map(to_modulator_slot).collect();
-            let pattern = li.pattern.map(|p| PatternState {
-                bpm: p.bpm,
-                length_beats: p.length_beats,
-                looping: p.looping,
-                base_note: p.base_note,
-                events: p.events,
-                enabled: p.enabled,
-                recording: false,
-                in_key: p.in_key,
-            });
-            InstrumentNode {
-                range: li.range,
-                transpose: li.transpose,
-                volume: li.volume,
-                instrument,
-                effects,
-                modulators,
-                pattern,
-                pitch_bend_range: li.pitch_bend_range,
-                remap: li.remap,
-                group: li.group,
-            }
-        })
-        .collect();
-
-    let tree_entries = build_tree_entries(&instruments, &groups);
-    let param_len = instruments.first()
-        .and_then(|n| n.instrument.as_ref())
-        .map_or(0, |p| p.params.len());
-
-    let help_lines = build_help_lines();
-
-    // Determine initial BPM from loaded patterns (if any).
-    let initial_bpm = instruments.iter()
-        .filter_map(|n| n.pattern.as_ref())
-        .map(|p| p.bpm)
-        .next()
-        .unwrap_or(120.0);
-
-    // Send transpose and pattern data to audio graph for loaded instruments.
-    for (inst_idx, inst_node) in instruments.iter().enumerate() {
-        if inst_node.transpose != 0 {
-            let _ = cmd_tx.send(GraphCommand::SetTranspose {
-                inst: inst_idx,
-                semitones: inst_node.transpose,
-            });
-        }
-        if let Some(ref p) = inst_node.pattern {
-            let pattern_events: Vec<crate::plugin::chain::PatternEvent> = p.events.iter().map(|&(frame, status, note, vel)| {
-                crate::plugin::chain::PatternEvent {
-                    frame,
-                    status,
-                    note,
-                    velocity: vel,
-                }
-            }).collect();
-            let beats_per_sec = p.bpm / 60.0;
-            let length_samples = (p.length_beats / beats_per_sec * sample_rate) as u64;
-            let _ = cmd_tx.send(GraphCommand::SetPattern {
-                inst: inst_idx,
-                pattern: crate::plugin::chain::Pattern {
-                    events: pattern_events,
-                    length_samples,
-                },
-                base_note: p.base_note,
-                in_key: p.in_key,
-            });
-            let _ = cmd_tx.send(GraphCommand::SetPatternEnabled {
-                inst: inst_idx,
-                enabled: p.enabled,
-            });
-            if !p.looping {
-                let _ = cmd_tx.send(GraphCommand::SetPatternLooping {
-                    inst: inst_idx,
-                    looping: false,
-                });
-            }
+    // Serve the session to browsers too, if asked to. A server that cannot start (the
+    // port is taken) is an error before the terminal is taken over; the address is
+    // printed on stdout, where a script can find it (the TUI shows it as well).
+    let mut web = web.map(|args| Web::start(&mut ctl, args)).transpose()?;
+    if let Some(web) = &web {
+        let status = web.status();
+        println!("Web interface: {}", status.url);
+        for warning in status.warnings() {
+            println!("{warning}");
         }
     }
 
-    let mut s = State {
-        active_tab: 0,
-        chain_state: ListState::new(tree_entries.len()),
-        param_state: ListState::new(param_len),
-        tree_entries,
-        instruments,
-        groups,
-        focus_params: false,
-        help_lines,
-        help_offset: 0,
-        scrollbar_dragging: false,
-        param_dragging: false,
-        param_scrollbar_dragging: false,
-        editing: None,
-        range_edit: None,
-        rename_group: None,
-        selector: None,
-        target_selector: None,
-        modulate: None,
-        group_assign: None,
-        preset_selector: None,
-        catalog: Vec::new(),
-        catalog_rx,
-        catalog_scanning: true,
-        areas: Areas::default(),
-        quit: false,
-        session_path,
-        dirty: false,
-        param_filter_input: TextInputState::new(""),
-        param_filtering: false,
-        param_filtered: (0..param_len).collect(),
-        cmd_tx,
-        midi_tx,
-        runtime,
-        sample_rate,
-        max_block_size,
-        global_bpm: initial_bpm,
-        bpm_editing: None,
-        gain_editing: None,
-        save_as: None,
-        pattern_rx,
-        learn_rx,
-        held,
-        piano_filter,
-        piano_view_octave: 4,
-        scale_selector: None,
-        midi_monitor,
-    };
+    // Scan the plugin catalog on a background thread so the TUI can draw
+    // immediately — a full scan instantiates every installed plugin and can
+    // take seconds. Results arrive per format and are folded in by
+    // `Controller::poll`. The catalog is only needed by the selector popup.
+    ctl.catalog.scan();
+
+    let mut s = State::new(ctl);
+    if let Some(web) = &web {
+        s.set_web(web.status());
+    }
 
     // Probe keyboard enhancement support (must be done before entering raw mode).
     let kitty_supported = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
@@ -2953,7 +1780,7 @@ pub fn run(
 
     // (Rust logging was already suppressed at the top of this function, before
     // the background scan spawned; it's restored below at teardown.)
-    let result = event_loop(&mut terminal, &mut s);
+    let result = TerminalReader::start().and_then(|reader| event_loop(&mut terminal, &mut s, reader.events(), web.as_mut()));
 
     log::set_max_level(prev_log_level);
 
@@ -2967,62 +1794,66 @@ pub fn run(
     )?;
     crossterm::terminal::disable_raw_mode()?;
 
-    result.map_err(Into::into)
+    // The controller goes back to the caller, which shuts it down once the audio
+    // stream has stopped. (The web server, if there is one, stops when this function
+    // returns, and the browsers are told: before the controller is shut down.)
+    result.map(|()| s.ctl).map_err(Into::into)
 }
 
-fn event_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+/// What happens between two frames, with or without user input: the controller
+/// does its housekeeping and folds in what the plugin scan and the audio thread
+/// have reported, and the view catches up with what changed.
+fn tick(s: &mut State) {
+    tick_at(s, Instant::now());
+}
+
+/// `tick`, at the time `now`.
+fn tick_at(s: &mut State, now: Instant) {
+    let polled = s.ctl.poll();
+    if polled.model_changed {
+        s.rebuild_tree();
+    }
+    if polled.catalog_changed {
+        s.refresh_selector();
+    }
+    s.clip.update(s.ctl.telemetry.count(telemetry::MASTER.clips), now);
+    // (A node that a browser took out, or that the cursor is not on any more, is not listened to.)
+    s.sync_strip();
+}
+
+/// How far the limiter has to have brought the sound down, in decibels, for the status bar to say so.
+const LIMIT_LIGHT_FROM: f32 = 0.1;
+
+/// How often the loop wakes by itself: to fold in what the audio thread and the
+/// catalog scan have reported, and to redraw what moves (the meters, the CLIP
+/// light, the held notes).
+const TICK: Duration = Duration::from_millis(100);
+
+/// Run the interface until the user quits: draw, then wait for `input` (the terminal's
+/// events, from a `TerminalReader`), the requests of the browsers if the session is
+/// served (`web`), or the tick; handle what came, and draw again. The events that are
+/// waiting when the loop wakes are all handled before the next frame.
+///
+/// The browsers and the terminal act on the one controller from here, one thing at a
+/// time. What a browser changes is reacted to like what the TUI itself changed, and
+/// what the TUI changes other than by intents is found by `resync` when it has handled
+/// its input and told to the browsers.
+fn event_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
     s: &mut State,
-) -> io::Result<()> {
+    input: &Receiver<io::Result<Event>>,
+    mut web: Option<&mut Web>,
+) -> io::Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    let ticks = crossbeam_channel::tick(TICK);
+    let mut web_requests = web.as_deref().map(Web::requests);
     loop {
-        // Drain plugin catalog batches from the background scan thread.
-        while s.catalog_scanning {
-            match s.catalog_rx.try_recv() {
-                Ok(batch) => s.extend_catalog(batch),
-                Err(crossbeam_channel::TryRecvError::Empty) => break,
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    s.catalog_scanning = false;
-                }
-            }
-        }
-
-        // Drain pattern recording completion notifications.
-        while let Ok(notif) = s.pattern_rx.try_recv() {
-            if let Some(inst_node) = s.instruments.get_mut(notif.inst) {
-                // Re-recording replaces the events but keeps the transpose mode.
-                let in_key = inst_node.pattern.as_ref().is_some_and(|p| p.in_key);
-                inst_node.pattern = Some(PatternState {
-                    bpm: s.global_bpm,
-                    length_beats: notif.length_beats,
-                    looping: notif.looping,
-                    base_note: notif.base_note,
-                    events: notif.events,
-                    enabled: notif.enabled,
-                    recording: false,
-                    in_key,
-                });
-                s.rebuild_tree();
-            }
-        }
-
-        // Drain MIDI-learn captures: fill in the bound control on the model.
-        while let Ok(notif) = s.learn_rx.try_recv() {
-            use crate::plugin::chain::ModulatorLocation;
-            let scope = match notif.location {
-                ModulatorLocation::Lane(inst) => ModScope::Lane(inst),
-                ModulatorLocation::Group(g) => ModScope::Group(g),
-            };
-            if let Some(m) = s
-                .scoped_modulators_mut(scope)
-                .and_then(|ms| ms.get_mut(notif.mod_index))
-            {
-                if let ModSourceSlot::MidiLearn { source, learning } = &mut m.source {
-                    *source = Some(notif.source);
-                    *learning = false;
-                }
-            }
-            s.dirty = true;
-            s.rebuild_tree();
+        tick(s);
+        if let Some(web) = web.as_deref_mut() {
+            web.refresh(&mut s.ctl);
+            s.web = Some(web.status());
         }
 
         render(terminal, s)?;
@@ -3030,15 +1861,28 @@ fn event_loop(
             break;
         }
 
-        // Poll with timeout so we wake up to drain pattern notifications
-        // even when there's no user input.
-        if !event::poll(Duration::from_millis(100))? {
-            continue;
-        }
-        let ev = event::read()?;
-        process_event(s, ev);
-        while event::poll(Duration::ZERO)? {
-            process_event(s, event::read()?);
+        let requests = web_requests.clone().unwrap_or_else(crossbeam_channel::never);
+        crossbeam_channel::select! {
+            recv(input) -> event => {
+                let Ok(event) = event else {
+                    return Err(io::Error::other("the terminal reader has stopped"));
+                };
+                process_event_showing_the_load(terminal, s, event?)?;
+                while let Ok(event) = input.try_recv() {
+                    process_event_showing_the_load(terminal, s, event?)?;
+                }
+                web::resync(&mut s.ctl);
+            }
+            recv(requests) -> request => match (request, web.as_deref_mut()) {
+                (Ok(request), Some(web)) => {
+                    for applied in web.serve(&mut s.ctl, request) {
+                        s.react_to(&applied);
+                    }
+                }
+                // The server is gone: there is nothing more to wait for from it.
+                _ => web_requests = None,
+            },
+            recv(ticks) -> _ => {}
         }
     }
     Ok(())
@@ -3048,9 +1892,66 @@ fn event_loop(
 // Event processing
 // ---------------------------------------------------------------------------
 
+/// Whether a popup, or the filter of the parameters, has the keys: they go to it and not to the chain.
+fn popup_is_open(s: &State) -> bool {
+    s.selector.is_some()
+        || s.target_selector.is_some()
+        || s.modulate.is_some()
+        || s.group_assign.is_some()
+        || s.ear_popup.is_some()
+        || s.preset_selector.is_some()
+        || s.scale_selector.is_some()
+        || s.bpm_editing.is_some()
+        || s.gain_editing.is_some()
+        || s.cable_editing.is_some()
+        || s.save_as.is_some()
+        || s.save_module.is_some()
+        || s.editing.is_some()
+        || s.range_edit.is_some()
+        || s.rename_group.is_some()
+        || s.param_filtering
+}
+
+/// Handle one event of the terminal, and what it asked that waits for a frame (`run_pending`): the keys of a test have no frame to draw between the two.
+#[cfg(test)]
 fn process_event(s: &mut State, ev: Event) {
+    handle_event(s, ev);
+    run_pending(s);
+    s.sync_strip();
+}
+
+/// What the loop does with an event: `process_event`, with a frame drawn between its two halves when the first asked for something that takes a while. A plugin
+/// can take a while to load, and the loop is blocked for as long as it takes, so the frame says what is going on (a box: "Loading Pianoteq 9…") before the load.
+fn process_event_showing_the_load<B: Backend>(terminal: &mut Terminal<B>, s: &mut State, ev: Event) -> io::Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    handle_event(s, ev);
+    if s.pending_load.is_some() {
+        render(terminal, s)?;
+    }
+    run_pending(s);
+    Ok(())
+}
+
+/// Do what an event asked that waited for a frame: ask for the plugin that was chosen (a refusal is the controller's, and says why).
+fn run_pending(s: &mut State) {
+    if let Some(PendingLoad { intent, .. }) = s.pending_load.take() {
+        s.apply(intent);
+    }
+}
+
+fn handle_event(s: &mut State, ev: Event) {
     match ev {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            // A letter with Control held is no text, and no key of a popup: it is not put in as the letter (Ctrl+Z, which undoes in the chain, typed a z), and
+            // Ctrl+C and Ctrl+Q leave from here as from the chain. (Windows reports AltGr, which makes `@` and `\` on some keyboards, as Control with Alt: that is text.)
+            if popup_is_open(s) && matches!(key.code, KeyCode::Char(_)) && key.modifiers.contains(KeyModifiers::CONTROL) && !key.modifiers.contains(KeyModifiers::ALT) {
+                if matches!(key.code, KeyCode::Char('q' | 'c')) {
+                    s.quit = true;
+                }
+                return;
+            }
             if s.selector.is_some() {
                 handle_selector_key(s, key.code);
             } else if s.target_selector.is_some() {
@@ -3059,6 +1960,8 @@ fn process_event(s: &mut State, ev: Event) {
                 handle_modulate_key(s, key.code);
             } else if s.group_assign.is_some() {
                 handle_group_assign_key(s, key.code);
+            } else if s.ear_popup.is_some() {
+                handle_ear_key(s, key.code);
             } else if s.preset_selector.is_some() {
                 handle_preset_selector_key(s, key.code);
             } else if s.scale_selector.is_some() {
@@ -3067,8 +1970,12 @@ fn process_event(s: &mut State, ev: Event) {
                 handle_bpm_edit_key(s, key.code);
             } else if s.gain_editing.is_some() {
                 handle_gain_edit_key(s, key.code);
+            } else if s.cable_editing.is_some() {
+                handle_cable_edit_key(s, key.code);
             } else if s.save_as.is_some() {
                 handle_save_as_key(s, key.code);
+            } else if s.save_module.is_some() {
+                handle_save_module_key(s, key.code);
             } else if s.editing.is_some() {
                 handle_edit_key(s, key.code);
             } else if s.range_edit.is_some() {
@@ -3086,6 +1993,7 @@ fn process_event(s: &mut State, ev: Event) {
                 || s.target_selector.is_some()
                 || s.modulate.is_some()
                 || s.group_assign.is_some()
+                || s.ear_popup.is_some()
                 || s.preset_selector.is_some()
                 || s.scale_selector.is_some()
                 || s.editing.is_some()
@@ -3093,13 +2001,16 @@ fn process_event(s: &mut State, ev: Event) {
                 || s.rename_group.is_some()
                 || s.bpm_editing.is_some()
                 || s.gain_editing.is_some()
+                || s.cable_editing.is_some()
                 || s.save_as.is_some()
+                || s.save_module.is_some()
             {
                 if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                     s.selector = None;
                     s.target_selector = None;
                     s.modulate = None;
                     s.group_assign = None;
+                    s.ear_popup = None;
                     s.preset_selector = None;
                     s.scale_selector = None;
                     s.editing = None;
@@ -3107,7 +2018,9 @@ fn process_event(s: &mut State, ev: Event) {
                     s.rename_group = None;
                     s.bpm_editing = None;
                     s.gain_editing = None;
+                    s.cable_editing = None;
                     s.save_as = None;
+                    s.save_module = None;
                 }
                 return;
             }
@@ -3201,6 +2114,23 @@ fn handle_group_assign_key(s: &mut State, code: KeyCode) {
     }
 }
 
+fn handle_ear_key(s: &mut State, code: KeyCode) {
+    let es = s.ear_popup.as_mut().unwrap();
+    match code {
+        KeyCode::Esc => s.ear_popup = None,
+        KeyCode::Enter => s.confirm_ear_popup(),
+        KeyCode::Up => {
+            es.filter.list.up();
+            es.filter.list.ensure_visible(20);
+        }
+        KeyCode::Down => {
+            es.filter.list.down();
+            es.filter.list.ensure_visible(20);
+        }
+        _ => {}
+    }
+}
+
 fn handle_scale_selector_key(s: &mut State, code: KeyCode) {
     let ss = s.scale_selector.as_mut().unwrap();
     match code {
@@ -3251,12 +2181,19 @@ fn handle_preset_selector_key(s: &mut State, code: KeyCode) {
     }
 }
 
+/// The number typed into a popup, if it is one. `str::parse` takes `nan` and `inf` for
+/// numbers, and a NaN is not stopped by `clamp`: it would get into the model, and from
+/// there to the audio thread and to every browser (JSON has no NaN).
+fn parse_number(text: &str) -> Option<f32> {
+    text.trim().parse::<f32>().ok().filter(|value| value.is_finite())
+}
+
 fn handle_edit_key(s: &mut State, code: KeyCode) {
     let edit = s.editing.as_mut().unwrap();
     match code {
         KeyCode::Esc => s.editing = None,
         KeyCode::Enter => {
-            if let Ok(val) = edit.input.value.parse::<f32>() {
+            if let Some(val) = parse_number(&edit.input.value) {
                 s.set_param_value(val);
             }
             s.editing = None;
@@ -3287,14 +2224,9 @@ fn handle_range_edit_key(s: &mut State, code: KeyCode) {
                     Err(_) => return, // keep popup open on parse error
                 }
             };
-            let _ = s
-                .cmd_tx
-                .send(GraphCommand::SetInstrumentRange { inst, range });
-            if let Some(node) = s.instruments.get_mut(inst) {
-                node.range = range;
+            if let Some(node) = s.ctl.model.instruments.get(inst).map(|lane| lane.node) {
+                s.apply(Intent::SetRange { node, range: range.map(|(low, high)| NoteRange { low, high }) });
             }
-            s.dirty = true;
-            s.rebuild_tree();
             s.range_edit = None;
         }
         KeyCode::Backspace => re.input.backspace(),
@@ -3313,15 +2245,16 @@ fn handle_rename_group_key(s: &mut State, code: KeyCode) {
     match code {
         KeyCode::Esc => s.rename_group = None,
         KeyCode::Enter => {
-            let name = rg.input.value.trim().to_string();
+            let name = rg.input.value.clone();
             let group = rg.group;
             // Empty clears the custom name (falls back to "Group N"). The name
             // is display-only, so no audio-thread command is needed.
-            if let Some(g) = s.groups.get_mut(group) {
-                g.name = if name.is_empty() { None } else { Some(name) };
+            if let Some(node) = s.ctl.model.groups.get(group).map(|g| g.node) {
+                // (A name that is refused keeps the popup open, as a range that is not one does.)
+                if s.apply(Intent::RenameGroup { node, name }).is_none() {
+                    return;
+                }
             }
-            s.dirty = true;
-            s.rebuild_tree();
             s.rename_group = None;
         }
         KeyCode::Backspace => rg.input.backspace(),
@@ -3330,7 +2263,8 @@ fn handle_rename_group_key(s: &mut State, code: KeyCode) {
         KeyCode::Right => rg.input.move_right(),
         KeyCode::Home => rg.input.home(),
         KeyCode::End => rg.input.end(),
-        KeyCode::Char(ch) => rg.input.insert(ch),
+        // (The controller refuses a name longer than `MAX_NAME`: there is no typing past it.)
+        KeyCode::Char(ch) if rg.input.value.chars().count() < MAX_NAME => rg.input.insert(ch),
         _ => {}
     }
 }
@@ -3340,16 +2274,9 @@ fn handle_bpm_edit_key(s: &mut State, code: KeyCode) {
     match code {
         KeyCode::Esc => s.bpm_editing = None,
         KeyCode::Enter => {
-            if let Ok(val) = edit.input.value.trim().parse::<f32>() {
-                let bpm = val.clamp(edit.param_min, edit.param_max);
-                s.global_bpm = bpm;
-                let _ = s.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm });
-                // Update all pattern states
-                for inst_node in &mut s.instruments {
-                    if let Some(ref mut p) = inst_node.pattern {
-                        p.bpm = bpm;
-                    }
-                }
+            if let Some(bpm) = parse_number(&edit.input.value) {
+                // (The controller holds it to the tempos there can be, which the popup says.)
+                let _ = s.apply(Intent::SetBpm { bpm });
             }
             s.bpm_editing = None;
         }
@@ -3369,43 +2296,9 @@ fn handle_gain_edit_key(s: &mut State, code: KeyCode) {
     match code {
         KeyCode::Esc => s.gain_editing = None,
         KeyCode::Enter => {
-            if let Ok(val) = ge.edit.input.value.trim().parse::<f32>() {
-                let value = val.clamp(ge.edit.param_min, ge.edit.param_max);
-                let inst = ge.inst;
-                match ge.target {
-                    GainTarget::Mix { index } => {
-                        // Audio slot: 0 = instrument, 1..N = effects.
-                        let _ = s.cmd_tx.send(GraphCommand::SetMix {
-                            inst,
-                            slot: index + 1,
-                            value,
-                        });
-                        if let Some(fx) =
-                            s.instruments.get_mut(inst).and_then(|n| n.effects.get_mut(index))
-                        {
-                            fx.mix = value;
-                        }
-                    }
-                    GainTarget::Volume => {
-                        let _ = s.cmd_tx.send(GraphCommand::SetVolume { inst, value });
-                        if let Some(node) = s.instruments.get_mut(inst) {
-                            node.volume = value;
-                        }
-                    }
-                    GainTarget::GroupVolume { group } => {
-                        let _ = s.cmd_tx.send(GraphCommand::SetGroupVolume { group, value });
-                        if let Some(g) = s.groups.get_mut(group) {
-                            g.volume = value;
-                        }
-                    }
-                    GainTarget::GroupMix { group, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::SetGroupMix { group, index, value });
-                        if let Some(fx) = s.groups.get_mut(group).and_then(|g| g.effects.get_mut(index)) {
-                            fx.mix = value;
-                        }
-                    }
-                }
-                s.dirty = true;
+            let (node, gain) = (ge.node, ge.gain);
+            if let Some(value) = parse_number(&ge.edit.input.value) {
+                s.apply(Intent::SetGain { node, gain, value });
             }
             s.gain_editing = None;
         }
@@ -3420,37 +2313,46 @@ fn handle_gain_edit_key(s: &mut State, code: KeyCode) {
     }
 }
 
+fn handle_cable_edit_key(s: &mut State, code: KeyCode) {
+    let ce = s.cable_editing.as_mut().unwrap();
+    match code {
+        KeyCode::Esc => s.cable_editing = None,
+        KeyCode::Enter => {
+            let edge = ce.edge;
+            if let Some(gain) = parse_number(&ce.edit.input.value) {
+                if let Err(why) = s.try_apply(Intent::SetCableGain { edge, gain }) {
+                    s.patch.notice = Some(why.to_string());
+                }
+            }
+            s.cable_editing = None;
+        }
+        KeyCode::Backspace => ce.edit.input.backspace(),
+        KeyCode::Delete => ce.edit.input.delete(),
+        KeyCode::Left => ce.edit.input.move_left(),
+        KeyCode::Right => ce.edit.input.move_right(),
+        KeyCode::Home => ce.edit.input.home(),
+        KeyCode::End => ce.edit.input.end(),
+        KeyCode::Char(ch) => ce.edit.input.insert(ch),
+        _ => {}
+    }
+}
+
 fn handle_save_as_key(s: &mut State, code: KeyCode) {
     let sa = s.save_as.as_mut().unwrap();
     match code {
         KeyCode::Esc => s.save_as = None,
         KeyCode::Enter => {
-            let mut name = sa.input.value.trim().to_string();
+            let name = sa.input.value.trim().to_string();
             if name.is_empty() {
                 return; // keep popup open until a name is given
             }
-            if !name.ends_with(".toml") {
-                name.push_str(".toml");
-            }
-            // Save into the current session's directory (fallback: cwd).
-            let dir = s
-                .session_path
-                .as_ref()
-                .and_then(|p| p.parent())
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."));
-            let path = dir.join(name);
-            match s.save_session_to(&path) {
-                Ok(()) => {
-                    // Subsequent Ctrl+S now targets the new file.
-                    s.session_path = Some(path);
-                    s.save_as = None;
-                }
-                Err(e) => {
-                    // Keep the popup (and the original session_path) and show
-                    // the error so the user can fix the name or cancel.
-                    s.save_as.as_mut().unwrap().error = Some(e.to_string());
-                }
+            // (The controller's intent: the name is checked as the page's is, and the browsers are told what the session is called now.)
+            match s.ctl.apply(Intent::SaveAs { name }) {
+                // Subsequent Ctrl+S now targets the new file.
+                Ok(_) => s.save_as = None,
+                // Keep the popup (and the original session path) and show the
+                // error so the user can fix the name or cancel.
+                Err(e) => s.save_as.as_mut().unwrap().error = Some(e.to_string()),
             }
         }
         KeyCode::Backspace => {
@@ -3468,6 +2370,47 @@ fn handle_save_as_key(s: &mut State, code: KeyCode) {
         KeyCode::Char(ch) => {
             sa.error = None;
             sa.input.insert(ch);
+        }
+        _ => {}
+    }
+}
+
+/// The keys of the popup that names the module that a chain of effects is saved as: Enter asks the controller (the intent a browser's button asks, `SaveModule`), which says what a name may be and
+/// writes the file; a name that is refused stays in the popup with the reason.
+fn handle_save_module_key(s: &mut State, code: KeyCode) {
+    let Some(sm) = s.save_module.as_mut() else { return };
+    match code {
+        KeyCode::Esc => s.save_module = None,
+        KeyCode::Enter => {
+            let name = sm.input.value.trim().to_string();
+            if name.is_empty() {
+                return; // keep popup open until a name is given
+            }
+            match s.ctl.apply(Intent::SaveModule { node: sm.node, name }) {
+                Ok(_) => s.save_module = None,
+                // Keep the popup and show why, so that the name can be fixed or the popup left.
+                Err(e) => {
+                    if let Some(sm) = s.save_module.as_mut() {
+                        sm.error = Some(e.to_string());
+                    }
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            sm.error = None;
+            sm.input.backspace();
+        }
+        KeyCode::Delete => {
+            sm.error = None;
+            sm.input.delete();
+        }
+        KeyCode::Left => sm.input.move_left(),
+        KeyCode::Right => sm.input.move_right(),
+        KeyCode::Home => sm.input.home(),
+        KeyCode::End => sm.input.end(),
+        KeyCode::Char(ch) => {
+            sm.error = None;
+            sm.input.insert(ch);
         }
         _ => {}
     }
@@ -3522,6 +2465,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 && modifiers.contains(KeyModifiers::SHIFT) =>
         {
             let current = s
+                .ctl
                 .session_path
                 .as_ref()
                 .and_then(|p| p.file_name())
@@ -3533,37 +2477,73 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             });
         }
         KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
-            s.save_session();
+            if let Err(e) = s.ctl.save() {
+                log::error!("Failed to save session: {e}");
+            }
         }
-        KeyCode::Char('1') => s.active_tab = 0,
-        KeyCode::Char('2') => s.active_tab = 1,
-        KeyCode::Char('3') => s.active_tab = 2,
-        KeyCode::Char('4') => s.active_tab = 3,
+        // Ctrl+Shift+Z and Ctrl+Y — redo; Ctrl+Z — undo: the controller's history of what was set (the browser's buttons ask for
+        // the same). Nothing to undo or redo is logged and changes nothing. (Checked in this order, as the save keys are.)
+        KeyCode::Char('z' | 'Z')
+            if modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            s.apply(Intent::Redo);
+        }
+        KeyCode::Char('y') if modifiers.contains(KeyModifiers::CONTROL) => {
+            s.apply(Intent::Redo);
+        }
+        KeyCode::Char('z') if modifiers.contains(KeyModifiers::CONTROL) => {
+            s.apply(Intent::Undo);
+        }
+        // Ctrl+P — panic: let go of every note that sounds (the pedal up, each held note, all notes off and all sound off on every channel), which the browser's
+        // button does too. It is no change of the session and has no step of the history.
+        KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
+            let lost = s.ctl.note_input().panic();
+            if lost > 0 {
+                log::warn!("Panic: the channel to the audio thread was full, and {lost} messages were lost");
+            }
+        }
+        KeyCode::Char('1') => s.active_tab = TAB_SESSION,
+        KeyCode::Char('2') => s.active_tab = TAB_PIANO,
+        KeyCode::Char('3') => s.active_tab = TAB_SCOPE,
+        KeyCode::Char('4') => s.active_tab = TAB_PATCH,
+        KeyCode::Char('5') => s.active_tab = TAB_HELP,
         KeyCode::Tab => s.active_tab = (s.active_tab + 1) % TAB_NAMES.len(),
         KeyCode::BackTab => s.active_tab = (s.active_tab + TAB_NAMES.len() - 1) % TAB_NAMES.len(),
 
+        // ---- Patch tab: every other key is the matrix's ----
+        _ if s.active_tab == TAB_PATCH => handle_patch_key(s, code, modifiers),
+
         // ---- Piano tab ----
-        KeyCode::Char('k') if s.active_tab == 1 => {
+        KeyCode::Char('k') if s.active_tab == TAB_PIANO => {
             s.open_scale_selector();
         }
-        KeyCode::Char('l') if s.active_tab == 1 => {
-            let new_mode = match s.piano_filter.mode() {
+        KeyCode::Char('l') if s.active_tab == TAB_PIANO => {
+            let new_mode = match s.ctl.piano_filter.mode() {
                 PianoMode::Highlight => PianoMode::Locked,
                 PianoMode::Locked => PianoMode::Highlight,
             };
-            s.piano_filter.set_mode(new_mode);
-            s.dirty = true;
-            log::info!("Piano mode → {}", new_mode.label());
+            if s.apply(Intent::SetLocked { locked: new_mode == PianoMode::Locked }).is_some() {
+                log::info!("Piano mode → {}", new_mode.label());
+            }
         }
-        KeyCode::Char('[') if s.active_tab == 1 && s.piano_view_octave > 0 => {
+        KeyCode::Char('[') if s.active_tab == TAB_PIANO && s.piano_view_octave > 0 => {
             s.piano_view_octave -= 1;
         }
-        KeyCode::Char(']') if s.active_tab == 1 && s.piano_view_octave < 8 => {
+        KeyCode::Char(']') if s.active_tab == TAB_PIANO && s.piano_view_octave < 8 => {
             s.piano_view_octave += 1;
         }
 
+        // ---- Session tab: the scope of the node under the chain cursor, under the chain and the parameters ----
+        KeyCode::Char('o') if s.active_tab == TAB_SESSION => s.strip.on = !s.strip.on,
+        KeyCode::Char('O') if s.active_tab == TAB_SESSION => s.strip.scope.toggle_kind(),
+
+        // ---- Scope tab ----
+        KeyCode::Char('v') if s.active_tab == TAB_SCOPE => s.scope.toggle_kind(),
+        KeyCode::Left if s.active_tab == TAB_SCOPE => s.scope.faster(),
+        KeyCode::Right if s.active_tab == TAB_SCOPE => s.scope.slower(),
+
         // 'i' — replace instrument on the selected instrument slot.
-        KeyCode::Char('i') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('i') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some(TreeAddress::Instrument(_)) = s.selected_address().copied() {
                 s.open_selector(SelectorMode::Instrument);
             }
@@ -3573,43 +2553,48 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         // plugin selector to fill it. The lane defaults to builtin:osc, so it
         // makes sound even if the selector is dismissed without a pick. Set its
         // key range afterwards with 'R'. This is how you build a keyboard split.
-        KeyCode::Char('n') if s.active_tab == 0 && !s.focus_params => {
-            let new_idx = s.instruments.len();
-            let _ = s.cmd_tx.send(GraphCommand::AddInstrument { range: None });
-            s.instruments.push(InstrumentNode {
-                range: None,
-                transpose: 0,
-                volume: 1.0,
-                instrument: None,
-                effects: vec![],
-                modulators: vec![],
-                pattern: None,
-                pitch_bend_range: 2.0,
-                remap: Default::default(),
-                group: None,
-            });
-            // Default the new lane to builtin:osc so it isn't silent if the
-            // selector is cancelled.
-            if let Some((loaded, slot)) = s.load_plugin_slot("builtin:osc") {
-                s.set_instrument(new_idx, loaded, slot);
+        // (The lane is made by the intent a browser's "+ Instrument" asks for, a step
+        // of the history: the catalog has to name the oscillator, as the scan has long
+        // before anyone presses a key; if it does not, there is no lane to fill.)
+        KeyCode::Char('n') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if s.apply(Intent::AddInstrument { plugin: "builtin:osc".to_string() }).is_some() {
+                // Move the cursor onto the new lane so the selector fills it.
+                let new_idx = s.ctl.model.instruments.len().saturating_sub(1);
+                if let Some(pos) = s.tree_entries.iter().position(
+                    |e| matches!(e.address, TreeAddress::Instrument(i) if i == new_idx),
+                ) {
+                    s.chain_state.selected = pos;
+                    s.sync_param_state();
+                }
+                s.open_selector(SelectorMode::Instrument);
             }
-            s.dirty = true;
-            s.rebuild_tree();
-            // Move the cursor onto the new lane so the selector fills it.
-            if let Some(pos) = s.tree_entries.iter().position(
-                |e| matches!(e.address, TreeAddress::Instrument(i) if i == new_idx),
-            ) {
-                s.chain_state.selected = pos;
-                s.sync_param_state();
+        }
+
+        // 'N' — add an effect that stands by itself (step 87): the selector lists the
+        // effects, and the one that is chosen goes in a lane of its own that has no
+        // instrument (`AddFreeEffect`, a step of the history), where cables bring what
+        // it is fed. Wherever the cursor is.
+        KeyCode::Char('N') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            s.open_selector(SelectorMode::FreeEffect);
+        }
+
+        // 'K' — keep the chain of effects of the lane the cursor is of as a module (step 104): a popup asks for the name, and the intent `SaveModule` writes the chain to the
+        // library, whose modules `N` lists with the effects and adds, each as a lane of its own. A lane that has no effect has no chain: nothing opens.
+        KeyCode::Char('K') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some(lane) = s.selected_inst().and_then(|inst| s.ctl.model.instruments.get(inst)) {
+                if !lane.effects.is_empty() {
+                    s.save_module = Some(SaveModuleState { node: lane.node, input: TextInputState::new(""), error: None });
+                }
             }
-            s.open_selector(SelectorMode::Instrument);
         }
 
         // 'R' — set the key range of the selected instrument, or rename the
         // selected group (range doesn't apply to groups).
-        KeyCode::Char('R') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('R') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some(TreeAddress::Group(group)) = s.selected_address().copied() {
                 let initial = s
+                    .ctl
+                    .model
                     .groups
                     .get(group)
                     .and_then(|g| g.name.clone())
@@ -3619,6 +2604,8 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 s.rename_group = Some(RenameGroupState { group, input });
             } else if let Some(inst) = s.selected_inst() {
                 let initial = s
+                    .ctl
+                    .model
                     .instruments
                     .get(inst)
                     .and_then(|n| n.range)
@@ -3632,7 +2619,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // Session: contextual add (chain focus only).
         // Instrument/Effect → add effect.
-        KeyCode::Char('a') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('a') if s.active_tab == TAB_SESSION && !s.focus_params => {
             match s.selected_address().copied() {
                 Some(TreeAddress::Instrument(_) | TreeAddress::Effect { .. }) => {
                     s.open_selector(SelectorMode::Effect);
@@ -3644,26 +2631,22 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                     s.open_selector(SelectorMode::GroupEffect(group));
                 }
                 Some(TreeAddress::Pattern(_)) => {}
-                Some(TreeAddress::Modulator { .. }) => {}
-                Some(TreeAddress::GroupModulator { .. }) => {}
+                Some(TreeAddress::FreeModulator { .. }) => {}
                 None => {}
             }
         }
 
         // 'm' (param focus) — modulate the selected parameter: open a popup to
-        // bind it to a new or existing lane modulator.
-        KeyCode::Char('m') if s.active_tab == 0 && s.focus_params => {
+        // bind it to a new or existing modulator.
+        KeyCode::Char('m') if s.active_tab == TAB_SESSION && s.focus_params => {
             match s.selected_address().copied() {
-                Some(TreeAddress::Instrument(_) | TreeAddress::Effect { .. }) => {
+                // A plugin's parameter (an instrument's, an effect's or a bus effect's), or a group's volume or pan → create/attach a modulator.
+                Some(TreeAddress::Instrument(_) | TreeAddress::Effect { .. } | TreeAddress::GroupEffect { .. } | TreeAddress::Group(_)) => {
                     s.open_modulate();
-                }
-                // A group bus-effect parameter → create/attach a group modulator.
-                Some(TreeAddress::GroupEffect { .. }) => {
-                    s.open_group_modulate();
                 }
                 // A modulator's own param (rate / ADSR / a target depth) →
                 // cross-modulate it with a sibling modulator.
-                Some(TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. }) => {
+                Some(TreeAddress::FreeModulator { .. }) => {
                     s.open_modulate_cross_mod();
                 }
                 _ => {}
@@ -3672,79 +2655,48 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // 'l' (param focus) — MIDI learn: bind the next CC / pitch-bend to the
         // selected parameter (plugin param or modulator field).
-        KeyCode::Char('l') if s.active_tab == 0 && s.focus_params => {
+        KeyCode::Char('l') if s.active_tab == TAB_SESSION && s.focus_params => {
             s.learn_selected_param();
         }
 
-        // 'm' (chain focus) — add an empty LFO modulator to the instrument's
-        // lane rack. (In param focus, `m` modulates the selected parameter —
+        // 'm' (chain focus) — add an LFO, one of the session's own that hears the lane or the group that the cursor is in. (In param focus, `m` modulates the selected parameter —
         // handled above.)
-        KeyCode::Char('m') if s.active_tab == 0 && !s.focus_params => {
-            // On a group / group-bus node, add a group-scoped modulator; on an
-            // instrument-side node, add a lane modulator.
-            let group = match s.selected_address().copied() {
-                Some(TreeAddress::Group(g))
-                | Some(TreeAddress::GroupEffect { group: g, .. })
-                | Some(TreeAddress::GroupModulator { group: g, .. }) => Some(g),
-                _ => None,
-            };
-            if let Some(g) = group {
-                if let Some(node) = s.groups.get_mut(g) {
-                    let mod_index = node.modulators.len();
-                    let _ = s.cmd_tx.send(GraphCommand::InsertGroupModulator {
-                        group: g,
-                        index: mod_index,
-                        source: crate::plugin::chain::ModSource::Lfo {
-                            waveform: crate::plugin::chain::LfoWaveform::Sine,
-                            rate: 1.0,
-                            phase: 0.0,
-                        },
-                    });
-                    node.modulators.push(ModulatorSlot {
-                        source: ModSourceSlot::Lfo {
-                            waveform: crate::plugin::chain::LfoWaveform::Sine,
-                            rate: 1.0,
-                        },
-                        targets: vec![],
-                    });
-                    s.dirty = true;
-                    s.rebuild_tree();
-                }
-            } else if let Some(inst) = s.selected_address().and_then(|a| a.inst()) {
-                if let Some(node) = s.instruments.get_mut(inst) {
-                    let mod_index = node.modulators.len();
-                    let _ = s.cmd_tx.send(GraphCommand::InsertModulator {
-                        inst,
-                        index: mod_index,
-                        source: crate::plugin::chain::ModSource::Lfo {
-                            waveform: crate::plugin::chain::LfoWaveform::Sine,
-                            rate: 1.0,
-                            phase: 0.0,
-                        },
-                    });
-                    node.modulators.push(ModulatorSlot {
-                        source: ModSourceSlot::Lfo {
-                            waveform: crate::plugin::chain::LfoWaveform::Sine,
-                            rate: 1.0,
-                        },
-                        targets: vec![],
-                    });
-                    s.dirty = true;
-                    s.rebuild_tree();
-                }
+        KeyCode::Char('m') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            // On a group, a group-bus node or a modulator that hears a group, add one that hears the group; on an instrument-side node or a modulator that hears a lane, one that hears the lane;
+            // on a modulator that hears every note, another that does.
+            let address = s.selected_address().copied();
+            let owner = address.and_then(|a| match s.group_of(a) {
+                Some(group) => s.ctl.model.groups.get(group).map(|bus| bus.node),
+                None => s.lane_of(a).and_then(|inst| s.ctl.model.instruments.get(inst)).map(|lane| lane.node),
+            });
+            if owner.is_some() || matches!(address, Some(TreeAddress::FreeModulator { .. })) {
+                s.add_free_modulator(owner);
+            }
+        }
+
+        // 'F' (chain focus) — add a free modulator: in no lane and no group, wherever the cursor is, and the cursor goes onto it (`AddFreeModulator`, a step of
+        // the history). Its cables (`t`) go to a parameter of any plugin of the session.
+        KeyCode::Char('F') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            s.add_free_modulator(None);
+        }
+
+        // 'h' (chain focus) — choose whose notes a free modulator hears: every note, a lane's or a group's (`SetModulatorEar`, a step of the history), via a popup.
+        KeyCode::Char('h') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some(TreeAddress::FreeModulator { index }) = s.selected_address().copied() {
+                s.open_ear_popup(index);
             }
         }
 
         // 'g' (chain focus) — assign the selected instrument to a group
         // (new, existing, or ungroup), via a popup.
-        KeyCode::Char('g') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('g') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some(TreeAddress::Instrument(inst)) = s.selected_address().copied() {
                 s.open_group_assign(inst);
             }
         }
 
         // 'p' — open preset selector for the selected plugin slot.
-        KeyCode::Char('p') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('p') if s.active_tab == TAB_SESSION && !s.focus_params => {
             if let Some(addr) = s.selected_address().copied() {
                 let target = match addr {
                     TreeAddress::Instrument(inst) => Some((inst, 0)),
@@ -3758,269 +2710,184 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // 't' — add modulation target (when modulator selected).
-        KeyCode::Char('t') if s.active_tab == 0 && !s.focus_params => {
-            match s.selected_address().copied() {
-                Some(TreeAddress::Modulator { inst, index }) => {
-                    s.open_target_selector(inst, index);
+        KeyCode::Char('t') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some(TreeAddress::FreeModulator { index }) = s.selected_address().copied() {
+                s.open_free_target_selector(index);
+            }
+        }
+
+        // Ctrl+R — clear the pattern of the lane (on its Pattern or Instrument node), as `d` on the pattern does. (Before `r`, which records, whatever
+        // the modifiers: the help said Ctrl+R clears, and it recorded.)
+        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) && s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some(TreeAddress::Pattern(inst) | TreeAddress::Instrument(inst)) = s.selected_address().copied() {
+                if s.ctl.model.instruments.get(inst).is_some_and(|lane| lane.pattern.is_some()) {
+                    s.clear_pattern(inst);
                 }
-                Some(TreeAddress::GroupModulator { group, index }) => {
-                    s.open_group_target_selector(group, index);
-                }
-                _ => {}
             }
         }
 
         // 'r' — toggle pattern recording (on Pattern or Instrument node).
-        KeyCode::Char('r') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('r') if s.active_tab == TAB_SESSION && !s.focus_params => {
             let target = match s.selected_address().copied() {
                 Some(TreeAddress::Pattern(inst)) => Some(inst),
                 Some(TreeAddress::Instrument(inst)) => Some(inst),
                 _ => None,
             };
-            if let Some(inst) = target {
-                if let Some(inst_node) = s.instruments.get_mut(inst) {
-                    let currently_recording = inst_node.pattern.as_ref().is_some_and(|p| p.recording);
-                    if currently_recording {
-                        // Stop recording
-                        let _ = s.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: false });
-                        if let Some(ref mut p) = inst_node.pattern {
-                            p.recording = false;
-                        }
-                    } else {
-                        // Start recording: create pattern state if needed
-                        if inst_node.pattern.is_none() {
-                            inst_node.pattern = Some(PatternState {
-                                bpm: s.global_bpm,
-                                length_beats: 4.0,
-                                looping: true,
-                                base_note: None,
-                                events: vec![],
-                                enabled: false,
-                                recording: false,
-                                in_key: false,
-                            });
-                        }
-                        // Send BPM and length first
-                        let _ = s.cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: s.global_bpm });
-                        let _ = s.cmd_tx.send(GraphCommand::SetPatternLength {
-                            inst,
-                            beats: inst_node.pattern.as_ref().unwrap().length_beats,
-                        });
-                        let _ = s.cmd_tx.send(GraphCommand::SetPatternRecording { inst, recording: true });
-                        inst_node.pattern.as_mut().unwrap().recording = true;
-                    }
-                    s.dirty = true;
-                    s.rebuild_tree();
-                }
+            if let Some(lane) = target.and_then(|inst| s.ctl.model.instruments.get(inst)) {
+                let (node, going) = (lane.node, lane.pattern.as_ref().is_some_and(|pattern| pattern.recording));
+                // (A recording is stopped by a second `r`; the tempo and the length are sent first when it starts.)
+                s.apply(Intent::SetRecording { node, recording: !going });
             }
         }
 
         // 'b' — edit BPM.
-        KeyCode::Char('b') if s.active_tab == 0 && !s.focus_params => {
+        KeyCode::Char('b') if s.active_tab == TAB_SESSION && !s.focus_params => {
             s.bpm_editing = Some(EditState {
-                input: TextInputState::new(&format!("{:.0}", s.global_bpm)),
+                input: TextInputState::new(&format!("{:.0}", s.ctl.model.bpm)),
                 param_name: "BPM".to_string(),
-                param_min: 20.0,
-                param_max: 300.0,
+                param_min: BPM_MIN,
+                param_max: BPM_MAX,
             });
         }
 
+        // 'L' — put the limiter on the output mix in the sound, or take it out (the master's, whatever the cursor is on: step 102).
+        KeyCode::Char('L') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            let on = !s.ctl.model.master.limiter;
+            s.apply(Intent::SetLimiter { on });
+        }
+
+        // 'C' — set the limiter's ceiling, in decibels below full scale.
+        KeyCode::Char('C') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            let ceiling = s.ctl.model.master.ceiling;
+            s.gain_editing = Some(GainEditState::new(NodeId::MASTER, Gain::LimiterCeiling, ceiling, "limiter ceiling (dB below full scale, -24 to 0)"));
+        }
+
+        // 'V' — set the master volume, the gain on the output mix before the limiter.
+        KeyCode::Char('V') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            let volume = s.ctl.model.master.volume;
+            s.gain_editing = Some(GainEditState::new(NodeId::MASTER, Gain::MasterVolume, volume, "master volume (1.0 = unity)"));
+        }
+
         // 'x' — edit the dry/wet mix of the selected effect (host-side blend).
-        KeyCode::Char('x') if s.active_tab == 0 && !s.focus_params => {
-            let (target, mix) = match s.selected_address().copied() {
+        KeyCode::Char('x') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            let effect = match s.selected_address().copied() {
                 Some(TreeAddress::Effect { inst, index }) => {
-                    let mix = s.instruments.get(inst).and_then(|n| n.effects.get(index)).map_or(1.0, |fx| fx.mix);
-                    (Some((inst, GainTarget::Mix { index })), mix)
+                    s.ctl.model.instruments.get(inst).and_then(|n| n.effects.get(index))
                 }
                 Some(TreeAddress::GroupEffect { group, index }) => {
-                    let mix = s.groups.get(group).and_then(|g| g.effects.get(index)).map_or(1.0, |fx| fx.mix);
-                    (Some((0, GainTarget::GroupMix { group, index })), mix)
+                    s.ctl.model.groups.get(group).and_then(|g| g.effects.get(index))
                 }
-                _ => (None, 1.0),
+                _ => None,
             };
-            if let Some((inst, target)) = target {
-                s.gain_editing = Some(GainEditState {
-                    inst,
-                    target,
-                    edit: EditState {
-                        input: TextInputState::new(&format!("{mix:.2}")),
-                        param_name: "mix (0=dry, 1=wet)".to_string(),
-                        param_min: 0.0,
-                        param_max: 1.0,
-                    },
-                });
+            if let Some(fx) = effect {
+                s.gain_editing = Some(GainEditState::new(fx.node, Gain::Mix, fx.mix, "mix (0=dry, 1=wet)"));
             }
         }
 
         // 'v' — edit the output volume of the selected instrument or group
         // (host-side gain, applied before effects). UI range 0–4.
-        KeyCode::Char('v') if s.active_tab == 0 && !s.focus_params => {
-            let (inst, target, volume) = match s.selected_address().copied() {
+        KeyCode::Char('v') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            let target = match s.selected_address().copied() {
                 Some(TreeAddress::Group(group)) => {
-                    let volume = s.groups.get(group).map_or(1.0, |g| g.volume);
-                    (0, Some(GainTarget::GroupVolume { group }), volume)
+                    s.ctl.model.groups.get(group).map(|g| (g.node, Gain::GroupVolume, g.volume))
                 }
-                Some(addr) => match addr.inst() {
-                    Some(inst) => {
-                        let volume = s.instruments.get(inst).map_or(1.0, |n| n.volume);
-                        (inst, Some(GainTarget::Volume), volume)
-                    }
-                    None => (0, None, 1.0),
-                },
-                None => (0, None, 1.0),
+                Some(addr) => s
+                    .lane_of(addr)
+                    .and_then(|inst| s.ctl.model.instruments.get(inst))
+                    .map(|n| (n.node, Gain::Volume, n.volume)),
+                None => None,
             };
-            if let Some(target) = target {
-                s.gain_editing = Some(GainEditState {
-                    inst,
-                    target,
-                    edit: EditState {
-                        input: TextInputState::new(&format!("{volume:.2}")),
-                        param_name: "volume (1.0 = unity)".to_string(),
-                        param_min: 0.0,
-                        param_max: 4.0,
-                    },
-                });
+            if let Some((node, gain, volume)) = target {
+                s.gain_editing = Some(GainEditState::new(node, gain, volume, "volume (1.0 = unity)"));
             }
         }
 
-        KeyCode::Char('d') if s.active_tab == 0 && !s.focus_params => {
+        // 'M' / 'S' (chain focus) — mute or solo the lane or the group that the selected entry is of (the instrument,
+        // its effects, its modulators and its pattern are the lane's; a group's header, its bus effects and its
+        // modulators are the group's), as the page's M and S buttons do.
+        KeyCode::Char('M') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some((node, muted, _, _)) = s.selected_lane_or_group() {
+                s.apply(Intent::SetMute { node, muted: !muted });
+            }
+        }
+        KeyCode::Char('S') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some((node, _, solo, _)) = s.selected_lane_or_group() {
+                s.apply(Intent::SetSolo { node, solo: !solo });
+            }
+        }
+        // 'w' (chain focus) — cut the way out of the lane or the group that the selected entry is of, or give it back: where its end goes (its group's bus or the mix),
+        // or nowhere but its audio cables. A way out that would make the audio go round is refused (logged), as the page's is.
+        KeyCode::Char('w') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some((node, _, _, route)) = s.selected_lane_or_group() {
+                s.apply(Intent::SetRoute { node, route: if route == Route::Out { Route::None } else { Route::Out } });
+            }
+        }
+
+        // 'f' (chain focus) — cut the link into the effect that the cursor is on from the stage before it in its chain (the instrument, the effect before it, or the sum of the bus), or give
+        // it back (the intent `SetFeed`): the effect is then fed by its audio cables and by nothing else. A feed that would make the audio go round is refused (logged), as the page's is.
+        KeyCode::Char('f') if s.active_tab == TAB_SESSION && !s.focus_params => {
+            if let Some((node, fed)) = s.selected_effect_feed() {
+                s.apply(Intent::SetFeed { node, feed: if fed { Feed::None } else { Feed::Chain } });
+            }
+        }
+
+        KeyCode::Char('d') if s.active_tab == TAB_SESSION && !s.focus_params => {
             let sel = s.chain_state.selected;
             if sel < s.tree_entries.len() {
                 let addr = s.tree_entries[sel].address;
+                // (A node is taken out by the intent that a browser's "x" asks for too.)
                 match addr {
                     TreeAddress::Effect { inst, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveEffect { inst, index });
-                        if let Some(inst_node) = s.instruments.get_mut(inst) {
-                            if index < inst_node.effects.len() {
-                                inst_node.effects.remove(index);
-                            }
-                        }
-                        s.dirty = true;
-                        s.rebuild_tree();
+                        let node = s.ctl.model.instruments.get(inst).and_then(|lane| lane.effects.get(index)).map(|fx| fx.node);
+                        s.remove_node(node);
                     }
                     TreeAddress::Instrument(inst) => {
-                        let has_plugin =
-                            s.instruments.get(inst).is_some_and(|n| n.instrument.is_some());
-                        if has_plugin {
-                            let _ = s.cmd_tx.send(GraphCommand::ClearInstrument { inst });
-                            if let Some(n) = s.instruments.get_mut(inst) {
-                                n.instrument = None;
+                        // (The instrument is taken out by the intent that the page's "Remove only the instrument" asks, the lane keeping its effects and the rest; a lane that has
+                        // none is taken out by the intent that takes out a lane.)
+                        let lane = s.ctl.model.instruments.get(inst).map(|lane| (lane.node, lane.instrument.is_some()));
+                        match lane {
+                            Some((node, true)) => {
+                                s.apply(Intent::ClearInstrument { node });
                             }
-                            s.dirty = true;
-                            s.rebuild_tree();
-                        } else if s.instruments.len() > 1 {
-                            // If this lane was a group member, fix up that group's
-                            // modulator member ordinals (mirrors the audio thread).
-                            let member_of = tui_lane_member_ordinal(&s.instruments, inst);
-                            let _ = s.cmd_tx.send(GraphCommand::RemoveInstrument { inst });
-                            s.instruments.remove(inst);
-                            if let Some((group, ordinal)) = member_of {
-                                if let Some(g) = s.groups.get_mut(group) {
-                                    fixup_tui_group_member_after_remove(&mut g.modulators, ordinal);
-                                }
-                            }
-                            s.dirty = true;
-                            s.rebuild_tree();
+                            Some((node, false)) => s.remove_node(Some(node)),
+                            None => {}
                         }
                     }
-                    TreeAddress::Pattern(inst) => {
-                        let _ = s.cmd_tx.send(GraphCommand::ClearPattern { inst });
-                        if let Some(inst_node) = s.instruments.get_mut(inst) {
-                            inst_node.pattern = None;
-                        }
-                        s.dirty = true;
-                        s.rebuild_tree();
-                    }
-                    TreeAddress::Modulator { inst, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveModulator { inst, index });
-                        if let Some(node) = s.instruments.get_mut(inst) {
-                            if index < node.modulators.len() {
-                                node.modulators.remove(index);
-                                // Clean up cross-mod targets in siblings.
-                                fixup_tui_cross_mod_after_remove(&mut node.modulators, index);
-                            }
-                        }
-                        // If this lane is a group member, fix up group modulators
-                        // that cross-mod its modulators.
-                        if let Some((group, ordinal)) = tui_lane_member_ordinal(&s.instruments, inst) {
-                            if let Some(g) = s.groups.get_mut(group) {
-                                fixup_tui_group_member_mod_after_remove(&mut g.modulators, ordinal, index);
-                            }
-                        }
-                        s.dirty = true;
-                        s.rebuild_tree();
-                    }
+                    TreeAddress::Pattern(inst) => s.clear_pattern(inst),
                     TreeAddress::GroupEffect { group, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveGroupEffect { group, index });
-                        if let Some(g) = s.groups.get_mut(group) {
-                            if index < g.effects.len() {
-                                g.effects.remove(index);
-                                // Drop/shift group-mod bus targets after the removed effect.
-                                fixup_tui_group_bus_after_remove(&mut g.modulators, index);
-                            }
-                        }
-                        s.dirty = true;
-                        s.rebuild_tree();
+                        let node = s.ctl.model.groups.get(group).and_then(|bus| bus.effects.get(index)).map(|fx| fx.node);
+                        s.remove_node(node);
                     }
-                    TreeAddress::GroupModulator { group, index } => {
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveGroupModulator { group, index });
-                        if let Some(g) = s.groups.get_mut(group) {
-                            if index < g.modulators.len() {
-                                g.modulators.remove(index);
-                                // Clean up cross-mod targets in sibling group modulators.
-                                fixup_tui_cross_mod_after_remove(&mut g.modulators, index);
-                            }
-                        }
-                        s.dirty = true;
-                        s.rebuild_tree();
+                    TreeAddress::FreeModulator { index } => {
+                        let node = s.ctl.model.free_modulators.get(index).map(|m| m.node);
+                        s.remove_node(node);
                     }
                     TreeAddress::Group(group) => {
                         // Delete the group: members become ungrouped, higher
                         // group indices shift down.
-                        let _ = s.cmd_tx.send(GraphCommand::RemoveGroup { group });
-                        if group < s.groups.len() {
-                            s.groups.remove(group);
-                            for inst_node in s.instruments.iter_mut() {
-                                match inst_node.group {
-                                    Some(g) if g == group => inst_node.group = None,
-                                    Some(g) if g > group => inst_node.group = Some(g - 1),
-                                    _ => {}
-                                }
-                            }
-                        }
-                        s.dirty = true;
-                        s.rebuild_tree();
+                        let node = s.ctl.model.groups.get(group).map(|bus| bus.node);
+                        s.remove_node(node);
                     }
                 }
             }
         }
 
         // Enter: focus params or open value editor.
-        KeyCode::Enter if s.active_tab == 0 => {
+        KeyCode::Enter if s.active_tab == TAB_SESSION => {
             if s.focus_params {
                 let sel = s.chain_state.selected;
                 let pa = s.param_state.selected;
                 if sel < s.tree_entries.len() {
                     let addr = s.tree_entries[sel].address;
                     match addr {
-                        TreeAddress::Modulator { inst, index } => {
-                            let edit = s.instruments.get(inst)
-                                .and_then(|n| n.modulators.get(index))
-                                .and_then(|m| modulator_edit_state(m, pa));
-                            if edit.is_some() {
-                                s.editing = edit;
-                            }
-                        }
-                        TreeAddress::GroupModulator { group, index } => {
-                            let edit = s.groups.get(group)
-                                .and_then(|g| g.modulators.get(index))
-                                .and_then(|m| modulator_edit_state(m, pa));
+                        TreeAddress::FreeModulator { index } => {
+                            let edit = s.ctl.model.free_modulators.get(index).and_then(|m| modulator_edit_state(m, pa));
                             if edit.is_some() {
                                 s.editing = edit;
                             }
                         }
                         TreeAddress::Pattern(inst) => {
-                            let pat = s.instruments.get(inst)
+                            let pat = s.ctl.model.instruments.get(inst)
                                 .and_then(|n| n.pattern.as_ref());
                             if let Some(p) = pat {
                                 match pa {
@@ -4041,7 +2908,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         }
                         TreeAddress::Group(group) => {
                             // Group bus pane: 0 = volume, 1 = pan.
-                            if let Some(g) = s.groups.get(group) {
+                            if let Some(g) = s.ctl.model.groups.get(group) {
                                 let (val, name, min, max) = match pa {
                                     0 => (g.volume, "volume (1.0 = unity)", 0.0, 4.0),
                                     1 => (g.pan, "pan (-1 L … +1 R)", -1.0, 1.0),
@@ -4079,7 +2946,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                 }
             }
         }
-        KeyCode::Esc if s.active_tab == 0 => {
+        KeyCode::Esc if s.active_tab == TAB_SESSION => {
             if s.param_filtering {
                 // Cancel filter input, clear filter text.
                 s.param_filtering = false;
@@ -4095,7 +2962,7 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // '/' — activate parameter filter (only for plugin nodes, not modulators).
-        KeyCode::Char('/') if s.active_tab == 0 && s.focus_params && !s.param_filtering => {
+        KeyCode::Char('/') if s.active_tab == TAB_SESSION && s.focus_params && !s.param_filtering => {
             let sel = s.chain_state.selected;
             if sel < s.tree_entries.len() {
                 let is_plugin = matches!(
@@ -4109,18 +2976,16 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
         }
 
         // Parameter adjustment.
-        KeyCode::Left if s.active_tab == 0 && s.focus_params && !s.param_filtering => {
-            let step = param_step(s, modifiers);
-            s.adjust_param(-step);
+        KeyCode::Left if s.active_tab == TAB_SESSION && s.focus_params && !s.param_filtering => {
+            s.adjust_param(-1.0, modifiers);
         }
-        KeyCode::Right if s.active_tab == 0 && s.focus_params && !s.param_filtering => {
-            let step = param_step(s, modifiers);
-            s.adjust_param(step);
+        KeyCode::Right if s.active_tab == TAB_SESSION && s.focus_params && !s.param_filtering => {
+            s.adjust_param(1.0, modifiers);
         }
 
         // Reorder effects / reorder instruments.
         KeyCode::Up
-            if s.active_tab == 0
+            if s.active_tab == TAB_SESSION
                 && !s.focus_params
                 && modifiers.contains(KeyModifiers::SHIFT) =>
         {
@@ -4128,29 +2993,12 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             if sel < s.tree_entries.len() {
                 match s.tree_entries[sel].address {
                     TreeAddress::Effect { inst, index } if index > 0 => {
-                        let _ = s.cmd_tx.send(GraphCommand::ReorderEffect {
-                            inst,
-                            from: index,
-                            to: index - 1,
-                        });
-                        if let Some(inst_node) = s.instruments.get_mut(inst) {
-                            if index < inst_node.effects.len() {
-                                inst_node.effects.swap(index, index - 1);
-                            }
-                        }
-                        s.dirty = true;
-                        s.rebuild_tree();
-                        if s.chain_state.selected > 0 {
-                            s.chain_state.selected -= 1;
-                        }
+                        let node = s.ctl.model.instruments.get(inst).and_then(|lane| lane.effects.get(index)).map(|fx| fx.node);
+                        s.move_effect_to(node, index - 1);
                     }
                     TreeAddress::Instrument(inst) if inst > 0 => {
-                        let _ = s.cmd_tx.send(GraphCommand::SwapInstruments {
-                            inst_a: inst,
-                            inst_b: inst - 1,
-                        });
-                        s.instruments.swap(inst, inst - 1);
-                        s.dirty = true;
+                        s.ctl.swap_lanes(inst, inst - 1);
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                         let new_addr = TreeAddress::Instrument(inst - 1);
                         if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
@@ -4159,15 +3007,15 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.sync_param_state();
                     }
                     TreeAddress::Pattern(inst) if inst > 0 => {
-                        let _ = s.cmd_tx.send(GraphCommand::SwapPatterns {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SwapPatterns {
                             inst_a: inst,
                             inst_b: inst - 1,
                         });
-                        let a_pat = s.instruments[inst].pattern.take();
-                        let b_pat = s.instruments[inst - 1].pattern.take();
-                        s.instruments[inst].pattern = b_pat;
-                        s.instruments[inst - 1].pattern = a_pat;
-                        s.dirty = true;
+                        let a_pat = s.ctl.model.instruments[inst].pattern.take();
+                        let b_pat = s.ctl.model.instruments[inst - 1].pattern.take();
+                        s.ctl.model.instruments[inst].pattern = b_pat;
+                        s.ctl.model.instruments[inst - 1].pattern = a_pat;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                         let new_addr = TreeAddress::Pattern(inst - 1);
                         if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
@@ -4176,28 +3024,15 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.sync_param_state();
                     }
                     TreeAddress::GroupEffect { group, index } if index > 0 => {
-                        let _ = s.cmd_tx.send(GraphCommand::ReorderGroupEffect {
-                            group,
-                            from: index,
-                            to: index - 1,
-                        });
-                        if let Some(g) = s.groups.get_mut(group) {
-                            if index < g.effects.len() {
-                                g.effects.swap(index, index - 1);
-                            }
-                        }
-                        s.dirty = true;
-                        s.rebuild_tree();
-                        if s.chain_state.selected > 0 {
-                            s.chain_state.selected -= 1;
-                        }
+                        let node = s.ctl.model.groups.get(group).and_then(|bus| bus.effects.get(index)).map(|fx| fx.node);
+                        s.move_effect_to(node, index - 1);
                     }
                     _ => {}
                 }
             }
         }
         KeyCode::Down
-            if s.active_tab == 0
+            if s.active_tab == TAB_SESSION
                 && !s.focus_params
                 && modifiers.contains(KeyModifiers::SHIFT) =>
         {
@@ -4205,29 +3040,16 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
             if sel < s.tree_entries.len() {
                 match s.tree_entries[sel].address {
                     TreeAddress::Effect { inst, index } => {
-                        let effect_count = s.instruments.get(inst)
+                        let effect_count = s.ctl.model.instruments.get(inst)
                             .map_or(0, |n| n.effects.len());
                         if index + 1 < effect_count {
-                            let _ = s.cmd_tx.send(GraphCommand::ReorderEffect {
-                                inst,
-                                from: index,
-                                to: index + 1,
-                            });
-                            if let Some(inst_node) = s.instruments.get_mut(inst) {
-                                inst_node.effects.swap(index, index + 1);
-                            }
-                            s.dirty = true;
-                            s.rebuild_tree();
-                            s.chain_state.selected += 1;
+                            let node = s.ctl.model.instruments.get(inst).and_then(|lane| lane.effects.get(index)).map(|fx| fx.node);
+                            s.move_effect_to(node, index + 1);
                         }
                     }
-                    TreeAddress::Instrument(inst) if inst + 1 < s.instruments.len() => {
-                        let _ = s.cmd_tx.send(GraphCommand::SwapInstruments {
-                            inst_a: inst,
-                            inst_b: inst + 1,
-                        });
-                        s.instruments.swap(inst, inst + 1);
-                        s.dirty = true;
+                    TreeAddress::Instrument(inst) if inst + 1 < s.ctl.model.instruments.len() => {
+                        s.ctl.swap_lanes(inst, inst + 1);
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                         let new_addr = TreeAddress::Instrument(inst + 1);
                         if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
@@ -4235,16 +3057,16 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         }
                         s.sync_param_state();
                     }
-                    TreeAddress::Pattern(inst) if inst + 1 < s.instruments.len() => {
-                        let _ = s.cmd_tx.send(GraphCommand::SwapPatterns {
+                    TreeAddress::Pattern(inst) if inst + 1 < s.ctl.model.instruments.len() => {
+                        let _ = s.ctl.cmd_tx.send(GraphCommand::SwapPatterns {
                             inst_a: inst,
                             inst_b: inst + 1,
                         });
-                        let a_pat = s.instruments[inst].pattern.take();
-                        let b_pat = s.instruments[inst + 1].pattern.take();
-                        s.instruments[inst].pattern = b_pat;
-                        s.instruments[inst + 1].pattern = a_pat;
-                        s.dirty = true;
+                        let a_pat = s.ctl.model.instruments[inst].pattern.take();
+                        let b_pat = s.ctl.model.instruments[inst + 1].pattern.take();
+                        s.ctl.model.instruments[inst].pattern = b_pat;
+                        s.ctl.model.instruments[inst + 1].pattern = a_pat;
+                        s.ctl.dirty = true;
                         s.rebuild_tree();
                         let new_addr = TreeAddress::Pattern(inst + 1);
                         if let Some(pos) = s.tree_entries.iter().position(|e| e.address == new_addr) {
@@ -4253,19 +3075,10 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
                         s.sync_param_state();
                     }
                     TreeAddress::GroupEffect { group, index } => {
-                        let count = s.groups.get(group).map_or(0, |g| g.effects.len());
+                        let count = s.ctl.model.groups.get(group).map_or(0, |g| g.effects.len());
                         if index + 1 < count {
-                            let _ = s.cmd_tx.send(GraphCommand::ReorderGroupEffect {
-                                group,
-                                from: index,
-                                to: index + 1,
-                            });
-                            if let Some(g) = s.groups.get_mut(group) {
-                                g.effects.swap(index, index + 1);
-                            }
-                            s.dirty = true;
-                            s.rebuild_tree();
-                            s.chain_state.selected += 1;
+                            let node = s.ctl.model.groups.get(group).and_then(|bus| bus.effects.get(index)).map(|fx| fx.node);
+                            s.move_effect_to(node, index + 1);
                         }
                     }
                     _ => {}
@@ -4275,42 +3088,56 @@ fn handle_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
 
         // Navigation.
         KeyCode::Up => match s.active_tab {
-            0 if s.focus_params => s.param_state.up(),
-            0 => {
+            TAB_SESSION if s.focus_params => s.param_state.up(),
+            TAB_SESSION => {
                 s.chain_state.up();
                 s.sync_param_state();
             }
-            3 => s.help_offset = s.help_offset.saturating_sub(1),
+            TAB_HELP => s.help_offset = s.help_offset.saturating_sub(1),
             _ => {}
         },
         KeyCode::Down => match s.active_tab {
-            0 if s.focus_params => s.param_state.down(),
-            0 => {
+            TAB_SESSION if s.focus_params => s.param_state.down(),
+            TAB_SESSION => {
                 s.chain_state.down();
                 s.sync_param_state();
             }
-            3 => s.help_offset += 1,
+            TAB_HELP => s.help_offset += 1,
             _ => {}
         },
         KeyCode::PageUp => match s.active_tab {
-            0 if s.focus_params => s.param_state.page_up(20),
-            0 => {
+            TAB_SESSION if s.focus_params => s.param_state.page_up(20),
+            TAB_SESSION => {
                 s.chain_state.page_up(20);
                 s.sync_param_state();
             }
-            3 => s.help_offset = s.help_offset.saturating_sub(20),
+            TAB_HELP => s.help_offset = s.help_offset.saturating_sub(20),
             _ => {}
         },
         KeyCode::PageDown => match s.active_tab {
-            0 if s.focus_params => s.param_state.page_down(20),
-            0 => {
+            TAB_SESSION if s.focus_params => s.param_state.page_down(20),
+            TAB_SESSION => {
                 s.chain_state.page_down(20);
                 s.sync_param_state();
             }
-            3 => s.help_offset += 20,
+            TAB_HELP => s.help_offset += 20,
             _ => {}
         },
         _ => {}
+    }
+}
+
+/// A key on the Patch tab that is none of the global keys: the matrix says what it asks of the controller, which is carried out here, and a refusal is said in the tab.
+fn handle_patch_key(s: &mut State, code: KeyCode, modifiers: KeyModifiers) {
+    match s.patch.press(&s.ctl.model, code, modifiers) {
+        patch_view::Act::None => {}
+        patch_view::Act::Notice(text) => s.patch.notice = Some(text),
+        patch_view::Act::Apply(intent) => {
+            if let Err(why) = s.try_apply(intent) {
+                s.patch.notice = Some(why.to_string());
+            }
+        }
+        patch_view::Act::TypeLevel { edge, gain } => s.cable_editing = Some(CableEditState::new(edge, gain)),
     }
 }
 
@@ -4321,13 +3148,13 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
             s.param_dragging = false;
             s.param_scrollbar_dragging = false;
 
-            if let Some(tab) = TabBar::tab_at(x, y, s.areas.tab, TAB_NAMES, TAB_SEP) {
+            if let Some(tab) = TabBar::tab_at(x, y, s.areas.tab, &tab_labels(s.ctl.dirty), TAB_SEP) {
                 s.active_tab = tab;
                 return;
             }
 
             // Action bar.
-            if s.active_tab == 0 {
+            if s.active_tab == TAB_SESSION {
                 let sel = s.chain_state.selected;
                 let addr = s.tree_entries.get(sel).map(|e| &e.address);
                 let actions = action_bar_items(addr, s.focus_params);
@@ -4336,9 +3163,19 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
                     return;
                 }
             }
+            if s.active_tab == TAB_PATCH {
+                if let Some(at) = action_bar_index(x, y, s.areas.action_bar, &patch_action_items()) {
+                    handle_patch_key(s, PATCH_ACTIONS[at].2, KeyModifiers::NONE);
+                    return;
+                }
+            }
 
             match s.active_tab {
-                0 => {
+                TAB_PATCH => {
+                    s.patch.notice = None;
+                    s.patch.click(&s.ctl.model, x, y);
+                }
+                TAB_SESSION => {
                     if s.areas.chain_inner.contains((x, y).into()) {
                         if s.chain_state.click_at(y, s.areas.chain_inner) {
                             s.focus_params = false;
@@ -4360,9 +3197,9 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
                                 if x >= enum_start && x < enum_end {
                                     let mid = enum_start + (enum_end - enum_start) / 2;
                                     if x < mid {
-                                        s.adjust_param(-1.0);
+                                        s.adjust_param(-1.0, KeyModifiers::NONE);
                                     } else {
-                                        s.adjust_param(1.0);
+                                        s.adjust_param(1.0, KeyModifiers::NONE);
                                     }
                                 }
                             } else if let Some(val) = bar_value_at(x, s.areas.param_inner) {
@@ -4375,7 +3212,7 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
                         }
                     }
                 }
-                3 => {
+                TAB_HELP => {
                     let total = s.help_lines.len();
                     if ScrollView::is_scrollbar_hit(x, s.areas.content, total) {
                         s.help_offset =
@@ -4387,12 +3224,12 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if s.scrollbar_dragging && s.active_tab == 3 {
+            if s.scrollbar_dragging && s.active_tab == TAB_HELP {
                 let total = s.help_lines.len();
                 s.help_offset = ScrollView::offset_from_scrollbar(y, s.areas.content, total);
-            } else if s.param_scrollbar_dragging && s.active_tab == 0 {
+            } else if s.param_scrollbar_dragging && s.active_tab == TAB_SESSION {
                 s.param_state.select_from_scrollbar(y, s.areas.param_inner);
-            } else if s.param_dragging && s.active_tab == 0 {
+            } else if s.param_dragging && s.active_tab == TAB_SESSION {
                 if let Some(val) = bar_value_at(x, s.areas.param_inner) {
                     if let Some((min, max)) = s.selected_param_range() {
                         let mapped = min + val * (max - min);
@@ -4407,25 +3244,27 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
             s.param_scrollbar_dragging = false;
         }
         MouseEventKind::ScrollUp => match s.active_tab {
-            0 if s.focus_params => {
+            TAB_SESSION if s.focus_params => {
                 for _ in 0..3 { s.param_state.up_nowrap(); }
             }
-            0 => {
+            TAB_SESSION => {
                 for _ in 0..3 { s.chain_state.up_nowrap(); }
                 s.sync_param_state();
             }
-            3 => s.help_offset = s.help_offset.saturating_sub(3),
+            TAB_PATCH => s.patch.scroll(&s.ctl.model, -3),
+            TAB_HELP => s.help_offset = s.help_offset.saturating_sub(3),
             _ => {}
         },
         MouseEventKind::ScrollDown => match s.active_tab {
-            0 if s.focus_params => {
+            TAB_SESSION if s.focus_params => {
                 for _ in 0..3 { s.param_state.down_nowrap(); }
             }
-            0 => {
+            TAB_SESSION => {
                 for _ in 0..3 { s.chain_state.down_nowrap(); }
                 s.sync_param_state();
             }
-            3 => s.help_offset += 3,
+            TAB_PATCH => s.patch.scroll(&s.ctl.model, 3),
+            TAB_HELP => s.help_offset += 3,
             _ => {}
         },
         _ => {}
@@ -4436,128 +3275,179 @@ fn handle_mouse(s: &mut State, kind: MouseEventKind, x: u16, y: u16) {
 // Rendering
 // ---------------------------------------------------------------------------
 
-fn render(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    s: &mut State,
-) -> io::Result<()> {
-    terminal.draw(|frame| {
-        let area = frame.area();
-        // `--debug` carves a MIDI-monitor strip off the bottom (0 rows otherwise).
-        let debug_h: u16 = if s.midi_monitor.is_enabled() { 9 } else { 0 };
-        let [tab_area, content_area, action_area, debug_area] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(debug_h),
-        ])
-        .areas(area);
-
-        s.areas.tab = tab_area;
-        s.areas.content = content_area;
-        s.areas.action_bar = action_area;
-
-        let session_label = if s.dirty { "(1) Session *" } else { "(1) Session" };
-        let tab_names: &[&str] = &[session_label, TAB_NAMES[1], TAB_NAMES[2], TAB_NAMES[3]];
-        frame.render_widget(TabBar::new(tab_names, s.active_tab), tab_area);
-
-        // BPM display on the right side of the tab bar.
-        let bpm_text = format!("{:.0} BPM", s.global_bpm);
-        let bpm_width = bpm_text.len() as u16;
-        if tab_area.width > bpm_width + 2 {
-            let bpm_area = Rect {
-                x: tab_area.right() - bpm_width - 1,
-                y: tab_area.y,
-                width: bpm_width + 1,
-                height: 1,
-            };
-            frame.render_widget(
-                Paragraph::new(bpm_text).style(Style::default().fg(DIM)),
-                bpm_area,
-            );
-        }
-
-        match s.active_tab {
-            0 => {
-                // Pre-compute approximate inner heights and sync scroll offsets
-                // so mouse click_at uses the correct offset.
-                let inner_h = content_area.height.saturating_sub(2) as usize;
-                s.chain_state.ensure_visible(inner_h);
-                s.param_state.ensure_visible(inner_h);
-
-                let (ci, pi) = render_session(
-                    frame,
-                    content_area,
-                    &s.tree_entries,
-                    &s.chain_state,
-                    &s.instruments,
-                    &s.groups,
-                    &s.param_state,
-                    s.focus_params,
-                    &s.param_filter_input,
-                    s.param_filtering,
-                    &s.param_filtered,
-                );
-                s.areas.chain_inner = ci;
-                s.areas.param_inner = pi;
-
-                render_action_bar(frame, action_area, &s.tree_entries, &s.chain_state, s.focus_params);
-
-                if let Some(edit) = &s.editing {
-                    render_edit_popup(frame, area, edit);
-                }
-                if let Some(re) = &s.range_edit {
-                    render_range_edit_popup(frame, area, re);
-                }
-                if let Some(rg) = &s.rename_group {
-                    render_rename_group_popup(frame, area, rg);
-                }
-                if let Some(sel) = &s.selector {
-                    render_selector_popup(frame, area, sel, s.catalog_scanning);
-                }
-                if let Some(ts) = &s.target_selector {
-                    render_target_selector_popup(frame, area, ts);
-                }
-                if let Some(ms) = &s.modulate {
-                    render_modulate_popup(frame, area, ms);
-                }
-                if let Some(gs) = &s.group_assign {
-                    render_group_assign_popup(frame, area, gs);
-                }
-                if let Some(ps) = &s.preset_selector {
-                    render_preset_selector_popup(frame, area, ps);
-                }
-                if let Some(edit) = &s.bpm_editing {
-                    render_edit_popup(frame, area, edit);
-                }
-                if let Some(ge) = &s.gain_editing {
-                    render_edit_popup(frame, area, &ge.edit);
-                }
-                if let Some(sa) = &s.save_as {
-                    render_save_as_popup(frame, area, sa);
-                }
-            }
-            1 => {
-                render_piano_tab(frame, content_area, s);
-                if let Some(ss) = &s.scale_selector {
-                    render_scale_selector_popup(frame, area, ss);
-                }
-            }
-            2 => {
-                frame.render_widget(
-                    Paragraph::new("Oscilloscope — not yet implemented")
-                        .style(Style::default().fg(DIM)),
-                    content_area,
-                );
-            }
-            3 => render_help(frame, content_area, &s.help_lines, s.help_offset),
-            _ => {}
-        }
-
-        if s.midi_monitor.is_enabled() {
-            render_midi_monitor(frame, debug_area, &s.midi_monitor);
-        }
-    })?;
+fn render<B: Backend>(terminal: &mut Terminal<B>, s: &mut State) -> io::Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    terminal.draw(|frame| draw(frame, s)).map_err(io::Error::other)?;
     Ok(())
+}
+
+/// Draw one frame. Kept free of the terminal backend so the golden-render
+/// tests (`golden_tests.rs`) can drive it through ratatui's `TestBackend`.
+fn draw(frame: &mut ratatui::Frame, s: &mut State) {
+    let area = frame.area();
+    // `--debug` carves a MIDI-monitor strip off the bottom (0 rows otherwise).
+    let debug_h: u16 = if s.ctl.midi_monitor.is_enabled() { 9 } else { 0 };
+    let [tab_area, content_area, action_area, debug_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(debug_h),
+    ])
+    .areas(area);
+
+    s.areas.tab = tab_area;
+    s.areas.content = content_area;
+    s.areas.action_bar = action_area;
+
+    let tab_names = tab_labels(s.ctl.dirty);
+    frame.render_widget(TabBar::new(&tab_names, s.active_tab), tab_area);
+
+    // The right side of the tab bar: the web interface when there is one, the CLIP
+    // light while it is lit, then the BPM. The web label gives way first: it is
+    // shortened, or left out, to keep clear of the tabs.
+    let bpm_text = format!("{:.0} BPM", s.ctl.model.bpm);
+    let clip_text = if s.clip.is_lit() { "CLIP  " } else { "" };
+    // The limiter says so while it works: how far it has brought the sound down lately (a reduction under a tenth of a decibel is none).
+    let reduction = s.ctl.telemetry.load(telemetry::MASTER_REDUCTION);
+    let limit_text = if s.ctl.model.master.limiter && reduction >= LIMIT_LIGHT_FROM { format!("LIM -{reduction:.1} dB  ") } else { String::new() };
+    let tabs_width = tab_names.iter().map(|name| name.chars().count()).sum::<usize>() + 3 * (tab_names.len() - 1);
+    // (The limiter's light gives way, as the web label does, when it would touch the tabs: the light and the tempo are what a narrow terminal keeps.)
+    let limit_text = if (tab_area.width as usize) > tabs_width + 2 + 2 + limit_text.len() + clip_text.len() + bpm_text.len() { limit_text } else { String::new() };
+    // (The tabs, a gap of two, the label, two blanks after it, the rest, and a blank at the edge.)
+    let room = (tab_area.width as usize).saturating_sub(tabs_width + 2 + 2 + limit_text.len() + clip_text.len() + bpm_text.len() + 1);
+    let web_text = s.web.as_ref().and_then(|web| web.label(room)).map(|label| format!("{label}  ")).unwrap_or_default();
+    let status_width = (web_text.len() + limit_text.len() + clip_text.len() + bpm_text.len()) as u16;
+    if tab_area.width > status_width + 2 {
+        let status_area = Rect {
+            x: tab_area.right() - status_width - 1,
+            y: tab_area.y,
+            width: status_width + 1,
+            height: 1,
+        };
+        let clip_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+        let limit_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        frame.render_widget(
+            Paragraph::new(ratatui::text::Line::from(vec![
+                ratatui::text::Span::raw(web_text),
+                ratatui::text::Span::styled(limit_text, limit_style),
+                ratatui::text::Span::styled(clip_text, clip_style),
+                ratatui::text::Span::raw(bpm_text),
+            ]))
+            .style(Style::default().fg(DIM)),
+            status_area,
+        );
+    }
+
+    match s.active_tab {
+        TAB_SESSION => {
+            // The scope of the node under the cursor, if it is on and there is room, takes the foot of the tab: the chain and the parameters are what is above it.
+            let (session_area, strip_area) = scope_view::split_for_strip(content_area, s.strip.on);
+            // Pre-compute approximate inner heights and sync scroll offsets
+            // so mouse click_at uses the correct offset.
+            let inner_h = session_area.height.saturating_sub(2) as usize;
+            s.chain_state.ensure_visible(inner_h);
+            s.param_state.ensure_visible(inner_h);
+
+            let playhead = s.selected_playhead();
+            let (ci, pi) = render_session(
+                frame,
+                session_area,
+                &s.tree_entries,
+                &s.chain_state,
+                &s.ctl.model.instruments,
+                &s.ctl.model.groups,
+                &s.ctl.model.free_modulators,
+                &s.ctl.model.cables,
+                &s.param_state,
+                s.focus_params,
+                &s.param_filter_input,
+                s.param_filtering,
+                &s.param_filtered,
+                playhead,
+            );
+            s.areas.chain_inner = ci;
+            s.areas.param_inner = pi;
+            if let Some(strip_area) = strip_area {
+                s.strip.take(&s.ctl, Instant::now());
+                let looking = match s.selected_signal() {
+                    None => scope_view::Looking::Nothing,
+                    Some((node, name)) if s.ctl.probe_ring(node).is_some() => scope_view::Looking::Ring(name),
+                    Some((_, name)) => scope_view::Looking::NoRing(name),
+                };
+                scope_view::render_strip(frame, strip_area, &s.strip, &looking, s.ctl.sample_rate);
+            }
+
+            render_action_bar(frame, action_area, &s.tree_entries, &s.chain_state, s.focus_params);
+
+            if let Some(edit) = &s.editing {
+                render_edit_popup(frame, area, edit);
+            }
+            if let Some(re) = &s.range_edit {
+                render_range_edit_popup(frame, area, re);
+            }
+            if let Some(rg) = &s.rename_group {
+                render_rename_group_popup(frame, area, rg);
+            }
+            if let Some(sel) = &s.selector {
+                render_selector_popup(frame, area, sel, s.ctl.catalog.is_scanning());
+            }
+            if let Some(ts) = &s.target_selector {
+                render_target_selector_popup(frame, area, ts);
+            }
+            if let Some(ms) = &s.modulate {
+                render_modulate_popup(frame, area, ms);
+            }
+            if let Some(pending) = &s.pending_load {
+                render_loading_popup(frame, area, &pending.name);
+            }
+            if let Some(gs) = &s.group_assign {
+                render_group_assign_popup(frame, area, gs);
+            }
+            if let Some(es) = &s.ear_popup {
+                render_ear_popup(frame, area, es);
+            }
+            if let Some(ps) = &s.preset_selector {
+                render_preset_selector_popup(frame, area, ps);
+            }
+            if let Some(edit) = &s.bpm_editing {
+                render_edit_popup(frame, area, edit);
+            }
+            if let Some(ge) = &s.gain_editing {
+                render_edit_popup(frame, area, &ge.edit);
+            }
+            if let Some(sa) = &s.save_as {
+                render_save_as_popup(frame, area, sa);
+            }
+            if let Some(sm) = &s.save_module {
+                render_save_module_popup(frame, area, sm);
+            }
+        }
+        TAB_PIANO => {
+            render_piano_tab(frame, content_area, s);
+            if let Some(ss) = &s.scale_selector {
+                render_scale_selector_popup(frame, area, ss);
+            }
+        }
+        TAB_SCOPE => {
+            s.scope.take(&s.ctl.telemetry.scope, Instant::now());
+            scope_view::render(frame, content_area, &s.scope, s.ctl.sample_rate);
+        }
+        TAB_PATCH => {
+            s.patch.render(frame, content_area, &s.ctl.model);
+            render_actions(frame, action_area, &patch_action_items());
+            if let Some(ce) = &s.cable_editing {
+                render_edit_popup(frame, area, &ce.edit);
+            }
+        }
+        TAB_HELP => render_help(frame, content_area, &s.help_lines, s.help_offset),
+        _ => {}
+    }
+
+    if s.ctl.midi_monitor.is_enabled() {
+        render_midi_monitor(frame, debug_area, &s.ctl.midi_monitor);
+    }
 }
 
 /// Live incoming-MIDI tally shown at the bottom under `--debug`. Each row is one
@@ -4596,11 +3486,14 @@ fn render_session(
     chain_state: &ListState,
     instruments: &[InstrumentNode],
     groups: &[GroupNode],
+    free_modulators: &[ModulatorSlot],
+    cables: &[AudioCable],
     param_state: &ListState,
     focus_params: bool,
     param_filter_input: &TextInputState,
     param_filtering: bool,
     param_filtered: &[usize],
+    playhead: Option<usize>,
 ) -> (Rect, Rect) {
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(42), Constraint::Fill(1)]).areas(area);
@@ -4618,9 +3511,15 @@ fn render_session(
     let left_inner = left_block.inner(left);
     frame.render_widget(left_block, left);
 
+    // An entry that has a colour is drawn in it: dimmed, as the others are, until it is the selected one, which is bold.
     let items: Vec<ListItem> = tree_entries
         .iter()
-        .map(|e| ListItem::raw(&e.label))
+        .enumerate()
+        .map(|(i, e)| match e.color {
+            Some(color) if i == chain_state.selected => ListItem::styled(&e.label, Style::default().fg(color)),
+            Some(color) => ListItem::styled(&e.label, Style::default().fg(color).add_modifier(Modifier::DIM)),
+            None => ListItem::raw(&e.label),
+        })
         .collect();
     let mut cs = chain_state.clone();
     cs.ensure_visible(left_inner.height as usize);
@@ -4635,148 +3534,17 @@ fn render_session(
     // Param pane — find the selected plugin or modulator.
     let selected = chain_state.selected;
     let mut mod_params: Vec<ParamSlot> = Vec::new(); // temp storage for modulator pseudo-params
+    let mut mod_looks: Vec<RowLook> = Vec::new(); // how each of them is drawn, if it is not as the others are
+    let mut plugin_slot: Option<&PluginSlot> = None; // the plugin whose parameters the pane shows, which says which of them have no effect now
     let (plugin_name, plugin_params) = if selected < tree_entries.len() {
         let addr = &tree_entries[selected].address;
         match addr {
-            TreeAddress::Modulator { .. } | TreeAddress::GroupModulator { .. } => {
-                let m = match addr {
-                    TreeAddress::Modulator { inst, index } => {
-                        instruments.get(*inst).and_then(|n| n.modulators.get(*index))
-                    }
-                    TreeAddress::GroupModulator { group, index } => {
-                        groups.get(*group).and_then(|g| g.modulators.get(*index))
-                    }
-                    _ => None,
-                };
-                match m {
+            TreeAddress::FreeModulator { index } => {
+                match free_modulators.get(*index) {
                     Some(m) => {
-                        use crate::plugin::chain::LfoWaveform;
-                        // Type enum (index 0) — always present.
-                        let type_names = vec!["LFO".to_string(), "Envelope".to_string()];
-                        let (name, type_idx) = match &m.source {
-                            ModSourceSlot::Lfo { waveform, rate } => {
-                                let name = format!("LFO {:.1}Hz {}", rate, waveform.name());
-                                mod_params.push(ParamSlot {
-                                    name: "Type".to_string(),
-                                    index: 0,
-                                    min: 0.0,
-                                    max: 1.0,
-                                    default: 0.0,
-                                    value: 0.0,
-                                    kind: ParamKind::Enum(type_names),
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Waveform".to_string(),
-                                    index: 1,
-                                    min: 0.0,
-                                    max: (LfoWaveform::ALL.len() - 1) as f32,
-                                    default: 0.0,
-                                    value: waveform.to_index() as f32,
-                                    kind: ParamKind::Enum(
-                                        LfoWaveform::ALL.iter().map(|w| w.name().to_string()).collect(),
-                                    ),
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Rate (Hz)".to_string(),
-                                    index: 2,
-                                    min: 0.01,
-                                    max: 50.0,
-                                    default: 1.0,
-                                    value: *rate,
-                                    kind: ParamKind::Float,
-                                });
-                                (name, 0)
-                            }
-                            ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-                                let name = "ADSR".to_string();
-                                mod_params.push(ParamSlot {
-                                    name: "Type".to_string(),
-                                    index: 0,
-                                    min: 0.0,
-                                    max: 1.0,
-                                    default: 0.0,
-                                    value: 1.0,
-                                    kind: ParamKind::Enum(type_names),
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Attack (s)".to_string(),
-                                    index: 1,
-                                    min: 0.001,
-                                    max: 10.0,
-                                    default: 0.01,
-                                    value: *attack,
-                                    kind: ParamKind::Float,
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Decay (s)".to_string(),
-                                    index: 2,
-                                    min: 0.001,
-                                    max: 10.0,
-                                    default: 0.3,
-                                    value: *decay,
-                                    kind: ParamKind::Float,
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Sustain".to_string(),
-                                    index: 3,
-                                    min: 0.0,
-                                    max: 1.0,
-                                    default: 0.7,
-                                    value: *sustain,
-                                    kind: ParamKind::Float,
-                                });
-                                mod_params.push(ParamSlot {
-                                    name: "Release (s)".to_string(),
-                                    index: 4,
-                                    min: 0.001,
-                                    max: 10.0,
-                                    default: 0.5,
-                                    value: *release,
-                                    kind: ParamKind::Float,
-                                });
-                                (name, 1)
-                            }
-                            ModSourceSlot::MidiLearn { .. } => {
-                                // A single read-only info row showing the binding.
-                                mod_params.push(ParamSlot {
-                                    name: format!("Source: {}", m.source.label()),
-                                    index: 0,
-                                    min: 0.0,
-                                    max: 0.0,
-                                    default: 0.0,
-                                    value: 0.0,
-                                    kind: ParamKind::Separator,
-                                });
-                                ("MIDI".to_string(), 2)
-                            }
-                        };
-                        let _ = type_idx;
-                        // Separator before target depths.
-                        let depth_offset = match &m.source {
-                            ModSourceSlot::Lfo { .. } => 4,  // 3 source params + 1 separator
-                            ModSourceSlot::Envelope { .. } => 6,  // 5 source params + 1 separator
-                            ModSourceSlot::MidiLearn { .. } => 2, // 1 source-info row + 1 separator
-                        };
-                        mod_params.push(ParamSlot {
-                            name: "Targets".to_string(),
-                            index: 0,
-                            min: 0.0,
-                            max: 0.0,
-                            default: 0.0,
-                            value: 0.0,
-                            kind: ParamKind::Separator,
-                        });
-                        for (i, t) in m.targets.iter().enumerate() {
-                            mod_params.push(ParamSlot {
-                                name: format!("{} depth", t.param_name),
-                                index: (i + depth_offset) as u32,
-                                min: 0.0,
-                                max: 1.0,
-                                default: 0.5,
-                                value: t.depth,
-                                kind: ParamKind::Float,
-                            });
-                        }
+                        let (name, rows, looks) = modulator_pane(m, playhead);
+                        mod_params = rows;
+                        mod_looks = looks;
                         (name, mod_params.as_slice())
                     }
                     None => ("(none)".to_string(), &[] as &[ParamSlot]),
@@ -4795,6 +3563,7 @@ fn render_session(
                             default: 4.0,
                             value: p.length_beats,
                             kind: ParamKind::Float,
+                            ..Default::default()
                         });
                         mod_params.push(ParamSlot {
                             name: "Enabled".to_string(),
@@ -4804,6 +3573,7 @@ fn render_session(
                             default: 1.0,
                             value: if p.enabled { 1.0 } else { 0.0 },
                             kind: ParamKind::Enum(vec!["Off".to_string(), "On".to_string()]),
+                            ..Default::default()
                         });
                         mod_params.push(ParamSlot {
                             name: "Loop".to_string(),
@@ -4813,6 +3583,7 @@ fn render_session(
                             default: 1.0,
                             value: if p.looping { 1.0 } else { 0.0 },
                             kind: ParamKind::Enum(vec!["Off".to_string(), "On".to_string()]),
+                            ..Default::default()
                         });
                         mod_params.push(ParamSlot {
                             name: "Transpose".to_string(),
@@ -4822,6 +3593,7 @@ fn render_session(
                             default: 0.0,
                             value: if p.in_key { 1.0 } else { 0.0 },
                             kind: ParamKind::Enum(vec!["Chromatic".to_string(), "In Key".to_string()]),
+                            ..Default::default()
                         });
                         if !p.events.is_empty() {
                             let notes = p.events.iter().filter(|e| e.1 == 0x90).count();
@@ -4833,6 +3605,7 @@ fn render_session(
                                 default: 0.0,
                                 value: notes as f32,
                                 kind: ParamKind::Separator,
+                                ..Default::default()
                             });
                         }
                         ("Pattern".to_string(), mod_params.as_slice())
@@ -4852,6 +3625,7 @@ fn render_session(
                             default: 1.0,
                             value: g.volume,
                             kind: ParamKind::Float,
+                            ..Default::default()
                         });
                         mod_params.push(ParamSlot {
                             name: "pan".to_string(),
@@ -4861,11 +3635,9 @@ fn render_session(
                             default: 0.0,
                             value: g.pan,
                             kind: ParamKind::Float,
+                            ..Default::default()
                         });
-                        let name = g
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| format!("Group {}", group + 1));
+                        let name = g.display_name(*group);
                         (name, mod_params.as_slice())
                     }
                     None => ("(none)".to_string(), &[] as &[ParamSlot]),
@@ -4888,7 +3660,10 @@ fn render_session(
                     _ => None,
                 };
                 match slot {
-                    Some(p) => (p.name.clone(), p.params.as_slice()),
+                    Some(p) => {
+                        plugin_slot = Some(p);
+                        (p.name.clone(), p.params.as_slice())
+                    }
                     None => ("(none)".to_string(), &[] as &[ParamSlot]),
                 }
             }
@@ -4897,24 +3672,46 @@ fn render_session(
         ("(none)".to_string(), &[] as &[ParamSlot])
     };
 
-    let right_style = if focus_params {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(DIM)
-    };
-    let right_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(right_style)
-        .title(format!(" {} ", plugin_name));
-    let right_inner = right_block.inner(right);
-    frame.render_widget(right_block, right);
-
-    // Determine if the filter bar should be shown.
+    // Determine if the filter bar can be shown.
     let is_plugin_node = selected < tree_entries.len()
         && matches!(
             tree_entries[selected].address,
             TreeAddress::Instrument(_) | TreeAddress::Effect { .. }
         );
+
+    // Build the display params — apply filter for plugin nodes.
+    let display_params: Vec<&ParamSlot> = if is_plugin_node && !param_filtered.is_empty() {
+        param_filtered.iter().filter_map(|&i| plugin_params.get(i)).collect()
+    } else if is_plugin_node && param_filtered.is_empty() && !param_filter_input.value.is_empty() {
+        // Filter active but no matches.
+        vec![]
+    } else {
+        plugin_params.iter().collect()
+    };
+    // Why each of them has no effect now, if it has none (step 95b). A row is told from its parameter and not from its place, which a filter changes.
+    let unused: Vec<Option<&str>> = display_params.iter().map(|p| plugin_slot.and_then(|slot| slot.unused_because(p, cables))).collect();
+    // The reason for the row that the cursor is on, said under the pane while the cursor is in it.
+    let reason = focus_params
+        .then(|| display_params.get(param_state.selected).zip(unused.get(param_state.selected).copied().flatten()))
+        .flatten()
+        .map(|(p, why)| format!(" {} has no effect now: {why} ", p.name));
+
+    let right_style = if focus_params {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(DIM)
+    };
+    let mut right_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(right_style)
+        .title(format!(" {} ", plugin_name));
+    if let Some(reason) = reason {
+        right_block = right_block.title_bottom(reason);
+    }
+    let right_inner = right_block.inner(right);
+    frame.render_widget(right_block, right);
+
+    // Determine if the filter bar should be shown.
     let show_filter = is_plugin_node
         && (param_filtering || !param_filter_input.value.is_empty());
 
@@ -4942,16 +3739,6 @@ fn render_session(
             Rect::new(fa.x + pw, fa.y, fa.width.saturating_sub(pw), 1),
         );
     }
-
-    // Build the display params — apply filter for plugin nodes.
-    let display_params: Vec<&ParamSlot> = if is_plugin_node && !param_filtered.is_empty() {
-        param_filtered.iter().filter_map(|&i| plugin_params.get(i)).collect()
-    } else if is_plugin_node && param_filtered.is_empty() && !param_filter_input.value.is_empty() {
-        // Filter active but no matches.
-        vec![]
-    } else {
-        plugin_params.iter().collect()
-    };
 
     let name_width = 24;
     let bar_width = list_area.width.saturating_sub(name_width as u16 + 12) as usize;
@@ -4994,21 +3781,26 @@ fn render_session(
     let sep_style = Style::default().fg(DIM);
     let param_items: Vec<ListItem> = param_strings
         .iter()
-        .map(|(name, col1, col2, col3, row_kind)| match row_kind {
-            ParamRow::Separator => ListItem::spans(vec![
-                ListSpan::new(name, sep_style),
-                ListSpan::new(col1, sep_style),
-            ]),
-            ParamRow::Enum => ListItem::spans(vec![
-                ListSpan::new(name, Style::default()),
-                ListSpan::new(col1, Style::default()),
-            ]),
-            ParamRow::Normal => ListItem::spans(vec![
-                ListSpan::new(name, Style::default()),
-                ListSpan::new(col1, Style::default()),
-                ListSpan::new(col2, Style::default()),
-                ListSpan::new(col3, Style::default()),
-            ]),
+        .enumerate()
+        .map(|(i, (name, col1, col2, col3, row_kind))| {
+            // (Only a modulator's pane has looks of its own, and it shows every row it has, so a row's look is at its own place; a plugin's parameter that has no effect now is dimmed as a step past the length is.)
+            let look = if unused.get(i).copied().flatten().is_some() { RowLook::Unused } else { mod_looks.get(i).copied().unwrap_or_default() }.style();
+            match row_kind {
+                ParamRow::Separator => ListItem::spans(vec![
+                    ListSpan::new(name, sep_style),
+                    ListSpan::new(col1, sep_style),
+                ]),
+                ParamRow::Enum => ListItem::spans(vec![
+                    ListSpan::new(name, look),
+                    ListSpan::new(col1, look),
+                ]),
+                ParamRow::Normal => ListItem::spans(vec![
+                    ListSpan::new(name, look),
+                    ListSpan::new(col1, look),
+                    ListSpan::new(col2, look),
+                    ListSpan::new(col3, look),
+                ]),
+            }
         })
         .collect();
 
@@ -5036,21 +3828,24 @@ fn render_action_bar(
     chain_state: &ListState,
     focus_params: bool,
 ) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
     let sel = chain_state.selected;
     let addr = tree_entries.get(sel).map(|e| &e.address);
     // Show the actions for whichever pane has focus (chain vs. parameters).
-    let actions = action_bar_items(addr, focus_params);
+    render_actions(frame, area, &action_bar_items(addr, focus_params));
+}
 
+/// Draw `actions`, a key and what it does each, in the action bar.
+fn render_actions(frame: &mut ratatui::Frame, area: Rect, actions: &[(&str, &str)]) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
     let key_style = Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(Color::White);
 
     let y = area.y;
     let mut x = area.x;
 
-    for &(key, desc) in &actions {
+    for &(key, desc) in actions {
         if x > area.x {
             x += 1;
         }
@@ -5142,6 +3937,18 @@ fn render_rename_group_popup(frame: &mut ratatui::Frame, area: Rect, rg: &Rename
     }
 }
 
+/// The box that says that a plugin is being loaded, for the frame that is drawn before the loop is blocked by it.
+fn render_loading_popup(frame: &mut ratatui::Frame, area: Rect, name: &str) {
+    let text = format!("Loading {name}…");
+    let width = (text.chars().count() as u16 + 4).clamp(20, area.width.max(20));
+    let popup = centered_rect(width, 3, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(text).alignment(ratatui::layout::Alignment::Center), inner);
+}
+
 fn render_save_as_popup(frame: &mut ratatui::Frame, area: Rect, sa: &SaveAsState) {
     let popup = centered_rect(44, 5, area);
     frame.render_widget(Clear, popup);
@@ -5167,6 +3974,27 @@ fn render_save_as_popup(frame: &mut ratatui::Frame, area: Rect, sa: &SaveAsState
     }
 }
 
+fn render_save_module_popup(frame: &mut ratatui::Frame, area: Rect, sm: &SaveModuleState) {
+    let popup = centered_rect(52, 5, area);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Save Chain as Module ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.height >= 2 {
+        // The hint line doubles as the error line after a refused name.
+        let hint = match &sm.error {
+            Some(e) => Paragraph::new(e.as_str()).style(Style::default().fg(Color::Red)),
+            None => Paragraph::new("Module name (saved in the library; .toml added)").style(Style::default().fg(DIM)),
+        };
+        frame.render_widget(hint, Rect::new(inner.x, inner.y, inner.width, 1));
+        frame.render_widget(TextInput::new(&sm.input), Rect::new(inner.x, inner.y + 1, inner.width, 1));
+    }
+}
+
 fn render_selector_popup(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -5178,6 +4006,8 @@ fn render_selector_popup(
         (SelectorMode::Instrument, true) => " Select Instrument (scanning…) ",
         (SelectorMode::Effect, false) => " Select Effect ",
         (SelectorMode::Effect, true) => " Select Effect (scanning…) ",
+        (SelectorMode::FreeEffect, false) => " Select Free Effect ",
+        (SelectorMode::FreeEffect, true) => " Select Free Effect (scanning…) ",
         (SelectorMode::GroupEffect(_), false) => " Select Group Effect ",
         (SelectorMode::GroupEffect(_), true) => " Select Group Effect (scanning…) ",
     };
@@ -5193,9 +4023,10 @@ fn render_selector_popup(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
+    // (The format is a column wider than `Built-in`, which is the longest, so that it does not run into the number of parameters.)
     let columns: &[(&str, u16)] = &[
-        ("Name", inner.width.saturating_sub(22)),
-        ("Format", 8),
+        ("Name", inner.width.saturating_sub(23)),
+        ("Format", 9),
         ("Params", 7),
         ("Presets", 7),
     ];
@@ -5217,6 +4048,23 @@ fn render_group_assign_popup(frame: &mut ratatui::Frame, area: Rect, gs: &GroupA
 
     let columns: &[(&str, u16)] = &[("Group", inner.width)];
     frame.render_widget(FilterList::new(&gs.filter, &gs.items, columns), inner);
+}
+
+fn render_ear_popup(frame: &mut ratatui::Frame, area: Rect, es: &EarState) {
+    let w = (area.width * 45 / 100).max(32).min(area.width);
+    let h = (area.height * 40 / 100).max(7).min(area.height);
+    let popup = centered_rect(w, h, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta))
+        .title(" Whose notes it hears ");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let columns: &[(&str, u16)] = &[("Hears", inner.width)];
+    frame.render_widget(FilterList::new(&es.filter, &es.items, columns), inner);
 }
 
 fn render_modulate_popup(frame: &mut ratatui::Frame, area: Rect, ms: &ModulateState) {
@@ -5314,8 +4162,8 @@ fn render_piano_tab(frame: &mut ratatui::Frame, area: Rect, s: &State) {
     .areas(status_area);
 
     // ---- Row 1: scale + mode ----
-    let scale = s.piano_filter.scale();
-    let mode = s.piano_filter.mode();
+    let scale = s.ctl.piano_filter.scale();
+    let mode = s.ctl.piano_filter.mode();
     let config_text = format!(
         " Scale: {}   Mode: {}   Octave view: C{}",
         scale.display(),
@@ -5332,7 +4180,7 @@ fn render_piano_tab(frame: &mut ratatui::Frame, area: Rect, s: &State) {
     );
 
     // ---- Row 2: held notes + chord detection ----
-    let held_notes = s.held.held();
+    let held_notes = s.ctl.held.held();
     let held_names: Vec<String> = held_notes
         .iter()
         .map(|&n| {
@@ -5398,7 +4246,7 @@ fn render_piano_tab(frame: &mut ratatui::Frame, area: Rect, s: &State) {
     // ---- Keyboard ----
     frame.render_widget(Clear, kb_area);
     let buf = frame.buffer_mut();
-    piano_view::render_keyboard(kb_area, buf, &s.held, &scale, s.piano_view_octave);
+    piano_view::render_keyboard(kb_area, buf, &s.ctl.held, &scale, s.piano_view_octave);
 
     // ---- Scale strip: degree → note pairs ----
     use crate::scale::{SCALES, SCALE_DEGREES};
@@ -5466,358 +4314,153 @@ fn render_help(frame: &mut ratatui::Frame, area: Rect, lines: &[String], offset:
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// After removing a modulator at `removed_index` from the TUI model,
-/// clean up cross-mod targets in siblings: remove targets pointing at the
-/// removed index, and decrement indices > removed_index.
-fn fixup_tui_cross_mod_after_remove(modulators: &mut [ModulatorSlot], removed_index: usize) {
-    use crate::plugin::chain::ModTargetKind;
-    for m in modulators.iter_mut() {
-        m.targets.retain(|t| {
-            let idx = match &t.kind {
-                ModTargetKind::PluginParam { .. }
-                | ModTargetKind::GroupMember { .. }
-                | ModTargetKind::GroupBus { .. }
-                | ModTargetKind::GroupMemberMod { .. } => None,
-                ModTargetKind::ModulatorRate { mod_index }
-                | ModTargetKind::ModulatorAttack { mod_index }
-                | ModTargetKind::ModulatorDecay { mod_index }
-                | ModTargetKind::ModulatorSustain { mod_index }
-                | ModTargetKind::ModulatorRelease { mod_index }
-                | ModTargetKind::ModulatorDepth { mod_index, .. } => Some(*mod_index),
-            };
-            idx != Some(removed_index)
-        });
-        for t in &mut m.targets {
-            let idx = match &mut t.kind {
-                ModTargetKind::PluginParam { .. }
-                | ModTargetKind::GroupMember { .. }
-                | ModTargetKind::GroupBus { .. }
-                | ModTargetKind::GroupMemberMod { .. } => continue,
-                ModTargetKind::ModulatorRate { mod_index }
-                | ModTargetKind::ModulatorAttack { mod_index }
-                | ModTargetKind::ModulatorDecay { mod_index }
-                | ModTargetKind::ModulatorSustain { mod_index }
-                | ModTargetKind::ModulatorRelease { mod_index }
-                | ModTargetKind::ModulatorDepth { mod_index, .. } => mod_index,
-            };
-            if *idx > removed_index {
-                *idx -= 1;
-            }
+/// What a row of a modulator's pane is called, with the unit it is in.
+fn modulator_field_label(field: ModulatorField) -> &'static str {
+    match field {
+        ModulatorField::Rate => "Rate (Hz)",
+        ModulatorField::Waveform => "Waveform",
+        ModulatorField::Attack => "Attack (s)",
+        ModulatorField::Decay => "Decay (s)",
+        ModulatorField::Sustain => "Sustain",
+        ModulatorField::Release => "Release (s)",
+        ModulatorField::Value => "Value",
+        ModulatorField::Glide => "Glide",
+        ModulatorField::Length => "Length (steps)",
+        ModulatorField::Retrigger => "Retrigger",
+        ModulatorField::Fade => "Fade (s)",
+        ModulatorField::Sync => "Sync",
+    }
+}
+
+/// How a row of a pane is drawn besides what it says. Only the steps of a step sequencer, the rate of a modulator that follows the tempo and a plugin's parameter that has no effect now have a look of their own.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum RowLook {
+    #[default]
+    Normal,
+    /// A step that the sequencer does not go through: it is past its length (it keeps its value for when the sequencer is longer); the rate of a modulator that follows the tempo
+    /// (it keeps it for when it is free again); or a plugin's parameter that has no effect now (`PluginSlot::unused_because`: it keeps its value for when it has one).
+    Unused,
+    /// The step that the sequencer is at.
+    Playing,
+}
+
+impl RowLook {
+    /// What the row's cells have on top of the style of their list: a dimmed step is a step the sequencer does not play, as a chain entry that is not selected is dimmed to
+    /// recede, and the step that it is at is magenta, the colour of a modulator in the chain.
+    fn style(self) -> Style {
+        match self {
+            RowLook::Normal => Style::default(),
+            RowLook::Unused => Style::default().add_modifier(Modifier::DIM),
+            RowLook::Playing => Style::default().fg(Color::Magenta),
         }
     }
 }
 
-/// Mirror of the audio-thread `fixup_group_bus_after_remove` for the TUI model:
-/// after a group bus effect at `removed` is deleted, drop GroupBus targets on
-/// it and shift higher bus indices down.
-fn fixup_tui_group_bus_after_remove(modulators: &mut [ModulatorSlot], removed: usize) {
-    use crate::plugin::chain::ModTargetKind;
-    for m in modulators.iter_mut() {
-        m.targets.retain(|t| {
-            !matches!(t.kind, ModTargetKind::GroupBus { effect_index, .. } if effect_index == removed)
-        });
-        for t in &mut m.targets {
-            if let ModTargetKind::GroupBus { effect_index, .. } = &mut t.kind {
-                if *effect_index > removed {
-                    *effect_index -= 1;
+/// The pane of a modulator: its title, a row for each of what `modulator_row` says its rows are (the
+/// kind it is, its waveform, its settings, a separator, a depth for each cable), as parameters to draw, and the look of each. A step sequencer's step that is `playhead` is
+/// marked in its name (`Step 3 ▶`), and the steps past its length are `Unused`.
+fn modulator_pane(m: &ModulatorSlot, playhead: Option<usize>) -> (String, Vec<ParamSlot>, Vec<RowLook>) {
+    use crate::plugin::chain::LfoWaveform;
+    let title = match &m.source {
+        ModSourceSlot::Lfo { .. } => m.source.label(),
+        ModSourceSlot::Envelope { .. } => "ADSR".to_string(),
+        ModSourceSlot::MidiLearn { .. } => "MIDI".to_string(),
+        ModSourceSlot::Macro { .. } => "Macro".to_string(),
+        ModSourceSlot::Steps { .. } => "Step sequencer".to_string(),
+    };
+    let row = |name: String, index: usize, min: f32, max: f32, default: f32, value: f32, kind: ParamKind| ParamSlot {
+        name,
+        index: index as u32,
+        min,
+        max,
+        default,
+        value,
+        kind,
+        ..Default::default()
+    };
+    // What a modulator of each kind starts as, which a row's default is.
+    let (new_lfo, new_envelope, new_macro, new_steps) =
+        (ModSourceSlot::new_lfo(), ModSourceSlot::new_envelope(), ModSourceSlot::new_macro(), ModSourceSlot::new_steps());
+    let is_steps = matches!(m.source, ModSourceSlot::Steps { .. });
+    let steps_in_use = match m.source {
+        ModSourceSlot::Steps { length, .. } => length,
+        _ => 0,
+    };
+    // (A modulator that follows the tempo does not go by its rate, which it keeps for when it is free again.)
+    let follows_tempo = m.source.setting(ModulatorField::Sync).is_some_and(|sync| sync > 0.0);
+    let (rows, looks) = (0..modulator_param_len(m))
+        .filter_map(|position| {
+            let modulator_row = modulator_row(m, position)?;
+            let look = match modulator_row {
+                ModulatorRow::Step(step) if Some(step) == playhead => RowLook::Playing,
+                ModulatorRow::Step(step) if step >= steps_in_use => RowLook::Unused,
+                ModulatorRow::Setting(ModulatorField::Rate) if follows_tempo => RowLook::Unused,
+                _ => RowLook::Normal,
+            };
+            let slot = match modulator_row {
+                ModulatorRow::Type => {
+                    let envelope = matches!(m.source, ModSourceSlot::Envelope { .. });
+                    row("Type".to_string(), position, 0.0, 1.0, 0.0, if envelope { 1.0 } else { 0.0 }, ParamKind::Enum(vec!["LFO".to_string(), "Envelope".to_string()]))
                 }
-            }
-        }
-    }
-}
-
-/// TUI-model mirror of `fixup_group_member_after_remove`: after the member at
-/// ordinal `removed` leaves a group, drop GroupMember targets on it and shift
-/// higher ordinals down.
-fn fixup_tui_group_member_after_remove(modulators: &mut [ModulatorSlot], removed: usize) {
-    use crate::plugin::chain::ModTargetKind;
-    for m in modulators.iter_mut() {
-        m.targets.retain(|t| match &t.kind {
-            ModTargetKind::GroupMember { member, .. }
-            | ModTargetKind::GroupMemberMod { member, .. } => *member != removed,
-            _ => true,
-        });
-        for t in &mut m.targets {
-            let member = match &mut t.kind {
-                ModTargetKind::GroupMember { member, .. }
-                | ModTargetKind::GroupMemberMod { member, .. } => member,
-                _ => continue,
-            };
-            if *member > removed {
-                *member -= 1;
-            }
-        }
-    }
-}
-
-/// TUI-model mirror of `shift_group_member_after_insert`: after a member joins
-/// a group at ordinal `inserted`, bump group-target member ordinals at/after it.
-fn shift_tui_group_member_after_insert(modulators: &mut [ModulatorSlot], inserted: usize) {
-    use crate::plugin::chain::ModTargetKind;
-    for m in modulators.iter_mut() {
-        for t in &mut m.targets {
-            let member = match &mut t.kind {
-                ModTargetKind::GroupMember { member, .. }
-                | ModTargetKind::GroupMemberMod { member, .. } => member,
-                _ => continue,
-            };
-            if *member >= inserted {
-                *member += 1;
-            }
-        }
-    }
-}
-
-/// TUI-model mirror of `fixup_group_member_mod_after_remove`: after member
-/// `member`'s lane modulator at `removed` is deleted, drop GroupMemberMod
-/// targets on it and shift that member's higher mod-indices down.
-fn fixup_tui_group_member_mod_after_remove(
-    modulators: &mut [ModulatorSlot],
-    member: usize,
-    removed: usize,
-) {
-    use crate::plugin::chain::ModTargetKind;
-    for m in modulators.iter_mut() {
-        m.targets.retain(|t| {
-            !matches!(t.kind, ModTargetKind::GroupMemberMod { member: tm, mod_index, .. } if tm == member && mod_index == removed)
-        });
-        for t in &mut m.targets {
-            if let ModTargetKind::GroupMemberMod { member: tm, mod_index, .. } = &mut t.kind {
-                if *tm == member && *mod_index > removed {
-                    *mod_index -= 1;
+                ModulatorRow::Waveform => {
+                    let (min, max) = ModulatorField::Waveform.range();
+                    let value = m.source.setting(ModulatorField::Waveform).unwrap_or(0.0);
+                    let names = LfoWaveform::ALL.iter().map(|w| w.name().to_string()).collect();
+                    row(modulator_field_label(ModulatorField::Waveform).to_string(), position, min, max, 0.0, value, ParamKind::Enum(names))
                 }
-            }
-        }
-    }
-}
-
-/// The (group, member-ordinal) of TUI instrument `inst`, or None if ungrouped.
-fn tui_lane_member_ordinal(instruments: &[InstrumentNode], inst: usize) -> Option<(usize, usize)> {
-    let group = instruments.get(inst)?.group?;
-    let ordinal = instruments[..inst]
-        .iter()
-        .filter(|n| n.group == Some(group))
-        .count();
-    Some((group, ordinal))
-}
-
-/// Convert a TUI ModSourceSlot to an audio-thread ModSource for GraphCommands.
-fn mod_source_slot_to_graph(slot: &ModSourceSlot) -> crate::plugin::chain::ModSource {
-    match slot {
-        ModSourceSlot::Lfo { waveform, rate } => crate::plugin::chain::ModSource::Lfo {
-            waveform: *waveform,
-            rate: *rate,
-            phase: 0.0,
-        },
-        ModSourceSlot::Envelope { attack, decay, sustain, release } => crate::plugin::chain::ModSource::Envelope {
-            attack: *attack,
-            decay: *decay,
-            sustain: *sustain,
-            release: *release,
-            state: crate::plugin::chain::EnvState::Idle,
-            level: 0.0,
-            notes_held: 0,
-        },
-        ModSourceSlot::MidiLearn { source, learning } => crate::plugin::chain::ModSource::MidiLearn {
-            source: *source,
-            value: 0.0,
-            learning: *learning,
-        },
-    }
-}
-
-fn to_plugin_slot(lp: LoadedPlugin) -> PluginSlot {
-    let params = lp
-        .params
-        .into_iter()
-        .zip(lp.param_defaults)
-        .zip(lp.param_values)
-        .filter(|((p, _), _)| !p.name.starts_with("(locked)"))
-        .map(|((p, baseline), v)| ParamSlot {
-            kind: p.labels.map_or(ParamKind::Float, ParamKind::Enum),
-            name: p.name,
-            index: p.index,
-            min: p.min,
-            max: p.max,
-            default: baseline,
-            value: v,
+                ModulatorRow::Setting(field) => {
+                    let (min, max) = field.range();
+                    // (A step sequencer's rate starts at 8, and not at an LFO's 1.)
+                    let default = if is_steps { new_steps.setting(field) } else { new_lfo.setting(field).or_else(|| new_envelope.setting(field)).or_else(|| new_macro.setting(field)) };
+                    row(modulator_field_label(field).to_string(), position, min, max, default.unwrap_or(min), m.source.setting(field)?, ParamKind::Float)
+                }
+                ModulatorRow::Retrigger => {
+                    let value = m.source.setting(ModulatorField::Retrigger)?;
+                    row(modulator_field_label(ModulatorField::Retrigger).to_string(), position, 0.0, 1.0, 1.0, value, ParamKind::Enum(vec!["off".to_string(), "on".to_string()]))
+                }
+                ModulatorRow::Sync => {
+                    let (min, max) = ModulatorField::Sync.range();
+                    let value = m.source.setting(ModulatorField::Sync)?;
+                    let names = std::iter::once(FREE).chain(SYNC_DIVISIONS.iter().map(|&(name, _)| name)).map(str::to_string).collect();
+                    row(modulator_field_label(ModulatorField::Sync).to_string(), position, min, max, 0.0, value, ParamKind::Enum(names))
+                }
+                ModulatorRow::Step(step) => {
+                    let value = *m.source.steps()?.get(step)?;
+                    let marker = if look == RowLook::Playing { " ▶" } else { "" };
+                    row(format!("Step {}{marker}", step + 1), position, STEP_MIN, STEP_MAX, ModSourceSlot::staircase()[step], value, ParamKind::Float)
+                }
+                // A control's source, shown and not edited.
+                ModulatorRow::Info => row(format!("Source: {}", m.source.label()), position, 0.0, 0.0, 0.0, 0.0, ParamKind::Separator),
+                ModulatorRow::Separator => row("Targets".to_string(), position, 0.0, 0.0, 0.0, 0.0, ParamKind::Separator),
+                ModulatorRow::Depth(target) => {
+                    let target = m.targets.get(target)?;
+                    row(format!("{} depth", target.param_name), position, DEPTH_MIN, DEPTH_MAX, 0.5, target.depth, ParamKind::Float)
+                }
+            };
+            Some((slot, look))
         })
-        .collect();
-    PluginSlot {
-        name: lp.name,
-        format: format_from_id(&lp.id),
-        id: lp.id,
-        is_instrument: lp.is_instrument,
-        params,
-        presets: lp.presets,
-        current_preset: lp.current_preset,
-        mix: lp.mix,
-    }
+        .unzip();
+    (title, rows, looks)
 }
 
-/// Number of param-pane rows for a modulator: source params + "Targets"
-/// separator + one row per target. Scope-independent (lane or group).
-fn modulator_param_len(m: &ModulatorSlot) -> usize {
-    let fixed = match &m.source {
-        ModSourceSlot::Lfo { .. } => 3,      // Type + Waveform + Rate
-        ModSourceSlot::Envelope { .. } => 5, // Type + A + D + S + R
-        ModSourceSlot::MidiLearn { .. } => 1, // Source-info row only
-    };
-    fixed + 1 + m.targets.len()
-}
-
-/// (min, max) for a modulator pseudo-param at row `pa`, or None for enum /
-/// separator rows. Scope-independent.
-fn modulator_param_range(m: &ModulatorSlot, pa: usize) -> Option<(f32, f32)> {
-    if pa == 0 {
-        return None; // Type enum
-    }
-    match &m.source {
-        ModSourceSlot::Lfo { .. } => match pa {
-            1 => None, // Waveform enum
-            2 => Some((0.01, 50.0)),
-            3 => None, // Separator
-            _ => m.targets.get(pa - 4).map(|_| (0.0f32, 1.0f32)),
-        },
-        ModSourceSlot::Envelope { .. } => match pa {
-            1 => Some((0.001, 10.0)),
-            2 => Some((0.001, 10.0)),
-            3 => Some((0.0, 1.0)),
-            4 => Some((0.001, 10.0)),
-            5 => None, // Separator
-            _ => m.targets.get(pa - 6).map(|_| (0.0f32, 1.0f32)),
-        },
-        // Row 0 = source info (handled above), 1 = Targets separator, 2+ = depths.
-        ModSourceSlot::MidiLearn { .. } => match pa {
-            1 => None,
-            _ => m.targets.get(pa - 2).map(|_| (0.0f32, 1.0f32)),
-        },
-    }
-}
-
-/// True if a modulator pseudo-param at row `pa` is an enum (Type / Waveform).
-fn modulator_param_is_enum(m: &ModulatorSlot, pa: usize) -> bool {
-    match &m.source {
-        ModSourceSlot::Lfo { .. } => pa == 0 || pa == 1, // Type, Waveform
-        ModSourceSlot::Envelope { .. } => pa == 0,       // Type
-        ModSourceSlot::MidiLearn { .. } => false,        // source row is read-only info
-    }
-}
-
-/// Build the value-entry `EditState` for a modulator pseudo-param at row `pa`,
-/// or None for enum/separator rows. Scope-independent (lane or group).
+/// Build the value-entry `EditState` for row `pa` of a modulator's pane, or None for a row that is
+/// not a number to type (the kind, the waveform, a separator). Scope-independent (lane or group).
 fn modulator_edit_state(m: &ModulatorSlot, pa: usize) -> Option<EditState> {
-    if pa == 0 {
-        return None; // Type enum
-    }
-    match &m.source {
-        ModSourceSlot::Lfo { rate, .. } => match pa {
-            1 => None, // Waveform enum
-            2 => Some(EditState {
-                input: TextInputState::new(&format!("{:.2}", rate)),
-                param_name: "Rate (Hz)".to_string(),
-                param_min: 0.01,
-                param_max: 50.0,
-            }),
-            3 => None, // Separator
-            _ => m.targets.get(pa - 4).map(|t| EditState {
-                input: TextInputState::new(&format!("{:.2}", t.depth)),
-                param_name: format!("{} depth", t.param_name),
-                param_min: 0.0,
-                param_max: 1.0,
-            }),
-        },
-        ModSourceSlot::Envelope { attack, decay, sustain, release } => {
-            let edit = match pa {
-                1 => Some((*attack, "Attack (s)".to_string(), 0.001f32, 10.0f32)),
-                2 => Some((*decay, "Decay (s)".to_string(), 0.001, 10.0)),
-                3 => Some((*sustain, "Sustain".to_string(), 0.0, 1.0)),
-                4 => Some((*release, "Release (s)".to_string(), 0.001, 10.0)),
-                5 => None, // Separator
-                _ => m.targets.get(pa - 6).map(|t| {
-                    (t.depth, format!("{} depth", t.param_name), 0.0f32, 1.0f32)
-                }),
-            };
-            edit.map(|(val, pname, min, max)| EditState {
-                input: TextInputState::new(&format!("{:.3}", val)),
-                param_name: pname,
-                param_min: min,
-                param_max: max,
-            })
+    // (An envelope's numbers are shown to a thousandth, the others' to a hundredth.)
+    let places = if matches!(m.source, ModSourceSlot::Envelope { .. }) { 3 } else { 2 };
+    let (value, name, min, max) = match modulator_row(m, pa)? {
+        ModulatorRow::Setting(field) => {
+            let (min, max) = field.range();
+            (m.source.setting(field)?, modulator_field_label(field).to_string(), min, max)
         }
-        // Row 0 = source info (handled above), 1 = Targets separator, 2+ = depths.
-        ModSourceSlot::MidiLearn { .. } => match pa {
-            1 => None,
-            _ => m.targets.get(pa - 2).map(|t| EditState {
-                input: TextInputState::new(&format!("{:.2}", t.depth)),
-                param_name: format!("{} depth", t.param_name),
-                param_min: 0.0,
-                param_max: 1.0,
-            }),
-        },
-    }
-}
-
-/// Map a modulator's param-pane row `pa` to a cross-mod target on that
-/// modulator (index `mod_index`): its rate/ADSR field or one of its target
-/// depths. Returns `(kind, min, max, base, label)`, or None for enum/separator
-/// rows. Used by MIDI-learn to bind a control to a modulator's own parameter.
-fn modulator_row_to_cross_mod(
-    m: &ModulatorSlot,
-    mod_index: usize,
-    pa: usize,
-) -> Option<(crate::plugin::chain::ModTargetKind, f32, f32, f32, String)> {
-    use crate::plugin::chain::ModTargetKind as K;
-    let depth_at = |off: usize| {
-        let ti = pa - off;
-        m.targets
-            .get(ti)
-            .map(|t| (K::ModulatorDepth { mod_index, target_index: ti }, 0.0f32, 1.0f32, t.depth, format!("Mod {mod_index} depth {ti}")))
+        ModulatorRow::Step(step) => (*m.source.steps()?.get(step)?, format!("Step {}", step + 1), STEP_MIN, STEP_MAX),
+        ModulatorRow::Depth(target) => {
+            let target = m.targets.get(target)?;
+            (target.depth, format!("{} depth", target.param_name), DEPTH_MIN, DEPTH_MAX)
+        }
+        ModulatorRow::Type | ModulatorRow::Info | ModulatorRow::Waveform | ModulatorRow::Retrigger | ModulatorRow::Sync | ModulatorRow::Separator => return None,
     };
-    match &m.source {
-        ModSourceSlot::Lfo { rate, .. } => match pa {
-            2 => Some((K::ModulatorRate { mod_index }, 0.01, 50.0, *rate, format!("Mod {mod_index} rate"))),
-            _ if pa >= 4 => depth_at(4),
-            _ => None,
-        },
-        ModSourceSlot::Envelope { attack, decay, sustain, release } => match pa {
-            1 => Some((K::ModulatorAttack { mod_index }, 0.001, 10.0, *attack, format!("Mod {mod_index} attack"))),
-            2 => Some((K::ModulatorDecay { mod_index }, 0.001, 10.0, *decay, format!("Mod {mod_index} decay"))),
-            3 => Some((K::ModulatorSustain { mod_index }, 0.0, 1.0, *sustain, format!("Mod {mod_index} sustain"))),
-            4 => Some((K::ModulatorRelease { mod_index }, 0.001, 10.0, *release, format!("Mod {mod_index} release"))),
-            _ if pa >= 6 => depth_at(6),
-            _ => None,
-        },
-        ModSourceSlot::MidiLearn { .. } if pa >= 2 => depth_at(2),
-        ModSourceSlot::MidiLearn { .. } => None,
-    }
-}
-
-fn to_modulator_slot(lm: LoadedModulator) -> ModulatorSlot {
-    let source = match lm.source {
-        LoadedModSource::Lfo { waveform, rate } => ModSourceSlot::Lfo { waveform, rate },
-        LoadedModSource::Envelope { attack, decay, sustain, release } => {
-            ModSourceSlot::Envelope { attack, decay, sustain, release }
-        }
-        LoadedModSource::MidiLearn { source, learning } => {
-            ModSourceSlot::MidiLearn { source, learning }
-        }
-    };
-    ModulatorSlot {
-        source,
-        targets: lm
-            .targets
-            .into_iter()
-            .map(|lt| ModTargetSlot {
-                slot: lt.slot,
-                param_name: lt.param_name,
-                kind: lt.kind,
-                depth: lt.depth,
-                param_min: lt.param_min,
-                param_max: lt.param_max,
-            })
-            .collect(),
-    }
+    Some(EditState { input: TextInputState::new(&format!("{value:.places$}")), param_name: name, param_min: min, param_max: max })
 }
 
 fn param_step(s: &State, modifiers: KeyModifiers) -> f32 {
@@ -5837,12 +4480,38 @@ fn param_step(s: &State, modifiers: KeyModifiers) -> f32 {
         1.0
     };
 
+    range * step_fraction(modifiers)
+}
+
+/// How far a press of Left or Right goes, as a fraction of the range of the row: a twentieth, a hundredth with Shift, a tenth with Ctrl.
+fn step_fraction(modifiers: KeyModifiers) -> f32 {
     if modifiers.contains(KeyModifiers::CONTROL) {
-        range * 0.10
+        0.10
     } else if modifiers.contains(KeyModifiers::SHIFT) {
-        range * 0.01
+        0.01
     } else {
-        range * 0.05
+        0.05
+    }
+}
+
+/// What a step of `direction` (1 up, -1 down) by `fraction` of the range of a modulator's row makes of `value`. A setting that runs over decades (`Taper::Log`:
+/// a rate, a time) is multiplied by that fraction of the ratio of its ends, so that a step goes as far on a knob wherever on it the value is; a level, and the
+/// depth of a cable (a fraction of what it drives), move by the fraction of one. (A value below the lowest, which a file may give, steps from the lowest:
+/// a ratio of nothing is nothing.)
+fn stepped(field: Option<ModulatorField>, value: f32, direction: f32, fraction: f32) -> f32 {
+    match field {
+        // (A whole number, a length, goes by one: a twentieth of its range is not a step of it.)
+        Some(field) if field.is_whole() => value + direction,
+        Some(field) if field.taper() == Taper::Log => {
+            let (min, max) = field.range();
+            value.max(min) * (max / min).powf(direction * fraction)
+        }
+        // (A level that has a range of its own, a fade of 0 to 5 seconds, goes by that fraction of it; the depth of a cable is a fraction of what it drives.)
+        Some(field) => {
+            let (min, max) = field.range();
+            value + direction * fraction * (max - min)
+        }
+        None => value + direction * fraction,
     }
 }
 
@@ -5861,11 +4530,37 @@ fn format_range(range: (u8, u8)) -> String {
     crate::session::format_range(range)
 }
 
+/// A modulation depth as the tree writes it: a percentage of the parameter's range, whole, and with the decimal that it needs when it is
+/// under 10% and not a whole percentage, so that the depth that suits a parameter with a wide range (0.4% of a delay's two seconds) is not
+/// written as 0%.
+fn depth_percent(depth: f32) -> String {
+    let percent = depth * 100.0;
+    if percent.abs() < 10.0 && (percent - percent.round()).abs() >= 0.05 {
+        format!("{percent:.1}%")
+    } else {
+        // (A whole percentage, or one that is within a twentieth of it: -0.04 is 0, and not -0.)
+        format!("{}%", percent.round() + 0.0)
+    }
+}
+
 /// Render one instrument and its children (pattern, effects, lane mod rack).
 /// `prefix` is prepended to every label so the whole sub-tree can be nested
 /// under a group header.
+/// What the tree says at the end of a lane's or a group's line of whether it is muted, whether it is soloed and whether its way out is cut: `  [mute]`, `  [solo]` and `  [no out]`,
+/// the ones that there are, in that order, after two spaces.
+fn flags_label(muted: bool, solo: bool, route: Route) -> String {
+    let flags: Vec<&str> = [(muted, "[mute]"), (solo, "[solo]"), (route == Route::None, "[no out]")].into_iter().filter_map(|(on, word)| on.then_some(word)).collect();
+    if flags.is_empty() { String::new() } else { format!("  {}", flags.join(" ")) }
+}
+
+/// What the tree says at the end of an effect's line when the stage before it does not feed it (its link is cut: `SetFeed`): `  [no in]`, and nothing for an effect that is fed.
+fn feed_label(fed: bool) -> &'static str {
+    if fed { "" } else { "  [no in]" }
+}
+
 fn push_instrument_entries(
     entries: &mut Vec<TreeEntry>,
+    model: &SessionModel,
     inst: &InstrumentNode,
     inst_idx: usize,
     prefix: &str,
@@ -5883,30 +4578,34 @@ fn push_instrument_entries(
         String::new()
     };
     entries.push(TreeEntry {
-        label: format!("{prefix}{plugin_label}{range_label}{transpose_label}"),
+        label: format!("{prefix}{plugin_label}{range_label}{transpose_label}{}", flags_label(inst.muted, inst.solo, inst.route)),
         address: TreeAddress::Instrument(inst_idx),
-        color: Color::Green,
+        node: inst.node,
+        color: None,
         indent: 0,
     });
 
     let has_pattern = inst.pattern.as_ref().is_some_and(|p| p.recording || !p.events.is_empty());
-    let child_count = if has_pattern { 1 } else { 0 } + inst.effects.len() + inst.modulators.len();
+    // The modulators that hear the lane are listed with it, after its effects.
+    let hearing: Vec<(usize, &ModulatorSlot)> = model.free_modulators.iter().enumerate().filter(|(_, m)| model.ear_of(m) == Some(inst.node)).collect();
+    let child_count = if has_pattern { 1 } else { 0 } + inst.effects.len() + hearing.len();
     let mut child_idx = 0;
     let branch_for = |idx: usize| if idx == child_count - 1 { "╰" } else { "├" };
 
     if let Some(pat) = &inst.pattern {
         if pat.recording || !pat.events.is_empty() {
-            let (icon, color, detail) = if pat.recording {
-                ("\u{23fa}", Color::Red, "recording...".to_string())
+            let (icon, detail) = if pat.recording {
+                ("\u{23fa}", "recording...".to_string())
             } else {
                 let n = pat.events.iter().filter(|e| e.1 == 0x90).count();
                 let mode = if pat.in_key { ", in-key" } else { "" };
-                ("\u{25b6}", Color::Blue, format!("{:.0} beats, {n} notes{mode}", pat.length_beats))
+                ("\u{25b6}", format!("{:.0} beats, {n} notes{mode}", pat.length_beats))
             };
             entries.push(TreeEntry {
                 label: format!("{prefix}{} {icon} Pattern  {detail}", branch_for(child_idx)),
                 address: TreeAddress::Pattern(inst_idx),
-                color,
+                node: inst.node,
+                color: None,
                 indent: 1,
             });
             child_idx += 1;
@@ -5915,175 +4614,176 @@ fn push_instrument_entries(
 
     for (fx_idx, fx) in inst.effects.iter().enumerate() {
         entries.push(TreeEntry {
-            label: format!("{prefix}{} fx {}  [{}]", branch_for(child_idx), fx.name, fx.format),
+            label: format!("{prefix}{} fx {}  [{}]{}", branch_for(child_idx), fx.name, fx.format, feed_label(fx.fed)),
             address: TreeAddress::Effect { inst: inst_idx, index: fx_idx },
-            color: Color::Yellow,
+            node: fx.node,
+            color: None,
             indent: 1,
         });
         child_idx += 1;
     }
 
-    let slot_name = |slot: usize| -> String {
-        if slot == 0 {
-            inst.instrument.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Instrument".into())
-        } else {
-            inst.effects.get(slot - 1).map(|p| p.name.clone()).unwrap_or_else(|| format!("fx{slot}"))
-        }
-    };
-    let target_disp = |t: &ModTargetSlot| -> String {
-        match t.kind {
-            crate::plugin::chain::ModTargetKind::PluginParam { slot, .. } => {
-                format!("{}: {}", slot_name(slot), t.param_name)
-            }
-            _ => t.param_name.clone(),
-        }
-    };
-    for (mod_idx, m) in inst.modulators.iter().enumerate() {
-        let source_label = m.source.label();
+    for (mod_idx, m) in hearing {
         let targets = if m.targets.is_empty() {
             String::new()
         } else {
-            let list = m
-                .targets
-                .iter()
-                .map(|t| format!("{} ({:.0}%)", target_disp(t), t.depth * 100.0))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let list = m.targets.iter().map(|t| format!("{} ({})", heard_target_label(model, t, inst_idx), depth_percent(t.depth))).collect::<Vec<_>>().join(", ");
             format!(" \u{2192} {list}")
         };
         entries.push(TreeEntry {
-            label: format!("{prefix}{} ~ {source_label}{targets}", branch_for(child_idx)),
-            address: TreeAddress::Modulator { inst: inst_idx, index: mod_idx },
-            color: Color::Magenta,
+            label: format!("{prefix}{} ~ {}{targets}", branch_for(child_idx), m.source.label()),
+            address: TreeAddress::FreeModulator { index: mod_idx },
+            node: m.node,
+            color: Some(Color::Magenta),
             indent: 1,
         });
         child_idx += 1;
     }
 }
 
-fn build_tree_entries(instruments: &[InstrumentNode], groups: &[GroupNode]) -> Vec<TreeEntry> {
+/// What a cable of a modulator that hears group `group` drives, as the tree says it under the group: a parameter of a member's plugin by the member's place in the group (`M0 Oscillator:
+/// detune`), a parameter of one of the group's bus effects (`Bus Reverb: damping`), and anything else as every modulator's is (`L2 Filter: cutoff`).
+fn heard_by_group_target_label(model: &SessionModel, target: &ModTargetSlot, group: usize) -> String {
+    if let Driven::Param { plugin, .. } = target.aim {
+        let slot = model.plugin_slot(plugin);
+        match (model.locate(plugin), slot) {
+            (Some(NodePath::GroupEffect { group: of, .. }), Some(slot)) if of == group => return format!("Bus {}: {}", slot.name, target.param_name),
+            (Some(NodePath::Instrument(lane) | NodePath::Effect { inst: lane, .. }), Some(slot)) if model.instruments[lane].group == Some(group) => {
+                let member = model.instruments[..lane].iter().filter(|other| other.group == Some(group)).count();
+                return format!("M{member} {}: {}", slot.name, target.param_name);
+            }
+            _ => {}
+        }
+    }
+    free_target_label(model, target)
+}
+
+/// What a cable of a modulator that hears lane `inst` drives, as the tree says it under the lane: a parameter of a plugin of the lane by the plugin (`Oscillator: detune`), and anything else
+/// as every modulator's is (`L2 Filter: cutoff`).
+fn heard_target_label(model: &SessionModel, target: &ModTargetSlot, inst: usize) -> String {
+    if let Driven::Param { plugin, .. } = target.aim {
+        if matches!(model.locate(plugin), Some(NodePath::Instrument(lane) | NodePath::Effect { inst: lane, .. }) if lane == inst) {
+            if let Some(slot) = model.plugin_slot(plugin) {
+                return format!("{}: {}", slot.name, target.param_name);
+            }
+        }
+    }
+    free_target_label(model, target)
+}
+
+/// Where the plugin in `node` is, as the Patch tab tags a lane and a group: `L1` for a plugin of the first lane (its instrument or an effect of its chain) and `G1` for an effect of the
+/// first group's bus or for the group itself; nothing for a node that is none of them.
+fn plugin_tag(model: &SessionModel, node: NodeId) -> String {
+    match model.locate(node) {
+        Some(NodePath::Instrument(inst) | NodePath::Effect { inst, .. }) => format!("L{}", inst + 1),
+        Some(NodePath::GroupEffect { group, .. } | NodePath::Group(group)) => format!("G{}", group + 1),
+        _ => String::new(),
+    }
+}
+
+/// What a cable that drives a host-side value is called, by whose it is (a lane's volume, an effect's mix, a group's volume or pan), as the Patch tab tags them: `L1 Oscillator volume`,
+/// `L1 Filter mix`, `G1 Reverb (bus) mix`, `G1 volume`. (A plugin's own parameter of the same name is `L1 Oscillator: volume`, with a colon.)
+fn gain_target_label(model: &SessionModel, node: NodeId, gain: crate::app::model::ModGain) -> String {
+    let tag = plugin_tag(model, node);
+    match (model.locate(node), model.plugin_slot(node)) {
+        (Some(NodePath::GroupEffect { .. }), Some(slot)) => format!("{tag} {} (bus) {}", slot.name, gain.name()),
+        (_, Some(slot)) => format!("{tag} {} {}", slot.name, gain.name()),
+        (_, None) => format!("{tag} {}", gain.name()),
+    }
+}
+
+/// What a cable of a free modulator drives, as the tree says it: a parameter by the lane or the group its plugin is in (`L1 Oscillator: detune`, `G1 Filter (bus): cutoff`, as the Patch tab
+/// tags them), and the setting of another free modulator by its label (`Mod 1 attack`).
+fn free_target_label(model: &SessionModel, target: &ModTargetSlot) -> String {
+    if let Driven::Gain { node, gain } = target.aim {
+        return gain_target_label(model, node, gain);
+    }
+    let Driven::Param { plugin, .. } = target.aim else { return target.param_name.clone() };
+    let Some(slot) = model.plugin_slot(plugin) else { return target.param_name.clone() };
+    let bus = if matches!(model.locate(plugin), Some(NodePath::GroupEffect { .. })) { " (bus)" } else { "" };
+    format!("{} {}{bus}: {}", plugin_tag(model, plugin), slot.name, target.param_name)
+}
+
+fn build_tree_entries(model: &SessionModel) -> Vec<TreeEntry> {
+    let (instruments, groups) = (&model.instruments[..], &model.groups[..]);
     let mut entries = Vec::new();
 
-    // Groups first: a header, the member instruments nested under it, then the
+    // The free modulators that hear no lane and no group first (magenta): they are the session's own, and each says what its cables drive wherever it is. The ones that hear a lane or a group are
+    // listed with it, where a lane's and a group's own were (a modulator is the session's own, and is listed where its notes are).
+    for (mod_idx, m) in model.free_modulators.iter().enumerate().filter(|(_, m)| model.ear_of(m).is_none()) {
+        let targets = if m.targets.is_empty() {
+            String::new()
+        } else {
+            let list = m.targets.iter().map(|t| format!("{} ({})", free_target_label(model, t), depth_percent(t.depth))).collect::<Vec<_>>().join(", ");
+            format!(" \u{2192} {list}")
+        };
+        entries.push(TreeEntry {
+            label: format!("~ {}{targets}  (free)", m.source.label()),
+            address: TreeAddress::FreeModulator { index: mod_idx },
+            node: m.node,
+            color: Some(Color::Magenta),
+            indent: 0,
+        });
+    }
+
+    // Groups: a header, the member instruments nested under it, then the
     // group's bus effects.
     for (g_idx, group) in groups.iter().enumerate() {
-        let name = group.name.clone().unwrap_or_else(|| format!("Group {}", g_idx + 1));
+        let name = group.display_name(g_idx);
         let vol = if (group.volume - 1.0).abs() > f32::EPSILON {
             format!("  vol {:.2}", group.volume)
         } else {
             String::new()
         };
         entries.push(TreeEntry {
-            label: format!("\u{25a6} {name}{vol}"),
+            label: format!("\u{25a6} {name}{vol}{}", flags_label(group.muted, group.solo, group.route)),
             address: TreeAddress::Group(g_idx),
-            color: Color::Cyan,
+            node: group.node,
+            color: Some(Color::Cyan),
             indent: 0,
         });
         for (inst_idx, inst) in instruments.iter().enumerate() {
             if inst.group == Some(g_idx) {
-                push_instrument_entries(&mut entries, inst, inst_idx, "  ");
+                push_instrument_entries(&mut entries, model, inst, inst_idx, "  ");
             }
         }
         for (fx_idx, fx) in group.effects.iter().enumerate() {
             entries.push(TreeEntry {
-                label: format!("  fx {}  [{}]  (bus)", fx.name, fx.format),
+                label: format!("  fx {}  [{}]  (bus){}", fx.name, fx.format, feed_label(fx.fed)),
                 address: TreeAddress::GroupEffect { group: g_idx, index: fx_idx },
-                color: Color::Yellow,
+                node: fx.node,
+                color: None,
                 indent: 1,
             });
         }
 
-        // Group-scoped modulators (magenta), after the bus effects.
-        if !group.modulators.is_empty() {
-            // Resolve member ordinal -> plugin name for GroupMember targets.
-            let members: Vec<&InstrumentNode> =
-                instruments.iter().filter(|n| n.group == Some(g_idx)).collect();
-            let member_plugin = |member: usize, slot: usize| -> String {
-                let Some(m) = members.get(member) else { return format!("M{member}") };
-                if slot == 0 {
-                    m.instrument.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Instrument".into())
-                } else {
-                    m.effects.get(slot - 1).map(|p| p.name.clone()).unwrap_or_else(|| format!("fx{slot}"))
-                }
+        // The modulators that hear the group, after its bus effects (a cable into a member's plugin or a bus effect of the group says so by the member and the effect, and any other as
+        // every modulator's does).
+        for (mod_idx, m) in model.free_modulators.iter().enumerate().filter(|(_, m)| model.ear_of(m) == Some(group.node)) {
+            let targets = if m.targets.is_empty() {
+                String::new()
+            } else {
+                let list = m.targets.iter().map(|t| format!("{} ({})", heard_by_group_target_label(model, t, g_idx), depth_percent(t.depth))).collect::<Vec<_>>().join(", ");
+                format!(" \u{2192} {list}")
             };
-            let target_disp = |t: &ModTargetSlot| -> String {
-                match t.kind {
-                    crate::plugin::chain::ModTargetKind::GroupMember { member, slot, .. } => {
-                        format!("M{member} {}: {}", member_plugin(member, slot), t.param_name)
-                    }
-                    crate::plugin::chain::ModTargetKind::GroupBus { effect_index, .. } => {
-                        let name = group.effects.get(effect_index)
-                            .map(|p| p.name.clone())
-                            .unwrap_or_else(|| format!("fx{effect_index}"));
-                        format!("Bus {name}: {}", t.param_name)
-                    }
-                    crate::plugin::chain::ModTargetKind::GroupMemberMod { member, mod_index, field } => {
-                        // Render live from the kind so it survives membership fixups.
-                        use crate::plugin::chain::CrossModField;
-                        let fname = match field {
-                            CrossModField::Rate => "rate".to_string(),
-                            CrossModField::Attack => "attack".to_string(),
-                            CrossModField::Decay => "decay".to_string(),
-                            CrossModField::Sustain => "sustain".to_string(),
-                            CrossModField::Release => "release".to_string(),
-                            CrossModField::Depth(ti) => format!("depth {ti}"),
-                        };
-                        format!("M{member} Mod{mod_index} {fname}")
-                    }
-                    _ => t.param_name.clone(),
-                }
-            };
-            for (mod_idx, m) in group.modulators.iter().enumerate() {
-                let source_label = m.source.label();
-                let targets = if m.targets.is_empty() {
-                    String::new()
-                } else {
-                    let list = m
-                        .targets
-                        .iter()
-                        .map(|t| format!("{} ({:.0}%)", target_disp(t), t.depth * 100.0))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!(" \u{2192} {list}")
-                };
-                entries.push(TreeEntry {
-                    label: format!("  ~ {source_label}{targets}  (bus)"),
-                    address: TreeAddress::GroupModulator { group: g_idx, index: mod_idx },
-                    color: Color::Magenta,
-                    indent: 1,
-                });
-            }
+            entries.push(TreeEntry {
+                label: format!("  ~ {}{targets}  (bus)", m.source.label()),
+                address: TreeAddress::FreeModulator { index: mod_idx },
+                node: m.node,
+                color: Some(Color::Magenta),
+                indent: 1,
+            });
         }
     }
 
     // Ungrouped instruments at the top level.
     for (inst_idx, inst) in instruments.iter().enumerate() {
         if inst.group.is_none() {
-            push_instrument_entries(&mut entries, inst, inst_idx, "");
+            push_instrument_entries(&mut entries, model, inst, inst_idx, "");
         }
     }
 
     entries
-}
-
-fn format_from_id(id: &str) -> String {
-    if id.starts_with("builtin:") {
-        "Built-in".into()
-    } else if id.starts_with("lv2:") || id.starts_with("http://") || id.starts_with("urn:") {
-        "LV2".into()
-    } else if id.starts_with("clap:") || id.contains('.') && !id.contains('/') {
-        "CLAP".into()
-    } else if id.starts_with("vst3:") {
-        "VST3".into()
-    } else if id.ends_with(".lv2") {
-        "LV2".into()
-    } else if id.ends_with(".clap") {
-        "CLAP".into()
-    } else if id.ends_with(".vst3") {
-        "VST3".into()
-    } else {
-        "?".into()
-    }
 }
 
 /// Truncate `s` to at most `max` characters, appending an ellipsis when cut.
@@ -6101,55 +4801,56 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn action_bar_hit(x: u16, y: u16, area: Rect, actions: &[(&str, &str)]) -> Option<char> {
+/// Which of the actions of the action bar a click at (`x`, `y`) is on: its place in `actions`.
+fn action_bar_index(x: u16, y: u16, area: Rect, actions: &[(&str, &str)]) -> Option<usize> {
     if y != area.y || x < area.x || x >= area.right() {
         return None;
     }
     let rel_x = (x - area.x) as usize;
     let mut pos = 0;
-    for &(key, desc) in actions {
+    for (at, &(key, desc)) in actions.iter().enumerate() {
         if pos > 0 {
             pos += 1;
         }
         let total = key.len() + 2 + desc.len() + 1;
         if rel_x >= pos && rel_x < pos + total {
-            return key.chars().next();
+            return Some(at);
         }
         pos += total;
     }
     None
 }
 
-/// Enumerate all plugin formats on a background thread, sending each format's
-/// results as a separate batch so the selector fills in progressively (built-ins
-/// arrive instantly, VST3 — which instantiates every plugin — arrives last).
-/// The channel disconnecting signals that the scan is complete.
-fn spawn_catalog_scan() -> crossbeam_channel::Receiver<Vec<PluginInfo>> {
-    let (tx, rx) = crossbeam_channel::unbounded();
-    std::thread::spawn(move || {
-        let _ = tx.send(plugin::builtin::enumerate_plugins());
-
-        #[cfg(feature = "lv2")]
-        let _ = tx.send(plugin::lv2::enumerate_plugins());
-
-        let _ = tx.send(plugin::clap::enumerate_plugins());
-
-        #[cfg(feature = "vst3")]
-        let _ = tx.send(plugin::vst3::enumerate_plugins());
-    });
-    rx
+/// The key of the action of the action bar that a click is on.
+fn action_bar_hit(x: u16, y: u16, area: Rect, actions: &[(&str, &str)]) -> Option<char> {
+    action_bar_index(x, y, area, actions).and_then(|at| actions[at].0.chars().next())
 }
 
-fn build_help_lines() -> Vec<String> {
-    vec![
+fn build_help_lines(web: Option<&WebStatus>) -> Vec<String> {
+    let mut lines = vec![
         "Tang — Terminal Audio Plugin Host".into(),
         "".into(),
+    ];
+    if let Some(web) = web {
+        lines.extend([
+            "Web interface (--web):".into(),
+            format!("  {}", web.url),
+            "  Open it in a browser: what is changed there shows here, and what is".into(),
+            "  changed here shows there.".into(),
+        ]);
+        lines.extend(web.warnings().into_iter().map(|warning| format!("  {warning}")));
+        lines.push("".into());
+    }
+    lines.extend(vec![
         "Global keybindings:".into(),
-        "  1 2 3 4    Switch to tab by number".into(),
+        "  1 2 3 4 5  Switch to tab by number".into(),
         "  Tab        Next tab".into(),
         "  Shift+Tab  Previous tab".into(),
         "  Ctrl+S     Save session".into(),
         "  Ctrl+Shift+S  Save session as (new filename)".into(),
+        "  Ctrl+Z     Undo the last thing done (as the browser's Undo does)".into(),
+        "  Ctrl+Y     Redo (Ctrl+Shift+Z too)".into(),
+        "  Ctrl+P     Panic: let go of every note that sounds".into(),
         "  Ctrl+Q     Quit".into(),
         "".into(),
         "Session tab (chain focus):".into(),
@@ -6160,23 +4861,53 @@ fn build_help_lines() -> Vec<String> {
         "  i          Replace instrument".into(),
         "  R          Set instrument key range / rename group".into(),
         "  v          Set instrument volume".into(),
+        "  M          Mute / unmute the lane or group (a mute wins over a solo)".into(),
+        "  S          Solo / unsolo it (while anything is soloed only it is heard)".into(),
+        "  w          Cut / give back the way out of the lane or group (it is heard only through its audio cables)".into(),
+        "  f          Cut / give back the link into the effect (it is fed by its audio cables and by nothing else)".into(),
         "  a          Add effect after selected".into(),
+        "  N          Add an effect that stands by itself (in a lane of its own; cables feed it), or a module of the library (a chain of effects, whole)".into(),
+        "  K          Keep the chain of effects of the lane as a module (a popup asks for the name; `N` adds it, here or in another session)".into(),
         "  d          Delete selected".into(),
-        "  m          Add modulator (lane rack; group rack on a group node)".into(),
+        "  m          Add a modulator that hears the lane or group the cursor is of (on a modulator: what it hears)".into(),
+        "  F          Add a modulator that hears every note (its cables reach any plugin of the session)".into(),
+        "  h          Choose whose notes a modulator hears (a lane's, a group's, or every note)".into(),
         "  g          Assign instrument to a group (submix bus)".into(),
         "  x          Set effect / group-bus dry/wet mix".into(),
         "  r          Record/stop pattern".into(),
         "  Ctrl+R     Clear pattern".into(),
         "  b          Set BPM".into(),
+        "  L          Put the limiter on the output in the sound, or take it out (it holds the mix under its ceiling and does not let it clip)".into(),
+        "  C          Set the limiter's ceiling (dB below full scale)".into(),
+        "  V          Set the master volume (before the limiter)".into(),
         "".into(),
-        "Modulator (chain focus, lane or group):".into(),
+        "Modulator (chain focus):".into(),
         "  t          Add modulation target".into(),
         "  d          Delete modulator".into(),
+        "".into(),
+        "Patch tab (the audio cables, as a matrix of outputs against inputs):".into(),
+        "  Arrows     Move the cursor (Home / End: first / last input; PageUp / PageDown)".into(),
+        "  Enter      Draw a cable at the crosspoint, or take it out (Space too)".into(),
+        "  +  -       Turn the level of the cable by a twentieth (0 to 2)".into(),
+        "  e          Type the level of the cable".into(),
+        "  d          Take the cable out".into(),
+        "  w          Cut / give back the way out of the lane or group of the row".into(),
+        "  M  S       Mute / solo the lane or group of the row".into(),
+        "  Ctrl+Z     Undo (Ctrl+Y redoes); a cross is where a cable would make the audio go round".into(),
+        "  ↳B         The second input of an effect that has one (the Math): a column of its own after the first".into(),
         "".into(),
         "Piano tab:".into(),
         "  k          Open scale picker (root + scale)".into(),
         "  [          Shift view octave down".into(),
         "  ]          Shift view octave up".into(),
+        "".into(),
+        "Scope tab:".into(),
+        "  v          Wave or spectrum of the output".into(),
+        "  Left/Right Shorter / longer time base (the wave)".into(),
+        "".into(),
+        "Scope of a node (Session tab):".into(),
+        "  o          Show / hide the scope of the selected node, under the chain (24 rows or more)".into(),
+        "  O          Wave or spectrum of that scope".into(),
         "".into(),
         "Session tab (param focus):".into(),
         "  Up/Down    Navigate parameters".into(),
@@ -6184,7 +4915,7 @@ fn build_help_lines() -> Vec<String> {
         "  Shift+←/→  Fine adjust (1%)".into(),
         "  Ctrl+←/→   Coarse adjust (10%)".into(),
         "  Enter      Type a value".into(),
-        "  m          Modulate this parameter (new/existing modulator)".into(),
+        "  m          Modulate this parameter (a new LFO, envelope, macro, velocity or key, or one that is there)".into(),
         "  l          MIDI learn: bind the next CC / pitch-bend / aftertouch".into(),
         "  /          Search parameters".into(),
         "  Esc        Clear filter / back to chain".into(),
@@ -6199,7 +4930,8 @@ fn build_help_lines() -> Vec<String> {
         "  Click      Select items, tabs, actions".into(),
         "  Drag       Adjust parameter bars".into(),
         "  Scroll     Navigate lists".into(),
-    ]
+    ]);
+    lines
 }
 
 #[cfg(test)]
@@ -6246,9 +4978,43 @@ mod tests {
         assert!(!chain.iter().any(|(k, _)| *k == "l"));
 
         // A modulator's own params can be cross-modulated ('m') and learned ('l').
-        let m = TreeAddress::Modulator { inst: 0, index: 0 };
+        let m = TreeAddress::FreeModulator { index: 0 };
         let macts = action_bar_items(Some(&m), true);
         assert!(macts.iter().any(|(k, _)| *k == "m"), "modulate missing on modulator: {macts:?}");
         assert!(macts.iter().any(|(k, _)| *k == "l"), "learn missing on modulator: {macts:?}");
+    }
+
+    #[test]
+    fn modulator_target_depth_allows_negative() {
+        // A depth row must be editable across -1..1 so modulation can invert.
+        let m = ModulatorSlot {
+            node: crate::app::model::NodeId(0),
+            source: ModSourceSlot::Lfo {
+                waveform: crate::plugin::chain::LfoWaveform::Sine,
+                rate: 1.0,
+                retrigger: false,
+                fade: 0.0,
+                sync: 0,
+            },
+            targets: vec![ModTargetSlot {
+                edge: crate::app::model::EdgeId(0),
+                param_name: "cutoff".into(),
+                aim: crate::app::model::Driven::Param { plugin: crate::app::model::NodeId(1), index: 0 },
+                depth: -0.5,
+                param_min: 0.0,
+                param_max: 1.0,
+                effective: None,
+            }],
+            output: None,
+            position: None,
+            ear: None,
+        };
+        // LFO rows: 0=Type, 1=Waveform, 2=Rate, 3=Sync, 4=Retrigger, 5=Fade, 6=Targets separator, 7=first depth.
+        assert_eq!(modulator_param_range(&m, 5), Some((0.0, 5.0)), "the fade is a number too");
+        assert_eq!(modulator_param_range(&m, 3), None, "the note length is a choice");
+        assert!(modulator_edit_state(&m, 3).is_none(), "and nothing to type");
+        assert_eq!(modulator_param_range(&m, 7), Some((-1.0, 1.0)));
+        let edit = modulator_edit_state(&m, 7).expect("depth row is editable");
+        assert_eq!((edit.param_min, edit.param_max), (-1.0, 1.0));
     }
 }

@@ -1,0 +1,58 @@
+# Example: a sidechain, by the two inputs of a Math effect. A pad (a saw, three oscillators for each
+# note) goes through a Math effect in its own chain, in its `follow` mode (the Pump preset): the pad
+# is its input A, and the Math turns it down by how loud its input B is. B has a cable from a second
+# lane, a ghost kick: a sine two octaves under the key whose volume a step sequencer opens on each
+# beat (the sixteen steps are sixteenth notes, a step of 1 every fourth: four to the floor; a key
+# starts the pattern from its first step, and it goes by the tempo: change it with `b`). The kick has
+# no way out of its own (`route = "none"`): it is not heard, and what is heard is what it does to the
+# pad. Every beat it ducks the pad, and the pad comes back as the Math's follower lets go (its release
+# is 0.2 s): the pumping of a dance track. The follower turns the pad down by how loud B is, and a
+# full duck wants B at full scale: the kick's volume and the cable's level are both turned up for it
+# (2 each; a single key then puts B at full scale). Give the kick its way out (`w` in the terminal, or
+# draw a cable from it to the master, and turn its volume down) to hear it too. Take the cable to B
+# out (the cross on it, on the page) and B is the effect's own carrier, a sine of a little over 1 Hz
+# (the Pump preset's `pitch` is -36, a note far below hearing), which the follower follows as well: the
+# pad goes on pumping, smoothly and at a pace of its own, with no kick. Hold a chord.
+
+bpm = 120.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.4
+
+[instrument.params]
+waveform = 3.0 # saw
+unison = 2.0   # three oscillators for each note (a place in the list: 0 is one)
+attack = 0.05
+release = 0.3
+
+[[instrument.effect]]
+plugin = "builtin:math"
+preset = "Pump"
+mix = 1.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 2.0
+transpose = -24
+route = "none"
+
+[instrument.params]
+waveform = 0.0 # sine
+volume = 0.0   # the sequencer opens it
+
+[[instrument.modulator]]
+type = "steps"
+steps = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+sync = "1/16"
+retrigger = true
+
+[[instrument.modulator.target]]
+param = "volume"
+depth = 1.0
+
+# B (`.side`) of the pad's Math effect: the kick.
+[[cable]]
+from = "instrument[1]"
+to = "instrument[0].effect[0].side"
+gain = 2.0

@@ -1,0 +1,35 @@
+# An effect with a second input (step 95): lane 0's saw goes through a math effect, a ring, whose second input is a cable from lane 1's sine, a fifth above, whose own way out is cut so that it is
+# heard only through the ring: the sum and the difference of the two pitches, and neither of them. A group has a math effect on its bus too, a fold, with nothing patched at its second input: its
+# own carrier moves the fold (the lane in the group is the third).
+[[group]]
+volume = 0.8
+[[group.effect]]
+plugin = "builtin:math"
+mix = 1.0
+params = { "mode" = 2.0, "amount" = 0.6, "pitch" = 0.0, "level" = 0.8 }
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+params = { "waveform" = 3.0 }
+[[instrument.effect]]
+plugin = "builtin:math"
+mix = 1.0
+params = { "mode" = 0.0, "level" = 0.9 }
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+transpose = 7
+route = "none"
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.25
+transpose = -12
+group = 0
+params = { "waveform" = 1.0 }
+
+[[cable]]
+from = "instrument[1]"
+to = "instrument[0].effect[0].side"

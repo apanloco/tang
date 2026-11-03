@@ -1,0 +1,16 @@
+/* What a modulator puts out, as a line that scrolls: the screen it is drawn on, with the past fading off the left edge. */
+.tang-livetrace {
+  position: relative;
+  height: 44px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--tang-surface-raised);
+}
+
+.tang-livetrace__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 40%);
+  mask-image: linear-gradient(to right, transparent, #000 40%);
+}

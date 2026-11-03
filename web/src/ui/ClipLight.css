@@ -1,0 +1,13 @@
+.tang-clip {
+  padding: 0 var(--tang-space-1);
+  border-radius: 3px;
+  font: 700 10px / 14px var(--tang-mono);
+  letter-spacing: 0.06em;
+  color: var(--tang-text-muted);
+  background: var(--tang-surface-raised);
+}
+
+.tang-clip[data-lit] {
+  color: #fff;
+  background: var(--tang-danger);
+}

@@ -1,0 +1,40 @@
+# Chain links that are cut, heard through their cables. Lane 0 (in the group "Pad") plays through a filter that its instrument does not feed (its feed is cut): a cable from the instrument
+# brings the sound in at 0.8, and the delay after the filter is fed by it as the stages of a chain are. The reverb on the group's bus is not fed by the sum of the bus either: what it is
+# given is a cable from the delay of lane 0, so that lane 0 is heard through the reverb and in no other way. Lane 1, in no group, plays as it is.
+[[group]]
+name = "Pad"
+
+[[group.effect]]
+plugin = "builtin:reverb"
+mix = 1.0
+feed = "none"
+
+[[instrument]]
+plugin = "builtin:osc"
+group = 0
+volume = 0.25
+[instrument.params]
+waveform = 3.0
+[[instrument.effect]]
+plugin = "builtin:filter"
+feed = "none"
+[[instrument.effect]]
+plugin = "builtin:delay"
+mix = 0.4
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.2
+transpose = 7
+[instrument.params]
+waveform = 2.0
+
+[[cable]]
+from = "instrument[0]"
+to = "instrument[0].effect[0]"
+gain = 0.8
+
+[[cable]]
+from = "instrument[0].effect[1]"
+to = "group[0].effect[0]"
+gain = 0.8

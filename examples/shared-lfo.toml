@@ -1,0 +1,54 @@
+# Example: one LFO on two lanes. The LFO is nobody's: it is in no lane (a top-level
+# `[[modulator]]`), it hears every key, and it has two cables, one to the cutoff of the filter of
+# each lane. A saw and a square an octave above it each go through a low-pass filter, and the
+# LFO opens the saw's as it shuts the square's (a depth of +0.2 and one of -0.2 on one wave), so
+# that the two take turns: a seesaw of bright and dull, two seconds a turn. A cable of a lane's
+# own modulator reaches that lane's chain only; a free one names the plugin it drives by its
+# place in the session, as the cables of audio name their ends: `instrument[1].effect[0]` is the
+# first effect of the second lane. Hold a chord (C3 E3 G3 is a good one).
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.2
+
+[instrument.params]
+waveform = 3.0 # saw
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+cutoff = 0.55
+resonance = 2.5
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.15
+transpose = 12
+
+[instrument.params]
+waveform = 2.0 # square
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+cutoff = 0.55
+resonance = 2.5
+
+[[modulator]]
+type = "lfo"
+waveform = "sine"
+rate = 0.5
+
+[[modulator.target]]
+to = "instrument[0].effect[0]"
+param = "cutoff"
+depth = 0.2
+
+[[modulator.target]]
+to = "instrument[1].effect[0]"
+param = "cutoff"
+depth = -0.2

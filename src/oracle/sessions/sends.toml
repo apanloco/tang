@@ -1,0 +1,31 @@
+# Two oscillators into one reverb, by audio cables: each lane goes to the mix as it is (a saw, and a square a fifth above it), and sends part of itself to the reverb on
+# the bus of a group that has no lane in it. The reverb is all wet, so it puts out its tail only: what is heard is the two oscillators and, under them, one room.
+[[group]]
+name = "Room"
+
+[[group.effect]]
+plugin = "builtin:reverb"
+mix = 1.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+[instrument.params]
+waveform = 3.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.25
+transpose = 7
+[instrument.params]
+waveform = 2.0
+
+[[cable]]
+from = "instrument[0]"
+to = "group[0].effect[0]"
+gain = 0.6
+
+[[cable]]
+from = "instrument[1]"
+to = "group[0].effect[0]"
+gain = 0.4

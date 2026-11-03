@@ -1,0 +1,30 @@
+# Example: a melody that makes itself. A random LFO (sample and hold: it holds one number for each
+# cycle) moves the oscillator's `detune` by up to an octave either way, a new number every eighth
+# note of the tempo, and the oscillator's `quantize` holds the detune to a scale counted from the
+# key that you play (here the minor pentatonic, which has no wrong notes): hold C and it plays
+# the notes of C minor pentatonic, hold F and it plays F minor pentatonic, with the rhythm of
+# the tempo. A key starts it again. The numbers are the same every time the session is loaded.
+# On the page, try the other scales in `quantize` (the panel of the oscillator, under Voice), put
+# a delay after it from the `fx` menu, or change the tempo in the bar.
+
+bpm = 120.0
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+
+[instrument.params]
+waveform = 1.0 # triangle
+quantize = 11.0 # a place in the list of scales: 0 is off, 11 is the minor pentatonic
+attack = 0.005
+release = 0.2
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "random"
+sync = "1/8"
+retrigger = true
+
+[[instrument.modulator.target]]
+param = "detune"
+depth = 0.25

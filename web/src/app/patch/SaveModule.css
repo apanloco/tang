@@ -1,0 +1,53 @@
+/* The field for the name of a module that opens under the button that saves a chain of effects: a small panel in the page, over the canvas, whose nodes and cables have z-indexes of their own. */
+.tang-module-name {
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+  box-sizing: border-box;
+  padding: var(--tang-space-1);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.45);
+}
+
+.tang-module-name__field {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 var(--tang-space-2);
+  border: 1px solid var(--tang-modulation);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+}
+
+.tang-module-name__field:focus-visible,
+.tang-module-name__button:focus-visible {
+  outline: 2px solid var(--tang-scale);
+  outline-offset: 1px;
+}
+
+.tang-module-name__button {
+  flex: none;
+  height: 24px;
+  padding: 0 var(--tang-space-2);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  font-size: var(--tang-text-small);
+  cursor: pointer;
+}
+
+.tang-module-name__button:hover:not(:disabled) {
+  border-color: var(--tang-modulation);
+}
+
+.tang-module-name__button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

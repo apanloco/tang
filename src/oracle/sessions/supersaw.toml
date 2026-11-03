@@ -1,0 +1,38 @@
+# Example: a supersaw. A saw with a unison of seven (each oscillator a few cents from
+# the next and spread across the speakers), through a low-pass filter that a slow LFO
+# opens and closes, and a reverb. Hold a chord. On the page, try the oscillator's
+# `unison`, `spread` and `width` (they are in its panel: pin them to put them on the node).
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.3
+
+[instrument.params]
+waveform = 3.0 # saw
+unison = 6.0   # a place in the list: 0 is one oscillator, 6 is seven
+spread = 0.35  # semitones from the note, the outer oscillators each way
+width = 0.9    # how far across the speakers
+attack = 0.02
+release = 0.5
+
+[[instrument.effect]]
+plugin = "builtin:filter"
+mix = 1.0
+
+[instrument.effect.params]
+cutoff = 0.65
+resonance = 1.2
+
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 0.25
+
+[[instrument.modulator]]
+type = "lfo"
+waveform = "sine"
+rate = 0.12
+
+[[instrument.modulator.target]]
+slot = 1
+param = "cutoff"
+depth = 0.2

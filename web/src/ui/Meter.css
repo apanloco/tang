@@ -1,0 +1,10 @@
+.tang-meter {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+}
+
+.tang-meter .tang-livebar {
+  flex: 1;
+  --bar: var(--tang-ok);
+}
