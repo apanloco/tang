@@ -28,6 +28,9 @@ pub trait Engine: Send {
     /// the plugins that come and go), so that the channel they are sent through does not fill up and the controller wait for room in it, and render nothing. The default is an engine that has nothing to take.
     fn idle(&mut self) {}
 
+    /// What the host says of time before a block (a plugin in a DAW, step 118): its tempo, if it gives one, and where it is in beats, if it is playing. The default is an engine that has no use for it.
+    fn set_host_time(&mut self, _bpm: Option<f32>, _beat: Option<f64>) {}
+
     /// What the lanes, the groups and the audio cables are, for the oracle to hold to the model (the ids that the engine has for them are the model's): `None` for an engine that has no such
     /// things to say.
     #[cfg(test)]
@@ -47,6 +50,10 @@ impl Engine for AudioGraph {
 
     fn idle(&mut self) {
         self.drain_commands();
+    }
+
+    fn set_host_time(&mut self, bpm: Option<f32>, beat: Option<f64>) {
+        AudioGraph::set_host_time(self, bpm, beat);
     }
 
     #[cfg(test)]
@@ -71,6 +78,10 @@ impl<E: Engine + ?Sized> Engine for Box<E> {
 
     fn idle(&mut self) {
         (**self).idle()
+    }
+
+    fn set_host_time(&mut self, bpm: Option<f32>, beat: Option<f64>) {
+        (**self).set_host_time(bpm, beat)
     }
 }
 
@@ -411,6 +422,11 @@ impl Renderer {
             channel[..len].copy_from_slice(&rendered[..len]);
             channel[len..].fill(0.0);
         }
+    }
+
+    /// What the host says of time before it asks for a block (`Engine::set_host_time`): its tempo, if it gives one, and where it is in beats, if it is playing.
+    pub(crate) fn set_host_time(&mut self, bpm: Option<f32>, beat: Option<f64>) {
+        self.graph.set_host_time(bpm, beat);
     }
 
     /// What the renderer does while nothing asks it for a block (`Engine::idle`): the notes that arrive are not kept for the block that comes later, and the engine takes what the controller has sent.

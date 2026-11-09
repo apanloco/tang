@@ -22,4 +22,9 @@ bpm: number,
  * The sample rate the engine runs at, in Hz: what a client needs to put a frequency on what it draws of the output
  * (the scope's spectrum). It does not change while the program runs.
  */
-sampleRate: number, piano: PianoMeta, };
+sampleRate: number, piano: PianoMeta, 
+/**
+ * Whether the tempo is the host's (step 118: a plugin in a DAW goes by the DAW's tempo, which `bpm` then is, and a person cannot set it from the page): a page shows it and does not ask to change it. Left out of
+ * the wire while it is false, so that what every client and every fixture of an earlier step has is as it was.
+ */
+hostTempo?: boolean, };

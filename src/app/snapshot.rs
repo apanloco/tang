@@ -48,6 +48,11 @@ pub struct Meta {
     /// (the scope's spectrum). It does not change while the program runs.
     pub sample_rate: f32,
     pub piano: PianoMeta,
+    /// Whether the tempo is the host's (step 118: a plugin in a DAW goes by the DAW's tempo, which `bpm` then is, and a person cannot set it from the page): a page shows it and does not ask to change it. Left out of
+    /// the wire while it is false, so that what every client and every fixture of an earlier step has is as it was.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "web", ts(as = "Option<bool>", optional))]
+    pub host_tempo: bool,
 }
 
 /// The Piano tab's scale and mode.
@@ -311,6 +316,7 @@ impl Controller {
                 bpm: self.model.bpm,
                 sample_rate: self.sample_rate,
                 piano: PianoMeta::new(self.piano_filter.scale(), matches!(self.piano_filter.mode(), PianoMode::Locked)),
+                host_tempo: self.host_tempo,
             },
             graph: self.model.graph(),
             telemetry: self.model.telemetry_layout(),
@@ -353,8 +359,21 @@ mod tests {
                 bpm: 120.0,
                 sample_rate: 48_000.0,
                 piano: PianoMeta { scale: "C major".to_string(), root: 0, kind: "major".to_string(), notes: vec![0, 2, 4, 5, 7, 9, 11], locked: false },
+                host_tempo: false,
             }
         );
+    }
+
+    #[test]
+    fn a_snapshot_says_that_the_tempo_is_the_hosts_when_it_is_and_says_nothing_of_it_when_it_is_not() {
+        let mut ctl = controller(GROUPS, None);
+        assert!(!ctl.snapshot().meta.host_tempo);
+        assert!(serde_json::to_value(ctl.snapshot()).unwrap()["meta"].get("hostTempo").is_none(), "a key that is false is not on the wire");
+        ctl.set_bpm_from_host(100.0).unwrap();
+        assert!(ctl.snapshot().meta.host_tempo);
+        assert_eq!(serde_json::to_value(ctl.snapshot()).unwrap()["meta"]["hostTempo"], json!(true));
+        let wire = json!({"dirty": false, "file": null, "bpm": 120.0, "sampleRate": 48000.0, "piano": {"scale": "C major", "root": 0, "kind": "major", "notes": [0, 2, 4, 5, 7, 9, 11], "locked": false}});
+        assert!(!serde_json::from_value::<Meta>(wire).unwrap().host_tempo, "a snapshot from before the step has no key, and is not the host's");
     }
 
     #[test]

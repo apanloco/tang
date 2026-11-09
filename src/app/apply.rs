@@ -593,6 +593,32 @@ impl Controller {
         Ok(Event::BpmSet { bpm })
     }
 
+    /// The tempo as a host says it (step 118: a plugin in a DAW goes by the DAW's tempo): in the model and in every client, as `SetBpm` does, with **no step of the history**, the session **not marked as changed** and **nothing for the
+    /// engine**: the audio thread has the host's tempo from the host's own block (`Engine::set_host_time`) at once, and a command from here would come after a newer one and put the old tempo back for a block. Held to the range of a
+    /// tempo; refused, with nothing changed, for a number that is not finite. From the first one the tempo is the host's (`host_tempo`), which is for whatever sets it again to put right.
+    pub fn set_bpm_from_host(&mut self, bpm: f32) -> Result<(), IntentError> {
+        if !bpm.is_finite() {
+            return Err(invalid(format!("{bpm} is not a tempo")));
+        }
+        let bpm = bpm.clamp(BPM_MIN, BPM_MAX);
+        let first = !self.host_tempo;
+        self.host_tempo = true;
+        if bpm != self.model.bpm {
+            self.model.bpm = bpm;
+            self.rev += 1;
+            let applied = Applied::of(self.rev, vec![Event::BpmSet { bpm }]);
+            self.publish(&applied);
+        }
+        // (The first tempo that a host says is told to the clients as the session that they are shown now, with the tempo that is the host's: no event says so.)
+        #[cfg(any(test, feature = "web"))]
+        if first {
+            self.resync();
+        }
+        #[cfg(not(any(test, feature = "web")))]
+        let _ = first;
+        Ok(())
+    }
+
     /// The position of the lane `node`, whose pattern an intent is about.
     fn lane_of_a_pattern(&self, node: NodeId) -> Result<usize, IntentError> {
         match self.model.locate(node).ok_or(IntentError::NotFound(node))? {
@@ -4824,6 +4850,70 @@ type = "steps"
 
     fn add(ctl: &mut Controller, parent: NodeId, kind: ModulatorKind) -> Result<Applied, IntentError> {
         ctl.apply(Intent::AddFreeModulator { kind, hears: Some(parent) })
+    }
+
+    #[test]
+    fn the_hosts_tempo_is_in_the_model_and_the_clients_and_is_no_step_of_the_history_no_change_of_the_session_and_nothing_for_the_engine() {
+        let (engine, mut ctl) = controller();
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = heard.clone();
+        ctl.subscribe(Box::new(move |applied: &Applied| sink.lock().unwrap().push(applied.clone())));
+        sent(&engine);
+        ctl.dirty = false;
+        let (history, rev) = (ctl.history_state(), ctl.rev);
+        assert!(!ctl.host_tempo, "a session that has heard of no host has its own tempo");
+
+        ctl.set_bpm_from_host(96.5).unwrap();
+        assert_eq!(ctl.model.bpm, 96.5, "the model has it");
+        assert!(ctl.host_tempo, "and from now on the tempo is the host's");
+        assert_eq!(heard.lock().unwrap().iter().flat_map(|applied| applied.events.clone()).collect::<Vec<_>>(), [Event::BpmSet { bpm: 96.5 }], "every client is told");
+        assert_eq!(ctl.rev, rev + 2, "a revision for the event, and one for the session that the clients are shown now, which says that the tempo is the host's");
+        assert!(sent(&engine).is_empty(), "the engine is told nothing: it has the host's tempo from the host's own block");
+        assert_eq!(ctl.history_state(), history, "no step of the history");
+        assert!(!ctl.dirty, "and no change of the session");
+
+        heard.lock().unwrap().clear();
+        ctl.set_bpm_from_host(96.5).unwrap();
+        assert!((ctl.rev, heard.lock().unwrap().len()) == (rev + 2, 0), "the tempo that it already is says nothing and uses no revision");
+        ctl.set_bpm_from_host(1000.0).unwrap();
+        assert_eq!(ctl.model.bpm, BPM_MAX, "held to the range of a tempo");
+        ctl.set_bpm_from_host(0.5).unwrap();
+        assert_eq!(ctl.model.bpm, BPM_MIN);
+        let rev = ctl.rev;
+        assert!(ctl.set_bpm_from_host(f32::NAN).is_err() && ctl.set_bpm_from_host(f32::INFINITY).is_err(), "a number that is not a tempo is refused");
+        assert_eq!((ctl.model.bpm, ctl.rev), (BPM_MIN, rev), "with nothing changed");
+    }
+
+    /// A sink that keeps what the tempo was said to be in each session that it was given whole.
+    struct Shown(std::sync::Arc<std::sync::Mutex<Vec<(bool, f32)>>>);
+
+    impl crate::app::subscribers::EventSink for Shown {
+        fn applied(&mut self, _applied: &Applied) {}
+
+        fn resync(&mut self, snapshot: &crate::app::snapshot::Snapshot) {
+            self.0.lock().unwrap().push((snapshot.meta.host_tempo, snapshot.meta.bpm));
+        }
+    }
+
+    #[test]
+    fn the_clients_are_shown_the_session_again_when_the_first_tempo_of_a_host_makes_the_tempo_the_hosts_and_not_again_for_the_ones_after_it() {
+        for (first, says_it) in [(96.5, "a tempo that is not the session's"), (120.0, "the tempo that the session has already")] {
+            let (_engine, mut ctl) = controller();
+            let shown = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            ctl.subscribe(Box::new(Shown(shown.clone())));
+            ctl.set_bpm_from_host(first).unwrap();
+            assert_eq!(*shown.lock().unwrap(), [(true, first)], "once, with the tempo that is the host's: {says_it}");
+            ctl.set_bpm_from_host(first + 10.0).unwrap();
+            ctl.set_bpm_from_host(first + 10.0).unwrap();
+            assert_eq!(shown.lock().unwrap().len(), 1, "a tempo that moves is an event (BpmSet), and no new session: {says_it}");
+        }
+    }
+
+    #[test]
+    fn a_refused_tempo_from_a_host_does_not_make_the_tempo_the_hosts() {
+        let (_engine, mut ctl) = controller();
+        assert!(ctl.set_bpm_from_host(f32::NAN).is_err());
+        assert!(!ctl.host_tempo);
     }
 
     #[test]

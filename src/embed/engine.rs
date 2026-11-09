@@ -12,6 +12,8 @@ use crate::audio::{MIDI_CHANNEL_CAPACITY, MidiEvent, Renderer};
 use crate::plugin::builtin::HostInput;
 use crate::source::Source;
 
+use super::params::HostParams;
+
 /// The source of what the host sends: the first MIDI device there is (`Source::device(0)`; the controller shows it as the device called `HOST_DEVICE`, and a lane hears it like any other source).
 pub(super) const HOST_SOURCE: Source = Source::device(0);
 
@@ -108,22 +110,42 @@ pub(super) fn spawn_idle(shared: Arc<Shared>, period: Duration) -> std::io::Resu
     })
 }
 
+/// What a host says of time in a block (step 118): its tempo, in beats a minute, if it gives one, and where it is in beats at the start of the block, if it is playing. What is not said is none.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Transport {
+    pub tempo: Option<f64>,
+    pub beat: Option<f64>,
+}
+
+impl Transport {
+    /// A host that says nothing of time.
+    pub const NONE: Transport = Transport { tempo: None, beat: None };
+}
+
 /// The audio thread's handle: what a plugin's `process` is. There is one for each activation, and it is not used from two threads at once.
 pub struct Audio {
     shared: Arc<Shared>,
+    /// Where the host's tempo is told to the session (`HostParams::host_says_tempo`).
+    params: Arc<HostParams>,
     /// The events of the block, as the engine has them (made once, so that a block asks the allocator for nothing unless a host sends more than the channel of notes holds).
     events: Vec<MidiEvent>,
 }
 
 impl Audio {
-    pub(super) fn new(shared: Arc<Shared>) -> Audio {
-        Audio { shared, events: Vec::with_capacity(MIDI_CHANNEL_CAPACITY) }
+    pub(super) fn new(shared: Arc<Shared>, params: Arc<HostParams>) -> Audio {
+        Audio { shared, params, events: Vec::with_capacity(MIDI_CHANNEL_CAPACITY) }
     }
 
     /// Render a block into `output`, a buffer for each channel whose length is the length of the block (the engine has two channels: a host that gives one has the left, one that gives more has the right again), with the MIDI of the block in `midi`, in order, and the
     /// audio that comes into the host's `process` in `input` (a buffer for each channel: none for a plugin that has no audio input, one is heard in both sides), which the audio inputs of the session play. A block that cannot be rendered (the renderer is busy for longer than a few
     /// microseconds, or the engine has panicked) is silence.
     pub fn process(&mut self, midi: &[HostMidi], input: &[&[f32]], output: &mut [&mut [f32]]) {
+        self.process_at(Transport::NONE, midi, input, output);
+    }
+
+    /// `process` for a host that says something of time (`Transport`): the tempo is the graph's from this block on, what follows the tempo goes by it, and an LFO or a step sequencer that follows the tempo and does not start again with a
+    /// note is at the place that the host's beat says (`AudioGraph::set_host_time`); the session is told the tempo, which is what its page shows.
+    pub fn process_at(&mut self, transport: Transport, midi: &[HostMidi], input: &[&[f32]], output: &mut [&mut [f32]]) {
         // (A block of no frames is not a block: the plugins inside are never given one, what the host sent with it has no frame to be at, and it takes no commands, so it is not counted either: the idle thread goes on taking what the controller sends.)
         if output.first().is_none_or(|channel| channel.is_empty()) {
             return;
@@ -134,10 +156,16 @@ impl Audio {
             [mono] => self.shared.input.put(mono, mono),
             [] => self.shared.input.clear(),
         }
+        if let Some(tempo) = transport.tempo {
+            self.params.host_says_tempo(tempo);
+        }
         self.events.clear();
         self.events.extend(midi.iter().map(|event| MidiEvent::from_source(HOST_SOURCE, u64::from(event.frame), event.bytes)));
         match self.shared.try_renderer() {
-            Some(mut renderer) => renderer.render_planar(&self.events, output),
+            Some(mut renderer) => {
+                renderer.set_host_time(transport.tempo.map(|tempo| tempo as f32), transport.beat);
+                renderer.render_planar(&self.events, output);
+            }
             None => {
                 for channel in output.iter_mut() {
                     channel.fill(0.0);
