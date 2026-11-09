@@ -256,6 +256,8 @@ pub struct Controller {
     pub session_path: Option<PathBuf>,
     /// The session differs from what was last saved.
     pub dirty: bool,
+    /// Whether the tempo is the host's (step 118): a plugin whose host has said a tempo goes by it, and `Bank::sync` puts it back when anything else sets it.
+    pub host_tempo: bool,
     /// How many intents have been applied (`Controller::apply`).
     pub rev: u64,
     /// The installed plugins, for the selector popups. Empty until
@@ -345,6 +347,7 @@ impl Controller {
             model,
             session_path,
             dirty: false,
+            host_tempo: false,
             cmd_tx,
             midi_tx,
             pattern_rx,

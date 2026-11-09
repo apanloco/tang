@@ -4,7 +4,9 @@
 
 use clack_extensions::params::{HostParams, HostParamsImplMainThread, HostParamsImplShared, ParamClearFlags, ParamInfoBuffer, ParamRescanFlags, PluginParams};
 use clack_extensions::state::{HostState, HostStateImpl, PluginState};
-use clack_host::events::event_types::{MidiEvent, ParamGestureBeginEvent, ParamGestureEndEvent, ParamModEvent, ParamValueEvent};
+use clack_host::events::event_types::{MidiEvent, ParamGestureBeginEvent, ParamGestureEndEvent, ParamModEvent, ParamValueEvent, TransportEvent, TransportFlags};
+use clack_host::events::{EventFlags, EventHeader};
+use clack_host::utils::{BeatTime, SecondsTime};
 use clack_host::factory::plugin::PluginFactory;
 use clack_host::prelude::*;
 use clack_host::process::StartedPluginAudioProcessor;
@@ -183,6 +185,27 @@ impl Rig {
         (left, right, said_of(&output_events))
     }
 
+    /// One block of an instrument with `midi` while the host says what it says of time (`transport`: see `time`), and what it played.
+    pub fn block_time(&mut self, midi: &[(u32, [u8; 3])], transport: &TransportEvent) -> (Vec<f32>, Vec<f32>) {
+        let mut input_events = EventBuffer::with_capacity(midi.len().max(1));
+        for &(time, bytes) in midi {
+            input_events.push(&MidiEvent::new(time, 0, bytes));
+        }
+        let mut output_events = EventBuffer::with_capacity(4);
+        let (mut left, mut right) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+        let mut ports = AudioPorts::with_capacity(2, 1);
+        let mut outputs = ports.with_output_buffers([AudioPortBuffer {
+            channels: AudioPortBufferType::f32_output_only([left.as_mut_slice(), right.as_mut_slice()].into_iter()),
+            latency: 0,
+        }]);
+        self.processor
+            .as_mut()
+            .expect("started")
+            .process(&InputAudioBuffers::empty(), &mut outputs, &input_events.as_input(), &mut output_events.as_output(), None, Some(transport))
+            .expect("the block is processed");
+        (left, right)
+    }
+
     /// The host sets the parameters without a block (`flush`, while the plugin is active and not processing), and what the plugin says of its parameters.
     pub fn flush_params(&mut self, params: &[Param]) -> Vec<Said> {
         let extension = self.instance.plugin_handle().get_extension::<PluginParams>().expect("the plugin has parameters");
@@ -317,6 +340,34 @@ pub fn switch_values(events: &EventBuffer) -> Vec<f64> {
             _ => None,
         })
         .collect()
+}
+
+/// What a host says of time in a block: its tempo, if it gives one, and where it is in beats, if it is playing (a host that plays says where; one that is stopped does not play).
+pub fn time(tempo: Option<f64>, beat: Option<f64>) -> TransportEvent {
+    let mut flags = TransportFlags::empty();
+    if tempo.is_some() {
+        flags |= TransportFlags::HAS_TEMPO;
+    }
+    if beat.is_some() {
+        flags |= TransportFlags::HAS_BEATS_TIMELINE | TransportFlags::IS_PLAYING;
+    }
+    let zero = BeatTime::from_float(0.0);
+    TransportEvent {
+        header: EventHeader::new_core(0, EventFlags::empty()),
+        flags,
+        song_pos_beats: BeatTime::from_float(beat.unwrap_or(0.0)),
+        song_pos_seconds: SecondsTime::from_float(0.0),
+        tempo: tempo.unwrap_or(0.0),
+        tempo_inc: 0.0,
+        loop_start_beats: zero,
+        loop_end_beats: zero,
+        loop_start_seconds: SecondsTime::from_float(0.0),
+        loop_end_seconds: SecondsTime::from_float(0.0),
+        bar_start: zero,
+        bar_number: 0,
+        time_signature_numerator: 4,
+        time_signature_denominator: 4,
+    }
 }
 
 /// What a host does to a parameter in a block: sets it, or modulates it by an amount.

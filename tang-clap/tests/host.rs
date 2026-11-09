@@ -202,6 +202,91 @@ fn the_hosts_modulation_is_added_to_what_is_played_and_the_value_that_was_set_st
     rig.stop();
 }
 
+/// The text of the session that the plugin would keep in the host's project.
+fn session_of(rig: &mut Rig) -> String {
+    String::from_utf8(rig.save()[9..].to_vec()).unwrap()
+}
+
+#[test]
+fn the_hosts_tempo_is_the_sessions_and_follows_it_when_it_moves() {
+    let bundle = bundle();
+    let mut rig = Rig::start(&bundle, instrument_id());
+    assert!(!session_of(&mut rig).contains("bpm"), "a new session has the tempo that every one has, and says none");
+    rig.block_time(&[], &time(Some(93.0), None));
+    wait_until("the session to have the host's tempo", || session_of(&mut rig).contains("bpm = 93"));
+    rig.block_time(&[], &time(Some(133.5), Some(4.0)));
+    wait_until("the session to follow the host's tempo", || session_of(&mut rig).contains("bpm = 133.5"));
+    assert_eq!(rig.dirty_marks(), 0, "the host is not told that its project has changed: its own tempo is not an edit");
+    // A host that says no tempo leaves the one that the session has.
+    rig.block_time(&[], &time(None, None));
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    assert!(session_of(&mut rig).contains("bpm = 133.5"));
+    rig.stop();
+}
+
+/// A session with a square LFO, a cycle of which is a quarter note (a beat) and which does not start again with a note, that takes the oscillator's volume to a half in the half of the cycle that it is high in.
+const SYNCED: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n\n[[instrument.modulator]]\ntype = \"lfo\"\nwaveform = \"square\"\nsync = \"1/4\"\n\n[[instrument.modulator.target]]\nparam = \"volume\"\ndepth = -0.5\n\n[master]\nlimiter = false\n";
+
+/// How loud the instrument is when the host is at `beat`: the blocks go on at that beat until the sound has settled (the oscillator takes a moment to go to a volume), and the loudest sample of the last is what it is.
+fn loudness_at(rig: &mut Rig, tempo: f64, beat: f64) -> f32 {
+    let mut loudest = 0.0f32;
+    for _ in 0..12 {
+        let (left, right) = rig.block_time(&[], &time(Some(tempo), Some(beat)));
+        loudest = left.iter().chain(&right).fold(0.0f32, |loudest, sample| loudest.max(sample.abs()));
+    }
+    loudest
+}
+
+#[test]
+fn an_lfo_that_follows_the_tempo_is_where_the_hosts_beat_says_in_what_is_heard_whatever_the_plugin_did_before() {
+    let bundle = bundle();
+    let mut rig = Rig::start(&bundle, instrument_id());
+    rig.load(&state_of(SYNCED)).expect("the session is taken");
+    rig.block_time(&[(0, NOTE_ON)], &time(Some(120.0), Some(0.0)));
+    // The first and the second half of a cycle (a beat) are the loud and the quiet one, or the other way round: they are not alike.
+    let first = loudness_at(&mut rig, 120.0, 0.25);
+    let second = loudness_at(&mut rig, 120.0, 0.75);
+    let (loud, quiet) = (first.max(second), first.min(second));
+    assert!(loud > 0.05 && quiet < loud * 0.7, "a half of the cycle takes the volume down: {first} and {second}");
+    // The same places a beat, and many beats, later are the same, and the host that goes back gets what it got before.
+    assert!((loudness_at(&mut rig, 120.0, 1.25) - first).abs() < loud * 0.02, "a beat later: the same half");
+    assert!((loudness_at(&mut rig, 120.0, 1.75) - second).abs() < loud * 0.02);
+    assert!((loudness_at(&mut rig, 120.0, 100.25) - first).abs() < loud * 0.02, "a hundred beats on");
+    assert!((loudness_at(&mut rig, 120.0, 0.25) - first).abs() < loud * 0.02, "and back");
+    // At another tempo a beat is as long and is the same cycle: the beat says where, and the tempo how fast it would go.
+    assert!((loudness_at(&mut rig, 77.0, 0.75) - second).abs() < loud * 0.02);
+    rig.stop();
+}
+
+/// How many times the instrument's volume goes from the loud half to the quiet half or back in `blocks` blocks (the first ones are left out: the note begins) while the host says a tempo and no beat, as a host that is not playing does:
+/// an LFO that follows the tempo and goes by itself goes round as fast as the tempo makes it.
+fn turns_of_the_volume(rig: &mut Rig, tempo: f64, blocks: usize) -> usize {
+    rig.block_time(&[(0, NOTE_ON)], &time(Some(tempo), None));
+    let levels: Vec<f32> = (0..blocks)
+        .map(|_| {
+            let (left, right) = rig.block_time(&[], &time(Some(tempo), None));
+            left.iter().chain(&right).fold(0.0f32, |loudest, sample| loudest.max(sample.abs()))
+        })
+        .collect();
+    let top = levels.iter().copied().fold(0.0f32, f32::max);
+    let loud: Vec<bool> = levels.iter().skip(20).map(|level| *level > top * 0.75).collect();
+    loud.windows(2).filter(|pair| pair[0] != pair[1]).count()
+}
+
+#[test]
+fn the_hosts_tempo_alone_is_the_tempo_that_an_lfo_that_follows_it_goes_by_when_the_host_does_not_play() {
+    let bundle = bundle();
+    // A square LFO that goes round in a thirty-second note: 8 times a second at 60 beats a minute and 32 at 240.
+    let fast = SYNCED.replace("1/4", "1/32");
+    let mut rig = Rig::start(&bundle, instrument_id());
+    rig.load(&state_of(&fast)).expect("the session is taken");
+    let slow = turns_of_the_volume(&mut rig, 60.0, 140);
+    let quick = turns_of_the_volume(&mut rig, 240.0, 140);
+    assert!(slow >= 4, "it goes round at 60 beats a minute: {slow} turns");
+    assert!(quick > slow * 2, "and at four times the tempo it goes round about four times as fast: {quick} turns against {slow}");
+    rig.stop();
+}
+
 #[test]
 fn a_value_or_a_modulation_for_a_parameter_that_is_not_in_the_bank_is_left_alone() {
     let bundle = bundle();

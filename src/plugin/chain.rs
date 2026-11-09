@@ -805,8 +805,19 @@ impl Modulator {
         }
     }
 
-    /// Advance the modulator by one buffer, at `bpm` beats a minute. For envelopes, processes MIDI note events.
+    /// `tick_at` with no host: what a test of a modulator that is on its own has.
+    #[cfg(test)]
     fn tick(&mut self, buffer_size: usize, midi_events: &[(u64, [u8; 3])], bpm: f32) {
+        self.tick_at(buffer_size, midi_events, bpm, None);
+    }
+
+    /// Advance the modulator by one buffer, at `bpm` beats a minute. For envelopes, processes MIDI note events. `beat` is where the host is, in beats, at the start of the buffer, while it plays (a plugin in a DAW, step 118:
+    /// `AudioGraph::set_host_time`): an LFO or a step sequencer that follows the tempo and does not start again with a note is **where the beat says** and not where the last buffer left it, so that it begins its cycle on the
+    /// host's beat, goes along when the host jumps or loops, and a random wave draws the number that it drew the last time that this beat came. One that starts again with a note (`retrigger`), and one that does not follow the
+    /// tempo, is as it was.
+    fn tick_at(&mut self, buffer_size: usize, midi_events: &[(u64, [u8; 3])], bpm: f32, beat: Option<f64>) {
+        // (Where the host is at the end of the buffer, which is where the modulator is put: it puts out what it is at then, as it does when it goes on by itself.)
+        let at_end = beat.map(|start| start + f64::from(buffer_size as u32) / f64::from(self.sample_rate) * f64::from(bpm) / 60.0);
         match &mut self.source {
             ModSource::Lfo { waveform, rate, phase, retrigger, fade, sync, age } => {
                 // A note (a note-on with a velocity, on any channel: the lane's or a member's, as the step sequencer's) starts the fade again, and the wave too if it retriggers.
@@ -816,7 +827,14 @@ impl Modulator {
                 } else {
                     *age += buffer_size as f32 / self.sample_rate;
                 }
-                if note && *retrigger {
+                // The cycles that the host's beat has made of the length of a cycle: the phase is the part of a cycle, the cycle is the whole of them.
+                let locked = at_end.filter(|_| *sync > 0.0 && !*retrigger).map(|end| end / f64::from(*sync));
+                if let Some(cycles) = locked {
+                    let part = cycles.rem_euclid(1.0) as f32;
+                    // (A part that rounds up to a whole one is the start of the next cycle.)
+                    *phase = if part >= 1.0 { 0.0 } else { part };
+                    self.cycle = cycles.floor() as i64 as u32;
+                } else if note && *retrigger {
                     // The start of the wave, at the start of a cycle of its own: a random wave takes its next number.
                     *phase = 0.0;
                     self.cycle = self.cycle.wrapping_add(1);
@@ -931,7 +949,13 @@ impl Modulator {
             ModSource::Macro { value } => self.last_output = *value,
             ModSource::Steps { values, length, rate, glide, retrigger, sync, position } => {
                 let length = (*length).clamp(1, MAX_STEPS);
-                if *retrigger && midi_events.iter().any(|&(_frame, bytes)| note_on_of(bytes).is_some()) {
+                // The steps that the host's beat has made of the length of a step: the place in the cycle of steps is the rest of their number by the length.
+                let locked = at_end.filter(|_| *sync > 0.0 && !*retrigger).map(|end| end / f64::from(*sync));
+                if let Some(steps) = locked {
+                    let place = steps.rem_euclid(length as f64) as f32;
+                    // (A place that rounds up to the end is the first step.)
+                    *position = if place >= length as f32 { 0.0 } else { place };
+                } else if *retrigger && midi_events.iter().any(|&(_frame, bytes)| note_on_of(bytes).is_some()) {
                     // A note puts it at the first step, which this buffer puts out.
                     *position = 0.0;
                 } else {
@@ -3447,6 +3471,8 @@ pub struct AudioGraph {
     modulator_seeds: u32,
     /// The tempo, in beats a minute: what the modulators that follow it go by (`SetGlobalBpm`).
     bpm: f32,
+    /// Where the host is, in beats, at the start of the block that is rendered, while it plays (`set_host_time`): none for a program that is not in a host, and for one that is stopped or does not say.
+    host_beat: Option<f64>,
 }
 
 impl AudioGraph {
@@ -3480,7 +3506,17 @@ impl AudioGraph {
             master: Master::new(),
             modulator_seeds: 0,
             bpm: DEFAULT_BPM,
+            host_beat: None,
         }
+    }
+
+    /// What the host says of time before it asks for a block (a plugin in a DAW, step 118): its tempo, if it gives one (it is the graph's, as `SetGlobalBpm` makes it, from this block on, with none of the controller's wait), and
+    /// where it is in beats, if it is playing. A tempo that is not a finite number above 0 and a beat that is not finite are left out. Called for every block: what is not said is not there.
+    pub fn set_host_time(&mut self, bpm: Option<f32>, beat: Option<f64>) {
+        if let Some(bpm) = bpm.filter(|bpm| bpm.is_finite() && *bpm > 0.0) {
+            self.bpm = bpm;
+        }
+        self.host_beat = beat.filter(|beat| beat.is_finite());
     }
 
     /// The seed of the next modulator to come in: each has its own, so that two random LFOs do not draw the same numbers, and a graph that is made
@@ -4606,7 +4642,7 @@ impl AudioGraph {
                         }
                         (None, None) => midi_events.all(),
                     };
-                    m.tick(frames, heard, self.bpm);
+                    m.tick_at(frames, heard, self.bpm, self.host_beat);
                 }
                 apply_cross_mod(&mut self.free_modulators, &mut self.free_cross_mod_scratch, self.telemetry.as_deref());
                 if let Some(telemetry) = &self.telemetry {
@@ -8159,6 +8195,152 @@ mod tests {
         }
         assert!((rig.read(position) - 2.4).abs() < 1e-4, "{}", rig.read(position));
         assert_eq!(rig.read(output), 1.0, "the third step");
+    }
+
+    /// Where an LFO is in its cycle now, and a step sequencer in its steps.
+    fn place_of(m: &Modulator) -> f32 {
+        match &m.source {
+            ModSource::Lfo { phase, .. } => *phase,
+            ModSource::Steps { position, .. } => *position,
+            other => panic!("{other:?} has no place"),
+        }
+    }
+
+    /// The beats that a buffer of `FRAMES` frames at 48 kHz is long at `bpm`.
+    fn beats_of_a_buffer(bpm: f64) -> f64 {
+        FRAMES as f64 / 48000.0 * bpm / 60.0
+    }
+
+    #[test]
+    fn an_lfo_that_follows_the_tempo_is_where_the_hosts_beat_says_at_the_end_of_the_buffer_whatever_it_did_before() {
+        let end = 0.25 + beats_of_a_buffer(120.0);
+        let expected = LfoWaveform::Saw.eval_cycle(end.rem_euclid(1.0) as f32, 5, 0);
+        let mut fresh = Modulator::new(lfo(LfoWaveform::Saw, 7.0).with_sync(1.0), 48000.0).with_seed(5);
+        fresh.tick_at(FRAMES, &[], 120.0, Some(0.25));
+        assert_eq!(fresh.last_output, expected, "a beat is a cycle: a quarter of a beat is a quarter of a cycle");
+        assert!((place_of(&fresh) as f64 - end.rem_euclid(1.0)).abs() < 1e-6);
+        // One that has gone about by itself, and has been somewhere else in the song, is at the same place when the host is.
+        let mut travelled = Modulator::new(lfo(LfoWaveform::Saw, 7.0).with_sync(1.0), 48000.0).with_seed(5);
+        for _ in 0..30 {
+            travelled.tick_at(FRAMES, &[], 120.0, None);
+        }
+        travelled.tick_at(FRAMES, &[], 120.0, Some(100.7));
+        travelled.tick_at(FRAMES, &[], 120.0, Some(0.25));
+        assert_eq!(travelled.last_output, expected, "the host jumped back: so does the LFO");
+        // The cycle is the length of a cycle in beats: two beats to a cycle is half the phase.
+        let mut slow = Modulator::new(lfo(LfoWaveform::Saw, 7.0).with_sync(2.0), 48000.0).with_seed(5);
+        slow.tick_at(FRAMES, &[], 120.0, Some(1.0));
+        assert!((place_of(&slow) as f64 - (1.0 + beats_of_a_buffer(120.0)) / 2.0).abs() < 1e-6, "{}", place_of(&slow));
+    }
+
+    #[test]
+    fn a_random_lfo_that_follows_the_hosts_beat_draws_the_number_of_the_cycle_that_the_beat_is_in() {
+        let mut m = Modulator::new(lfo(LfoWaveform::Random, 1.0).with_sync(1.0), 48000.0).with_seed(5);
+        m.tick_at(FRAMES, &[], 120.0, Some(3.5));
+        assert_eq!(m.last_output, noise(5, 3), "the fourth beat from the start: the cycle that is numbered 3");
+        m.tick_at(FRAMES, &[], 120.0, Some(3.7));
+        assert_eq!(m.last_output, noise(5, 3), "and it holds the number while the beat is in that cycle");
+        m.tick_at(FRAMES, &[], 120.0, Some(4.1));
+        assert_eq!(m.last_output, noise(5, 4), "then the next");
+        m.tick_at(FRAMES, &[], 120.0, Some(3.5));
+        assert_eq!(m.last_output, noise(5, 3), "and the host that comes back to a beat is given the number that it was given before");
+        // (A beat before the start, as a count-in has, is a cycle before the first: a number all the same, and not a panic.)
+        m.tick_at(FRAMES, &[], 120.0, Some(-2.5));
+        assert_eq!(m.last_output, noise(5, (-3i64) as u32));
+    }
+
+    #[test]
+    fn an_lfo_that_starts_again_with_a_note_and_one_that_does_not_follow_the_tempo_are_not_put_where_the_beat_is() {
+        // A note starts it at the start of its wave, and between notes it goes on from there at the tempo's rate, whatever beat the host is at.
+        let mut keyed = Modulator::new(lfo(LfoWaveform::Saw, 1.0).with_sync(1.0).with_key(true, 0.0), 48000.0).with_seed(5);
+        keyed.tick_at(FRAMES, &[note_on(60)], 120.0, Some(0.25));
+        assert_eq!(place_of(&keyed), 0.0, "the note started it");
+        keyed.tick_at(FRAMES, &[], 120.0, Some(0.9));
+        assert!((place_of(&keyed) as f64 - beats_of_a_buffer(120.0)).abs() < 1e-6, "it went on by itself: {}", place_of(&keyed));
+        // One that has its own rate goes by it.
+        let mut free = Modulator::new(lfo(LfoWaveform::Saw, 4.0), 48000.0).with_seed(5);
+        free.tick_at(FRAMES, &[], 120.0, Some(0.9));
+        assert!((place_of(&free) - 4.0 * FRAMES as f32 / 48000.0).abs() < 1e-6, "{}", place_of(&free));
+    }
+
+    #[test]
+    fn a_step_sequencer_that_follows_the_tempo_and_does_not_start_again_with_a_note_is_at_the_step_that_the_beat_says() {
+        // A sixteenth note is a step: a quarter of a beat. Four steps go round in one beat.
+        let mut m = Modulator::new(steps(&[0.5, -0.25, 1.0, 0.75], 4, 1.0, 0.0, false).with_sync(0.25), 48000.0);
+        m.tick_at(FRAMES, &[], 120.0, Some(2.6));
+        let expected = ((2.6 + beats_of_a_buffer(120.0)) / 0.25).rem_euclid(4.0);
+        assert!((place_of(&m) as f64 - expected).abs() < 1e-4, "{} for {expected}", place_of(&m));
+        assert_eq!(m.last_output, [0.5, -0.25, 1.0, 0.75][expected as usize], "and puts out the step that it is on");
+        // The host that jumps takes it along.
+        m.tick_at(FRAMES, &[], 120.0, Some(0.0));
+        assert_eq!(place_of(&m) as f64, (beats_of_a_buffer(120.0) / 0.25).rem_euclid(4.0) as f32 as f64);
+        // One that starts again with a note goes by itself, from the first step.
+        let mut keyed = Modulator::new(steps(&[0.5, -0.25, 1.0, 0.75], 4, 1.0, 0.0, true).with_sync(0.25), 48000.0);
+        keyed.tick_at(FRAMES, &[note_on(60)], 120.0, Some(2.6));
+        assert_eq!(place_of(&keyed), 0.0);
+        keyed.tick_at(FRAMES, &[], 120.0, Some(2.6));
+        assert!((place_of(&keyed) as f64 - beats_of_a_buffer(120.0) / 0.25).abs() < 1e-4, "{}", place_of(&keyed));
+        // One that has a rate of its own goes by it.
+        let mut own = Modulator::new(steps(&[0.5, -0.25, 1.0, 0.75], 4, 8.0, 0.0, false), 48000.0);
+        own.tick_at(FRAMES, &[], 120.0, Some(2.6));
+        assert!((place_of(&own) - 8.0 * FRAMES as f32 / 48000.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_beat_before_the_start_of_the_song_is_a_place_in_the_cycle_all_the_same() {
+        // A host that counts in plays from a beat that is below 0: the place is counted back from the end of the cycle, and is never below 0.
+        let end = -0.5 + beats_of_a_buffer(120.0);
+        let mut wave = Modulator::new(lfo(LfoWaveform::Saw, 1.0).with_sync(1.0), 48000.0);
+        wave.tick_at(FRAMES, &[], 120.0, Some(-0.5));
+        assert!((place_of(&wave) as f64 - end.rem_euclid(1.0)).abs() < 1e-6, "{} for {}", place_of(&wave), end.rem_euclid(1.0));
+        let mut sequence = Modulator::new(steps(&[0.5, -0.25, 1.0, 0.75], 4, 1.0, 0.0, false).with_sync(0.25), 48000.0);
+        sequence.tick_at(FRAMES, &[], 120.0, Some(-0.5));
+        let expected = (end / 0.25).rem_euclid(4.0);
+        assert!((place_of(&sequence) as f64 - expected).abs() < 1e-4, "{} for {expected}", place_of(&sequence));
+        assert!(place_of(&sequence) >= 0.0 && sequence.last_output == [0.5, -0.25, 1.0, 0.75][expected as usize]);
+    }
+
+    #[test]
+    fn a_place_that_the_beat_rounds_up_to_a_whole_cycle_or_to_the_end_of_the_steps_is_the_start_of_the_next() {
+        // The beat is a hair short of the end of the first cycle at the end of the buffer: in the 32-bit number that a phase is, it is the whole of it, and a phase of 1 is not one.
+        let mut wave = Modulator::new(lfo(LfoWaveform::Saw, 1.0).with_sync(1.0), 48000.0);
+        wave.tick_at(FRAMES, &[], 120.0, Some(1.0 - beats_of_a_buffer(120.0) - 1e-12));
+        assert_eq!(place_of(&wave), 0.0);
+        let mut sequence = Modulator::new(steps(&[0.5, -0.25], 2, 1.0, 0.0, false).with_sync(1.0), 48000.0);
+        sequence.tick_at(FRAMES, &[], 120.0, Some(2.0 - beats_of_a_buffer(120.0) - 1e-12));
+        assert_eq!(place_of(&sequence), 0.0, "and so is the end of the steps: it is the first");
+        assert_eq!(sequence.last_output, 0.5);
+    }
+
+    #[test]
+    fn the_host_says_its_tempo_and_where_it_is_and_the_graph_goes_by_them_from_the_next_block_and_what_it_does_not_say_is_not_there() {
+        let mut rig = Rig::new();
+        rig.lane_modulator(0, lfo(LfoWaveform::Saw, 1.0).with_sync(1.0));
+        let phase = |rig: &Rig| place_of(&rig.graph.free_modulators[0]);
+        // The tempo is the graph's at once (a command would have waited for the block after it), and without a beat the LFO goes by itself at it: 60 beats a minute is a cycle a second.
+        rig.graph.set_host_time(Some(60.0), None);
+        for _ in 0..75 {
+            rig.process(&[]);
+        }
+        assert!((phase(&rig) - 0.1).abs() < 1e-4, "{}", phase(&rig));
+        // The host plays: the LFO is where its beat is, whatever it did.
+        rig.graph.set_host_time(Some(120.0), Some(8.25));
+        rig.process(&[]);
+        assert!((phase(&rig) as f64 - (0.25 + beats_of_a_buffer(120.0))).abs() < 1e-6, "{}", phase(&rig));
+        // The host stops (it says no beat) and is not asked again: it goes by itself from there, at the tempo that it said last.
+        rig.graph.set_host_time(None, None);
+        let before = phase(&rig);
+        rig.process(&[]);
+        assert!(((phase(&rig) - before).rem_euclid(1.0) as f64 - beats_of_a_buffer(120.0)).abs() < 1e-5);
+        // A tempo that is not one, and a beat that is not one, are not heard.
+        rig.graph.set_host_time(Some(f32::NAN), Some(f64::NAN));
+        assert_eq!((rig.graph.bpm, rig.graph.host_beat), (120.0, None));
+        rig.graph.set_host_time(Some(0.0), Some(f64::INFINITY));
+        assert_eq!((rig.graph.bpm, rig.graph.host_beat), (120.0, None));
+        rig.graph.set_host_time(Some(-90.0), None);
+        assert_eq!(rig.graph.bpm, 120.0);
+        rig.graph.set_host_time(Some(f32::INFINITY), None);
+        assert_eq!(rig.graph.bpm, 120.0, "and a tempo that is too fast to be one is not heard either");
     }
 
     #[test]

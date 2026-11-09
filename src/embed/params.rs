@@ -76,6 +76,8 @@ pub struct HostParams {
     modulation: [Cell; SLOTS],
     /// The value that the page, or anything else than the host, changed each macro to last.
     to_host: [Cell; SLOTS],
+    /// The tempo that the host said last, in beats a minute (step 118); its sequence is 0 until it has said one.
+    tempo: Cell,
     /// The value of each macro as the controller's thread has it (the bits of an `f32`): what the host is told when it asks.
     now: [AtomicU32; SLOTS],
     info: Mutex<[SlotInfo; SLOTS]>,
@@ -93,6 +95,7 @@ impl HostParams {
             from_host: Default::default(),
             modulation: Default::default(),
             to_host: Default::default(),
+            tempo: Cell::default(),
             now: Default::default(),
             info: Mutex::new(std::array::from_fn(|_| SlotInfo::default())),
             rescan: AtomicU8::new(0),
@@ -114,6 +117,19 @@ impl HostParams {
         if let (Some(cell), true) = (self.modulation.get(slot), amount.is_finite()) {
             cell.store(amount.clamp(-1.0, 1.0) as f32);
             let _ = self.bell.try_send(());
+        }
+    }
+
+    /// The host says its tempo, in beats a minute (a number that is not finite and one that is not above 0 are left out): it is for the audio thread, in every block that has a tempo, and it writes and rings the bell only when the tempo
+    /// is not what it was, so that a host that holds one tempo costs nothing. The session takes it (`Bank::sync`: the tempo is the host's from then on); a bank that is made later, for another session, takes the one that is here.
+    pub fn host_says_tempo(&self, bpm: f64) {
+        if bpm.is_finite() && bpm > 0.0 {
+            let bpm = bpm as f32;
+            // (A tempo above 0 is never the 0 that a cell that has been written to by no one holds, so that the first tempo is always a change.)
+            if self.tempo.load().1 != bpm {
+                self.tempo.store(bpm);
+                let _ = self.bell.try_send(());
+            }
         }
     }
 
@@ -186,6 +202,12 @@ impl Bank {
     /// Bring the session and the host together: the slots as the session has its macros (and the host asked to read them again if they are not what it was told), what the host set taken into the session (a value as the change of the macro
     /// that a knob makes, a modulation as what the engine plays it as, with the value that was set kept), and what the page changed told to the host.
     pub(super) fn sync(&mut self, ctl: &mut Controller) {
+        // The host's tempo is the session's from the first that it says: it is put back where a person's edit, or anything else, has moved it.
+        let (sequence, tempo) = self.params.tempo.load();
+        if sequence != 0 {
+            let _ = ctl.set_bpm_from_host(tempo);
+        }
+
         let macros = ctl.macros(SLOTS);
         let mut rescan = 0;
 
@@ -378,6 +400,57 @@ mod tests {
         params.host_sets(SLOTS, 0.5);
         params.host_modulates(SLOTS, 0.5);
         assert_eq!(ring.len(), 0, "what is not set rings nothing");
+    }
+
+    #[test]
+    fn the_hosts_tempo_rings_the_bell_when_it_changes_and_not_when_it_does_not_and_a_tempo_that_is_not_one_is_left_out() {
+        let params = HostParams::new();
+        let ring = params.ring();
+        params.host_says_tempo(120.0);
+        assert_eq!((ring.len(), params.tempo.load()), (1, (1, 120.0)), "the first tempo rings it");
+        ring.try_recv().unwrap();
+        params.host_says_tempo(120.0);
+        assert_eq!((ring.len(), params.tempo.load().0), (0, 1), "a host that holds one tempo says nothing in every block");
+        params.host_says_tempo(121.5);
+        assert_eq!((ring.len(), params.tempo.load()), (1, (2, 121.5)));
+        ring.try_recv().unwrap();
+        for not_a_tempo in [f64::NAN, f64::INFINITY, 0.0, -90.0] {
+            params.host_says_tempo(not_a_tempo);
+        }
+        assert_eq!((ring.len(), params.tempo.load()), (0, (2, 121.5)), "what is not a tempo is not said");
+    }
+
+    #[test]
+    fn the_hosts_tempo_is_the_sessions_from_the_first_that_it_says_and_a_tempo_that_something_else_sets_does_not_last() {
+        let (engine, mut ctl, params, mut bank, _woken) = rig(SESSION);
+        bank.sync(&mut ctl);
+        assert!(!ctl.host_tempo, "a host that has said no tempo leaves the session its own");
+        let (history, dirty) = (ctl.history_state(), ctl.dirty);
+        params.host_says_tempo(93.0);
+        engine.cmd_rx.try_iter().for_each(drop);
+        bank.sync(&mut ctl);
+        assert_eq!((ctl.model.bpm, ctl.host_tempo), (93.0, true));
+        assert_eq!((ctl.history_state(), ctl.dirty), (history, dirty), "no step of the history, and no mark on the session");
+        assert!(sent(&engine).is_empty(), "and nothing for the engine, which has it from the host's block");
+        // A person types another tempo on the page: it is put back at the next look.
+        ctl.apply(Intent::SetBpm { bpm: 140.0 }).unwrap();
+        assert_eq!(ctl.model.bpm, 140.0);
+        bank.sync(&mut ctl);
+        assert_eq!(ctl.model.bpm, 93.0, "the host's tempo is the session's");
+        // The host's tempo moves, as it does in a ramp: the session goes with it.
+        params.host_says_tempo(94.0);
+        bank.sync(&mut ctl);
+        assert_eq!(ctl.model.bpm, 94.0);
+    }
+
+    #[test]
+    fn a_bank_that_is_made_for_a_new_session_takes_the_tempo_that_the_host_said_before_it_was_made() {
+        let (_engine, mut ctl, _unused, _bank, _woken) = rig(SESSION);
+        let params = HostParams::new();
+        params.host_says_tempo(101.0);
+        let mut bank = Bank::new(params, Arc::new(|| {}));
+        bank.sync(&mut ctl);
+        assert_eq!((ctl.model.bpm, ctl.host_tempo), (101.0, true), "the host says a tempo only when it changes: a session that comes later is given the one that it has");
     }
 
     #[test]

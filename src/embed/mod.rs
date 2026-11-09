@@ -27,7 +27,7 @@ use control::{Control, Owner, Request, Setup};
 use engine::Shared;
 
 pub use control::HOST_DEVICE;
-pub use engine::{Audio, HostMidi};
+pub use engine::{Audio, HostMidi, Transport};
 pub use log_file::path as log_path;
 pub use params::{HostParams, SLOTS, SlotInfo, rescan};
 
@@ -226,7 +226,7 @@ impl Host {
         }
         if let Some(running) = &self.running {
             if running.rate == rate && running.frames == max_frames {
-                return Ok(Audio::new(running.shared.clone()));
+                return Ok(Audio::new(running.shared.clone(), self.params.clone()));
             }
             // (What the page has changed is read out before the engine goes; a controller that cannot say is no reason not to play.)
             if let Err(why) = self.session_text() {
@@ -250,7 +250,7 @@ impl Host {
             }
         }
         self.running = Some(running);
-        Ok(Audio::new(shared))
+        Ok(Audio::new(shared, self.params.clone()))
     }
 
     /// The session of `text` loaded onto `running`'s engine, or, if it cannot be, a new one with `text` kept (`Session::unreadable`).
@@ -551,7 +551,7 @@ mod tests {
     fn ones() -> (Arc<Shared>, Audio) {
         let (_, notes) = crossbeam_channel::bounded::<MidiEvent>(1);
         let shared = Shared::new(Renderer::new(Ones, notes, BLOCK), Arc::new(HostInput::new(BLOCK)));
-        let audio = Audio::new(shared.clone());
+        let audio = Audio::new(shared.clone(), HostParams::new());
         (shared, audio)
     }
 
@@ -592,7 +592,7 @@ mod tests {
     fn a_block_of_no_frames_is_neither_rendered_nor_counted() {
         use std::sync::atomic::Ordering;
         let (shared, _idles, blocks) = counting();
-        let mut audio = Audio::new(shared.clone());
+        let mut audio = Audio::new(shared.clone(), HostParams::new());
         let (mut left, mut right): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
         audio.process(&[at(0, NOTE_ON)], &[], &mut [&mut left, &mut right]);
         audio.process(&[], &[], &mut []);
@@ -641,7 +641,7 @@ mod tests {
     fn a_look_of_the_idle_thread_takes_what_is_sent_when_no_block_has_come_since_the_last_look_and_not_when_one_has() {
         use std::sync::atomic::Ordering;
         let (shared, idles, blocks) = counting();
-        let mut audio = Audio::new(shared.clone());
+        let mut audio = Audio::new(shared.clone(), HostParams::new());
         let mut seen = shared.look(0);
         assert_eq!(idles.load(Ordering::Relaxed), 1, "a first look with no block ever: the host is not rendering");
         // A block between two looks: the host is rendering, and the engine is left to it.

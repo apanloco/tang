@@ -4,6 +4,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { Intent } from "../protocol";
 
+import { tracerSnapshot } from "../client/fixtures";
+
 import { Tempo } from "./Tempo";
 import { rig } from "./testing";
 
@@ -241,6 +243,47 @@ describe("the tempo of the bar of the session", () => {
     press("Enter");
     await turn();
     expect(asked(made)).toEqual([]);
+    expect(field().value).toBe("120");
+  });
+});
+
+describe("the tempo of the bar of a session whose tempo is the host's (step 118)", () => {
+  const hosted = (bpm: number) => rig(<Tempo />, { snapshot: { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, bpm, hostTempo: true } } });
+  const value = (): HTMLElement => screen.getByRole("status", { name: "Tempo, the host's" });
+
+  test("is shown as the host's number and its unit, and is not a field that can be typed in", async () => {
+    await hosted(133.5);
+    expect(value().textContent).toBe("133.5");
+    expect(screen.getByText("BPM")).toBeTruthy();
+    expect(screen.queryByRole("spinbutton", { name: "Tempo" })).toBeNull();
+    expect(value().closest(".tang-tempo")?.getAttribute("title")).toMatch(/host/);
+  });
+
+  test("shows the places that a host's tempo has and no more, and none that it has not", async () => {
+    const made = await hosted(93);
+    expect(value().textContent).toBe("93");
+    act(() => {
+      made.server.apply({ type: "setBpm", bpm: 93.12345 });
+    });
+    await waitFor(() => {
+      expect(value().textContent).toBe("93.12");
+    });
+  });
+
+  test("follows the host when its tempo moves, and asks the server for nothing", async () => {
+    const made = await hosted(120);
+    act(() => {
+      made.server.apply({ type: "setBpm", bpm: 96.5 });
+    });
+    await waitFor(() => {
+      expect(value().textContent).toBe("96.5");
+    });
+    expect(asked(made)).toEqual([]);
+  });
+
+  test("is the field of the bar again when the tempo is not the host's", async () => {
+    await bar();
+    expect(screen.queryByRole("status", { name: "Tempo, the host's" })).toBeNull();
     expect(field().value).toBe("120");
   });
 });

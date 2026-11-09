@@ -75,6 +75,15 @@
   color: var(--tang-text-muted);
 }
 
+/* (A tempo that is the host's is a number and not a field: no border, no hover.) */
+.tang-tempo__value {
+  min-width: 2.5em;
+  text-align: right;
+  color: var(--tang-text);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
 .tang-tempo__field {
   width: 4em;
   height: 24px;

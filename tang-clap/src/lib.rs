@@ -24,13 +24,13 @@ use clack_extensions::note_ports::{NoteDialect, NoteDialects, NotePortInfo, Note
 use clack_extensions::params::{HostParams as HostParamsExtension, ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, ParamRescanFlags, PluginAudioProcessorParams, PluginMainThreadParams, PluginParams};
 use clack_extensions::state::{HostState, PluginState, PluginStateImpl};
 use clack_plugin::entry::prelude::*;
-use clack_plugin::events::event_types::{ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent};
+use clack_plugin::events::event_types::{ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent, TransportEvent, TransportFlags};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::plugin::features::{AUDIO_EFFECT, INSTRUMENT, STEREO, SYNTHESIZER};
 use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
 use clack_plugin::utils::Cookie;
-use tang::embed::{Host, HostMidi, HostParams, Kind, SLOTS, SlotInfo, rescan};
+use tang::embed::{Host, HostMidi, HostParams, Kind, SLOTS, SlotInfo, Transport, rescan};
 
 use crate::gui::{Gui, Page, Parent, Shown};
 
@@ -128,6 +128,15 @@ fn rescan_flags(bits: u8) -> ParamRescanFlags {
         }
     }
     flags
+}
+
+/// What the host says of time in a block (step 118): its tempo, if it gives one, and where it is in beats, if it is playing and says where. A host that is a free-running one gives no transport at all.
+fn host_time(transport: Option<&TransportEvent>) -> Transport {
+    let Some(transport) = transport else { return Transport::NONE };
+    Transport {
+        tempo: transport.flags.contains(TransportFlags::HAS_TEMPO).then_some(transport.tempo),
+        beat: transport.flags.contains(TransportFlags::IS_PLAYING | TransportFlags::HAS_BEATS_TIMELINE).then(|| transport.song_pos_beats.to_float()),
+    }
 }
 
 /// What the host reads a parameter of the bank as: the slot's number and what the macro in it is called ("Macro 2", "Macro 2: Brightness"), so that two parameters never have one name.
@@ -331,7 +340,7 @@ impl<'a, F: Flavour> PluginAudioProcessor<'a, TangShared, TangMainThread<'a, F>>
         Ok(TangAudioProcessor { audio, shared, host: host.shared(), midi: Vec::with_capacity(1024), input, reset: false, params, said, gestures: Gestures::new(config.sample_rate) })
     }
 
-    fn process(&mut self, _process: Process, mut audio: Audio, events: Events) -> Result<ProcessStatus, PluginError> {
+    fn process(&mut self, process: Process, mut audio: Audio, events: Events) -> Result<ProcessStatus, PluginError> {
         self.midi.clear();
         if std::mem::take(&mut self.reset) {
             self.midi.extend(events::all_notes_off());
@@ -373,9 +382,10 @@ impl<'a, F: Flavour> PluginAudioProcessor<'a, TangShared, TangMainThread<'a, F>>
         let [left, right] = &mut buffers;
         let [first, second] = &self.input;
         let input: [&[f32]; 2] = [&first[..frames], &second[..frames]];
+        let transport = host_time(process.transport);
         match (left.as_deref_mut(), right.as_deref_mut()) {
-            (Some(left), Some(right)) => self.audio.process(&self.midi, &input[..heard], &mut [left, right]),
-            (Some(left), None) => self.audio.process(&self.midi, &input[..heard], &mut [left]),
+            (Some(left), Some(right)) => self.audio.process_at(transport, &self.midi, &input[..heard], &mut [left, right]),
+            (Some(left), None) => self.audio.process_at(transport, &self.midi, &input[..heard], &mut [left]),
             _ => {}
         }
         Ok(ProcessStatus::Continue)
@@ -774,6 +784,40 @@ clack_export_entry!(TangEntry);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A transport event that says `flags`, with a tempo and a beat that are not zero.
+    fn transport(flags: TransportFlags) -> TransportEvent {
+        use clack_plugin::events::{EventFlags, EventHeader};
+        use clack_plugin::utils::{BeatTime, SecondsTime};
+        TransportEvent {
+            header: EventHeader::new_core(0, EventFlags::empty()),
+            flags,
+            song_pos_beats: BeatTime::from_float(7.5),
+            song_pos_seconds: SecondsTime::from_float(3.0),
+            tempo: 150.0,
+            tempo_inc: 0.0,
+            loop_start_beats: BeatTime::from_float(0.0),
+            loop_end_beats: BeatTime::from_float(0.0),
+            loop_start_seconds: SecondsTime::from_float(0.0),
+            loop_end_seconds: SecondsTime::from_float(0.0),
+            bar_start: BeatTime::from_float(0.0),
+            bar_number: 0,
+            time_signature_numerator: 4,
+            time_signature_denominator: 4,
+        }
+    }
+
+    #[test]
+    fn what_a_host_says_of_time_is_its_tempo_if_it_gives_one_and_its_beat_only_while_it_plays_and_says_where() {
+        use TransportFlags as F;
+        assert_eq!(host_time(None), Transport::NONE, "a host with no transport says nothing");
+        assert_eq!(host_time(Some(&transport(F::empty()))), Transport::NONE);
+        assert_eq!(host_time(Some(&transport(F::HAS_TEMPO))), Transport { tempo: Some(150.0), beat: None }, "a tempo, and not playing");
+        assert_eq!(host_time(Some(&transport(F::HAS_TEMPO | F::HAS_BEATS_TIMELINE))), Transport { tempo: Some(150.0), beat: None }, "a beat that is not playing is not where anything is");
+        assert_eq!(host_time(Some(&transport(F::HAS_TEMPO | F::IS_PLAYING))), Transport { tempo: Some(150.0), beat: None }, "and playing with no beat says no where");
+        assert_eq!(host_time(Some(&transport(F::HAS_TEMPO | F::IS_PLAYING | F::HAS_BEATS_TIMELINE))), Transport { tempo: Some(150.0), beat: Some(7.5) });
+        assert_eq!(host_time(Some(&transport(F::IS_PLAYING | F::HAS_BEATS_TIMELINE))), Transport { tempo: None, beat: Some(7.5) }, "a beat with no tempo");
+    }
 
     #[test]
     fn what_the_host_is_to_read_again_is_said_in_its_own_flags_one_for_each() {
