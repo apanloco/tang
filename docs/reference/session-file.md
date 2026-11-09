@@ -402,6 +402,7 @@ A lane that is added after the tempo was set starts at 120 in the audio thread (
 TUI's `r` does first; a pattern that has been recorded keeps its own `bpm` whatever the tempo is set to afterwards.
 The tempo is also what an LFO and a step sequencer go by when they follow it (`sync`, see "Tempo sync"): the graph has one tempo (`AudioGraph.bpm`, 120 until `SetGlobalBpm` says another, which the
 loader, `SetBpm` (so its undo and redo too) and the start of a recording send), and a modulator that follows it goes as fast as it does.
+In a plugin in a host that says its tempo (step 118, `docs/reference/plugin-host.md`) the tempo is the host's: it is `bpm` in the session while the host plays, a tempo that anything else sets is put back at the next look, and the file that a project keeps says the tempo that the host had last (the host's own tempo is read again with every block, so what is saved does not matter to the tempo that is played).
 TODO: a pattern does not follow the tempo (its events are frames, and its length is its beats counted at its own `bpm`); `docs/web-ui.md` Open question 10.
 
 ### Pattern recorder/player

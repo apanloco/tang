@@ -108,7 +108,7 @@ phase 0 step list: [`docs/web-ui.md`](docs/web-ui.md). Summary:
   piano (`client/keyboard.ts`, `app/useKeyboardPiano.ts`; see "Virtual piano"). Step 18 made the
   page save the session (`app/SessionBar.tsx`: the file's name, "Saved" or "Unsaved changes", a Save
   button and Control+S / Command+S, which keep the browser from offering to save the page; `Editor.save()`). Step 49 put the
-  tempo in that bar (`app/Tempo.tsx`, a field of beats a minute that is a `spinbutton`: what is typed is asked for as `SetBpm` with Enter or on leaving the field,
+  tempo in that bar (`app/Tempo.tsx`, a field of beats a minute that is a `spinbutton` (**in a plugin whose host says its tempo, `meta.hostTempo` of step 118, it is the host's number and no field**: an `output` called `Tempo, the host's`, with the places that a tempo has and no more, and no request is made from it): what is typed is asked for as `SetBpm` with Enter or on leaving the field,
   Escape gives it up, and the arrow keys turn it by one, by ten with Shift, each step asked as it is made, so that a held key is one step of the history; the server
   holds it to 20–300 and the field shows what it was held to; `Editor.setBpm`; the field is the page's `ui/NumberField`, which the length of a pattern uses too). Step 51 put
   the pattern of a lane in the page: a block under the controls of every lane, an empty lane too (`app/patch/PatternCell.tsx`: a button that records, `Editor.setRecording`,
