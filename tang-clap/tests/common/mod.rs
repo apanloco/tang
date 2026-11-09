@@ -2,8 +2,9 @@
 
 #![allow(dead_code)]
 
+use clack_extensions::params::{HostParams, HostParamsImplMainThread, HostParamsImplShared, ParamClearFlags, ParamInfoBuffer, ParamRescanFlags, PluginParams};
 use clack_extensions::state::{HostState, HostStateImpl, PluginState};
-use clack_host::events::event_types::MidiEvent;
+use clack_host::events::event_types::{MidiEvent, ParamGestureBeginEvent, ParamGestureEndEvent, ParamModEvent, ParamValueEvent};
 use clack_host::factory::plugin::PluginFactory;
 use clack_host::prelude::*;
 use clack_host::process::StartedPluginAudioProcessor;
@@ -19,6 +20,8 @@ pub struct TestShared {
     pub callbacks: std::sync::atomic::AtomicUsize,
     /// How many times the plugin has told the host that the project has changed (`state.mark_dirty`, on the main thread).
     pub dirty: std::sync::atomic::AtomicUsize,
+    /// What the plugin has asked the host to read of its parameters again (`params.rescan`, on the main thread), as the bits of the flags, one entry for each call.
+    pub rescans: std::sync::Mutex<Vec<u32>>,
 }
 pub struct TestMainThread<'a> {
     pub shared: &'a TestShared,
@@ -42,13 +45,25 @@ impl HostStateImpl for TestMainThread<'_> {
     }
 }
 
+impl HostParamsImplShared for TestShared {
+    fn request_flush(&self) {}
+}
+
+impl HostParamsImplMainThread for TestMainThread<'_> {
+    fn rescan(&mut self, flags: ParamRescanFlags) {
+        self.shared.rescans.lock().unwrap().push(flags.bits());
+    }
+
+    fn clear(&mut self, _param_id: ClapId, _flags: ParamClearFlags) {}
+}
+
 impl HostHandlers for Handlers {
     type Shared<'a> = TestShared;
     type MainThread<'a> = TestMainThread<'a>;
     type AudioProcessor<'a> = TestAudioProcessor;
 
     fn declare_extensions(builder: &mut HostExtensions<Self>, _shared: &Self::Shared<'_>) {
-        builder.register::<HostState>();
+        builder.register::<HostState>().register::<HostParams>();
     }
 }
 
@@ -141,6 +156,76 @@ impl Rig {
         switch_values(&output_events)
     }
 
+    /// One block of an instrument with `midi` and what the host does to its parameters in it (all at the block's first frame), the audio that it played, and what the plugin said of its parameters.
+    pub fn block_params(&mut self, midi: &[(u32, [u8; 3])], params: &[Param]) -> (Vec<f32>, Vec<f32>, Vec<Said>) {
+        let mut input_events = EventBuffer::with_capacity(midi.len() + params.len() + 1);
+        for param in params {
+            match *param {
+                Param::Value(id, value) => input_events.push(&ParamValueEvent::new(0, ClapId::new(id), Pckn::match_all(), value, clack_host::utils::Cookie::empty())),
+                Param::Modulation(id, amount) => input_events.push(&ParamModEvent::new(0, ClapId::new(id), Pckn::match_all(), amount, clack_host::utils::Cookie::empty())),
+            };
+        }
+        for &(time, bytes) in midi {
+            input_events.push(&MidiEvent::new(time, 0, bytes));
+        }
+        let mut output_events = EventBuffer::with_capacity(16);
+        let (mut left, mut right) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+        let mut ports = AudioPorts::with_capacity(2, 1);
+        let mut outputs = ports.with_output_buffers([AudioPortBuffer {
+            channels: AudioPortBufferType::f32_output_only([left.as_mut_slice(), right.as_mut_slice()].into_iter()),
+            latency: 0,
+        }]);
+        self.processor
+            .as_mut()
+            .expect("started")
+            .process(&InputAudioBuffers::empty(), &mut outputs, &input_events.as_input(), &mut output_events.as_output(), None, None)
+            .expect("the block is processed");
+        (left, right, said_of(&output_events))
+    }
+
+    /// The host sets the parameters without a block (`flush`, while the plugin is active and not processing), and what the plugin says of its parameters.
+    pub fn flush_params(&mut self, params: &[Param]) -> Vec<Said> {
+        let extension = self.instance.plugin_handle().get_extension::<PluginParams>().expect("the plugin has parameters");
+        let mut input_events = EventBuffer::with_capacity(params.len().max(1));
+        for param in params {
+            match *param {
+                Param::Value(id, value) => input_events.push(&ParamValueEvent::new(0, ClapId::new(id), Pckn::match_all(), value, clack_host::utils::Cookie::empty())),
+                Param::Modulation(id, amount) => input_events.push(&ParamModEvent::new(0, ClapId::new(id), Pckn::match_all(), amount, clack_host::utils::Cookie::empty())),
+            };
+        }
+        let mut output_events = EventBuffer::with_capacity(16);
+        let mut handle = self.processor.as_mut().expect("started").plugin_handle();
+        extension.flush_active(&mut handle, &input_events.as_input(), &mut output_events.as_output());
+        said_of(&output_events)
+    }
+
+    /// What the host reads of the parameter that is the `index`th: its id, name, flags, range and module, as the plugin gives them, or none if the plugin has no such parameter.
+    pub fn param_at(&mut self, index: u32) -> Option<ParamFacts> {
+        let mut handle = self.instance.plugin_handle();
+        let params = handle.get_extension::<PluginParams>().expect("the plugin has parameters");
+        let mut buffer = ParamInfoBuffer::new();
+        let info = params.get_info(&mut handle, index, &mut buffer)?;
+        Some(ParamFacts {
+            id: info.id.get(),
+            name: String::from_utf8_lossy(info.name).into_owned(),
+            module: String::from_utf8_lossy(info.module).into_owned(),
+            flags: info.flags,
+            range: (info.min_value, info.max_value, info.default_value),
+        })
+    }
+
+    /// The value that the plugin gives for the parameter `id` when the host asks.
+    pub fn param_value(&mut self, id: u32) -> Option<f64> {
+        let mut handle = self.instance.plugin_handle();
+        let params = handle.get_extension::<PluginParams>().expect("the plugin has parameters");
+        params.get_value(&mut handle, ClapId::new(id))
+    }
+
+    /// What the plugin has asked the host to read of its parameters again, the bits of the flags of each call, in order.
+    pub fn rescans(&self) -> Vec<u32> {
+        self.instance.access_shared_handler(|shared| shared.rescans.lock().unwrap().clone())
+    }
+
     /// How many times the plugin has asked the host to call its main thread back.
     pub fn callbacks(&self) -> usize {
         self.instance.access_shared_handler(|shared| shared.callbacks.load(std::sync::atomic::Ordering::SeqCst))
@@ -230,6 +315,49 @@ pub fn switch_values(events: &EventBuffer) -> Vec<f64> {
         .filter_map(|event| match event.as_core_event() {
             Some(clack_host::events::spaces::CoreEventSpace::ParamValue(change)) if change.param_id() == Some(ClapId::new(0)) => Some(change.value()),
             _ => None,
+        })
+        .collect()
+}
+
+/// What a host does to a parameter in a block: sets it, or modulates it by an amount.
+#[derive(Clone, Copy, Debug)]
+pub enum Param {
+    Value(u32, f64),
+    Modulation(u32, f64),
+}
+
+/// What a plugin says to the host of its parameters in a block.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Said {
+    Value(u32, f64),
+    Begin(u32),
+    End(u32),
+}
+
+/// What a host reads of a parameter.
+#[derive(Clone, Debug)]
+pub struct ParamFacts {
+    pub id: u32,
+    pub name: String,
+    pub module: String,
+    pub flags: clack_extensions::params::ParamInfoFlags,
+    /// The least, the most and the default value.
+    pub range: (f64, f64, f64),
+}
+
+/// What the plugin said of its parameters in the events that it sent, in order. (The gesture events are read by their type: `as_core_event` of the clack at the pinned commit does not know them, though the plugin sends them.)
+pub fn said_of(events: &EventBuffer) -> Vec<Said> {
+    events
+        .as_input()
+        .iter()
+        .filter_map(|event| {
+            if let Some(change) = event.as_event::<ParamValueEvent>() {
+                return Some(Said::Value(change.param_id()?.get(), change.value()));
+            }
+            if let Some(gesture) = event.as_event::<ParamGestureBeginEvent>() {
+                return Some(Said::Begin(gesture.param_id()?.get()));
+            }
+            event.as_event::<ParamGestureEndEvent>().and_then(|gesture| Some(Said::End(gesture.param_id()?.get())))
         })
         .collect()
 }

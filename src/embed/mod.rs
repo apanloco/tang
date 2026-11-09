@@ -10,6 +10,7 @@
 mod control;
 mod engine;
 mod log_file;
+mod params;
 
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -28,6 +29,7 @@ use engine::Shared;
 pub use control::HOST_DEVICE;
 pub use engine::{Audio, HostMidi};
 pub use log_file::path as log_path;
+pub use params::{HostParams, SLOTS, SlotInfo, rescan};
 
 /// How long the controller's thread may take to say that it has loaded the session: plugins that are loaded can take seconds, and a host waits for a plugin that is being activated.
 const LOAD_WAIT: Duration = Duration::from_secs(300);
@@ -165,6 +167,8 @@ pub struct Host {
     requests: (Sender<Request>, Receiver<Request>),
     /// What wakes the host's main thread up to look at `requests` (a plugin: `request_callback`, which may be called from any thread); the controller's thread calls it after it has put a request there.
     waker: Arc<dyn Fn() + Send + Sync>,
+    /// The parameters that the host has for the macros of the session (step 117): the same for every session that this host starts, so that what the host's threads hold is the one bank.
+    params: Arc<HostParams>,
     /// The libraries of sounds that the page lists, if this host is given some (a test); else the person's own.
     #[cfg(feature = "web")]
     sounds: Option<Arc<crate::app::sounds::Sounds>>,
@@ -174,11 +178,16 @@ impl Host {
     /// A plugin of this kind that is not running yet (`activate` starts it), which serves its session to browsers if `serve` (a build that has no web interface serves none).
     pub fn new(kind: Kind, serve: bool) -> Host {
         log_file::init();
-        Host { kind, serve, text: None, running: None, requests: crossbeam_channel::unbounded(), waker: Arc::new(|| {}), #[cfg(feature = "web")] sounds: None }
+        Host { kind, serve, text: None, running: None, requests: crossbeam_channel::unbounded(), waker: Arc::new(|| {}), params: HostParams::new(), #[cfg(feature = "web")] sounds: None }
     }
 
     pub fn kind(&self) -> Kind {
         self.kind
+    }
+
+    /// The parameters that the host has for the macros of this instance's session (step 117). They are there before the engine is, and are the same after it is made again.
+    pub fn params(&self) -> Arc<HostParams> {
+        self.params.clone()
     }
 
     /// Say how to wake the host's main thread when the page has something for it (a plugin: `request_callback`; what it does then is `serve_requests`). It is for the sessions that are started after this: set it before `activate`.
@@ -292,7 +301,7 @@ impl Host {
 
     /// How a controller that this host starts reaches it.
     fn owner(&self) -> Owner {
-        Owner { requests: self.requests.0.clone(), wake: self.waker.clone(), #[cfg(feature = "web")] sounds: self.sounds.clone() }
+        Owner { requests: self.requests.0.clone(), wake: self.waker.clone(), params: self.params.clone(), #[cfg(feature = "web")] sounds: self.sounds.clone() }
     }
 
     /// Where the page of this instance is, if the engine runs and serves one.

@@ -5,7 +5,7 @@ mod common;
 
 use clack_extensions::audio_ports::{AudioPortFlags, AudioPortInfoBuffer, PluginAudioPorts};
 use clack_extensions::note_ports::{NoteDialect, NoteDialects, NotePortInfoBuffer, PluginNotePorts};
-use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, PluginParams};
+use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, ParamRescanFlags, PluginParams};
 use clack_host::prelude::*;
 use common::*;
 
@@ -61,30 +61,158 @@ fn the_instrument_has_notes_in_and_a_stereo_output_and_the_effect_has_a_stereo_i
 }
 
 #[test]
-fn the_one_parameter_is_the_switch_that_opens_the_page_and_it_starts_closed() {
+fn the_first_parameter_is_the_switch_that_opens_the_page_and_it_starts_closed() {
     let bundle = bundle();
     for id in [instrument_id(), effect_id()] {
         let mut instance = instance(&bundle, id);
         let mut handle = instance.plugin_handle();
         let params = handle.get_extension::<PluginParams>().expect("the plugin has parameters");
-        assert_eq!(params.count(&mut handle), 1, "{id:?}");
+        assert_eq!(params.count(&mut handle), 1 + tang::embed::SLOTS as u32, "{id:?}: the switch and the bank");
         let mut buffer = ParamInfoBuffer::new();
         let info = params.get_info(&mut handle, 0, &mut buffer).expect("its description");
         assert_eq!((info.id, info.name, info.min_value, info.max_value, info.default_value), (ClapId::new(0), &b"Open the page"[..], 0.0, 1.0, 0.0));
         assert!(info.flags.contains(ParamInfoFlags::IS_STEPPED), "a switch has two places");
-        assert!(params.get_info(&mut handle, 1, &mut ParamInfoBuffer::new()).is_none(), "and there is no other");
+        assert!(params.get_info(&mut handle, 1 + tang::embed::SLOTS as u32, &mut ParamInfoBuffer::new()).is_none(), "and there is no other after the bank");
         assert_eq!(params.get_value(&mut handle, ClapId::new(0)), Some(0.0), "closed to begin with");
-        assert_eq!(params.get_value(&mut handle, ClapId::new(7)), None, "no other parameter has a value");
+        let past = ClapId::new(1 + tang::embed::SLOTS as u32);
+        assert_eq!(params.get_value(&mut handle, past), None, "no parameter past the bank has a value");
         let mut text = [std::mem::MaybeUninit::<u8>::uninit(); 32];
         assert_eq!(params.value_to_text(&mut handle, ClapId::new(0), 0.0, &mut text).unwrap(), b"Closed");
         assert_eq!(params.value_to_text(&mut handle, ClapId::new(0), 1.0, &mut text).unwrap(), b"Open");
-        assert!(params.value_to_text(&mut handle, ClapId::new(7), 1.0, &mut text).is_err());
+        assert!(params.value_to_text(&mut handle, past, 1.0, &mut text).is_err());
         for (written, value) in [(c"open", 1.0), (c"On", 1.0), (c"1", 1.0), (c"closed", 0.0), (c"OFF", 0.0), (c"0", 0.0)] {
             assert_eq!(params.text_to_value(&mut handle, ClapId::new(0), written), Some(value), "{written:?}");
         }
         assert_eq!(params.text_to_value(&mut handle, ClapId::new(0), c"maybe"), None);
-        assert_eq!(params.text_to_value(&mut handle, ClapId::new(7), c"open"), None);
+        assert_eq!(params.text_to_value(&mut handle, past, c"open"), None);
     }
+}
+
+#[test]
+fn after_the_switch_the_bank_has_a_parameter_for_each_slot_that_a_host_can_automate_and_modulate_and_that_is_called_macro_and_its_number() {
+    let bundle = bundle();
+    for id in [instrument_id(), effect_id()] {
+        let mut rig = Rig::start(&bundle, id);
+        for slot in 0..tang::embed::SLOTS as u32 {
+            let facts = rig.param_at(1 + slot).unwrap_or_else(|| panic!("{id:?}: a parameter for slot {slot}"));
+            assert_eq!((facts.id, facts.name.as_str(), facts.module.as_str()), (1 + slot, format!("Macro {}", slot + 1).as_str(), "Macros"), "{id:?}");
+            assert!(facts.flags.contains(ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE), "a host automates and modulates it: {:?}", facts.flags);
+            assert!(!facts.flags.intersects(ParamInfoFlags::IS_STEPPED | ParamInfoFlags::IS_HIDDEN), "it is a knob, and it is listed");
+            assert_eq!(facts.range, (0.0, 1.0, 0.0), "a macro goes from 0 to 1");
+            assert_eq!(rig.param_value(1 + slot), Some(0.0), "and starts at rest");
+        }
+        let mut handle = rig.instance.plugin_handle();
+        let params = handle.get_extension::<PluginParams>().unwrap();
+        let mut text = [std::mem::MaybeUninit::<u8>::uninit(); 32];
+        assert_eq!(params.value_to_text(&mut handle, ClapId::new(1), 0.5, &mut text).unwrap(), b"0.50");
+        for (written, value) in [(c"0.25", Some(0.25)), (c" 50% ", Some(0.5)), (c"150%", Some(1.0)), (c"-3", Some(0.0)), (c"nan", None), (c"loud", None), (c"", None)] {
+            assert_eq!(params.text_to_value(&mut handle, ClapId::new(2), written), value, "{written:?}");
+        }
+        rig.stop();
+    }
+}
+
+/// A session with one macro, called Level, that takes the oscillator's volume down as it is turned up: at 0 the note is as loud as the oscillator makes it, at 1 there is none.
+const LEVEL: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = 0.0\nname = \"Level\"\n\n[[instrument.modulator.target]]\nparam = \"volume\"\ndepth = -1.0\n\n[master]\nlimiter = false\n";
+
+/// A rig of the instrument that has been given `LEVEL` and whose bank has been told of it: the macro is the first parameter once the controller's thread has said so (it takes a look at most a tick after the session is there).
+fn level_rig(bundle: &PluginBundle) -> Rig {
+    let mut rig = Rig::start(bundle, instrument_id());
+    rig.load(&state_of(LEVEL)).expect("the session is taken");
+    wait_until("the bank to know the macro", || rig.param_at(1).is_some_and(|facts| facts.name == "Macro 1: Level"));
+    rig
+}
+
+/// Look every few milliseconds until `done` is true, and fail with `what` if it is not within five seconds: the controller's thread does what the host set, and it does it on its own time.
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !done() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "waited five seconds for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// How loud the instrument plays `NOTE_ON` that was begun some blocks ago: the loudest sample of eight blocks.
+fn level(rig: &mut Rig) -> f32 {
+    rig.loudest(&[], 8)
+}
+
+#[test]
+fn a_macro_of_the_session_is_a_parameter_called_by_its_name_and_the_host_is_asked_to_read_the_bank_again() {
+    let bundle = bundle();
+    let mut rig = Rig::start(&bundle, instrument_id());
+    assert!(rig.rescans().is_empty() && rig.callbacks() == 0, "a session without a macro asks the host for nothing");
+    rig.load(&state_of(LEVEL)).expect("the session is taken");
+    wait_until("the bank to know the macro", || rig.param_at(1).is_some_and(|facts| facts.name == "Macro 1: Level"));
+    assert_eq!(rig.param_at(2).unwrap().name, "Macro 2", "the slots after it are as they were");
+    assert_eq!(rig.param_value(1), Some(0.0));
+    assert!(rig.callbacks() > 0, "the controller's thread had the host's main thread called back");
+    rig.call_back();
+    assert_eq!(rig.rescans(), [(ParamRescanFlags::VALUES | ParamRescanFlags::INFO).bits()], "the host reads values and names, once");
+    rig.call_back();
+    assert_eq!(rig.rescans().len(), 1, "and a call back that has nothing for it asks for nothing");
+    rig.stop();
+}
+
+#[test]
+fn a_value_that_the_host_sets_for_the_macro_changes_the_sound_and_is_the_value_that_is_saved() {
+    let bundle = bundle();
+    let mut rig = level_rig(&bundle);
+    rig.play(&[(0, NOTE_ON)]);
+    let loud = level(&mut rig);
+    assert!(loud > 0.05, "at rest the note is as loud as the oscillator is");
+    let (_, _, said) = rig.block_params(&[], &[Param::Value(1, 1.0)]);
+    assert!(said.is_empty(), "the host is not told back what it set: {said:?}");
+    let mut quietest = f32::MAX;
+    wait_until("the macro to take the oscillator's volume down", || {
+        quietest = level(&mut rig);
+        quietest < 1e-3
+    });
+    assert!(quietest < 1e-3, "at full there is no volume left");
+    let saved = rig.save();
+    let text = String::from_utf8(saved[9..].to_vec()).unwrap();
+    assert!(text.contains("type = \"macro\"") && text.contains("value = 1"), "the value that the host set is the one that the session keeps:\n{text}");
+    assert_eq!(rig.param_value(1), Some(1.0));
+    // A value that the host sets when it is not processing is taken as well.
+    let said = rig.flush_params(&[Param::Value(1, 0.0)]);
+    assert!(said.is_empty());
+    wait_until("the macro to be at rest again", || level(&mut rig) > loud * 0.9);
+    assert_eq!(rig.param_value(1), Some(0.0));
+    rig.stop();
+}
+
+#[test]
+fn the_hosts_modulation_is_added_to_what_is_played_and_the_value_that_was_set_stays_what_is_saved_and_shown() {
+    let bundle = bundle();
+    let mut rig = level_rig(&bundle);
+    rig.play(&[(0, NOTE_ON)]);
+    let full = level(&mut rig);
+    rig.block_params(&[], &[Param::Modulation(1, 0.5)]);
+    let mut half = 0.0;
+    wait_until("the modulation to take the volume down by half", || {
+        half = level(&mut rig);
+        half < full * 0.65
+    });
+    assert!(half > full * 0.35, "the macro is at a half: the volume is a half ({half} against {full})");
+    let text = String::from_utf8(rig.save()[9..].to_vec()).unwrap();
+    assert!(text.contains("type = \"macro\"") && text.contains("value = 0.0"), "the session keeps the value that was set, not what the modulation made of it:\n{text}");
+    assert_eq!(rig.param_value(1), Some(0.0), "and the host that asks is told that");
+    rig.block_params(&[], &[Param::Modulation(1, 0.0)]);
+    wait_until("the modulation to end", || level(&mut rig) > full * 0.9);
+    rig.stop();
+}
+
+#[test]
+fn a_value_or_a_modulation_for_a_parameter_that_is_not_in_the_bank_is_left_alone() {
+    let bundle = bundle();
+    let mut rig = level_rig(&bundle);
+    rig.play(&[(0, NOTE_ON)]);
+    let full = level(&mut rig);
+    let (.., said) = rig.block_params(&[], &[Param::Value(99, 1.0), Param::Modulation(99, 1.0), Param::Value(17, 1.0), Param::Value(2, 1.0), Param::Value(1, f64::NAN)]);
+    assert!(said.is_empty());
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(level(&mut rig) > full * 0.9, "no macro was turned: slot 2 has none, the others are not slots, and a number that is not one is not set");
+    rig.stop();
 }
 
 #[test]

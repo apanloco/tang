@@ -21,16 +21,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use clack_extensions::audio_ports::{AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts, PluginAudioPortsImpl};
 use clack_extensions::gui::{GuiConfiguration, GuiResizeHints, GuiSize, PluginGui, PluginGuiImpl, Window};
 use clack_extensions::note_ports::{NoteDialect, NoteDialects, NotePortInfo, NotePortInfoWriter, PluginNotePorts, PluginNotePortsImpl};
-use clack_extensions::params::{ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, PluginAudioProcessorParams, PluginMainThreadParams, PluginParams};
+use clack_extensions::params::{HostParams as HostParamsExtension, ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, ParamRescanFlags, PluginAudioProcessorParams, PluginMainThreadParams, PluginParams};
 use clack_extensions::state::{HostState, PluginState, PluginStateImpl};
 use clack_plugin::entry::prelude::*;
-use clack_plugin::events::event_types::ParamValueEvent;
+use clack_plugin::events::event_types::{ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::plugin::features::{AUDIO_EFFECT, INSTRUMENT, STEREO, SYNTHESIZER};
 use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
 use clack_plugin::utils::Cookie;
-use tang::embed::{Host, HostMidi, Kind};
+use tang::embed::{Host, HostMidi, HostParams, Kind, SLOTS, SlotInfo, rescan};
 
 use crate::gui::{Gui, Page, Parent, Shown};
 
@@ -100,6 +100,106 @@ impl<F: Flavour> Plugin for TangPlugin<F> {
 /// The plugin's one parameter, **Open the page**: a switch that opens the page of the instance in the browser, in the way of every host (a host that has a button for the plugin's window shows the page from it as well, but not every host has
 /// one for a window that the plugin shows itself, and every host has the parameters of a plugin). It goes from 0 to 1 when it is pressed, opens the page, and is put back to 0 for the host to show.
 pub const PAGE_PARAM: u32 = 0;
+
+/// The id of the first parameter of the bank that follows the macros of the session (step 117): the macros are the ids from this one, a macro to an id, in the order of the session (`tang::embed::HostParams`). A host keeps automation by these
+/// ids, so **they are never changed** either: a parameter is added after the last, and a macro beyond it is none.
+pub const FIRST_MACRO_PARAM: u32 = 1;
+
+/// How long the page's knob is let rest, with no change that the host is told of, before the plugin says to the host that the gesture is over (the host records the automation of a parameter that is being touched from the gesture's start to its end).
+const GESTURE_QUIET_SECONDS: f64 = 0.3;
+
+/// The slot of the bank that the parameter `id` is, if it is one of the bank's.
+fn slot_of(id: ClapId) -> Option<usize> {
+    let slot = usize::try_from(id.get().checked_sub(FIRST_MACRO_PARAM)?).ok()?;
+    (slot < SLOTS).then_some(slot)
+}
+
+/// The id of the parameter of the bank in `slot`.
+fn param_of(slot: usize) -> ClapId {
+    ClapId::new(FIRST_MACRO_PARAM + slot as u32)
+}
+
+/// What the host is to read again, as the host's flags (`tang::embed::rescan`'s bits).
+fn rescan_flags(bits: u8) -> ParamRescanFlags {
+    let mut flags = ParamRescanFlags::empty();
+    for (bit, flag) in [(rescan::VALUES, ParamRescanFlags::VALUES), (rescan::INFO, ParamRescanFlags::INFO)] {
+        if bits & bit != 0 {
+            flags |= flag;
+        }
+    }
+    flags
+}
+
+/// What the host reads a parameter of the bank as: the slot's number and what the macro in it is called ("Macro 2", "Macro 2: Brightness"), so that two parameters never have one name.
+fn slot_name(slot: usize, info: &SlotInfo) -> String {
+    if info.present && !info.name.is_empty() { format!("Macro {}: {}", slot + 1, info.name) } else { format!("Macro {}", slot + 1) }
+}
+
+/// A value of a parameter of the bank as text: two places, as the page shows a macro's.
+fn value_text(value: f64) -> String {
+    format!("{value:.2}")
+}
+
+/// A value that a person typed in the host (`0.5`, `50%`).
+fn text_value(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let value = match text.strip_suffix('%') {
+        Some(percent) => percent.trim().parse::<f64>().ok()? / 100.0,
+        None => text.parse::<f64>().ok()?,
+    };
+    value.is_finite().then_some(value.clamp(0.0, 1.0))
+}
+
+/// What the plugin has said to the host about the bank's parameters while it is being turned on the page: a parameter that is being touched has had its gesture begun, and ends it when it has been left alone for a moment.
+struct Gestures {
+    /// The frame (counting the frames of the blocks that have been played) at which each parameter was last changed, while its gesture is open.
+    open: [Option<u64>; SLOTS],
+    elapsed: u64,
+    /// How many frames of quiet end a gesture.
+    quiet: u64,
+}
+
+impl Gestures {
+    fn new(rate: f64) -> Gestures {
+        Gestures { open: [None; SLOTS], elapsed: 0, quiet: (rate.max(1.0) * GESTURE_QUIET_SECONDS) as u64 }
+    }
+
+    /// Tell the host what the page changed since the last time (`said` is what has been told), as the gesture of a person's hand: begun at the first change, a value for each, and ended when the parameter has been left alone for `quiet` frames. `frames` is the length of the block.
+    fn tell(&mut self, params: &HostParams, said: &mut [u32; SLOTS], output: &mut OutputEvents, frames: u32) {
+        let Gestures { open, elapsed, quiet } = self;
+        params.changes_for_host(said, |slot, value| {
+            if open[slot].is_none() {
+                let _ = output.try_push(ParamGestureBeginEvent::new(0, param_of(slot)));
+            }
+            let _ = output.try_push(ParamValueEvent::new(0, param_of(slot), Pckn::match_all(), f64::from(value), Cookie::empty()));
+            open[slot] = Some(*elapsed);
+        });
+        for (slot, last) in open.iter_mut().enumerate() {
+            if last.is_some_and(|last| *elapsed - last >= *quiet) {
+                let _ = output.try_push(ParamGestureEndEvent::new(0, param_of(slot)));
+                *last = None;
+            }
+        }
+        *elapsed += u64::from(frames);
+    }
+}
+
+/// What the host says of the bank's parameters in an event: a value that it set, or what its modulation adds (the bank takes the newest of each).
+fn host_sets_a_macro(event: &UnknownEvent, params: &HostParams) {
+    match event.as_core_event() {
+        Some(CoreEventSpace::ParamValue(change)) => {
+            if let Some(slot) = change.param_id().and_then(slot_of) {
+                params.host_sets(slot, change.value());
+            }
+        }
+        Some(CoreEventSpace::ParamMod(change)) => {
+            if let Some(slot) = change.param_id().and_then(slot_of) {
+                params.host_modulates(slot, change.amount());
+            }
+        }
+        _ => {}
+    }
+}
 
 /// What the host's threads share: the state of the switch that opens the page, which the host sets on the audio thread (in a block) or on the main thread (when it is not processing) and which the main thread acts on.
 pub struct TangShared {
@@ -179,6 +279,7 @@ impl<'a, F: Flavour> PluginMainThread<'a, TangShared> for TangMainThread<'a, F> 
             self.refresh_gui();
             self.mark_dirty();
         }
+        self.rescan_params();
     }
 }
 
@@ -209,6 +310,10 @@ pub struct TangAudioProcessor<'a> {
     input: [Vec<f32>; 2],
     /// Whether the host has said `reset`, which the next block makes of an all-notes-off.
     reset: bool,
+    /// The parameters that follow the macros of the session (step 117), what has been told to the host of what the page changed, and the gestures that the host has been told are open.
+    params: Arc<HostParams>,
+    said: [u32; SLOTS],
+    gestures: Gestures,
 }
 
 impl<'a, F: Flavour> PluginAudioProcessor<'a, TangShared, TangMainThread<'a, F>> for TangAudioProcessor<'a> {
@@ -221,7 +326,9 @@ impl<'a, F: Flavour> PluginAudioProcessor<'a, TangShared, TangMainThread<'a, F>>
         // (A window that was asked for before the plugin was switched on shows that it was waiting: now it has a page.)
         main_thread.refresh_gui();
         let input = [vec![0.0; frames as usize], vec![0.0; frames as usize]];
-        Ok(TangAudioProcessor { audio, shared, host: host.shared(), midi: Vec::with_capacity(1024), input, reset: false })
+        let params = main_thread.host.params();
+        let said = params.said();
+        Ok(TangAudioProcessor { audio, shared, host: host.shared(), midi: Vec::with_capacity(1024), input, reset: false, params, said, gestures: Gestures::new(config.sample_rate) })
     }
 
     fn process(&mut self, _process: Process, mut audio: Audio, events: Events) -> Result<ProcessStatus, PluginError> {
@@ -232,10 +339,13 @@ impl<'a, F: Flavour> PluginAudioProcessor<'a, TangShared, TangMainThread<'a, F>>
         for event in events.input {
             events::convert(event, &mut self.midi);
             self.switch(event);
+            host_sets_a_macro(event, &self.params);
         }
         if self.shared.take_put_back() {
             let _ = events.output.try_push(switch_is_back());
         }
+        let frames = audio.frames_count();
+        self.gestures.tell(&self.params, &mut self.said, events.output, frames);
 
         let mut pair = audio.port_pair(0).ok_or(PluginError::Message("Tang has no audio port to play on"))?;
         let mut channels = pair.channels()?.into_f32().ok_or(PluginError::Message("Tang plays 32-bit audio"))?;
@@ -290,16 +400,19 @@ impl PluginAudioProcessorParams for TangAudioProcessor<'_> {
     fn flush(&mut self, input: &InputEvents, output: &mut OutputEvents) {
         for event in input {
             self.switch(event);
+            host_sets_a_macro(event, &self.params);
         }
         if self.shared.take_put_back() {
             let _ = output.try_push(switch_is_back());
         }
+        self.gestures.tell(&self.params, &mut self.said, output, 0);
     }
 }
 
 impl<F: Flavour> PluginMainThreadParams for TangMainThread<'_, F> {
+    /// The switch that opens the page, and the bank of parameters that follow the macros of the session: a host wants a list that does not change while a plugin is on, so every slot of the bank is there whether a macro is in it or not.
     fn count(&mut self) -> u32 {
-        1
+        1 + SLOTS as u32
     }
 
     fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
@@ -314,22 +427,43 @@ impl<F: Flavour> PluginMainThreadParams for TangMainThread<'_, F> {
                 max_value: 1.0,
                 default_value: 0.0,
             });
+        } else if let Some(slot) = (param_index as usize).checked_sub(1).filter(|slot| *slot < SLOTS) {
+            let name = slot_name(slot, &self.host.params().info(slot));
+            info.set(&ParamInfo {
+                id: param_of(slot),
+                flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
+                cookie: Cookie::empty(),
+                name: name.as_bytes(),
+                module: b"Macros",
+                min_value: 0.0,
+                max_value: 1.0,
+                default_value: 0.0,
+            });
         }
     }
 
     fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
-        (param_id == ClapId::new(PAGE_PARAM)).then(|| self.shared.value())
+        if param_id == ClapId::new(PAGE_PARAM) {
+            return Some(self.shared.value());
+        }
+        slot_of(param_id).map(|slot| self.host.params().value(slot))
     }
 
     fn value_to_text(&mut self, param_id: ClapId, value: f64, writer: &mut ParamDisplayWriter) -> std::fmt::Result {
         use std::fmt::Write as _;
-        if param_id != ClapId::new(PAGE_PARAM) {
-            return Err(std::fmt::Error);
+        if param_id == ClapId::new(PAGE_PARAM) {
+            return writer.write_str(if value >= 0.5 { "Open" } else { "Closed" });
         }
-        writer.write_str(if value >= 0.5 { "Open" } else { "Closed" })
+        if slot_of(param_id).is_some() {
+            return writer.write_str(&value_text(value));
+        }
+        Err(std::fmt::Error)
     }
 
     fn text_to_value(&mut self, param_id: ClapId, text: &CStr) -> Option<f64> {
+        if slot_of(param_id).is_some() {
+            return text_value(text.to_str().ok()?);
+        }
         if param_id != ClapId::new(PAGE_PARAM) {
             return None;
         }
@@ -340,14 +474,16 @@ impl<F: Flavour> PluginMainThreadParams for TangMainThread<'_, F> {
         }
     }
 
-    /// The host sends the changes of its parameters while the plugin is not processing (the main thread): a press opens the page at once, and the switch is put back.
+    /// The host sends the changes of its parameters while the plugin is not processing (the main thread): a press opens the page at once, and the switch is put back; what it sets of the macros is taken (the bank is the controller's to put in the session, which it does when it is rung).
     fn flush(&mut self, input: &InputEvents, output: &mut OutputEvents) {
+        let params = self.host.params();
         for event in input {
             if TangShared::page_value(event).is_some_and(|value| self.shared.host_sets(value)) {
                 self.shared.open_requested.store(false, Ordering::Release);
                 let _ = self.open_page();
                 self.shared.put_back.store(true, Ordering::Release);
             }
+            host_sets_a_macro(event, &params);
         }
         if self.shared.take_put_back() {
             let _ = output.try_push(switch_is_back());
@@ -519,6 +655,17 @@ impl<F: Flavour> TangMainThread<'_, F> {
         Page::of(self.host.url())
     }
 
+    /// The macros of the session came, went or were called something else, or a session was loaded (the controller's thread said so and had this thread called back): the host reads the bank's parameters again, which it does not record as automation.
+    fn rescan_params(&mut self) {
+        let bits = self.host.params().take_rescan();
+        if bits == 0 {
+            return;
+        }
+        if let Some(extension) = self.handle.shared().get_extension::<HostParamsExtension>() {
+            extension.rescan(&mut self.handle, rescan_flags(bits));
+        }
+    }
+
     /// Tell the host that the project has changed, as far as this plugin is concerned (its session is another one now): a host that has the `state` extension asks to save before it closes the project.
     fn mark_dirty(&mut self) {
         if let Some(mut state) = self.handle.shared().get_extension::<HostState>() {
@@ -623,3 +770,16 @@ impl Entry for TangEntry {
 }
 
 clack_export_entry!(TangEntry);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_the_host_is_to_read_again_is_said_in_its_own_flags_one_for_each() {
+        assert_eq!(rescan_flags(0), ParamRescanFlags::empty());
+        assert_eq!(rescan_flags(rescan::VALUES), ParamRescanFlags::VALUES, "values are values");
+        assert_eq!(rescan_flags(rescan::INFO), ParamRescanFlags::INFO, "and names are info");
+        assert_eq!(rescan_flags(rescan::VALUES | rescan::INFO), ParamRescanFlags::VALUES | ParamRescanFlags::INFO);
+    }
+}

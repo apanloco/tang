@@ -552,3 +552,79 @@ fn a_window_follows_the_instance_to_the_address_that_a_session_opened_by_its_pag
     gui.destroy(&mut handle);
     instance.deactivate(processor.stop_processing());
 }
+
+/// A session with one macro, called Level, that is the first parameter of the bank.
+const ONE_MACRO: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n\n[[instrument.modulator]]\ntype = \"macro\"\nvalue = 0.0\nname = \"Level\"\n\n[master]\nlimiter = false\n";
+
+#[test]
+fn a_knob_that_a_person_turns_on_the_page_is_told_to_the_host_as_a_gesture_with_its_value_and_the_gesture_ends_when_the_knob_is_let_be() {
+    let file = stand_in();
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = so_far(file);
+    let bundle = bundle();
+    let mut rig = Rig::start(&bundle, instrument_id());
+    rig.load(&state_of(ONE_MACRO)).expect("the session is taken");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !rig.param_at(1).is_some_and(|facts| facts.name == "Macro 1: Level") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(rig.param_at(1).unwrap().name, "Macro 1: Level", "the bank knows the macro");
+
+    // The page, and the node of the macro in it.
+    assert!(rig.block_with(Some(1.0)).is_empty());
+    rig.call_back();
+    let url = opened(file, before + 1).get(before).cloned().expect("the browser was opened");
+    assert_eq!(rig.block_with(None), [0.0], "the switch is put back");
+    let mut socket = page_socket(&url);
+    heard(&mut socket);
+    socket.send(tungstenite::Message::text(serde_json::json!({"type": "subscribe"}).to_string())).unwrap();
+    let level = loop {
+        let message = heard(&mut socket);
+        if message["type"] == "snapshot" {
+            let nodes = message["snapshot"]["graph"]["nodes"].as_array().expect("the nodes");
+            break nodes.iter().find(|node| node["name"] == "Level").and_then(|node| node["id"].as_u64()).expect("the macro's node");
+        }
+    };
+
+    // A person turns the knob on the page: the host is told, with the gesture's start before the value, in one block.
+    socket.send(tungstenite::Message::text(serde_json::json!({"type": "request", "reqId": 1, "intent": {"type": "setModulatorField", "node": level, "field": "value", "value": 0.75}}).to_string())).unwrap();
+    assert_eq!(answer(&mut socket, 1)["type"], "ack");
+    let mut told = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while told.is_empty() && Instant::now() < deadline {
+        told = rig.block_params(&[], &[]).2;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(told, [Said::Begin(1), Said::Value(1, f64::from(0.75f32))], "the gesture begins, and the value");
+    assert_eq!(rig.param_value(1), Some(0.75));
+    assert_eq!(rig.dirty_marks(), 0, "(a knob on the page is the page's business: the host's project is marked by the state that it saves, and not by this)");
+
+    // A second turn within the gesture is a value and no second beginning; left alone, the gesture ends once, after 0.3 s of blocks.
+    socket.send(tungstenite::Message::text(serde_json::json!({"type": "request", "reqId": 2, "intent": {"type": "setModulatorField", "node": level, "field": "value", "value": 0.5}}).to_string())).unwrap();
+    assert_eq!(answer(&mut socket, 2)["type"], "ack");
+    let mut told = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while told.is_empty() && Instant::now() < deadline {
+        told = rig.block_params(&[], &[]).2;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(told, [Said::Value(1, 0.5)], "no second beginning");
+    let mut rest = Vec::new();
+    for _ in 0..80 {
+        rest.extend(rig.block_params(&[], &[]).2);
+    }
+    assert_eq!(rest, [Said::End(1)], "and it ends, once, when the knob has been left be");
+
+    // A plugin that is switched off and on again, at the rate and the block size that it had, is not told again what the page changed before.
+    let Rig { mut instance, processor } = rig;
+    instance.deactivate(processor.unwrap().stop_processing());
+    let processor = instance
+        .activate(|_, _| TestAudioProcessor, PluginAudioConfiguration { sample_rate: RATE, min_frames_count: 1, max_frames_count: BLOCK as u32 })
+        .unwrap()
+        .start_processing()
+        .unwrap();
+    let mut rig = Rig { instance, processor: Some(processor) };
+    assert!(rig.block_params(&[], &[]).2.is_empty(), "nothing is said of the knob that was turned before");
+    assert_eq!(rig.param_value(1), Some(0.5), "and the host that asks has the value that it has");
+    rig.stop();
+}
