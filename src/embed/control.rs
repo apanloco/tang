@@ -16,6 +16,7 @@ use crate::plugin::chain::AudioGraph;
 use crate::source::SourceSet;
 
 use super::engine::HOST_SOURCE;
+use super::params::{Bank, HostParams};
 
 /// The name of the one device that Tang inside a host has: what the host sends, as a source of notes that a lane can be wired to.
 pub const HOST_DEVICE: &str = "Host";
@@ -42,6 +43,8 @@ pub(super) enum Request {
 pub(super) struct Owner {
     pub requests: Sender<Request>,
     pub wake: Arc<dyn Fn() + Send + Sync>,
+    /// The bank of parameters that the host has for the macros of the session (step 117): the controller's thread takes what the host set into the session, and tells the host what the page changed (`Bank::sync`).
+    pub params: Arc<HostParams>,
     /// The libraries of sounds that the page lists (step 116): the person's own (`standard_sounds`) if none is given, which a test does.
     #[cfg(feature = "web")]
     pub sounds: Option<Arc<crate::app::sounds::Sounds>>,
@@ -109,6 +112,7 @@ fn no_windows() -> Result<(), String> {
 /// The thread's body. The audio half of the engine goes to the host's side first (`audio`), so that it can take the commands that the load sends while it goes on; then the session is loaded and the page is served, and `started` says how it went.
 pub(super) fn run(setup: Setup, audio: Sender<(AudioGraph, Receiver<MidiEvent>)>, started: Sender<Result<Started, String>>, control: Receiver<Control>) {
     let Setup { text, sample_rate, max_frames, serve, bind, input, owner } = setup;
+    let mut bank = Bank::new(owner.params.clone(), owner.wake.clone());
     let config = match crate::session::parse(&text) {
         Ok(config) => config,
         Err(error) => {
@@ -141,7 +145,7 @@ pub(super) fn run(setup: Setup, audio: Sender<(AudioGraph, Receiver<MidiEvent>)>
 
     #[cfg(feature = "web")]
     if serve {
-        match serve_session(&mut ctl, &started, &control, bind, sounds) {
+        match serve_session(&mut ctl, &mut bank, &started, &control, bind, sounds) {
             Ok(()) => {
                 ctl.shutdown();
                 return;
@@ -154,7 +158,7 @@ pub(super) fn run(setup: Setup, audio: Sender<(AudioGraph, Receiver<MidiEvent>)>
     let _ = (serve, bind);
 
     let _ = started.send(Ok(Started { url: None }));
-    run_quietly(&mut ctl, &control);
+    run_quietly(&mut ctl, &mut bank, &control);
     ctl.shutdown();
 }
 
@@ -206,12 +210,17 @@ fn session_of(ctl: &mut Controller) -> Result<(String, bool), String> {
 }
 
 /// The loop of a controller that serves no page: answer what the host asks, and poll, until it says to stop.
-fn run_quietly(ctl: &mut Controller, control: &Receiver<Control>) {
+fn run_quietly(ctl: &mut Controller, bank: &mut Bank, control: &Receiver<Control>) {
     let tick = crossbeam_channel::tick(TICK);
+    let ring = bank.ring();
     loop {
         crossbeam_channel::select! {
             recv(tick) -> _ => {
                 ctl.poll();
+                bank.sync(ctl);
+            }
+            recv(ring) -> _ => {
+                bank.sync(ctl);
             }
             recv(control) -> message => match message {
                 Ok(Control::Session(reply)) => {
@@ -226,7 +235,7 @@ fn run_quietly(ctl: &mut Controller, control: &Receiver<Control>) {
 /// Serve the session of `ctl` to browsers on a port that the system picks (on this machine only: there is no token), say where (`started`), and answer what the browsers and the host ask until the host says to stop. The scan of the
 /// installed plugins loads every one of them, which is not safe in a host's process (`should_scan`): it starts when the first browser has come, and only if `TANG_SCAN` is set.
 #[cfg(feature = "web")]
-fn serve_session(ctl: &mut Controller, started: &Sender<Result<Started, String>>, control: &Receiver<Control>, bind: std::net::SocketAddr, sounds: Arc<crate::app::sounds::Sounds>) -> anyhow::Result<()> {
+fn serve_session(ctl: &mut Controller, bank: &mut Bank, started: &Sender<Result<Started, String>>, control: &Receiver<Control>, bind: std::net::SocketAddr, sounds: Arc<crate::app::sounds::Sounds>) -> anyhow::Result<()> {
     use crate::web::runtime::Runtime;
     use crate::web::server::Config;
 
@@ -237,6 +246,7 @@ fn serve_session(ctl: &mut Controller, started: &Sender<Result<Started, String>>
     let _ = started.send(Ok(Started { url: Some(runtime.url()) }));
 
     let requests = runtime.requests();
+    let ring = bank.ring();
     let tick = crossbeam_channel::tick(TICK);
     let scan = scan_asked_for(std::env::var_os("TANG_SCAN").as_deref());
     let mut scanned = false;
@@ -245,11 +255,17 @@ fn serve_session(ctl: &mut Controller, started: &Sender<Result<Started, String>>
             recv(requests) -> request => match request {
                 Ok(request) => {
                     runtime.serve(ctl, request);
+                    // (A knob that a person turned is told to the host at once, not at the next tick.)
+                    bank.sync(ctl);
                 }
                 Err(_) => break,
             },
+            recv(ring) -> _ => {
+                bank.sync(ctl);
+            }
             recv(tick) -> _ => {
                 ctl.poll();
+                bank.sync(ctl);
                 runtime.refresh(ctl);
                 if should_scan(scan, scanned, runtime.clients()) {
                     scanned = true;
@@ -284,7 +300,7 @@ mod tests {
             }
             counter.fetch_add(1, Ordering::SeqCst);
         };
-        (Owner { requests, wake: Arc::new(wake), #[cfg(feature = "web")] sounds: None }, asked, woken, found)
+        (Owner { requests, wake: Arc::new(wake), params: HostParams::new(), #[cfg(feature = "web")] sounds: None }, asked, woken, found)
     }
 
     #[cfg(feature = "web")]
@@ -345,6 +361,7 @@ mod tests {
             wake: Arc::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
+            params: HostParams::new(),
             #[cfg(feature = "web")]
             sounds: None,
         };

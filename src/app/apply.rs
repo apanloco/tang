@@ -34,6 +34,14 @@ pub(super) enum Done {
     Restructured,
 }
 
+/// A macro of the session as a host's parameter sees it (step 117, `Controller::macros`): which node it is, what a person called it (empty if nothing) and the value it was set to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MacroInfo {
+    pub node: NodeId,
+    pub name: String,
+    pub value: f32,
+}
+
 /// Where the audio thread finds the plugin an intent concerns.
 pub(super) enum PluginAt {
     /// A lane's instrument (slot 0) or one of its effects (slot 1..).
@@ -739,6 +747,48 @@ impl Controller {
         };
         let _ = self.cmd_tx.send(command);
         Ok(Event::ModulatorFieldSet { node, field, value })
+    }
+
+    /// The macros of the session in the order of its file, at most `limit` of them: what a host's parameters follow (step 117, `embed::HostParams`: the first macro is the first parameter).
+    pub fn macros(&self, limit: usize) -> Vec<MacroInfo> {
+        self.model
+            .free_modulators
+            .iter()
+            .filter_map(|slot| match &slot.source {
+                ModSourceSlot::Macro { value, name, .. } => Some(MacroInfo { node: slot.node, name: name.clone(), value: *value }),
+                _ => None,
+            })
+            .take(limit)
+            .collect()
+    }
+
+    /// A macro's value as a host's automation sets it (step 117): in the model, in the engine and in every client, as a knob that is turned is, with **no step of the history** (an automation lane would fill it) and the session **not marked as changed**
+    /// (playing a project is no edit of it). Refused, with nothing changed and no revision, for a node that is not a macro and for a number that is not finite; one outside 0 to 1 is held to it, as a knob's is.
+    pub fn set_macro_from_host(&mut self, node: NodeId, value: f32) -> Result<(), IntentError> {
+        let event = self.set_modulator_field(node, ModulatorField::Value, value)?;
+        self.rev += 1;
+        let applied = Applied::of(self.rev, vec![event]);
+        self.publish(&applied);
+        Ok(())
+    }
+
+    /// What the engine plays a macro as when that is not what the model has (step 117: a host's modulation adds to the value that was set, and what the page and the file show is that value): `value`, held to 0 to 1, goes to the engine alone.
+    /// Refused for a node that is not a macro and for a number that is not finite.
+    pub fn set_macro_in_engine(&mut self, node: NodeId, value: f32) -> Result<(), IntentError> {
+        if !value.is_finite() {
+            return Err(invalid(format!("{value} is not a value for a macro")));
+        }
+        let path = self.model.locate(node).ok_or(IntentError::NotFound(node))?;
+        let NodePath::Modulator { at, index } = path else {
+            return Err(invalid("that node is not a macro"));
+        };
+        match self.model.modulators_mut(at).and_then(|rack| rack.get(index)).map(|modulator| &modulator.source) {
+            Some(ModSourceSlot::Macro { .. }) => {}
+            Some(_) => return Err(invalid("that node is not a macro")),
+            None => return Err(IntentError::NotFound(node)),
+        }
+        let _ = self.cmd_tx.send(macro_command(at, index, value.clamp(0.0, 1.0)));
+        Ok(())
     }
 
     /// Give a step sequencer all of its steps (`Intent::SetSteps`): each held to `STEP_MIN` to `STEP_MAX`, and what is told is what it has.
@@ -4774,6 +4824,82 @@ type = "steps"
 
     fn add(ctl: &mut Controller, parent: NodeId, kind: ModulatorKind) -> Result<Applied, IntentError> {
         ctl.apply(Intent::AddFreeModulator { kind, hears: Some(parent) })
+    }
+
+    #[test]
+    fn the_macros_are_listed_in_the_order_of_the_session_as_many_as_are_asked_for_with_the_name_and_the_value_that_each_has() {
+        let (engine, mut ctl) = controller_without_modulators();
+        sent(&engine);
+        let empty = node(&ctl, NodePath::Instrument(1));
+        for kind in [ModulatorKind::Lfo, ModulatorKind::Macro, ModulatorKind::Envelope, ModulatorKind::Macro, ModulatorKind::Macro] {
+            add(&mut ctl, empty, kind).unwrap();
+        }
+        let all = ctl.macros(usize::MAX);
+        assert_eq!(all.len(), 3, "the macros, and not the LFO or the envelope between them");
+        ctl.apply(Intent::RenameMacro { node: all[1].node, name: "Wet".to_string() }).unwrap();
+        ctl.apply(Intent::SetModulatorField { node: all[2].node, field: ModulatorField::Value, value: 0.25 }).unwrap();
+        let all = ctl.macros(usize::MAX);
+        assert_eq!(all.iter().map(|each| (each.name.as_str(), each.value)).collect::<Vec<_>>(), [("", 0.0), ("Wet", 0.0), ("", 0.25)]);
+        assert_eq!(ctl.macros(2), all[..2], "as many as are asked for, the first ones");
+        assert!(ctl.macros(0).is_empty());
+    }
+
+    #[test]
+    fn a_value_that_a_host_sets_for_a_macro_goes_to_the_model_the_engine_and_the_clients_and_is_no_step_of_the_history_and_no_change_of_the_session() {
+        let (engine, mut ctl) = controller_without_modulators();
+        let empty = node(&ctl, NodePath::Instrument(1));
+        add(&mut ctl, empty, ModulatorKind::Lfo).unwrap();
+        add(&mut ctl, empty, ModulatorKind::Macro).unwrap();
+        let (lfo, macro_node) = (ctl.model.free_modulators[0].node, ctl.macros(1)[0].node);
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = heard.clone();
+        ctl.subscribe(Box::new(move |applied: &Applied| sink.lock().unwrap().push(applied.clone())));
+        sent(&engine);
+        ctl.dirty = false;
+        let (history, rev) = (ctl.history_state(), ctl.rev);
+
+        ctl.set_macro_from_host(macro_node, 0.6).unwrap();
+        assert_eq!(ctl.macros(1)[0].value, 0.6, "the model has it");
+        assert_eq!(sent(&engine).len(), 1, "and the engine is given one macro of the new value");
+        assert_eq!(heard.lock().unwrap().iter().flat_map(|applied| applied.events.clone()).collect::<Vec<_>>(), [Event::ModulatorFieldSet { node: macro_node, field: ModulatorField::Value, value: 0.6 }], "and every client is told once");
+        assert_eq!(ctl.rev, rev + 1, "with a revision of its own");
+        assert_eq!(ctl.history_state(), history, "no step of the history");
+        assert!(!ctl.dirty, "and the session has no changes that are not saved");
+        ctl.set_macro_from_host(macro_node, 7.0).unwrap();
+        assert_eq!(ctl.macros(1)[0].value, 1.0, "held to 1, as a knob's is");
+
+        let rev = ctl.rev;
+        sent(&engine);
+        heard.lock().unwrap().clear();
+        assert!(ctl.set_macro_from_host(macro_node, f32::NAN).is_err(), "a number that is not a number is refused");
+        assert!(ctl.set_macro_from_host(lfo, 0.5).is_err(), "so is a node that is not a macro");
+        assert!(ctl.set_macro_from_host(NodeId(9999), 0.5).is_err(), "and one that is not there");
+        assert_eq!((ctl.rev, ctl.macros(1)[0].value), (rev, 1.0), "a refusal changes nothing and uses no revision");
+        assert!(sent(&engine).is_empty() && heard.lock().unwrap().is_empty() && !ctl.dirty, "nothing is sent, told or marked");
+    }
+
+    #[test]
+    fn what_the_engine_plays_a_macro_as_is_given_to_the_engine_alone_held_to_nothing_and_one_and_refused_for_what_is_not_a_macro() {
+        let (engine, mut ctl) = controller_without_modulators();
+        let empty = node(&ctl, NodePath::Instrument(1));
+        add(&mut ctl, empty, ModulatorKind::Lfo).unwrap();
+        add(&mut ctl, empty, ModulatorKind::Macro).unwrap();
+        let (lfo, macro_node) = (ctl.model.free_modulators[0].node, ctl.macros(1)[0].node);
+        let (history, rev) = (ctl.history_state(), ctl.rev);
+        sent(&engine);
+        ctl.set_macro_in_engine(macro_node, 0.4).unwrap();
+        let commands = sent(&engine);
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0].contains("Macro { value: 0.4 }"), "{commands:?}");
+        ctl.set_macro_in_engine(macro_node, 3.0).unwrap();
+        assert!(sent(&engine)[0].contains("Macro { value: 1.0 }"), "held to 1");
+        ctl.set_macro_in_engine(macro_node, -3.0).unwrap();
+        assert!(sent(&engine)[0].contains("Macro { value: 0.0 }"), "and to 0");
+        assert_eq!((ctl.macros(1)[0].value, ctl.rev, ctl.history_state()), (0.0, rev, history), "the model, the clients and the history are as they were");
+        assert!(ctl.set_macro_in_engine(macro_node, f32::INFINITY).is_err());
+        assert!(ctl.set_macro_in_engine(lfo, 0.5).is_err(), "a modulator that is not a macro is not played as one");
+        assert!(ctl.set_macro_in_engine(NodeId(9999), 0.5).is_err());
+        assert!(sent(&engine).is_empty(), "and a refusal sends nothing");
     }
 
     #[test]
