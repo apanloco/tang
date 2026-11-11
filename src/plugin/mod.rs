@@ -199,6 +199,14 @@ pub trait Plugin: Send {
         0
     }
 
+    /// The tempo that the session goes by, in beats a minute, told before each block (step 120): in a program that is a plugin in a DAW it is the DAW's (step 118), and a plugin that is hosted here and has a tempo to keep
+    /// (a delay set in beats, an LFO that follows the clock, an arpeggiator) goes by it where its format has a way to say it: CLAP and VST3 do, as the transport and the process context that the plugin is given; LV2 has none here yet.
+    /// The graph tells every plugin of every lane and bus every block, so that a plugin that comes in later is told at its first one. An adapter keeps what it was told for its next `process` and does nothing else: it is on the
+    /// audio thread and does not call into the plugin. A tempo that is not a finite number above 0 is not one to keep. The default is a plugin that has no use for it.
+    fn set_tempo(&mut self, bpm: f32) {
+        let _ = bpm;
+    }
+
     /// Whether the effect has a second audio input, and what its two inputs are called (the default is none: an effect has the one that the chain feeds, and a plugin of another format
     /// that has a sidechain gets silence there, as it did). The host gives an effect that has one a second port in its plan, which cables can end at, and calls
     /// [`Plugin::process_side`] for it.

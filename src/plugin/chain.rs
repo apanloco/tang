@@ -3519,6 +3519,25 @@ impl AudioGraph {
         self.host_beat = beat.filter(|beat| beat.is_finite());
     }
 
+    /// Tell every plugin of every lane and of every bus the tempo that the graph goes by (`Plugin::set_tempo`, step 120): the instrument of a lane, its effects, and the effects of a group's bus. Done at the start of every
+    /// block, after the commands and the host's time, so that a tempo that was set or that the host changed is in the next `process` of the plugins, and a plugin that has just come in is told before its first.
+    fn tell_the_plugins_the_tempo(&mut self) {
+        let bpm = self.bpm;
+        for lane in &mut self.instruments {
+            if let Some(instrument) = lane.instrument.as_mut() {
+                instrument.set_tempo(bpm);
+            }
+            for effect in &mut lane.effects {
+                effect.set_tempo(bpm);
+            }
+        }
+        for group in &mut self.groups {
+            for effect in &mut group.effects {
+                effect.set_tempo(bpm);
+            }
+        }
+    }
+
     /// The seed of the next modulator to come in: each has its own, so that two random LFOs do not draw the same numbers, and a graph that is made
     /// again from the same commands draws the same as it did.
     fn next_modulator_seed(&mut self) -> u32 {
@@ -4594,6 +4613,8 @@ impl AudioGraph {
         audio_out: &mut [Vec<f32>],
     ) -> anyhow::Result<()> {
         self.drain_commands();
+        // The plugins hear the tempo that the commands and the host have made it (a plugin that the commands put in is told before its first block).
+        self.tell_the_plugins_the_tempo();
 
         let frames = audio_out.first().map(|b| b.len()).unwrap_or(0);
 
@@ -5346,6 +5367,142 @@ mod tests {
         }
 
         mock_plugin_boilerplate!();
+    }
+
+    /// What a `TempoListener` has been told (`Plugin::set_tempo`): the last tempo, as the bits of the f32 (0 until it is told one), and how many times it was told. The test that made the plugin reads it after the plugin has gone to the graph.
+    #[derive(Clone, Default)]
+    struct Told {
+        bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        times: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Told {
+        fn tempo(&self) -> f32 {
+            f32::from_bits(self.bits.load(std::sync::atomic::Ordering::Relaxed))
+        }
+        fn times(&self) -> usize {
+            self.times.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    /// A plugin that keeps what it is told of the tempo: an instrument that plays a constant, or an effect that passes what it is given.
+    struct TempoListener {
+        instrument: bool,
+        told: Told,
+    }
+
+    impl Plugin for TempoListener {
+        fn name(&self) -> &str {
+            "TempoListener"
+        }
+        fn is_instrument(&self) -> bool {
+            self.instrument
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            if self.instrument { 0 } else { 2 }
+        }
+
+        fn set_tempo(&mut self, bpm: f32) {
+            self.told.bits.store(bpm.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            self.told.times.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        fn process(&mut self, _: &[(u64, [u8; 3])], audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            for (i, out) in audio_out.iter_mut().enumerate() {
+                match audio_in.get(i) {
+                    Some(input) => out.copy_from_slice(input),
+                    None => out.fill(0.1),
+                }
+            }
+            Ok(())
+        }
+
+        mock_plugin_boilerplate!();
+    }
+
+    fn tempo_listener(instrument: bool) -> (Box<dyn Plugin>, Told) {
+        let told = Told::default();
+        (Box::new(TempoListener { instrument, told: told.clone() }), told)
+    }
+
+    #[test]
+    fn every_plugin_of_the_graph_is_told_the_tempo_before_each_block_the_instrument_of_a_lane_its_effects_a_lane_with_no_instrument_and_the_effects_of_a_bus() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        graph.instruments.push(InstrumentLane::new(lane_node(1)));
+        let (instrument, instrument_told) = tempo_listener(true);
+        let (effect, effect_told) = tempo_listener(false);
+        let (bare, bare_told) = tempo_listener(false);
+        let (bus, bus_told) = tempo_listener(false);
+        swap_instrument(&cmd_tx, instrument);
+        insert_effect(&cmd_tx, 0, effect, 1.0);
+        cmd_tx.send(GraphCommand::InsertEffect { inst: 1, index: 0, effect: bare, mix: 1.0, node: effect_node(1, 0) }).unwrap();
+        cmd_tx.send(GraphCommand::AddGroup { node: group_node(0) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneGroup { inst: 0, group: Some(0) }).unwrap();
+        cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 0, effect: bus, mix: 1.0, node: bus_effect_node(0, 0) }).unwrap();
+        let all = [&instrument_told, &effect_told, &bare_told, &bus_told];
+        assert!(all.iter().all(|told| told.times() == 0), "nothing is told before a block");
+        let mut out = make_output();
+        graph.process(&[note_on(60)], &mut out).unwrap();
+        for told in all {
+            assert_eq!((told.tempo(), told.times()), (DEFAULT_BPM, 1), "the tempo a graph begins with, once");
+        }
+        graph.process(&[], &mut out).unwrap();
+        for told in all {
+            assert_eq!(told.times(), 2, "and again with every block");
+        }
+    }
+
+    #[test]
+    fn the_tempo_that_is_told_is_the_one_that_the_graph_goes_by_whoever_set_it_the_session_or_the_host() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (instrument, told) = tempo_listener(true);
+        swap_instrument(&cmd_tx, instrument);
+        let mut out = make_output();
+        cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: 90.0 }).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!(told.tempo(), 90.0, "the session's");
+        graph.set_host_time(Some(140.0), None);
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!(told.tempo(), 140.0, "the host's, in the block that it was said before");
+        // A host that says no tempo in a block (it says where it is and nothing else) leaves the graph at the last, and so the plugins.
+        graph.set_host_time(None, Some(8.0));
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!(told.tempo(), 140.0);
+    }
+
+    #[test]
+    fn a_tempo_that_is_not_a_tempo_is_not_told_and_the_plugins_go_on_at_the_last() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (instrument, told) = tempo_listener(true);
+        swap_instrument(&cmd_tx, instrument);
+        let mut out = make_output();
+        graph.set_host_time(Some(100.0), None);
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!(told.tempo(), 100.0);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -20.0] {
+            graph.set_host_time(Some(bad), None);
+            graph.process(&[], &mut out).unwrap();
+            assert_eq!(told.tempo(), 100.0, "{bad} is no tempo");
+        }
+        cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: f32::NAN }).unwrap();
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!(told.tempo(), 100.0, "nor is it one that a command carries");
+    }
+
+    #[test]
+    fn a_plugin_that_comes_in_later_is_told_the_tempo_at_its_first_block_and_not_before() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        graph.set_host_time(Some(75.0), None);
+        let mut out = make_output();
+        graph.process(&[], &mut out).unwrap();
+        let (effect, told) = tempo_listener(false);
+        insert_effect(&cmd_tx, 0, effect, 1.0);
+        assert_eq!(told.times(), 0, "a command that is not drained yet has told it nothing");
+        graph.process(&[], &mut out).unwrap();
+        assert_eq!((told.tempo(), told.times()), (75.0, 1), "the tempo the graph goes by, at the first block it is in");
     }
 
     #[test]

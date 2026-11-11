@@ -3516,6 +3516,7 @@ dependencies = [
  "clack-extensions",
  "clack-finder",
  "clack-host",
+ "clack-plugin",
  "clap",
  "core-foundation",
  "cpal",
