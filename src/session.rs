@@ -1350,6 +1350,12 @@ pub fn resolve_plugin_path(plugin_source: &str, session_dir: &Path) -> String {
     if plugin_source.contains(':') {
         return plugin_source.to_string();
     }
+    // A bare CLAP id (`com.vendor.plugin`: dots, no slashes, and not the name of a bundle) is not a path: `plugin::autodetect` knows it. (Saved as it is, it was
+    // joined with the session's directory and then refused as an unknown format: f200.)
+    let bundle = [".clap", ".lv2", ".vst3"].iter().any(|ext| plugin_source.ends_with(ext));
+    if plugin_source.contains('.') && !plugin_source.contains('/') && !bundle {
+        return plugin_source.to_string();
+    }
     // Absolute paths pass through
     let p = Path::new(plugin_source);
     if p.is_absolute() {
@@ -2406,6 +2412,41 @@ fn inline_remap_entries(input: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_clap_id_is_not_made_a_path_and_a_relative_bundle_still_is() {
+        let dir = Path::new("/songs");
+        for id in ["io.github.apanloco.fractal-osc", "com.rustsynth.acid303", "org.surge-synth-team.surge-xt"] {
+            assert_eq!(resolve_plugin_path(id, dir), id, "{id}");
+        }
+        for same in ["builtin:osc", "clap:com.u-he.diva", "vst3:Pianoteq 9", "/usr/lib/clap/diva.clap"] {
+            assert_eq!(resolve_plugin_path(same, dir), same, "{same}");
+        }
+        assert_eq!(resolve_plugin_path("diva.clap", dir), "/songs/diva.clap");
+        assert_eq!(resolve_plugin_path("plugins/diva.clap", dir), "/songs/plugins/diva.clap");
+        // What has a slash is a path whatever dots it has (a folder that is called `my.plugins`), and a name with no dot at all is one too: a bare id is dots and no slash.
+        assert_eq!(resolve_plugin_path("my.plugins/synth", dir), "/songs/my.plugins/synth");
+        assert_eq!(resolve_plugin_path("synth", dir), "/songs/synth");
+        // (A bundle is told by its extension, as `plugin::autodetect` tells it; a bundle that is written as a folder has a slash at its end, which is a path too.)
+        assert_eq!(resolve_plugin_path("diva.vst3/", dir), "/songs/diva.vst3/");
+        assert_eq!(resolve_plugin_path("diva.vst3", dir), "/songs/diva.vst3");
+        assert_eq!(resolve_plugin_path("diva.lv2", dir), "/songs/diva.lv2");
+    }
+
+    /// What the loader does with the name of a plugin in a file is `resolve_plugin_path` and then `plugin::autodetect::resolve`: a bare id has to come out of the two as the CLAP plugin that it names (f200: the first made it a path in the
+    /// session's folder, and the second refused that as an unknown format), and a file that a session was saved as, with the id as the model had it, loads again.
+    #[test]
+    fn a_bare_clap_id_in_a_file_comes_out_of_the_loaders_two_steps_as_the_plugin_it_names() {
+        use crate::plugin::PluginType;
+        let dir = Path::new("/songs");
+        for id in ["io.github.dac2k9.sond", "com.rustsynth.acid303", "org.surge-synth-team.surge-xt"] {
+            let (kind, source) = crate::plugin::autodetect::resolve(&resolve_plugin_path(id, dir)).unwrap_or_else(|why| panic!("{id}: {why}"));
+            assert_eq!((kind, source), (PluginType::Clap, format!("clap:{id}")), "{id}");
+        }
+        // A relative bundle is still found in the session's folder, which is a path that the second step takes.
+        let (kind, source) = crate::plugin::autodetect::resolve(&resolve_plugin_path("diva.clap", dir)).unwrap();
+        assert_eq!((kind, source.as_str()), (PluginType::Clap, "/songs/diva.clap"));
+    }
 
     #[test]
     fn a_session_given_by_a_relative_path_is_known_by_an_absolute_one() {
