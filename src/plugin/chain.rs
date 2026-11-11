@@ -12,8 +12,9 @@ pub(crate) use nodes::ceiling_level;
 use crate::ids::{Driven, EdgeId, ModGain, ModSetting, NodeId};
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
+use crate::patternbox::{self, BoxNotification, BoxPlan, BoxPlayer, Click, Tick};
 use crate::session::{self, RemapTarget, Route};
-use crate::source::{Events, MAX_SOURCES, Source, SourceSet};
+use crate::source::{Events, MAX_BOXES, MAX_SOURCES, Source, SourceSet};
 use crate::telemetry::{self, Meter, MeterSlots, Slot, Telemetry};
 
 mod limiter;
@@ -2011,6 +2012,68 @@ pub enum GraphCommand {
         id: EdgeId,
         gain: f32,
     },
+    /// Put a pattern box in the graph (P4h of `docs/patch-graph.md` §11.6): `player` is made where memory may be asked for (it has all the room that it needs), and its notes are heard, as those of the source that it was made
+    /// with (`Source::pattern`), by the lanes that hear that source (`SetLaneSources`: no lane hears a box until it is told to). A box that is there under `node` is replaced, and the lanes let go of what it had sounding; more than
+    /// `MAX_BOXES` are not taken.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+    AddBox {
+        node: NodeId,
+        player: Box<BoxPlayer>,
+    },
+    /// Take a pattern box out: the lanes that heard it let go of what it had sounding.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+    RemoveBox {
+        node: NodeId,
+    },
+    /// A box's notes and length, made ready (`BoxPlan::new`): what it has sounding is let go of, and it goes on from where it is.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+    SetBoxPlan {
+        node: NodeId,
+        plan: Box<BoxPlan>,
+    },
+    /// What a box is set to: whether it loops, whose beat it goes by, whether a recording keeps what is there, whether it clicks, and the sources that it records.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+    SetBoxSettings {
+        node: NodeId,
+        settings: patternbox::Settings,
+    },
+    /// A box's transport: play, stop, record, and finish a recording.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+    BoxTransport {
+        node: NodeId,
+        action: BoxAction,
+    },
+}
+
+/// What a pattern box is told to do (`GraphCommand::BoxTransport`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+pub enum BoxAction {
+    /// Play from the start (own clock) or with the host's beat, if it is stopped.
+    Play,
+    /// Stop, and let go of what sounds; a pass that is going on is lost.
+    Stop,
+    /// Count in and take one pass (or pass after pass, if it overdubs).
+    Record,
+    /// The pass that is going on is the last (a count-in, or a wait, is given up).
+    FinishRecording,
+}
+
+/// A pattern box in the graph: the player, and what the controller was last told of what it is doing.
+struct BoxSlot {
+    node: NodeId,
+    player: Box<BoxPlayer>,
+    status: patternbox::Status,
+}
+
+/// How many events the room for a block's events with the boxes' notes merged in starts with, so that merging asks the allocator for nothing once it runs.
+const BOX_MERGE_CAPACITY: usize = 8192;
+
+/// Room for the block's events with the pattern boxes' notes merged in (`AudioGraph::run_boxes`). It is taken out of the graph for a block, and put back.
+#[derive(Default)]
+struct BoxMerge {
+    events: Vec<(u64, [u8; 3])>,
+    sources: Vec<Source>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3473,6 +3536,15 @@ pub struct AudioGraph {
     bpm: f32,
     /// Where the host is, in beats, at the start of the block that is rendered, while it plays (`set_host_time`): none for a program that is not in a host, and for one that is stopped or does not say.
     host_beat: Option<f64>,
+    /// The pattern boxes (P4h): each plays its notes and records what it hears, as a source of notes of its own (`run_boxes`).
+    boxes: Vec<BoxSlot>,
+    /// Room for what the boxes make, and for the block's events with it merged in.
+    box_merge: BoxMerge,
+    /// Where the controller is told what a box has recorded and what it is doing; `None` tells nobody.
+    box_tx: Option<Sender<BoxNotification>>,
+    /// The metronome of a recording that is counted in, and the ticks of the block that is run (the boxes' own, in order of their frames).
+    click: Click,
+    click_ticks: Vec<Tick>,
 }
 
 impl AudioGraph {
@@ -3507,6 +3579,11 @@ impl AudioGraph {
             modulator_seeds: 0,
             bpm: DEFAULT_BPM,
             host_beat: None,
+            boxes: Vec::new(),
+            box_merge: BoxMerge::default(),
+            box_tx: None,
+            click: Click::default(),
+            click_ticks: Vec::with_capacity(256),
         }
     }
 
@@ -3595,6 +3672,84 @@ impl AudioGraph {
                 });
             }
         }
+    }
+
+    /// Set the channel on which the pattern boxes tell what they have recorded and what they are doing (`BoxNotification`).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+    pub fn set_box_tx(&mut self, tx: Sender<BoxNotification>) {
+        self.box_tx = Some(tx);
+    }
+
+    /// Every lane lets go of what it has sounding from `source`, a few events a block (`GraphCommand::ReleaseSource`).
+    fn release_source_in_lanes(&mut self, source: Source) {
+        for lane in &mut self.instruments {
+            lane.releasing = lane.releasing.with(source);
+        }
+    }
+
+    /// The pattern boxes, for one block of `frames` frames: each runs, taking from the events of the inputs the notes of the sources that it records (while it records), and what the boxes play is merged into the block's events,
+    /// by frame (at one frame, the inputs' first, and then the boxes in the order they are in), each with the source of its box, so that the lanes that hear a box play it as they play a key. A block in which no box plays
+    /// anything is given back as it came. What the controller is to be told is sent from here: a pass of recording that ended (with the notes the box has now: the one allocation that a pass makes) and a change of what a box
+    /// is doing. The ticks of the metronome are gathered for `click`.
+    fn run_boxes<'a>(&mut self, input: Events<'a>, frames: usize, merge: &'a mut BoxMerge) -> Events<'a> {
+        let block = patternbox::Block { frames, sample_rate: self.graph_sample_rate(), bpm: self.bpm, host_beat: self.host_beat };
+        for slot in &mut self.boxes {
+            slot.player.process(&block, input.iter());
+            for &tick in slot.player.ticks() {
+                if self.click_ticks.len() < self.click_ticks.capacity() {
+                    self.click_ticks.push(tick);
+                }
+            }
+            if let Some(tx) = &self.box_tx {
+                if slot.player.take_finished() {
+                    let _ = tx.try_send(BoxNotification::Recorded { node: slot.node, notes: slot.player.notes().to_vec() });
+                }
+                let status = slot.player.status();
+                if status != slot.status {
+                    slot.status = status;
+                    let _ = tx.try_send(BoxNotification::Status { node: slot.node, status });
+                }
+            } else {
+                slot.player.take_finished();
+                slot.status = slot.player.status();
+            }
+        }
+        self.click_ticks.sort_unstable_by_key(|tick| tick.frame);
+        if self.boxes.iter().all(|slot| slot.player.events().is_empty()) {
+            return input;
+        }
+        // A merge of the inputs' events and of each box's (each is in the order of its frames): the lowest frame goes next, and the inputs' go before a box's at one frame, and a box's before a later box's.
+        merge.events.clear();
+        merge.sources.clear();
+        let mut at = [0usize; MAX_BOXES];
+        let mut inputs = input.iter().peekable();
+        loop {
+            let mut next_box: Option<(u64, usize)> = None;
+            for (nth, slot) in self.boxes.iter().enumerate() {
+                if let Some(event) = slot.player.events().get(at[nth]) {
+                    if next_box.is_none_or(|(frame, _)| event.frame < frame) {
+                        next_box = Some((event.frame, nth));
+                    }
+                }
+            }
+            let box_goes_first = match (inputs.peek(), next_box) {
+                (_, None) => false,
+                (None, Some(_)) => true,
+                (Some(&(_, frame, _)), Some((box_frame, _))) => box_frame < frame,
+            };
+            if let (true, Some((_, nth))) = (box_goes_first, next_box) {
+                let event = self.boxes[nth].player.events()[at[nth]];
+                at[nth] += 1;
+                merge.events.push((event.frame, event.bytes));
+                merge.sources.push(self.boxes[nth].player.source());
+            } else if let Some((source, frame, bytes)) = inputs.next() {
+                merge.events.push((frame, bytes));
+                merge.sources.push(source);
+            } else {
+                break;
+            }
+        }
+        Events::new(&merge.events, &merge.sources)
     }
 
     /// Set the notification channel for pattern recording completion.
@@ -4136,9 +4291,43 @@ impl AudioGraph {
                         lane.hear(sources);
                     }
                 }
-                GraphCommand::ReleaseSource { source } => {
-                    for lane in &mut self.instruments {
-                        lane.releasing = lane.releasing.with(source);
+                GraphCommand::ReleaseSource { source } => self.release_source_in_lanes(source),
+                GraphCommand::AddBox { node, player } => {
+                    if self.boxes.iter().any(|slot| slot.node == node) {
+                        log::warn!("pattern box {node:?} is already in the graph: not added again");
+                    } else if self.boxes.len() >= MAX_BOXES {
+                        log::warn!("pattern box not added: the graph has {MAX_BOXES} already");
+                    } else {
+                        self.boxes.push(BoxSlot { node, player, status: patternbox::Status::Stopped });
+                        // The room for the merged events is made here, with the command, and not in a block.
+                        self.box_merge.events.reserve(BOX_MERGE_CAPACITY);
+                        self.box_merge.sources.reserve(BOX_MERGE_CAPACITY);
+                    }
+                }
+                GraphCommand::RemoveBox { node } => {
+                    if let Some(at) = self.boxes.iter().position(|slot| slot.node == node) {
+                        let slot = self.boxes.remove(at);
+                        self.release_source_in_lanes(slot.player.source());
+                    }
+                }
+                GraphCommand::SetBoxPlan { node, plan } => {
+                    if let Some(slot) = self.boxes.iter_mut().find(|slot| slot.node == node) {
+                        slot.player.set_plan(*plan);
+                    }
+                }
+                GraphCommand::SetBoxSettings { node, settings } => {
+                    if let Some(slot) = self.boxes.iter_mut().find(|slot| slot.node == node) {
+                        slot.player.set_settings(settings);
+                    }
+                }
+                GraphCommand::BoxTransport { node, action } => {
+                    if let Some(slot) = self.boxes.iter_mut().find(|slot| slot.node == node) {
+                        match action {
+                            BoxAction::Play => slot.player.play(),
+                            BoxAction::Stop => slot.player.stop(),
+                            BoxAction::Record => slot.player.record(),
+                            BoxAction::FinishRecording => slot.player.finish_recording(),
+                        }
                     }
                 }
                 GraphCommand::SetLaneRoute { inst, route } => {
@@ -4609,7 +4798,7 @@ impl AudioGraph {
     /// which reach across lanes and groups and so are not nodes yet (P5); and the plan, run.
     pub fn process_events(
         &mut self,
-        midi_events: Events<'_>,
+        input_events: Events<'_>,
         audio_out: &mut [Vec<f32>],
     ) -> anyhow::Result<()> {
         self.drain_commands();
@@ -4617,6 +4806,12 @@ impl AudioGraph {
         self.tell_the_plugins_the_tempo();
 
         let frames = audio_out.first().map(|b| b.len()).unwrap_or(0);
+
+        // The pattern boxes (P4h) run for this block: they take what the inputs play, while they record, and what they play is among the events from here on, as the notes of their own sources. With none, the events are
+        // the inputs' as they came. (The room for what the boxes make is taken out of the graph for the block, and put back before the block's end.)
+        self.click_ticks.clear();
+        let mut merge = std::mem::take(&mut self.box_merge);
+        let midi_events = if self.boxes.is_empty() || frames == 0 { input_events } else { self.run_boxes(input_events, frames, &mut merge) };
 
         // How far a meter's peak falls over this buffer, if anything is measured.
         let fall = self
@@ -4693,6 +4888,8 @@ impl AudioGraph {
             };
             self.schedule.run(&mut self.instruments, &mut self.groups, &mut self.master, frames, &mut cx)
         };
+        // The room for the boxes' notes goes back (the events that it held are done with).
+        self.box_merge = merge;
         // A lane that a modulator hears had its notes worked out ahead of its head, which takes them and forgets it: a block that ended early (a plugin that failed) did not reach the heads
         // after it, and they are not prepared for the next block, whose notes are others.
         if !self.free_modulators.is_empty() {
@@ -4701,6 +4898,12 @@ impl AudioGraph {
             }
         }
         ran?;
+
+        // The metronome of a recording that is counted in, which the boxes tick: added to the output (after the limiter: a click is not the music), and over the end of the block if it is not over.
+        if !self.click_ticks.is_empty() || !self.click.is_idle() {
+            let sample_rate = self.graph_sample_rate();
+            self.click.render(&self.click_ticks, sample_rate, audio_out);
+        }
 
         // A cable that was told to go has gone down to nothing over this block: it leaves the plan now, so that the block that took the command is the one that makes the plan again
         // (and asks for memory, as every command that changes the wiring does) and the blocks after it have nothing to make.
@@ -9060,10 +9263,20 @@ mod tests {
             (Source::KEYS, [0x90, 60, 100]),
             (DEVICE_A, [0x90, 62, 100]),
             (DEVICE_B, [0x90, 64, 100]),
-            (Source::LAST, [0x90, 66, 100]),
+            (Source::LAST_INPUT, [0x90, 66, 100]),
             (Source::BROADCAST, [0xB0, 123, 0]),
         ];
         assert_eq!(heard_by(&mut lane, &block), block.map(|(_, bytes)| bytes));
+    }
+
+    #[test]
+    fn a_lane_hears_no_pattern_box_until_its_set_has_the_box() {
+        let mut lane = InstrumentLane::new(test_node());
+        let box_a = Source::pattern(0);
+        let block = [(Source::KEYS, [0x90, 60, 100]), (box_a, [0x90, 72, 100]), (Source::pattern(1), [0x90, 74, 100])];
+        assert_eq!(heard_by(&mut lane, &block), [[0x90, 60, 100]], "a box's notes are heard where a cable takes them: a lane that is told nothing hears the inputs");
+        lane.hear(SourceSet::ALL.with(box_a));
+        assert_eq!(heard_by(&mut lane, &block), [[0x90, 60, 100], [0x90, 72, 100]], "the box that its set has, and not the other");
     }
 
     #[test]
@@ -9437,6 +9650,427 @@ mod tests {
             }
         });
         assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+    }
+
+    // ---- pattern boxes (P4h): what the engine does with them ----------------------------------------------------------------------------
+
+    /// How many blocks of `FRAMES` frames are a beat, at 120 beats a minute and 48 kHz.
+    const BLOCKS_A_BEAT: usize = 375;
+    /// How many beats a block of `FRAMES` frames is.
+    const BEATS_A_BLOCK: f64 = FRAMES as f64 * 120.0 / 60.0 / 48_000.0;
+
+    fn box_node(nth: usize) -> NodeId {
+        NodeId(700 + nth as u32)
+    }
+
+    fn box_note(start: f32, length: f32, note: u8) -> patternbox::BoxNote {
+        patternbox::BoxNote { start, length, note, velocity: 100 }
+    }
+
+    /// Put box `nth` in, with this loop and these notes (its source is `Source::pattern(nth)`).
+    fn add_box(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, nth: usize, length: f32, notes: &[patternbox::BoxNote]) {
+        let mut player = BoxPlayer::new(Source::pattern(nth));
+        player.set_plan(BoxPlan::new(length, notes));
+        cmd_tx.send(GraphCommand::AddBox { node: box_node(nth), player: Box::new(player) }).unwrap();
+    }
+
+    fn transport(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, nth: usize, action: BoxAction) {
+        cmd_tx.send(GraphCommand::BoxTransport { node: box_node(nth), action }).unwrap();
+    }
+
+    /// What an `EventKeeper` has been given: the number of the block, the frame and the bytes of each event.
+    type Seen = Arc<std::sync::Mutex<Vec<(usize, u64, [u8; 3])>>>;
+
+    /// Test instrument that keeps the events it is given.
+    struct EventKeeper {
+        seen: Seen,
+        block: usize,
+    }
+
+    impl EventKeeper {
+        #[expect(clippy::new_ret_no_self, reason = "test helper returns trait object")]
+        fn new() -> (Box<dyn Plugin>, Seen) {
+            let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+            (Box::new(Self { seen: Arc::clone(&seen), block: 0 }), seen)
+        }
+    }
+
+    impl Plugin for EventKeeper {
+        fn name(&self) -> &str {
+            "EventKeeper"
+        }
+        fn is_instrument(&self) -> bool {
+            true
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            0
+        }
+
+        fn process(&mut self, midi_events: &[(u64, [u8; 3])], _audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            let mut seen = self.seen.lock().unwrap();
+            for &(frame, bytes) in midi_events {
+                seen.push((self.block, frame, bytes));
+            }
+            self.block += 1;
+            for out in audio_out.iter_mut() {
+                out.fill(0.0);
+            }
+            Ok(())
+        }
+
+        mock_plugin_boilerplate!();
+    }
+
+    #[test]
+    fn a_box_plays_the_lanes_that_hear_it_and_only_those_and_what_it_plays_ends_with_the_note() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5); // hears every input, and no box
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[Source::pattern(0)]) }).unwrap();
+        add_box(&cmd_tx, 0, 2.0, &[box_note(0.0, 1.0, 60)]);
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.0, "a box that is not playing makes no sound");
+        transport(&cmd_tx, 0, BoxAction::Play);
+        let levels: Vec<f32> = (0..BLOCKS_A_BEAT + 5).map(|_| the_one_level(&process_from(&mut graph, &[]))).collect();
+        assert!(levels[..BLOCKS_A_BEAT].iter().all(|&level| level == 0.25), "the lane that hears the box plays its note for a beat, and the other lane does not");
+        assert!(levels[BLOCKS_A_BEAT..].iter().all(|&level| level == 0.0), "and the note ends where it does");
+    }
+
+    #[test]
+    fn a_box_that_is_stopped_or_taken_out_is_let_go_of_by_the_lanes_that_heard_it() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[Source::pattern(0)]) }).unwrap();
+        add_box(&cmd_tx, 0, 4.0, &[box_note(0.0, 3.0, 60)]);
+        transport(&cmd_tx, 0, BoxAction::Play);
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.25);
+        transport(&cmd_tx, 0, BoxAction::Stop);
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.0, "the box lets go of its note in the first block after it was stopped");
+        transport(&cmd_tx, 0, BoxAction::Play);
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.25, "and plays again from its start");
+        cmd_tx.send(GraphCommand::RemoveBox { node: box_node(0) }).unwrap();
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.0, "a box that is taken out is let go of by the lanes");
+        assert!(graph.boxes.is_empty());
+    }
+
+    #[test]
+    fn the_notes_of_a_box_are_merged_with_the_inputs_by_frame_and_each_lane_hears_the_sources_it_has() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (keys_only, seen_keys) = EventKeeper::new();
+        swap_instrument(&cmd_tx, keys_only);
+        let (box_only, seen_box) = EventKeeper::new();
+        graph.instruments.push(InstrumentLane::new(lane_node(1)));
+        swap_instrument_at(&cmd_tx, 1, box_only);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[Source::pattern(0)]) }).unwrap();
+        let (both, seen_both) = EventKeeper::new();
+        graph.instruments.push(InstrumentLane::new(lane_node(2)));
+        swap_instrument_at(&cmd_tx, 2, both);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 2, sources: SourceSet::ALL.with(Source::pattern(0)) }).unwrap();
+        // The box plays 60 from half a frame after the tenth frame of the block, for 24 frames.
+        add_box(&cmd_tx, 0, 4.0, &[box_note(0.000_437_5, 0.001, 60)]);
+        transport(&cmd_tx, 0, BoxAction::Play);
+
+        let list = [(5, [0x90, 62, 100]), (10, [0x90, 64, 100]), (12, [0x80, 62, 0])];
+        let mut out = make_output();
+        graph.process_events(Events::new(&list, &[Source::KEYS; 3]), &mut out).unwrap();
+        assert_eq!(*seen_keys.lock().unwrap(), [(0, 5, [0x90, 62, 100]), (0, 10, [0x90, 64, 100]), (0, 12, [0x80, 62, 0])], "a lane that hears the inputs hears no box");
+        assert_eq!(*seen_box.lock().unwrap(), [(0, 10, [0x90, 60, 100]), (0, 34, [0x80, 60, 0])], "a lane that hears the box hears no key");
+        assert_eq!(
+            *seen_both.lock().unwrap(),
+            [(0, 5, [0x90, 62, 100]), (0, 10, [0x90, 64, 100]), (0, 10, [0x90, 60, 100]), (0, 12, [0x80, 62, 0]), (0, 34, [0x80, 60, 0])],
+            "a lane that hears both has them in the order of their frames, and at one frame the keys first"
+        );
+    }
+
+    #[test]
+    fn a_box_that_records_through_the_graph_tells_the_controller_what_it_took_and_what_it_is_doing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        graph.set_box_tx(tx);
+        add_box(&cmd_tx, 0, 1.0, &[box_note(0.0, 0.5, 72)]);
+        transport(&cmd_tx, 0, BoxAction::Record);
+        let mut told = Vec::new();
+        for block in 0..5 * BLOCKS_A_BEAT {
+            // Four beats of count-in, and then a pass of one beat, with a key down at the 94th block of it and up at the 188th.
+            let in_the_pass = block.checked_sub(4 * BLOCKS_A_BEAT);
+            let keys: Vec<(Source, [u8; 3])> = match in_the_pass {
+                Some(94) => vec![(Source::KEYS, [0x90, 60, 90])],
+                Some(188) => vec![(Source::KEYS, [0x80, 60, 0])],
+                _ => Vec::new(),
+            };
+            process_from(&mut graph, &keys);
+            told.extend(rx.try_iter());
+        }
+        use patternbox::Status::{CountingIn, Playing, Recording};
+        let [BoxNotification::Status { status: first, .. }, BoxNotification::Status { status: second, .. }, BoxNotification::Recorded { node, notes }, BoxNotification::Status { status: last, .. }] = &told[..] else {
+            panic!("{told:?}");
+        };
+        assert_eq!((*first, *second, *last), (CountingIn, Recording, Playing));
+        assert_eq!(*node, box_node(0));
+        let [taken] = &notes[..] else { panic!("{notes:?}") };
+        assert!((f64::from(taken.start) - 94.0 * BEATS_A_BLOCK).abs() < 1e-4 && (f64::from(taken.length) - 94.0 * BEATS_A_BLOCK).abs() < 1e-4, "{taken:?}");
+        assert_eq!((taken.note, taken.velocity), (60, 90), "and the note that the box had is gone");
+        assert_eq!(graph.boxes[0].player.notes().len(), 1);
+    }
+
+    #[test]
+    fn a_recording_that_overdubs_goes_on_until_the_graph_is_told_to_finish_it() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        graph.set_box_tx(tx);
+        add_box(&cmd_tx, 0, 1.0, &[]);
+        cmd_tx.send(GraphCommand::SetBoxSettings { node: box_node(0), settings: patternbox::Settings { overdub: true, click: false, ..patternbox::Settings::default() } }).unwrap();
+        transport(&cmd_tx, 0, BoxAction::Record);
+        // The count-in, and three passes of one beat each.
+        for _ in 0..7 * BLOCKS_A_BEAT {
+            process_from(&mut graph, &[]);
+        }
+        let recorded = |told: &[BoxNotification]| told.iter().filter(|told| matches!(told, BoxNotification::Recorded { .. })).count();
+        let told: Vec<BoxNotification> = rx.try_iter().collect();
+        assert_eq!(recorded(&told), 3, "a pass that overdubs is followed by another: {told:?}");
+        assert_eq!(graph.boxes[0].player.status(), patternbox::Status::Recording);
+
+        // Told to finish half way through the fourth pass, it ends that pass, which is the last, and plays.
+        for _ in 0..BLOCKS_A_BEAT / 2 {
+            process_from(&mut graph, &[]);
+        }
+        transport(&cmd_tx, 0, BoxAction::FinishRecording);
+        process_from(&mut graph, &[]);
+        assert_eq!(graph.boxes[0].player.status(), patternbox::Status::Recording, "the pass that is going on is finished first");
+        for _ in 0..BLOCKS_A_BEAT / 2 {
+            process_from(&mut graph, &[]);
+        }
+        let told: Vec<BoxNotification> = rx.try_iter().collect();
+        assert_eq!(recorded(&told), 1);
+        assert_eq!(graph.boxes[0].player.status(), patternbox::Status::Playing);
+    }
+
+    #[test]
+    fn a_recording_that_is_counted_in_clicks_into_the_output_and_one_with_the_click_off_or_no_recording_does_not() {
+        let sound_of_first_block = |click: bool, record: bool| {
+            let (mut graph, cmd_tx, _rr) = make_graph(2);
+            add_box(&cmd_tx, 0, 1.0, &[]);
+            cmd_tx.send(GraphCommand::SetBoxSettings { node: box_node(0), settings: patternbox::Settings { click, ..patternbox::Settings::default() } }).unwrap();
+            if record {
+                transport(&cmd_tx, 0, BoxAction::Record);
+            }
+            process_from(&mut graph, &[]).iter().flatten().any(|&sample| sample != 0.0)
+        };
+        assert!(sound_of_first_block(true, true), "the first tick of the count-in is in the first block");
+        assert!(!sound_of_first_block(false, true));
+        assert!(!sound_of_first_block(true, false));
+
+        // And the click does not stop at the end of the block that began it.
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        add_box(&cmd_tx, 0, 1.0, &[]);
+        transport(&cmd_tx, 0, BoxAction::Record);
+        process_from(&mut graph, &[]);
+        assert!(process_from(&mut graph, &[]).iter().flatten().any(|&sample| sample != 0.0), "a click is 25 ms, which is more than one block of 64 frames");
+        for _ in 0..30 {
+            process_from(&mut graph, &[]);
+        }
+        assert!(process_from(&mut graph, &[]).iter().flatten().all(|&sample| sample == 0.0), "and it is over, and does not begin again until the next beat");
+    }
+
+    #[test]
+    fn a_box_does_not_record_what_another_box_plays_even_if_it_is_told_to_hear_its_source() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        add_box(&cmd_tx, 0, 1.0, &[box_note(0.0, 0.9, 60)]);
+        add_box(&cmd_tx, 1, 1.0, &[]);
+        cmd_tx.send(GraphCommand::SetBoxSettings { node: box_node(1), settings: patternbox::Settings { inputs: SourceSet::ALL.with(Source::pattern(0)), ..patternbox::Settings::default() } }).unwrap();
+        transport(&cmd_tx, 0, BoxAction::Play);
+        transport(&cmd_tx, 1, BoxAction::Record);
+        for _ in 0..5 * BLOCKS_A_BEAT {
+            process_from(&mut graph, &[(Source::KEYS, [0xB0, 1, 64])]);
+        }
+        assert_eq!(graph.boxes[1].player.status(), patternbox::Status::Playing, "its pass is over");
+        assert!(graph.boxes[1].player.notes().is_empty(), "and it took nothing: a box hears the inputs, whatever its set says");
+    }
+
+    #[test]
+    fn the_notes_of_two_boxes_and_the_inputs_are_merged_by_frame_and_at_one_frame_the_inputs_go_first_and_then_the_boxes_in_order() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (keeper, seen) = EventKeeper::new();
+        swap_instrument(&cmd_tx, keeper);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: SourceSet::ALL.with(Source::pattern(0)).with(Source::pattern(1)) }).unwrap();
+        // Frames are 2/48000 of a beat. The first box plays 60 from frame 10.5 to 30.5 and 61 from 40.5 to 50.5; the second 62 from 20.5 to 30.5 (its end is at the frame where the first box's note ends)
+        // and 63 from 40.5 to 44.5 (it begins where the first box's second note does).
+        let frame = 2.0 / 48_000.0;
+        let at = |frames: f64| (frames * frame) as f32;
+        add_box(&cmd_tx, 0, 4.0, &[box_note(at(10.5), at(20.0), 60), box_note(at(40.5), at(10.0), 61)]);
+        add_box(&cmd_tx, 1, 4.0, &[box_note(at(20.5), at(10.0), 62), box_note(at(40.5), at(4.0), 63)]);
+        transport(&cmd_tx, 1, BoxAction::Play);
+        transport(&cmd_tx, 0, BoxAction::Play);
+        let list = [(25, [0x90, 70, 100]), (30, [0x80, 70, 0]), (40, [0xB0, 1, 9])];
+        let mut out = make_output();
+        graph.process_events(Events::new(&list, &[Source::KEYS; 3]), &mut out).unwrap();
+        let seen = seen.lock().unwrap();
+        let frames_and_bytes: Vec<(u64, [u8; 3])> = seen.iter().map(|&(_, frame, bytes)| (frame, bytes)).collect();
+        assert_eq!(
+            frames_and_bytes,
+            [
+                (10, [0x90, 60, 100]),
+                (20, [0x90, 62, 100]),
+                (25, [0x90, 70, 100]),
+                (30, [0x80, 70, 0]),
+                (30, [0x80, 60, 0]),
+                (30, [0x80, 62, 0]),
+                (40, [0xB0, 1, 9]),
+                (40, [0x90, 61, 100]),
+                (40, [0x90, 63, 100]),
+                (44, [0x80, 63, 0]),
+                (50, [0x80, 61, 0]),
+            ],
+            "by frame; at frame 30 the key first, then the first box's end and the second's; at 40 the controller, then the boxes' in order"
+        );
+    }
+
+    #[test]
+    fn a_chain_of_notes_that_end_where_the_next_begins_reaches_the_lane_in_order() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (keeper, seen) = EventKeeper::new();
+        swap_instrument(&cmd_tx, keeper);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[Source::pattern(0)]) }).unwrap();
+        // Twelve notes of one pitch, four frames long, the first beginning half a frame after the tenth: the end of each is at the frame that the next begins at (24 events in the block).
+        let frame = 2.0 / 48_000.0;
+        let notes: Vec<patternbox::BoxNote> = (0..12).map(|k| box_note(((10.5 + 4.0 * f64::from(k)) * frame) as f32, (4.0 * frame) as f32, 60)).collect();
+        add_box(&cmd_tx, 0, 4.0, &notes);
+        transport(&cmd_tx, 0, BoxAction::Play);
+        let mut out = make_output();
+        graph.process_events(Events::keys(&[]), &mut out).unwrap();
+        let mut want = vec![(0, 10, [0x90, 60, 100])];
+        for k in 1..12 {
+            want.push((0, 10 + 4 * k, [0x80, 60, 0]));
+            want.push((0, 10 + 4 * k, [0x90, 60, 100]));
+        }
+        want.push((0, 58, [0x80, 60, 0]));
+        assert_eq!(*seen.lock().unwrap(), want, "an end before the beginning that is at its frame, and every event after the last of the inputs");
+    }
+
+    #[test]
+    fn the_ticks_of_two_boxes_in_one_block_are_clicked_in_the_order_of_their_frames() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        // At 130 beats a minute a beat is 22153.8 frames: the second tick of the first box is at the ninth frame of the 347th block, and the first box's neighbour begins to count in at the first.
+        cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: 130.0 }).unwrap();
+        add_box(&cmd_tx, 0, 4.0, &[]);
+        add_box(&cmd_tx, 1, 4.0, &[]);
+        transport(&cmd_tx, 0, BoxAction::Record);
+        for _ in 0..346 {
+            process_from(&mut graph, &[]);
+        }
+        transport(&cmd_tx, 1, BoxAction::Record);
+        let out = process_from(&mut graph, &[]);
+        let mut want = make_output();
+        Click::default().render(&[Tick { frame: 0, downbeat: true }, Tick { frame: 9, downbeat: false }], 48_000.0, &mut want);
+        assert_eq!(out, want, "the click of the box that began to count in is begun again at the ninth frame by the other's second tick, and not the other way round");
+    }
+
+    #[test]
+    fn a_box_goes_by_the_tempo_of_the_graph() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[Source::pattern(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetGlobalBpm { bpm: 60.0 }).unwrap();
+        add_box(&cmd_tx, 0, 4.0, &[box_note(0.0, 1.0, 60)]);
+        transport(&cmd_tx, 0, BoxAction::Play);
+        let levels: Vec<f32> = (0..2 * BLOCKS_A_BEAT + 10).map(|_| the_one_level(&process_from(&mut graph, &[]))).collect();
+        assert!(levels[..2 * BLOCKS_A_BEAT].iter().all(|&level| level == 0.25), "a beat is 750 blocks at 60 beats a minute");
+        assert!(levels[2 * BLOCKS_A_BEAT..].iter().all(|&level| level == 0.0));
+    }
+
+    #[test]
+    fn a_box_that_is_given_a_new_plan_plays_it_from_where_it_is() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[Source::pattern(0)]) }).unwrap();
+        add_box(&cmd_tx, 0, 4.0, &[box_note(0.0, 3.0, 60)]);
+        transport(&cmd_tx, 0, BoxAction::Play);
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.25);
+        cmd_tx.send(GraphCommand::SetBoxPlan { node: box_node(0), plan: Box::new(BoxPlan::new(4.0, &[box_note(2.0, 1.0, 64)])) }).unwrap();
+        let levels: Vec<f32> = (0..3 * BLOCKS_A_BEAT).map(|_| the_one_level(&process_from(&mut graph, &[]))).collect();
+        // The block after the first is the second: the note that sounded is let go of, and the new one begins at beat 2, 750 blocks from the start.
+        let second = 2 * BLOCKS_A_BEAT - 1;
+        assert!(levels[..second].iter().all(|&level| level == 0.0), "the old note is let go of, and the new one has not begun");
+        assert!(levels[second..second + BLOCKS_A_BEAT].iter().all(|&level| level == 0.25), "the new note plays for a beat");
+        assert!(levels[second + BLOCKS_A_BEAT..].iter().all(|&level| level == 0.0));
+    }
+
+    #[test]
+    fn a_box_on_the_hosts_clock_follows_the_hosts_beat_through_the_graph() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[Source::pattern(0)]) }).unwrap();
+        add_box(&cmd_tx, 0, 2.0, &[box_note(0.0, 1.0, 60)]);
+        cmd_tx.send(GraphCommand::SetBoxSettings { node: box_node(0), settings: patternbox::Settings { clock: patternbox::Clock::Host, ..patternbox::Settings::default() } }).unwrap();
+        transport(&cmd_tx, 0, BoxAction::Play);
+        graph.set_host_time(Some(120.0), None);
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.0, "the host is not playing");
+        graph.set_host_time(Some(120.0), Some(8.0));
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.25, "beat 8 is the start of a loop of two beats");
+        graph.set_host_time(Some(120.0), Some(8.0 + BEATS_A_BLOCK));
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.25);
+        graph.set_host_time(Some(120.0), Some(9.5));
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.0, "the host jumped to the middle of the loop, past the note");
+        graph.set_host_time(Some(120.0), Some(10.0));
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.25, "and to the start of another loop: the note begins");
+        graph.set_host_time(Some(120.0), None);
+        assert_eq!(the_one_level(&process_from(&mut graph, &[])), 0.0, "and stops with the host");
+    }
+
+    #[test]
+    fn a_box_is_added_once_no_more_than_the_limit_are_taken_and_a_command_for_a_box_that_is_not_there_does_nothing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        add_box(&cmd_tx, 0, 4.0, &[]);
+        add_box(&cmd_tx, 1, 4.0, &[]);
+        add_box(&cmd_tx, 0, 4.0, &[box_note(0.0, 1.0, 60)]);
+        graph.drain_commands();
+        assert_eq!(graph.boxes.len(), 2, "a box that is there is not added again");
+        assert!(graph.boxes[0].player.notes().is_empty(), "the box that was there stays");
+        for nth in 0..MAX_BOXES + 3 {
+            add_box(&cmd_tx, nth, 4.0, &[]);
+            graph.drain_commands();
+        }
+        assert_eq!(graph.boxes.len(), MAX_BOXES, "the first sixteen are taken and no more");
+
+        let gone = NodeId(999);
+        cmd_tx.send(GraphCommand::RemoveBox { node: gone }).unwrap();
+        cmd_tx.send(GraphCommand::SetBoxPlan { node: gone, plan: Box::new(BoxPlan::new(4.0, &[box_note(0.0, 1.0, 60)])) }).unwrap();
+        cmd_tx.send(GraphCommand::SetBoxSettings { node: gone, settings: patternbox::Settings::default() }).unwrap();
+        cmd_tx.send(GraphCommand::BoxTransport { node: gone, action: BoxAction::Play }).unwrap();
+        graph.drain_commands();
+        assert!(graph.boxes.iter().all(|slot| slot.player.status() == patternbox::Status::Stopped && slot.player.notes().is_empty()));
+        cmd_tx.send(GraphCommand::RemoveBox { node: box_node(3) }).unwrap();
+        graph.drain_commands();
+        assert_eq!(graph.boxes.len(), MAX_BOXES - 1);
+        assert!(graph.boxes.iter().all(|slot| slot.node != box_node(3)));
+    }
+
+    #[test]
+    fn a_block_with_boxes_that_play_and_record_asks_the_allocator_for_nothing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: SourceSet::ALL.with(Source::pattern(0)).with(Source::pattern(1)) }).unwrap();
+        let mut out = make_output();
+        let list = [(3, [0x90, 62, 100]), (9, [0x80, 62, 0])];
+        // The plan of the graph is made in the first block, which is not what is looked at.
+        graph.process_events(Events::new(&list, &[Source::KEYS; 2]), &mut out).unwrap();
+        add_box(&cmd_tx, 0, 1.0, &[box_note(0.0, 0.1, 60), box_note(0.5, 0.1, 64)]);
+        add_box(&cmd_tx, 1, 2.0, &[box_note(0.0, 0.1, 67)]);
+        cmd_tx.send(GraphCommand::SetBoxSettings { node: box_node(1), settings: patternbox::Settings { overdub: true, ..patternbox::Settings::default() } }).unwrap();
+        transport(&cmd_tx, 0, BoxAction::Play);
+        transport(&cmd_tx, 1, BoxAction::Record);
+        // The commands are taken (and the room for the boxes made) here: the first block that merges is in the guard.
+        graph.drain_commands();
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            // The count-in and its clicks, passes that end and make what they took the box's notes, notes merged with the keys: a few beats more than the count-in and two passes.
+            for _ in 0..7 * BLOCKS_A_BEAT + 100 {
+                graph.process_events(Events::new(&list, &[Source::KEYS; 2]), &mut out).unwrap();
+            }
+        });
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
+        assert!(graph.boxes[1].player.notes().len() > 1, "the second box took the keys");
     }
 
     /// Changing a parameter that a modulator targets must move the modulator's

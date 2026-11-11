@@ -293,12 +293,13 @@ mod tests {
     }
 
     #[test]
-    fn the_devices_past_the_last_source_share_it() {
+    fn the_devices_past_the_last_input_share_it() {
         let mut table = SourceTable::default();
         let sources: Vec<Source> = (0..70).map(|n| table.source_of(&format!("device {n}"))).collect();
-        assert_eq!(sources[61], Source::device(61));
-        assert!(sources[..62].windows(2).all(|pair| pair[0] != pair[1]), "62 devices have a source each");
-        assert!(sources[62..].iter().all(|&source| source == Source::LAST), "the rest share the last: {sources:?}");
+        assert_eq!(sources[45], Source::device(45));
+        assert!(sources[..46].windows(2).all(|pair| pair[0] != pair[1]), "46 devices have a source each");
+        assert!(sources[46..].iter().all(|&source| source == Source::LAST_INPUT), "the rest share the last input: {sources:?}");
+        assert!(sources.iter().all(|source| !source.is_pattern()), "and none is a pattern box's");
         assert_eq!(table.source_of("device 3"), Source::device(3), "and the ones before it are what they were");
     }
 
@@ -416,7 +417,7 @@ mod tests {
     fn the_ports_that_share_the_last_source_are_one_source_for_a_device() {
         let names: Vec<String> = (0..66).map(|n| format!("device {n}")).collect();
         let ports: Vec<(&str, Source)> = names.iter().enumerate().map(|(nth, name)| (name.as_str(), Source::device(nth))).collect();
-        assert_eq!(numbers(matching(&ports, "device 65")), [63], "the 66th is the last source, which the ones after the 62nd share");
+        assert_eq!(numbers(matching(&ports, "device 65")), [47], "the 66th is the last input's source, which the ones after the 46th share (the numbers past it are the pattern boxes')");
         assert_eq!(numbers(matching(&ports, "device 3")), [4]);
     }
 

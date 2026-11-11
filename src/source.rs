@@ -4,27 +4,48 @@
 //! A source is the computer's keys (`Source::KEYS`: the keys, the page's piano and keys, and every browser, which are one `NoteInput` path) or one MIDI device, which has a number of its
 //! own for as long as the program runs (`midi::SourceTable`). A lane has the set of sources it hears (`SourceSet`, every source until it is told otherwise). A message that is sent as
 //! `Source::BROADCAST` is no source's and is heard by every lane whatever its set is: the panic.
+//!
+//! The first 48 numbers are the **inputs** (the keys and the devices) and the last 16 are the **pattern boxes'** (P4h): a box's notes are made inside the engine and carry the box's number, so that a lane hears them by the
+//! same set that says which inputs it hears, and `SourceSet::ALL`, what a lane hears until it is told otherwise, is the inputs: a box is heard by the lanes whose set has it and by no other.
 
 use std::fmt;
 
 /// How many sources there can be: a set of them is a `u64`.
 pub const MAX_SOURCES: usize = 64;
 
-/// A source of MIDI messages: the computer's keys, or a device. A number below `MAX_SOURCES`, or `BROADCAST`.
+/// How many of the sources are inputs, the computer's keys and the devices (the numbers 0 to 47): the others are the pattern boxes' (P4h).
+pub const INPUT_SOURCES: usize = 48;
+
+/// How many pattern boxes a session can have: each has a source of its own, the numbers 48 to 63.
+pub const MAX_BOXES: usize = MAX_SOURCES - INPUT_SOURCES;
+
+/// A source of MIDI messages: the computer's keys, a device or a pattern box. A number below `MAX_SOURCES`, or `BROADCAST`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Source(u8);
 
 impl Source {
     /// The computer's keys, the page's piano and keys and every browser's: the source of what `NoteInput::new` sends, and of every event that is not said to be another's.
     pub const KEYS: Source = Source(0);
-    /// The last source there is, which the devices beyond the 63rd share (`Source::device`).
-    pub const LAST: Source = Source(MAX_SOURCES as u8 - 1);
+    /// The last input there is, which the devices beyond the 46th share (`Source::device`).
+    pub const LAST_INPUT: Source = Source(INPUT_SOURCES as u8 - 1);
     /// No source's: what is heard by every lane, whatever the set of sources it hears is. A panic is sent as this, so that it reaches a lane that does not hear the keys.
     pub const BROADCAST: Source = Source(u8::MAX);
 
-    /// The source of the device that was seen `nth`, counting from 0 (the keys are another): the 63rd and the ones after it are all `Source::LAST`.
+    /// The source of the device that was seen `nth`, counting from 0 (the keys are another): the 47th and the ones after it are all `Source::LAST_INPUT`.
     pub const fn device(nth: usize) -> Source {
-        if nth + 1 >= MAX_SOURCES { Source::LAST } else { Source(nth as u8 + 1) }
+        if nth + 1 >= INPUT_SOURCES { Source::LAST_INPUT } else { Source(nth as u8 + 1) }
+    }
+
+    /// The source of the pattern box that has the number `nth`, 0 to 15 (`MAX_BOXES`; a session refuses more, and a number past it is the last box's).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+    pub const fn pattern(nth: usize) -> Source {
+        if nth >= MAX_BOXES { Source(MAX_SOURCES as u8 - 1) } else { Source((INPUT_SOURCES + nth) as u8) }
+    }
+
+    /// Whether this is a pattern box's.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+    pub const fn is_pattern(self) -> bool {
+        self.0 as usize >= INPUT_SOURCES && (self.0 as usize) < MAX_SOURCES
     }
 
     /// Its number, 0 for the keys: below `MAX_SOURCES`, or 255 for `BROADCAST`.
@@ -43,6 +64,7 @@ impl fmt::Display for Source {
         match self.0 {
             0 => write!(f, "the keys"),
             u8::MAX => write!(f, "every source"),
+            n if n as usize >= INPUT_SOURCES => write!(f, "pattern box {}", n as usize - INPUT_SOURCES + 1),
             n => write!(f, "device {n}"),
         }
     }
@@ -53,8 +75,8 @@ impl fmt::Display for Source {
 pub struct SourceSet(u64);
 
 impl SourceSet {
-    /// Every source, those that are not there yet too: what a lane hears until it is told otherwise.
-    pub const ALL: SourceSet = SourceSet(u64::MAX);
+    /// Every input, the keys and the devices, those that are not there yet too: what a lane hears until it is told otherwise. **A pattern box is not one of them**: its notes are heard by the lanes whose set has its source, which a cable says.
+    pub const ALL: SourceSet = SourceSet((1u64 << INPUT_SOURCES) - 1);
     /// No source.
     pub const NONE: SourceSet = SourceSet(0);
 
@@ -196,22 +218,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_keys_are_source_0_and_devices_are_numbered_from_1_to_the_last_that_the_rest_share() {
+    fn the_keys_are_source_0_and_devices_are_numbered_from_1_to_the_last_input_that_the_rest_share() {
         assert_eq!(Source::KEYS.number(), 0);
         assert_eq!(Source::device(0).number(), 1);
         assert_eq!(Source::device(1).number(), 2);
-        assert_eq!(Source::device(61).number(), 62);
-        assert_eq!(Source::device(62), Source::LAST);
-        assert_eq!(Source::LAST.number(), 63);
-        assert_eq!(Source::device(63), Source::LAST);
-        assert_eq!(Source::device(1_000_000), Source::LAST);
+        assert_eq!(Source::device(45).number(), 46);
+        assert_eq!(Source::device(46), Source::LAST_INPUT);
+        assert_eq!(Source::LAST_INPUT.number(), 47);
+        assert_eq!(Source::device(47), Source::LAST_INPUT);
+        assert_eq!(Source::device(1_000_000), Source::LAST_INPUT);
+        assert!(!Source::LAST_INPUT.is_pattern(), "no device is a box, however many there are");
+    }
+
+    #[test]
+    fn the_boxes_have_the_last_sixteen_numbers_and_are_in_no_default_set() {
+        assert_eq!(MAX_BOXES, 16);
+        assert_eq!((Source::pattern(0).number(), Source::pattern(1).number(), Source::pattern(15).number()), (48, 49, 63));
+        assert_eq!(Source::pattern(16).number(), 63, "a number past the sixteenth is the last box's (a session refuses it)");
+        assert!((0..MAX_BOXES).all(|nth| Source::pattern(nth).is_pattern()));
+        assert!(!Source::KEYS.is_pattern() && !Source::device(3).is_pattern() && !Source::BROADCAST.is_pattern());
+        for nth in 0..MAX_BOXES {
+            assert!(!SourceSet::ALL.contains(Source::pattern(nth)), "a lane that is not told which sources it hears hears no box: box {nth}");
+            assert!(SourceSet::NONE.with(Source::pattern(nth)).contains(Source::pattern(nth)), "and a set that is told one has it");
+        }
+        assert_eq!(SourceSet::NONE.with(Source::pattern(2)).with(Source::KEYS).iter().map(Source::number).collect::<Vec<_>>(), [0, 50]);
     }
 
     #[test]
     fn broadcast_is_no_source_of_the_64() {
         assert!(Source::BROADCAST.is_broadcast());
         assert!(!Source::KEYS.is_broadcast());
-        assert!(!Source::LAST.is_broadcast());
+        assert!(!Source::LAST_INPUT.is_broadcast() && !Source::pattern(15).is_broadcast());
         assert!(!SourceSet::ALL.contains(Source::BROADCAST), "no set has it: a lane hears it whatever its set is");
         assert_eq!(SourceSet::NONE.with(Source::BROADCAST), SourceSet::NONE);
         assert_eq!(SourceSet::ALL.without(Source::BROADCAST), SourceSet::ALL);
@@ -219,23 +256,23 @@ mod tests {
 
     #[test]
     fn a_set_has_the_sources_that_were_put_in_it() {
-        let set = SourceSet::NONE.with(Source::KEYS).with(Source::device(2)).with(Source::LAST);
-        assert_eq!(set.bits(), 1 | 1 << 3 | 1 << 63);
-        assert!(set.contains(Source::KEYS) && set.contains(Source::device(2)) && set.contains(Source::LAST));
+        let set = SourceSet::NONE.with(Source::KEYS).with(Source::device(2)).with(Source::LAST_INPUT);
+        assert_eq!(set.bits(), 1 | 1 << 3 | 1 << 47);
+        assert!(set.contains(Source::KEYS) && set.contains(Source::device(2)) && set.contains(Source::LAST_INPUT));
         assert!(!set.contains(Source::device(0)) && !set.contains(Source::device(1)));
-        assert_eq!(set.iter().map(Source::number).collect::<Vec<_>>(), [0, 3, 63]);
-        assert_eq!(set.without(Source::device(2)).iter().map(Source::number).collect::<Vec<_>>(), [0, 63]);
+        assert_eq!(set.iter().map(Source::number).collect::<Vec<_>>(), [0, 3, 47]);
+        assert_eq!(set.without(Source::device(2)).iter().map(Source::number).collect::<Vec<_>>(), [0, 47]);
         assert_eq!(SourceSet::from_bits(set.bits()), set);
     }
 
     #[test]
-    fn every_source_and_no_source() {
+    fn every_input_and_no_source() {
         assert!(SourceSet::NONE.is_empty() && !SourceSet::ALL.is_empty());
-        assert_eq!(SourceSet::ALL.iter().count(), MAX_SOURCES);
+        assert_eq!(SourceSet::ALL.iter().count(), INPUT_SOURCES);
         assert_eq!(SourceSet::NONE.iter().count(), 0);
         assert!(SourceSet::ALL.contains(Source::KEYS));
-        assert!((0..MAX_SOURCES - 1).all(|nth| SourceSet::ALL.contains(Source::device(nth))));
-        assert!((0..MAX_SOURCES - 1).all(|nth| !SourceSet::NONE.contains(Source::device(nth))));
+        assert!((0..INPUT_SOURCES - 1).all(|nth| SourceSet::ALL.contains(Source::device(nth))));
+        assert!((0..INPUT_SOURCES - 1).all(|nth| !SourceSet::NONE.contains(Source::device(nth))));
     }
 
     #[test]
@@ -285,6 +322,8 @@ mod tests {
     fn a_source_is_named_for_a_log_line() {
         assert_eq!(Source::KEYS.to_string(), "the keys");
         assert_eq!(Source::device(2).to_string(), "device 3");
+        assert_eq!(Source::pattern(0).to_string(), "pattern box 1");
+        assert_eq!(Source::pattern(15).to_string(), "pattern box 16");
         assert_eq!(Source::BROADCAST.to_string(), "every source");
     }
 }
