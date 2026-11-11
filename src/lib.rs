@@ -18,6 +18,8 @@ mod midi_monitor;
 mod note_input;
 #[cfg(test)]
 mod oracle;
+#[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+mod patternbox;
 mod piano;
 mod piano_filter;
 mod plugin;
