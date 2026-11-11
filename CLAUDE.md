@@ -153,7 +153,7 @@ A plugin can be specified using:
 - `./path/to/Plugin.clap`: CLAP bundle by path
 - `./path/to/Plugin.vst3`: VST3 bundle by path
 - `lv2:<uri>`: LV2 lookup by URI (lv2: prefix OPTIONAL)
-- `clap:<id>`: CLAP lookup by plugin ID (clap: prefix OPTIONAL)
+- `clap:<id>`: CLAP lookup by plugin ID (clap: prefix OPTIONAL: `com.vendor.plugin`, dots and no slash and not the name of a bundle, is the same, in a session file too; until step 121 a file that said it so was refused, f200)
 - `vst3:<name>`: VST3 lookup by name (case-insensitive)
 - `builtin:<name>`: built-in plugin (e.g. `builtin:osc`)
 
