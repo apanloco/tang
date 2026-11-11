@@ -1443,6 +1443,7 @@ first drawn, and a piano that came a moment after took some of it (the Oscillato
   only shows it. Both are saved with the session (`[piano]`), and the TUI's `k` and `l` ask the same intents, so each sees the other's.
 - **Velocity (step 52).** A pointer plays a key as hard as where it is on it: a velocity from 20 at the key's top edge, the far end from the player, to 127 at its front edge, evenly between (`velocityAt` in `client/pointerPiano.ts`; 1 is a note nobody hears), told when the pointer goes down and when it moves on to another key. A key that has no
   height to tell a place on is played at 100, as the keys of the computer are (they report no velocity). The keys' row says it in a tooltip. It is what a velocity control (D52) follows from the page.
+- **The keys are shut to begin with (step 119).** The piano's place is the bar alone (33 px) until the bar's `Keyboard` button opens the keys (the other 116 px, so that the section is 149 px as it was); the scale, the lock and the panic stay in the bar, and the keys of the computer play whether the keys are drawn or not. See `docs/reference/web-page.md`.
 - *Not built:* a picker that filters as the TUI's does (two plain choices do), the notes of the scale named on the keys, the chord readout and
   the scale strip of the TUI's tab, the labels of the computer's keys on the piano.
 
