@@ -111,7 +111,7 @@ TODO: the terminal has nothing of it to hide (a lane shows a range and a pattern
 - **Sources** (P4a of `docs/patch-graph.md` §11.6, step 81): every message that reaches the audio thread has a *source*, the input it came from (`Source`, `src/source.rs`, a number below 64).
   **0 is the keys** (the computer's keys, the page's piano and keys and every browser's: one `NoteInput` path, which `NoteInput::new` is), **each MIDI device** has a number of its own
   (`NoteInput::for_source`, made when its port is opened), handed out in the order the devices are first seen and kept for the run (`midi::SourceTable`: a device that is unplugged and plugged in
-  again is the source it was; the 63rd and the ones after it share the last, `Source::LAST`), and **`Source::BROADCAST`** is no source's: what a panic is sent as, so that every lane hears it whatever it
+  again is the source it was; the 47th and the ones after it share the last input, `Source::LAST_INPUT`: the numbers 48 to 63 are the pattern boxes', step 122, see "Pattern boxes (the engine)"), and **`Source::BROADCAST`** is no source's: what a panic is sent as, so that every lane hears it whatever it
   hears. The channel carries `MidiEvent { source, frame, bytes }`, and the audio callback (`audio::Renderer`, which has room for as many as the channel holds, `MIDI_CHANNEL_CAPACITY`, 1,024, so that a
   burst asks the allocator for nothing) hands the engine the block's events as `Events`: the frame and the bytes of each, as the plugins have them, and beside them the source of each (none at all says
   that every event is from the keys, which is what `AudioGraph::process` gives for a list of notes, so that the plugin trait and the tests that play a chord are as they were; the engine's own is
@@ -126,6 +126,50 @@ TODO: the terminal has nothing of it to hide (a lane shows a range and a pattern
   devices under "Architecture"), and so is `SetLaneSources`, from the cables of notes that a session has (P4b, step 82: see "Sources of notes and cables of notes"): a session that has none sends nothing, so that every lane hears every source and the sound is what it was, bit for bit (the oracle's corpus renders the same).
 TODO: the held-notes lights (`HeldNotes`, the Piano tab's) are one set of bits for every source: the notes that a device that has gone was holding are let go of by the lanes and stay lit until the panic (a bit
 cannot say which source set it).
+
+### Pattern boxes (the engine, P4h-A, step 122)
+
+A **pattern box** is a node that stores notes in beats and plays them as a source of its own (`docs/patch-graph.md` §11.6, "P4h"). Step 122 is its engine; the model, the file and the page are steps 123 and 124, and until the
+controller sends the commands below no session has a box (the items are marked as dead code that is expected, with the reason). The logic is `src/patternbox.rs`, as plain code with tests of its own, and the glue is in `plugin::chain`.
+
+- **A box is a source.** The numbers of the sources are 0 to 47 for the inputs (the keys, and the devices: `Source::device` shares the last, `Source::LAST_INPUT`, among those past the 46th) and 48 to 63 for the boxes
+  (`Source::pattern(n)`, `MAX_BOXES` = 16). `SourceSet::ALL`, what a lane hears until it is told otherwise, is the inputs: **a lane hears a box when its set has the box's source and at no other time** (`SetLaneSources`, which the
+  controller will send from the cables). Its notes are heard as a key is: the lane's range, remap, pattern, transpose and the modulators that hear the lane see them, and a box that is taken out, or stopped, is let go of by the
+  lanes as a source that is gone (`ReleaseSource`'s rule: no note hangs). The modulators that hear every event (those with no ear) hear the boxes' notes too.
+- **The commands** (`GraphCommand`): `AddBox { node, player }` (the box is made where memory may be asked for and moved in; one that is there under the node is not added again, and more than 16 are not taken),
+  `RemoveBox { node }`, `SetBoxPlan { node, plan }` (its notes and its length, made ready: what sounds is let go of, and it goes on from where it is), `SetBoxSettings { node, settings }` (`looping`, `clock`,
+  `overdub`, `click`, `inputs`: the sources it records) and `BoxTransport { node, action }` (`BoxAction::Play`, `Stop`, `Record`, `FinishRecording`). The engine tells the controller on a channel
+  (`AudioGraph::set_box_tx`): `BoxNotification::Recorded { node, notes }` when a pass of recording is over (the notes the box has now: the model keeps them and the file saves them) and `BoxNotification::Status { node, status }`
+  when what the box is doing changes (`Stopped`, `Playing`, `CountingIn`, `Waiting`, `Recording`: a count-in is over, a recording has ended, a box that plays once has played it).
+- **Time is beats.** A box's notes are `BoxNote { start, length, note, velocity }` in beats, and its loop has a length in beats (0.25 to 256), so that it goes by the tempo that the graph has at each block, the host's included
+  (`AudioGraph::bpm`, `host_beat`: step 118). Its clock is **its own** (from Play, at 0, to Stop) or **the host's** (`Clock::Host`: its place in the loop is the host's beat modulo the length, while the host plays; a box is
+  silent, and lets go of what it has on, while the host does not, and when the host *jumps*, more than 0.1 beat from where the last block ended; nothing is played at a host beat below 0, the count-in of a host). A box
+  that does not loop (the own clock only: the host's beat goes round by itself) plays once and stops.
+- **The plan.** `BoxPlan::new(length, notes)` makes the notes ready on the thread that is not the audio thread: what is not a note is left out (a pitch above 127, a number that is not finite), a velocity is brought into 1 to
+  127, a start and a length below 0 to 0; the notes are in the order of their starts; a note that begins past the loop's end or has no length is kept and not played; one that goes past the end ends there; a note is
+  ended by the next of its pitch, and an end comes before a beginning at one beat. At most 4,096 notes (`MAX_NOTES`). The plan has room for all of them, so that the notes of a recording become the box's with no memory asked for.
+- **A block.** The engine runs the boxes after the commands and before the modulators (`AudioGraph::run_boxes`): each box makes its notes on and off for the block with their frames (a stretch of the loop is a half-open
+  window of beats, so that nothing is made twice or lost whatever the size of the block; an end at the loop's very end is made in the last frame of the block that reaches it) and the events of the block are **merged by frame**
+  with the inputs' (a merge of the lists, which are each in the order of their frames: the inputs first at one frame, then the boxes in the order they were added, each box's own events in their order) with the source of each box. A block in which no box plays anything is the inputs' events as they came, and a graph with no box does
+  nothing for any of it: the oracle holds it, bit for bit.
+- **Recording.** `Record` on the own clock counts in 4 beats (the box begins at -4, the metronome clicks, a higher click on the first beat of a bar), then takes **one pass** of the box's length and plays what it took, from
+  the start of the loop that the pass ended; on the host's clock it waits for the next start of the loop (host beat a multiple of the length) and takes the pass from there (no click: the host has a metronome). It takes
+  the note ons and offs of the sources in the box's `inputs` (by default every input; **never another box's**: the events that a box hears are the inputs' as they came, and not the merged ones), a note on with no velocity
+  being an off, a key that goes down again ending the note it held, a key that comes up as it went down having the shortest note (1/64 beat), a key still down at the pass's end ending there; keys that go down in the count-in
+  are not taken. **Overwrite** (the default) mutes the box's notes for the pass and replaces them at its end; **overdub** keeps them, plays them over the pass, adds the new ones at its end and goes on with another pass,
+  until `FinishRecording` (the pass that is going on is the last). `Stop` loses a pass that is going on (the box has the notes it had); `Record` again begins again; `Play` while it records does nothing. A host that stops or
+  jumps loses the pass, and the box waits for the loop again.
+- **The click** is the lane recorder's (25 ms of a sine, 1,000 Hz and 1,500 Hz on the first beat of a bar, level 0.3), `Click`, and is **added to the output after the master limiter**, so that it is not metered and not
+  limited: it can take the output past what the ceiling says (a monitoring aid, as the lane's is not). One click state serves all the boxes (two ticks in one block: the later restarts it).
+- **Limits and what the audio thread does.** 16 boxes; 4,096 notes in a box; 4,096 events made for a block by one box and 512 heard (the rest are dropped: a pass that hears more than 512 events in one block takes the first
+  256 notes of them); the room for the merged events is 8,192 (it grows, with an allocation, if a block has more). **A block asks the allocator for nothing** while boxes play and record, and the end of a pass makes
+  the notes the box's with none (a test counts the allocations through the whole of a count-in, passes that end and a finished recording); the one allocation is the list of notes that `BoxNotification::Recorded` carries,
+  once for each pass that ends.
+- **Held by** 51 tests of the box (`patternbox::tests`: the plan, playing by the tempo, by the host's beat and by any size of block, never a note left on, recording on both clocks and across the middle of a block,
+  overwrite and overdub, the sources a box records, the click, the allocator) and 16 of the engine (`plugin::chain::tests`: which lane hears a box, the merge by frame and by source, a stop and a removal letting go, a
+  recording through the graph and what the controller is told, the click in the output, the host's beat, the tempo, the limits, the allocator), and by 161 mutants of all of it (2 survive, both equivalent: a stopped box's
+  early return, which is only the quick way out, and the quick exit of the merge for a block in which no box made anything).
+TODO: the controller sends none of the commands yet (step 123: the model, the file and the intents), and the terminal has no box (a box is the page's).
 
 ## Virtual piano
 
