@@ -17,10 +17,11 @@ use clack_extensions::preset_discovery::prelude::{
     FileType, Flags, HostPresetLoad, IndexerImpl, Location, LocationInfo, MetadataReceiverImpl,
     PluginPresetLoad, PresetDiscoveryFactory, Provider, Soundpack, Timestamp, UniversalPluginId,
 };
-use clack_host::events::event_types::ParamValueEvent;
+use clack_host::events::event_types::{ParamValueEvent, TransportEvent, TransportFlags};
+use clack_host::events::{EventFlags, EventHeader};
 use clack_host::prelude::*;
 use clack_host::process::StartedPluginAudioProcessor;
-use clack_host::utils::Cookie;
+use clack_host::utils::{BeatTime, Cookie, SecondsTime};
 
 use super::clap_callbacks;
 use super::clap_editor::{self, Asked};
@@ -376,6 +377,9 @@ pub struct ClapPlugin {
     /// How many frames late what the plugin makes is, as it said when it was activated (`Plugin::latency`). A plugin that changes it while it runs, and tells the host by
     /// `clap_host_latency.changed`, is not followed: the plugin is on the audio thread by then, and the extension is the main thread's.
     latency: u32,
+    /// The tempo that the session goes by, in beats a minute, as the graph told it before the block (`Plugin::set_tempo`, step 120): the plugin is given it as the transport of the block (`transport_event`). None until it is told, which
+    /// is a plugin that is given no transport at all, as every CLAP plugin was before.
+    tempo: Option<f64>,
     params_ext: Option<PluginParams>,
     params_cache: Vec<ParameterInfo>,
     param_ids: Vec<ClapId>,
@@ -549,10 +553,21 @@ pub fn load(
     sample_rate: f32,
     max_block_size: usize,
 ) -> anyhow::Result<Box<dyn Plugin>> {
-    let host_info = HostInfo::new("tang", "akerud", "https://github.com/akerud/tang", "0.1.0")?;
-
     // Resolve plugin ID and bundle
     let (bundle, plugin_id_string, name, is_instrument) = find_plugin(source)?;
+    load_found(bundle, plugin_id_string, name, is_instrument, sample_rate, max_block_size)
+}
+
+/// Make the plugin that a bundle has, once it is found (`load` finds it by its path or its id; a test hands over a bundle that is in the program, which has no file).
+fn load_found(
+    bundle: PluginBundle,
+    plugin_id_string: String,
+    name: String,
+    is_instrument: bool,
+    sample_rate: f32,
+    max_block_size: usize,
+) -> anyhow::Result<Box<dyn Plugin>> {
+    let host_info = HostInfo::new("tang", "akerud", "https://github.com/akerud/tang", "0.1.0")?;
 
     let plugin_id =
         std::ffi::CString::new(plugin_id_string.as_str()).expect("plugin ID contains NUL");
@@ -732,6 +747,7 @@ pub fn load(
         audio_in_channel_count,
         audio_out_channel_count,
         latency,
+        tempo: None,
         params_ext,
         params_cache,
         param_ids,
@@ -828,6 +844,28 @@ pub(super) fn find_plugin(source: &str) -> anyhow::Result<(PluginBundle, String,
 // Plugin trait implementation
 // ---------------------------------------------------------------------------
 
+/// What a plugin is told of time in a block (step 120): the tempo, and nothing else. A position, a loop, a time signature and whether the transport plays are the host's, and a program that is a plugin does not pass them on yet, so the flags
+/// say the tempo and no more, and every other field is as a host that has none of them leaves it.
+fn transport_event(tempo: f64) -> TransportEvent {
+    let zero = BeatTime::from_float(0.0);
+    TransportEvent {
+        header: EventHeader::new_core(0, EventFlags::empty()),
+        flags: TransportFlags::HAS_TEMPO,
+        song_pos_beats: zero,
+        song_pos_seconds: SecondsTime::from_float(0.0),
+        tempo,
+        tempo_inc: 0.0,
+        loop_start_beats: zero,
+        loop_end_beats: zero,
+        loop_start_seconds: SecondsTime::from_float(0.0),
+        loop_end_seconds: SecondsTime::from_float(0.0),
+        bar_start: zero,
+        bar_number: 0,
+        time_signature_numerator: 4,
+        time_signature_denominator: 4,
+    }
+}
+
 impl Plugin for ClapPlugin {
     fn editor_id(&self) -> Option<editors::EditorId> {
         self.editor_id
@@ -857,6 +895,12 @@ impl Plugin for ClapPlugin {
         self.latency
     }
 
+    fn set_tempo(&mut self, bpm: f32) {
+        if bpm.is_finite() && bpm > 0.0 {
+            self.tempo = Some(f64::from(bpm));
+        }
+    }
+
     fn process(
         &mut self,
         midi_events: &[(u64, [u8; 3])],
@@ -867,6 +911,8 @@ impl Plugin for ClapPlugin {
             .audio_processor
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("CLAP audio processor not active"))?;
+        // What the plugin is told of time: the tempo, if it has been told one (a transport on the stack: nothing is made on the heap).
+        let transport = self.tempo.map(transport_event);
 
         let frames = audio_out.first().map(|b| b.len()).unwrap_or(0);
         if frames == 0 {
@@ -950,7 +996,7 @@ impl Plugin for ClapPlugin {
                     &input_events,
                     &mut output_events,
                     None,
-                    None,
+                    transport.as_ref(),
                 )
                 .map_err(|e| anyhow::anyhow!("CLAP process error: {e}"))?;
         } else {
@@ -979,7 +1025,7 @@ impl Plugin for ClapPlugin {
                     &input_events,
                     &mut output_events,
                     None,
-                    None,
+                    transport.as_ref(),
                 )
                 .map_err(|e| anyhow::anyhow!("CLAP process error: {e}"))?;
         }
@@ -1085,6 +1131,142 @@ mod tests {
         assert!(shared.request_show().is_err());
         assert_eq!(shared.asked.take_resize(), None);
         assert!(!shared.asked.take_closed());
+    }
+
+    #[test]
+    fn what_a_plugin_is_told_of_time_is_the_tempo_and_nothing_else() {
+        let transport = transport_event(93.5);
+        assert_eq!(transport.tempo, 93.5, "the tempo, as it was told");
+        assert_eq!(transport.flags, TransportFlags::HAS_TEMPO, "and that is all that the flags say: not that it plays, not a position, not a loop, not a time signature");
+        assert_eq!(transport.song_pos_beats.to_float(), 0.0);
+        assert_eq!(transport.tempo_inc, 0.0, "a tempo that stands still");
+    }
+
+    /// CLAP plugins of the tests' own, run through the program's host as the plugin of a file is (`load_found`): they keep what the host gave them of time in the last block they were run for. One has no audio input, as an
+    /// instrument does, and one has an input, as an effect does: the host runs them through its two calls of `process` (with the input's buffers, and without).
+    mod probe {
+        use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+        use clack_extensions::audio_ports::{AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts, PluginAudioPortsImpl};
+        use clack_plugin::entry::DefaultPluginFactory;
+        use clack_plugin::prelude::*;
+
+        pub const INSTRUMENT_ID: &str = "tang.test.transport-probe";
+        pub const EFFECT_ID: &str = "tang.test.transport-probe-effect";
+        /// What the last block came with: 0 for no transport at all, and for a transport the bits of its flags and 1 more (so that it is never 0 when there was one).
+        pub static SEEN: AtomicU32 = AtomicU32::new(0);
+        /// The tempo of that transport, as the bits of the f64.
+        pub static TEMPO: AtomicU64 = AtomicU64::new(0);
+
+        /// A probe that is an effect (it declares an audio input) or is not.
+        pub struct Probe<const EFFECT: bool>;
+        pub type InstrumentEntry = SinglePluginEntry<Probe<false>>;
+        pub type EffectEntry = SinglePluginEntry<Probe<true>>;
+
+        /// The plugin's main thread, which has its audio ports to say: a stereo output, and a stereo input if it is an effect.
+        pub struct Ports<const EFFECT: bool>;
+
+        impl<const EFFECT: bool> Plugin for Probe<EFFECT> {
+            type AudioProcessor<'a> = Processor;
+            type Shared<'a> = ();
+            type MainThread<'a> = Ports<EFFECT>;
+
+            fn declare_extensions(builder: &mut PluginExtensions<Self>, _shared: Option<&()>) {
+                builder.register::<PluginAudioPorts>();
+            }
+        }
+
+        impl<const EFFECT: bool> DefaultPluginFactory for Probe<EFFECT> {
+            fn get_descriptor() -> PluginDescriptor {
+                PluginDescriptor::new(if EFFECT { EFFECT_ID } else { INSTRUMENT_ID }, "Transport probe")
+            }
+
+            fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
+                Ok(())
+            }
+
+            fn new_main_thread<'a>(_host: HostMainThreadHandle<'a>, _shared: &'a Self::Shared<'a>) -> Result<Self::MainThread<'a>, PluginError> {
+                Ok(Ports)
+            }
+        }
+
+        impl<'a, const EFFECT: bool> PluginMainThread<'a, ()> for Ports<EFFECT> {}
+
+        impl<const EFFECT: bool> PluginAudioPortsImpl for Ports<EFFECT> {
+            fn count(&mut self, is_input: bool) -> u32 {
+                u32::from(!is_input || EFFECT)
+            }
+
+            fn get(&mut self, index: u32, is_input: bool, writer: &mut AudioPortInfoWriter) {
+                if index == 0 && (!is_input || EFFECT) {
+                    writer.set(&AudioPortInfo {
+                        id: ClapId::new(u32::from(!is_input)),
+                        name: if is_input { b"in" } else { b"out" },
+                        channel_count: 2,
+                        flags: AudioPortFlags::IS_MAIN,
+                        port_type: Some(AudioPortType::STEREO),
+                        in_place_pair: None,
+                    });
+                }
+            }
+        }
+
+        pub struct Processor;
+
+        impl<'a, const EFFECT: bool> PluginAudioProcessor<'a, (), Ports<EFFECT>> for Processor {
+            fn activate(_host: HostAudioProcessorHandle<'a>, _main_thread: &mut Ports<EFFECT>, _shared: &'a (), _config: PluginAudioConfiguration) -> Result<Self, PluginError> {
+                Ok(Processor)
+            }
+
+            fn process(&mut self, process: Process, _audio: Audio, _events: Events) -> Result<ProcessStatus, PluginError> {
+                match process.transport {
+                    Some(transport) => {
+                        SEEN.store(transport.flags.bits() + 1, Ordering::Relaxed);
+                        TEMPO.store(transport.tempo.to_bits(), Ordering::Relaxed);
+                    }
+                    None => SEEN.store(0, Ordering::Relaxed),
+                }
+                Ok(ProcessStatus::Continue)
+            }
+        }
+    }
+
+    #[test]
+    fn a_clap_plugin_that_the_program_hosts_is_given_the_tempo_that_it_was_told_as_its_transport_and_none_before() {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        let instrument = PluginBundle::load_from_clack::<probe::InstrumentEntry>(c"").expect("the entry of the instrument probe loads");
+        let effect = PluginBundle::load_from_clack::<probe::EffectEntry>(c"").expect("the entry of the effect probe loads");
+        // (Each is run through the host's call of `process` that its audio ports make: the effect through the one that has the input's buffers.)
+        for (kind, bundle, id) in [("an instrument", instrument, probe::INSTRUMENT_ID), ("an effect", effect, probe::EFFECT_ID)] {
+            let mut plugin = load_found(bundle, id.to_string(), "Transport probe".to_string(), kind == "an instrument", 48_000.0, 256).expect("the host makes the plugin");
+            assert_eq!(plugin.audio_input_count(), if kind == "an effect" { 2 } else { 0 }, "{kind} has the input that it says");
+            let silence = vec![0.0f32; 256];
+            let (mut left, mut right) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+            let mut block = |plugin: &mut Box<dyn Plugin>| {
+                let mut out: [&mut [f32]; 2] = [&mut left[..], &mut right[..]];
+                plugin.process(&[], &[&silence[..], &silence[..]], &mut out).expect("a block is run");
+            };
+            // A plugin that has not been told a tempo is given no transport at all, as every CLAP plugin was.
+            probe::SEEN.store(99, Relaxed);
+            block(&mut plugin);
+            assert_eq!(probe::SEEN.load(Relaxed), 0, "{kind}: no transport before a tempo is told");
+            // Told one, it is given a transport that says the tempo, and that is all it says.
+            plugin.set_tempo(93.0);
+            block(&mut plugin);
+            assert_eq!(probe::SEEN.load(Relaxed), TransportFlags::HAS_TEMPO.bits() + 1, "{kind}: the tempo is there, and no flag but its own");
+            assert_eq!(f64::from_bits(probe::TEMPO.load(Relaxed)), 93.0, "{kind}");
+            // What is told that is no tempo is not kept: the plugin goes on at the last.
+            for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0] {
+                plugin.set_tempo(bad);
+                block(&mut plugin);
+                assert_eq!(f64::from_bits(probe::TEMPO.load(Relaxed)), 93.0, "{kind}: {bad} is no tempo");
+            }
+            // And a tempo that changes is the one that it is given in the next block.
+            plugin.set_tempo(120.5);
+            block(&mut plugin);
+            assert_eq!(f64::from_bits(probe::TEMPO.load(Relaxed)), 120.5, "{kind}");
+        }
     }
 
     #[test]

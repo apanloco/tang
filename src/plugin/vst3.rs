@@ -617,6 +617,8 @@ pub struct Vst3Plugin {
     /// How many frames late what the plugin makes is (`IAudioProcessor::getLatencySamples`), as it said when it was set up (`Plugin::latency`). A plugin that changes it while it
     /// runs, and tells the host by `restartComponent(kLatencyChanged)`, is not followed: the plugin is on the audio thread by then, and the host's handler ignores the restart.
     latency: u32,
+    /// The tempo that the session goes by, in beats a minute, as the graph told it before the block (`Plugin::set_tempo`, step 120), which the process context says. It is 120, the tempo that every VST3 plugin was told, until it is told another.
+    tempo: f64,
     separate_controller: bool,
     params_cache: Vec<ParameterInfo>,
     param_ids: Vec<u32>,
@@ -771,6 +773,21 @@ fn make_legacy_pitch_bend(channel: i8, lsb: i8, msb: i8, sample_offset: i32) -> 
 // Plugin trait implementation
 // ---------------------------------------------------------------------------
 
+/// The tempo that the adapter keeps when it is told `bpm` while it has `current`: the new one, unless it is no tempo (a number that is not finite, or not above 0), which leaves the one that it had.
+fn tempo_after(current: f64, bpm: f32) -> f64 {
+    if bpm.is_finite() && bpm > 0.0 { f64::from(bpm) } else { current }
+}
+
+/// What a plugin is told of time in a block: that it plays, the sample rate, and the tempo that the session goes by (step 120; until then it was always 120: `Plugin::set_tempo`). A position and the rest of what a process context can say
+/// are the host's, and a program that is a plugin does not pass them on yet, so their flags are not set.
+fn process_context(sample_rate: f32, tempo: f64) -> ProcessContext {
+    let mut context: ProcessContext = unsafe { std::mem::zeroed() };
+    context.state = (kPlaying | kTempoValid) as _;
+    context.sampleRate = f64::from(sample_rate);
+    context.tempo = tempo;
+    context
+}
+
 impl Plugin for Vst3Plugin {
     fn name(&self) -> &str {
         &self.name
@@ -794,6 +811,10 @@ impl Plugin for Vst3Plugin {
 
     fn latency(&self) -> u32 {
         self.latency
+    }
+
+    fn set_tempo(&mut self, bpm: f32) {
+        self.tempo = tempo_after(self.tempo, bpm);
     }
 
     fn process(
@@ -939,10 +960,7 @@ impl Plugin for Vst3Plugin {
             .as_ptr();
         let event_list_ptr = self.event_list.as_com_ref::<IEventList>().unwrap().as_ptr();
 
-        let mut context: ProcessContext = unsafe { std::mem::zeroed() };
-        context.state = (kPlaying | kTempoValid) as _;
-        context.sampleRate = self.sample_rate as f64;
-        context.tempo = 120.0;
+        let mut context = process_context(self.sample_rate, self.tempo);
 
         let mut process_data = ProcessData {
             processMode: kRealtime as i32,
@@ -1548,6 +1566,7 @@ pub fn load(
         audio_in_bus_count: audio_in_bus_count.max(0) as usize,
         audio_out_bus_count: audio_out_bus_count.max(0) as usize,
         latency,
+        tempo: f64::from(super::chain::DEFAULT_BPM),
         _module: module,
         component,
         processor,
@@ -1880,6 +1899,29 @@ fn brief_instantiate(
 mod tests {
     use super::*;
     use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_::{kCanAutomate, kIsBypass, kIsHidden, kIsList, kIsReadOnly, kNoFlags};
+
+    /// What a plugin is told of time is that it plays, at the tempo the session goes by and at the sample rate it runs at; nothing of a position (step 120: the tempo was always 120).
+    #[test]
+    fn the_process_context_says_that_it_plays_at_the_tempo_the_session_goes_by() {
+        let context = process_context(44_100.0, 87.5);
+        assert_eq!(context.tempo, 87.5, "the tempo, as it was told");
+        assert_eq!(context.sampleRate, 44_100.0);
+        // (The flags are typed by the field, which is a `u32` where the bindings say so and an `i32` where they do not: it is set as the code sets it.)
+        let mut says: ProcessContext = unsafe { std::mem::zeroed() };
+        says.state = (kPlaying | kTempoValid) as _;
+        assert_eq!(context.state, says.state, "that it plays and that the tempo is a valid one, and no more: no position, no loop, no time signature");
+        assert_eq!(context.projectTimeMusic, 0.0);
+    }
+
+    /// A tempo that is told is the one that the adapter keeps; one that is no tempo leaves the one that it had (step 120).
+    #[test]
+    fn a_tempo_that_is_no_tempo_leaves_the_one_that_a_vst3_plugin_has() {
+        assert_eq!(tempo_after(120.0, 93.5), 93.5);
+        assert_eq!(tempo_after(93.5, 0.5), 0.5, "a slow one is a tempo");
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -3.0] {
+            assert_eq!(tempo_after(93.5, bad), 93.5, "{bad} is no tempo: the one that it had stays, which is not the 120 that it began with");
+        }
+    }
 
     /// A person is shown the parameters that the plugin does not hide or say are read only, and none that is only there so that a host
     /// can send MIDI controllers through the parameters (one that cannot be automated and is the target of the plugin's MIDI mapping).
