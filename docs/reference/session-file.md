@@ -403,6 +403,8 @@ TUI's `r` does first; a pattern that has been recorded keeps its own `bpm` whate
 The tempo is also what an LFO and a step sequencer go by when they follow it (`sync`, see "Tempo sync"): the graph has one tempo (`AudioGraph.bpm`, 120 until `SetGlobalBpm` says another, which the
 loader, `SetBpm` (so its undo and redo too) and the start of a recording send), and a modulator that follows it goes as fast as it does.
 In a plugin in a host that says its tempo (step 118, `docs/reference/plugin-host.md`) the tempo is the host's: it is `bpm` in the session while the host plays, a tempo that anything else sets is put back at the next look, and the file that a project keeps says the tempo that the host had last (the host's own tempo is read again with every block, so what is saved does not matter to the tempo that is played).
+
+The plugins that the session holds are told the tempo that it goes by before every block (step 120: a CLAP plugin as its transport, a VST3 plugin in its process context, an LV2 plugin not at all; `docs/reference/plugins.md`, "Plugin I/O handling"), so that what a hosted synth or effect keeps in time of its own, a tempo-synced LFO or delay or arpeggiator, goes by the session's tempo, which in a plugin in a host is the host's.
 TODO: a pattern does not follow the tempo (its events are frames, and its length is its beats counted at its own `bpm`); `docs/web-ui.md` Open question 10.
 
 ### Pattern recorder/player
