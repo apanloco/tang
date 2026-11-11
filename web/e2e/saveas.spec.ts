@@ -5,6 +5,7 @@ import { expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
 import { test } from "./own";
+import { openTheKeys } from "./piano";
 
 // Save as, on the real program (a program of its own, with a copy of the tracer in a directory of its own: what it writes there is read). The page asks for a name;
 // the program says what a name may be, and puts the file beside the one the session has.
@@ -128,6 +129,8 @@ test("a name that is a path, an absolute one and the name of a file that is ther
 test("Control+Shift+S and Command+Shift+S open the field with the name of the file selected, letters typed in it are text and not notes, and Escape leaves it with the focus on the button", async ({ page, own }) => {
   await open(page, own.url);
   const key = (note: number) => page.locator(`[data-note="${String(note)}"]`);
+  // (The keys of the piano are what says that a note is played: they are shut to begin with, so they are opened first.)
+  await openTheKeys(page);
 
   // (The control: Q is the C of the octave above the lower row, C4, when the focus is not in a field.)
   await page.keyboard.down("q");

@@ -30,8 +30,14 @@ function widthIs(width: number): void {
   vi.stubGlobal("ResizeObserver", Observer);
 }
 
-/** The piano as the page has it: its keys follow the octave of the keys of the computer, which are played here too. */
+/** The piano as the page has it, with its keys open (the tests of the keys are about them: they are shut to begin with, see `ShutPage`): they follow the octave of the keys of the computer, which are played here too. */
 function Page() {
+  const octave = useKeyboardPiano();
+  return <Piano octave={octave} defaultOpen />;
+}
+
+/** The piano as the page begins: the keys are shut. */
+function ShutPage() {
   const octave = useKeyboardPiano();
   return <Piano octave={octave} />;
 }
@@ -128,6 +134,89 @@ describe("the keys of the piano", () => {
     expect(screen.queryByRole("combobox", { name: "Scale root" })).toBeNull();
     // (The place for them is there: see the page's tests.)
     expect(screen.getByRole("region", { name: "Piano" }).children).toHaveLength(0);
+  });
+});
+
+describe("the keys, which are shut away to begin with (step 119)", () => {
+  const button = () => screen.getByRole("button", { name: "Keyboard" });
+
+  test("are not drawn, and the bar is: the button that opens them, the scale, the lock and the panic", async () => {
+    widthIs(630);
+    const { view } = await rig(<ShutPage />);
+    expect(view.container.querySelector("[data-note]")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Piano keys" })).toBeNull();
+    expect(button().getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("combobox", { name: "Scale root" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Scale kind" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Lock to scale" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Panic" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Piano" }).hasAttribute("data-open")).toBe(false);
+  });
+
+  test("are drawn when the button is pressed, and the button says so; it shuts them again", async () => {
+    widthIs(630);
+    const { view } = await rig(<ShutPage />);
+    fireEvent.click(button());
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("group", { name: "Piano keys" })).toBeTruthy();
+    expect(notesOf(view.container)[0]).toBe(48);
+    expect(screen.getByRole("region", { name: "Piano" }).hasAttribute("data-open")).toBe(true);
+    fireEvent.click(button());
+    expect(button().getAttribute("aria-expanded")).toBe("false");
+    expect(view.container.querySelector("[data-note]")).toBeNull();
+    expect(screen.getByRole("region", { name: "Piano" }).hasAttribute("data-open")).toBe(false);
+    // (And once more: what was shut is drawn again, in the octave the keys of the computer are at.)
+    fireEvent.keyDown(document.body, { code: "BracketRight" });
+    fireEvent.click(button());
+    expect(notesOf(view.container)[0]).toBe(60);
+  });
+
+  test("begin open when they are asked to (the page's own tests do), and the bar says so", async () => {
+    widthIs(630);
+    const { view } = await rig(<Page />);
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(notesOf(view.container)).not.toHaveLength(0);
+  });
+
+  test("leave the keys of the computer playing: a key plays a note while the keys are shut, and its end is heard", async () => {
+    const { server } = await rig(<ShutPage />);
+    // Z is the C of note 48.
+    fireEvent.keyDown(document.body, { code: "KeyZ" });
+    await waitFor(() => {
+      expect(played(server)).toEqual(["on 48"]);
+    });
+    fireEvent.keyUp(document.body, { code: "KeyZ" });
+    await waitFor(() => {
+      expect(played(server)).toEqual(["on 48", "off 48"]);
+    });
+  });
+
+  test("let go of the note that a pointer holds when they are shut with it down", async () => {
+    widthIs(630);
+    const { view, server } = await rig(<ShutPage />);
+    fireEvent.click(button());
+    fireEvent.pointerDown(keyOf(view.container, 60), { pointerId: 1, button: 0 });
+    await waitFor(() => {
+      expect(played(server)).toEqual(["on 60"]);
+    });
+    fireEvent.click(button());
+    await waitFor(() => {
+      expect(played(server)).toEqual(["on 60", "off 60"]);
+    });
+  });
+
+  test("leave the panic working: with the keys shut it ends a note that a key of the computer holds, as it does with them drawn", async () => {
+    widthIs(630);
+    const { server } = await rig(<ShutPage />);
+    fireEvent.keyDown(document.body, { code: "KeyZ" });
+    await waitFor(() => {
+      expect(played(server)).toEqual(["on 48"]);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Panic" }));
+    await waitFor(() => {
+      expect(server.received).toContainEqual({ type: "panic" });
+    });
+    expect(server.heldNotes.size).toBe(0);
   });
 });
 

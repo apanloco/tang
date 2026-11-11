@@ -8,8 +8,8 @@ import type { PianoMeta } from "../../protocol";
 import { ClientProvider } from "../ClientProvider";
 import { Piano } from "./Piano";
 
-/** The piano over a mock engine whose session has this scale; `chord` is held by another client, so that the keys that are held are lit. */
-function OverMock({ piano, chord, octave = 4, width }: { piano?: PianoMeta; chord?: number[]; octave?: number; width?: number }) {
+/** The piano over a mock engine whose session has this scale; `chord` is held by another client, so that the keys that are held are lit. The keys are open, as a story is about them, unless `open` says they are shut as the page begins. */
+function OverMock({ piano, chord, octave = 4, width, open = true }: { piano?: PianoMeta; chord?: number[]; octave?: number; width?: number; open?: boolean }) {
   const server = useMemo(
     () => new MockServer({ telemetryPeriod: 33, snapshot: { ...tracerSnapshot, meta: { ...tracerSnapshot.meta, piano: piano ?? tracerSnapshot.meta.piano } } }),
     [piano],
@@ -32,7 +32,7 @@ function OverMock({ piano, chord, octave = 4, width }: { piano?: PianoMeta; chor
   return (
     <ClientProvider client={client}>
       <div style={{ width: width ?? "100%" }}>
-        <Piano octave={octave} />
+        <Piano octave={octave} defaultOpen={open} />
       </div>
     </ClientProvider>
   );
@@ -48,6 +48,9 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 const fSharpDorian: PianoMeta = { scale: "F# dorian", root: 6, kind: "dorian", notes: [1, 3, 4, 6, 8, 9, 11], locked: false };
+
+/** As the page begins: the keys are shut, and the bar, with the button that opens them, the scale, the lock and the panic, is all there is at the bottom. */
+export const Shut: Story = { args: { open: false } };
 
 /** C major, as a new session has it: the C of each octave is gold, the other notes of the scale teal. */
 export const InCMajor: Story = {};

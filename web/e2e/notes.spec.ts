@@ -6,6 +6,7 @@ import type { Locator, Page } from "@playwright/test";
 import { angleOf, fractionOf, pointAt } from "../src/ui/knob-geometry";
 import { node } from "./canvas";
 import { modulatorsIn, test } from "./own";
+import { openTheKeys } from "./piano";
 
 // A velocity and a key on the real program (a program of its own, on the null audio backend: the file it saves is read, and the history is the program's): controls that follow the notes the lane
 // plays, made from a knob with the knob's menu or from the lane's. The keys of the computer play at a velocity of 100, and the engine's control puts the notes it hears into what it drives.
@@ -146,7 +147,8 @@ test("a key of the page's piano plays harder lower down, which a velocity contro
   const dot = knobOf(filter, "resonance").locator(".tang-knob__dot");
   await expect.poll(async () => (await dotAt(dot)).x).toBeCloseTo(dotFor(2).x, 1);
 
-  // Middle C of the piano, pressed a tenth of the way down its height and then nine tenths of the way: velocities of 31 and 116 (20 and 107 steps over the key).
+  // Middle C of the piano (its keys are shut to begin with: opened first), pressed a tenth of the way down its height and then nine tenths of the way: velocities of 31 and 116 (20 and 107 steps over the key).
+  await openTheKeys(page);
   const key = page.locator('[data-note="60"]');
   const box = await key.boundingBox();
   if (!box) throw new Error("the key is on the page");

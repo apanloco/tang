@@ -19,13 +19,37 @@ async function loudest(page: Page, ms: number): Promise<number> {
   return top;
 }
 
-test("the piano is under the patch: a key played with the pointer lights and sounds, the scale colours the keys, the lock drops the notes outside it, and the saved file has both", async ({ page, own }) => {
+test("the piano is under the patch, its keys shut away until a button opens them: a key played with the pointer lights and sounds, the scale colours the keys, the lock drops the notes outside it, and the saved file has both", async ({ page, own }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.goto(own.url);
   await expect(page.getByRole("status")).toHaveText("Connected");
   const level = async (): Promise<number> => Number(await page.getByRole("meter", { name: "Master level" }).getAttribute("aria-valuenow"));
   const key = (note: number) => page.locator(`[data-note="${String(note)}"]`);
+
+  // The keys are shut to begin with (step 119): the bar is all that is at the bottom of the page, with its button, and the keys of the computer play without them.
+  const region = page.getByRole("region", { name: "Piano" });
+  const opener = region.getByRole("button", { name: "Keyboard" });
+  await expect(opener).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("group", { name: "Piano keys" })).toHaveCount(0);
+  await expect(page.locator("[data-note]")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Panic" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Lock to scale" })).toBeVisible();
+  const shut = await region.boundingBox();
+  const patchShut = await page.locator(".tang-app__patch").boundingBox();
+  expect(shut?.height ?? 999, "shut, the piano is the bar").toBeLessThan(40);
+  await page.keyboard.down("q");
+  await expect.poll(level, { message: "a key of the computer is heard with the keys shut" }).toBeGreaterThan(-50);
+  await page.keyboard.up("q");
+  await expect.poll(level, { message: "the master is quiet again" }).toBeLessThan(-50);
+
+  // The button opens them, and the patch gives up the room that they take.
+  await opener.click();
+  await expect(opener).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("group", { name: "Piano keys" })).toBeVisible();
+  const open = await region.boundingBox();
+  const patchOpen = await page.locator(".tang-app__patch").boundingBox();
+  expect(open?.height ?? 0, "with the keys, the piano is as tall as it was").toBeGreaterThan(140);
+  expect(Math.abs((patchShut?.height ?? 0) - (patchOpen?.height ?? 0) - ((open?.height ?? 0) - (shut?.height ?? 0))), "the patch has what the keys leave").toBeLessThan(2);
 
   // Six octaves at this width, from the one below the keys of the computer; named as the TUI names them.
   await expect(page.locator("[data-note]")).toHaveCount(72);
