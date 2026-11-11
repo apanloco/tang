@@ -1,4 +1,4 @@
-/* The piano below the patch: a bar with the scale and the lock, and the keys. The keys are drawn as the TUI draws them: a natural
+/* The piano below the patch: a bar with the button that opens the keys, the scale and the lock, and the keys, which are shut away to begin with. The keys are drawn as the TUI draws them: a natural
    piano (white and black bodies) with a stripe along the bottom of each key for what it is in the scale, gold for the root and
    teal for the other notes of the scale; a key that is held sinks (a shade darker), and one held that is not in the scale goes red,
    the "wrong note". */
@@ -8,10 +8,15 @@
   --gap: 12px;
   flex: none;
   box-sizing: border-box;
-  /* As tall as it is with the keys in it, which it is not yet when there is no session: the room below the patch is the same. */
-  height: calc(var(--bar) + var(--keys) + var(--gap) + 1px);
+  /* As tall as the bar while the keys are shut (what is at the bottom of the page then), which it is also when there is no session: the room below the patch is the same. */
+  height: calc(var(--bar) + 1px);
   border-top: 1px solid var(--tang-border);
   background: var(--tang-surface);
+}
+
+/* With the keys in it. */
+.tang-piano[data-open] {
+  height: calc(var(--bar) + var(--keys) + var(--gap) + 1px);
 }
 
 .tang-piano__bar {
@@ -40,6 +45,17 @@
   font: var(--tang-text-small) / 1.4 var(--tang-font);
 }
 
+/* The button that opens the keys and shuts them: a button like the lock, with a mark that says which way the keys go (up from the bar to open them, down to shut). */
+.tang-piano__toggle {
+  padding: 2px var(--tang-space-3);
+  border: 1px solid var(--tang-border);
+  border-radius: var(--tang-radius);
+  background: var(--tang-surface-raised);
+  color: var(--tang-text);
+  font: inherit;
+  cursor: pointer;
+}
+
 .tang-piano__lock {
   padding: 2px var(--tang-space-3);
   border: 1px solid var(--tang-border);
@@ -57,6 +73,7 @@
 }
 
 .tang-piano__select:focus-visible,
+.tang-piano__toggle:focus-visible,
 .tang-piano__lock:focus-visible {
   outline: 2px solid var(--tang-scale);
   outline-offset: 1px;

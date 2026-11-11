@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
+import { openTheKeys } from "./piano";
+
 // The picker of sounds (step 116) against the mock engine in the page, which says (`?open=1`) that its program can open another session and lists two libraries of sounds: in a real browser, what the picker is like in a window of the
 // size that a plugin's is (a window that a host gives it can be small), that the list scrolls and keeps the sound that an arrow goes to in view, and that what is typed in it is not the page's (a letter is a note on the piano).
 
@@ -85,9 +87,10 @@ test("is left by Escape and by a press beside the box, with nothing opened", asy
 
 test("keeps the keys typed in it from the page: a letter pressed on one of its buttons is no note on the piano", async ({ page }) => {
   await opened(page, 900, 600);
-  // (Q is the C of the piano of the computer's keys: C4, which the piano of the page lights while it is held.)
-  const c4 = page.locator('[data-note="60"]');
+  // (Q is the C of the piano of the computer's keys: C4, which the piano of the page lights while it is held, once its keys are open: they are shut to begin with.)
   await page.keyboard.press("Escape");
+  await openTheKeys(page);
+  const c4 = page.locator('[data-note="60"]');
   await page.keyboard.down("q");
   await expect(c4, "with the picker away a letter is a note").toHaveAttribute("data-held", "");
   await page.keyboard.up("q");

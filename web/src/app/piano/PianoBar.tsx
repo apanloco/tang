@@ -1,7 +1,7 @@
-// The choice of the piano's scale and the lock that drops the notes outside it. Both are the session's (the TUI sets them
+// The bar of the piano: the button that opens the keys (they are shut to begin with), the choice of the piano's scale and the lock that drops the notes outside it. Both are the session's (the TUI sets them
 // too): a choice shows at once and until the answer is in, and after it what the session has, which is what was asked for
 // unless it was refused (and the page says why). And the panic, which is nobody's choice but a way out: it lets go of every note
-// that sounds, the page's and everyone else's, and changes nothing in the session.
+// that sounds, the page's and everyone else's, and changes nothing in the session. The bar is there with the keys shut, so that the lock, which drops notes from any keyboard, and the panic are never out of sight.
 import { useRef, useState } from "react";
 
 import { SCALE_KINDS, SCALE_ROOTS } from "../../protocol";
@@ -106,9 +106,25 @@ function PanicButton() {
   );
 }
 
-export function PianoBar({ piano }: { piano: PianoMeta }) {
+/** Whether the keys are drawn: the button opens them and shuts them again. It is the first thing in the bar, which is all that is at the bottom of the page while the keys are shut (step 119). */
+function KeysButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      className="tang-piano__toggle"
+      aria-expanded={open}
+      title={open ? "Hide the keys of the piano. The keys of the computer go on playing." : "Show the keys of the piano. The keys of the computer play without them."}
+      onClick={onToggle}
+    >
+      <span aria-hidden="true">{open ? "▾" : "▴"}</span> Keyboard
+    </button>
+  );
+}
+
+export function PianoBar({ piano, open, onToggle }: { piano: PianoMeta; open: boolean; onToggle: () => void }) {
   return (
     <div className="tang-piano__bar">
+      <KeysButton open={open} onToggle={onToggle} />
       <ScalePicker piano={piano} />
       <LockButton locked={piano.locked} />
       <PanicButton />

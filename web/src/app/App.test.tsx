@@ -567,17 +567,30 @@ describe("the piano", () => {
     return found;
   };
 
-  test("has its place under the patch from the start, so that the canvas never has to give way to it, and has the keys once there is a session", async () => {
+  /** The keys are shut to begin with (step 119): the bar's button opens them, once there is a session to draw them in. */
+  const openKeys = async (): Promise<void> => {
+    const piano = screen.getByRole("region", { name: "Piano" });
+    fireEvent.click(await within(piano).findByRole("button", { name: "Keyboard" }));
+    await within(piano).findByRole("group", { name: "Piano keys" });
+  };
+
+  test("has its place under the patch from the start, so that the canvas never has to give way to it, and has the bar once there is a session, with the keys shut until the button opens them", async () => {
     page();
     // (The canvas is fitted to the room it has when it is first drawn: the piano that came a moment after would take some of it.)
     const piano = screen.getByRole("region", { name: "Piano" });
     expect(piano.children).toHaveLength(0);
-    await screen.findByRole("group", { name: "Piano keys" });
+    await within(piano).findByRole("combobox", { name: "Scale root" });
     expect(piano.children.length).toBeGreaterThan(0);
-    expect(within(piano).getByRole("combobox", { name: "Scale root" })).toBeTruthy();
     expect(within(piano).getByRole("combobox", { name: "Scale kind" })).toBeTruthy();
     expect(within(piano).getByRole("button", { name: "Lock to scale" })).toBeTruthy();
+    expect(within(piano).getByRole("button", { name: "Panic" })).toBeTruthy();
+    // The keys are not drawn, and the button says they can be.
+    expect(within(piano).queryByRole("group", { name: "Piano keys" })).toBeNull();
+    expect(document.querySelector("[data-note]")).toBeNull();
+    expect(within(piano).getByRole("button", { name: "Keyboard" }).getAttribute("aria-expanded")).toBe("false");
+    await openKeys();
     expect(within(piano).getByRole("group", { name: "Piano keys" })).toBeTruthy();
+    expect(within(piano).getByRole("button", { name: "Keyboard" }).getAttribute("aria-expanded")).toBe("true");
     // C major, as the tracer is: C is the root.
     expect(keyOf(60).dataset.role).toBe("root");
     // It comes after the patch, which has the room that is left.
@@ -587,7 +600,7 @@ describe("the piano", () => {
 
   test("is of the same window as the keys of the computer: the bracket keys move it", async () => {
     page();
-    await screen.findByRole("group", { name: "Piano keys" });
+    await openKeys();
     const lowest = (): number => Math.min(...Array.from(document.querySelectorAll<HTMLElement>("[data-note]"), (key) => Number(key.dataset.note)));
     const before = lowest();
     fireEvent.keyDown(document.body, { code: "BracketRight" });
@@ -596,7 +609,7 @@ describe("the piano", () => {
 
   test("plays a note for a pointer on a key, through the connection of the page", async () => {
     const { server } = page();
-    await screen.findByRole("group", { name: "Piano keys" });
+    await openKeys();
     fireEvent.pointerDown(keyOf(60), { pointerId: 1, button: 0 });
     await waitFor(() => {
       expect(server.received.filter((message) => message.type === "noteOn")).toEqual([{ type: "noteOn", note: 60, velocity: 100 }]);
@@ -610,6 +623,7 @@ describe("the piano", () => {
   test("sets the scale of the session when it is chosen, and the session says so", async () => {
     const { client } = page();
     const root = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Scale root" });
+    await openKeys();
     fireEvent.change(root, { target: { value: "7" } });
     await waitFor(() => {
       expect(client.state.snapshot?.meta.piano.scale).toBe("G major");
