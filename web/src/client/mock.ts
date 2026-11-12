@@ -49,7 +49,7 @@ import { sessionFileName } from "./filenames";
 import { audibleOf, fedOf, heardOf } from "./audible";
 import { cablesThatGo, isAudioCable, isLink, isModulation, isNotesCable } from "./cables";
 import { Counters } from "./counters";
-import { History, addedStep, laneOrGroupWords, planOf, removedStep, takesOut } from "./history";
+import { History, addedStep, laneOrGroupWords, planOf, removedStep, stepOf, takesOut } from "./history";
 import type { HistoryState, Made, Plan } from "./history";
 import { macroExposed, macroName } from "./macros";
 import type { MacroSource } from "./macros";
@@ -59,7 +59,8 @@ import { MODULATOR_LABELS, kindOf } from "./modulatorKinds";
 import { DEFAULT_MODULE_NAME, cleanModuleName, moduleNameOf, moduleOf, moduleOfNodes, pluginCount, tidyName, withModules } from "./modules";
 import type { Module, ModuleEffect, ModuleInstrument, ModuleOutput, ModuleTarget } from "./modules";
 import { noteName } from "./notes";
-import { clampLength, newBox, nextBoxName, patternTitle, sanitize } from "./patternBoxes";
+import { clampLength, newBox, nextBoxName, patternTitle, recordsKeys, sameNotes, sanitize } from "./patternBoxes";
+import { BoxRun, boxViewOf } from "./patternBoxPlayer";
 import { fieldsOf, gainPorts, isGainPort, samePort } from "./reach";
 import { applyEvent, withValues } from "./reducers";
 import { parseScale } from "./scales";
@@ -1917,6 +1918,8 @@ export class MockServer {
   /** The recordings that are going on, by the node of their lane: what the engine's pattern players hold, which the controller hears of when they are done. */
   readonly #recordings = new Map<NodeId, Recording>();
   #recordingTimer: ReturnType<typeof setInterval> | undefined;
+  /** The pattern boxes that are not stopped, by the node of the box: what the engine's players hold, whose changes the controller hears of (`BoxNotification`). */
+  readonly #boxes = new Map<NodeId, BoxRun>();
   /** The last note that each control that follows the notes has heard, by the node of the control (what the engine's controls hold): what it puts out is made of it. */
   readonly #heard = new Map<NodeId, { note: number; velocity: number }>();
   /** When each step sequencer that a note starts again was started last, in seconds of the server's clock (one that none has started goes from 0). */
@@ -2174,12 +2177,15 @@ export class MockServer {
         break;
       }
       case "noteOn":
+        // (`receive` has brought the pattern boxes up to now: a note is taken at the beat that it comes at.)
         connection.notes.add(message.note);
         this.#played(message.note);
         this.#listened(message.note, message.velocity);
+        this.#heardByBoxes(message.velocity > 0, message.note, message.velocity);
         break;
       case "noteOff":
         connection.notes.delete(message.note);
+        this.#heardByBoxes(false, message.note, 0);
         break;
       // (The server's own notes, every connection's: what the real server lets go of is what its held-notes bits say, whoever set them.)
       case "panic":
@@ -2225,6 +2231,7 @@ export class MockServer {
     if ("event" in outcome && outcome.event.type === "saved" && outcome.event.file !== null) this.#files.add(outcome.event.file);
     this.#keep(plan, made, before);
     this.#followRecordings(intent, tell);
+    this.#followBoxes(intent, tell);
     return done;
   }
 
@@ -2258,6 +2265,8 @@ export class MockServer {
   settle(): void {
     const now = this.now();
     let changed = false;
+    // (The pattern boxes go by the same clock: what they have done by now, a pass that ended included, is the session's, and the clients are told.)
+    const boxes = this.#settleBoxes(now);
     for (const [node, recording] of [...this.#recordings]) {
       const lane = this.#snapshot.graph.nodes.find((n) => n.id === node);
       // (A lane that is taken out, or whose pattern is, is let go of: there is nothing to make the pattern of.)
@@ -2270,10 +2279,130 @@ export class MockServer {
       this.#finished(node, recording);
       changed = true;
     }
-    if (changed) this.#resync(true);
-    if (this.#recordings.size === 0 && this.#recordingTimer !== undefined) {
+    if (changed || boxes.recorded) this.#resync(true);
+    else if (boxes.moved) this.#reannounce(true);
+    if (boxes.recorded) this.#tellHistory();
+    this.#keepTimer();
+  }
+
+  /** Keep the timer that looks at what goes by with time while something does (a lane that records, a box that counts in, takes a pass or plays once), and let it go when nothing does. */
+  #keepTimer(): void {
+    if (this.#recordings.size > 0 || this.#boxesMoving()) {
+      this.#watchRecordings();
+    } else if (this.#recordingTimer !== undefined) {
       clearInterval(this.#recordingTimer);
       this.#recordingTimer = undefined;
+    }
+  }
+
+  /**
+   * Do what the engine's players of pattern boxes would have done by `now`: each box that is not stopped goes on (`BoxRun.advance`: a count-in is over, a pass ends and makes the box's notes, a box that plays once has played it), and one that
+   * is stopped, or whose node has gone, is let go of. Whether what a box is doing changed, and whether a pass ended that changed the notes (the controller's `box_recorded`: the notes are the box's, and the history has a step).
+   */
+  #settleBoxes(now: number): { moved: boolean; recorded: boolean } {
+    let moved = false;
+    let recorded = false;
+    for (const [node, run] of [...this.#boxes]) {
+      const view = (): ReturnType<typeof boxViewOf> => boxViewOf(this.#snapshot.graph, node);
+      if (view() === undefined) {
+        this.#boxes.delete(node);
+        continue;
+      }
+      const before = run.status;
+      run.advance(
+        now,
+        this.#snapshot.meta.bpm,
+        () => view() ?? { length: 1, looping: true, overdub: false, clock: "own", notes: [] },
+        (notes) => {
+          recorded = this.#recorded(node, notes) || recorded;
+        },
+      );
+      if (run.stopped) this.#boxes.delete(node);
+      if (run.status !== before) moved = true;
+    }
+    this.#withStatuses();
+    return { moved, recorded };
+  }
+
+  /**
+   * A pass of recording is over: the notes that the box has are the session's, which is then unsaved, and the history has a step ("record into Pattern 1") that undo takes back to the notes it had (`Controller::box_recorded`). Notes that the box
+   * has already change nothing. Whether the notes changed.
+   */
+  #recorded(node: NodeId, notes: readonly PatternNote[]): boolean {
+    const box = this.#snapshot.graph.nodes.find((n) => n.id === node);
+    if (box?.kind !== "pattern" || sameNotes(notes, box.notes)) return false;
+    const nodes = this.#snapshot.graph.nodes.map((n) => (n === box ? { ...box, notes: [...notes] } : n));
+    this.#snapshot = { ...this.#snapshot, graph: { ...this.#snapshot.graph, nodes } };
+    this.#history.record(stepOf(`record into ${box.name}`, { type: "setPatternBoxNotes", node, notes: [...box.notes] }, { type: "setPatternBoxNotes", node, notes: [...notes] }, null, this.now()));
+    return true;
+  }
+
+  /**
+   * What an intent that was carried out does to the engine's players of boxes: what a box is told to do (the engine does it: `BoxRun`), a change of the clock that a box goes by stops it (`BoxPlayer::set_settings`), and a box that has gone, with its
+   * cables or by itself, is let go of. What the boxes are doing is the session's then (`withStatuses`), and the clients are told if it is not what they were told.
+   */
+  #followBoxes(intent: Intent, tell: boolean): void {
+    if (intent.type === "patternBoxTransport") {
+      const view = boxViewOf(this.#snapshot.graph, intent.node);
+      if (view !== undefined) {
+        const run = this.#boxes.get(intent.node) ?? new BoxRun(this.now());
+        if (intent.action === "record") run.record(view, this.now());
+        else if (intent.action === "play") run.play(view, this.now());
+        else if (intent.action === "stop") run.stop();
+        else run.finish();
+        if (run.stopped) this.#boxes.delete(intent.node);
+        else this.#boxes.set(intent.node, run);
+      }
+    }
+    for (const [node, run] of [...this.#boxes]) {
+      const view = boxViewOf(this.#snapshot.graph, node);
+      if (view === undefined) this.#boxes.delete(node);
+      else if (view.clock !== run.goesBy) {
+        run.stop();
+        this.#boxes.delete(node);
+      }
+    }
+    if (this.#withStatuses()) this.#reannounce(tell);
+    this.#keepTimer();
+  }
+
+  /** A key goes down or comes up: every box that is making a pass takes it, if it records the keys (`BoxRun.hear`). */
+  #heardByBoxes(on: boolean, note: number, velocity: number): void {
+    for (const [node, run] of this.#boxes) {
+      if (recordsKeys(this.#snapshot.graph, node)) run.hear(on, note, velocity);
+    }
+  }
+
+  /** Whether a box will change what it is doing by itself, which the server has to look at as time goes by. */
+  #boxesMoving(): boolean {
+    return [...this.#boxes].some(([node, run]) => {
+      const view = boxViewOf(this.#snapshot.graph, node);
+      return view !== undefined && run.moving(view);
+    });
+  }
+
+  /**
+   * The session with what each pattern box is doing as the engine's players say (a box that has none is stopped: a box that is put back by undo is new to the engine). The status is the audio thread's, and no intent sets it.
+   * True if it changed anything.
+   */
+  #withStatuses(): boolean {
+    const before = this.#snapshot.graph.nodes;
+    const nodes = before.map((n) => {
+      if (n.kind !== "pattern") return n;
+      const status = this.#boxes.get(n.id)?.status ?? "stopped";
+      return status === n.status ? n : { ...n, status };
+    });
+    const changed = nodes.some((n, i) => n !== before[i]);
+    if (changed) this.#snapshot = { ...this.#snapshot, graph: { ...this.#snapshot.graph, nodes } };
+    return changed;
+  }
+
+  /** Give the clients the session as it is, at a revision of its own, when only what a box is doing changed: it is no change that is saved (what the controller's `poll` does for a `BoxNotification::Status`). */
+  #reannounce(tell: boolean): void {
+    this.#snapshot = { ...this.#snapshot, rev: this.#snapshot.rev + 1 };
+    if (!tell) return;
+    for (const connection of this.#connections) {
+      if (connection.subscribed) connection.tell({ type: "snapshot", snapshot: this.#snapshot });
     }
   }
 
@@ -2418,6 +2547,8 @@ export class MockServer {
     const rev = this.#snapshot.rev + 1;
     if ("restructured" in outcome) {
       this.#snapshot = withoutLostEars({ ...outcome.restructured, rev: rev + 1, meta: { ...outcome.restructured.meta, dirty: true } });
+      // (What the boxes are doing is the engine's: a box that is put back by undo, or taken out, has no player that is going.)
+      this.#withStatuses();
       if (tell) {
         for (const connection of this.#connections) {
           if (connection.subscribed) connection.tell({ type: "snapshot", snapshot: this.#snapshot });

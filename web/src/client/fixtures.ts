@@ -4,7 +4,7 @@
 // program on the example can save over it) exactly as the server makes it. The JSON is generated from the Rust types and
 // kept current by a Rust test (`the_web_clients_fixture_of_the_tracer_is_current`), so
 // the cast below is as good as the generated types.
-import type { CatalogEntry, Event, Feed, Graph, Intent, Node, NodeId, NoteRange, ParamValue, Plugin, Port, Route, SideInfo, Snapshot, StampedEvent, TelemetryLayout } from "../protocol";
+import type { CatalogEntry, Event, Feed, Graph, Intent, Node, NodeId, NoteRange, ParamValue, PatternNote, PatternStatus, Plugin, Port, Route, SideInfo, Snapshot, StampedEvent, TelemetryLayout } from "../protocol";
 import { isLink } from "./cables";
 import builtinEffectNodes from "./fixtures/builtins.effects.json";
 import builtins from "./fixtures/builtins.catalog.json";
@@ -28,6 +28,7 @@ import moduleGraphs from "./fixtures/moduleGraphs.json";
 import modules from "./fixtures/modules.json";
 import moves from "./fixtures/moves.json";
 import noise from "./fixtures/noise.json";
+import patternBoxTakes from "./fixtures/patternBoxTakes.json";
 import patternBoxes from "./fixtures/patternBoxes.json";
 import patterns from "./fixtures/patterns.json";
 import pins from "./fixtures/pins.json";
@@ -261,6 +262,27 @@ export const sourcesFixture = sources as unknown as {
  */
 export const patternBoxesFixture = patternBoxes as unknown as {
   cases: { name: string; snapshot: Snapshot; rows: ({ intent: Intent } & ({ error: string } | { events: StampedEvent[]; restructured: boolean; after: Shape }))[] }[];
+};
+
+/**
+ * What the real player of a pattern box (`BoxPlayer`) makes of takes, scene by scene, at 120 beats a minute: the box as it is made (its length, whether it loops and overdubs, the notes it has), what is done to it and when (the transport and the keys, each on a
+ * sixteenth of a beat, the transport of a beat before the keys of it), what it is doing after each block of a sixteenth (each change and the beat that showed it: `statuses`), the notes that each pass that ended made of it (and the beat of the block it ended in)
+ * and the notes it has at the end. Written by the player (`the_web_clients_fixture_of_what_a_box_makes_of_a_take_is_current`).
+ */
+export const patternBoxTakesFixture = patternBoxTakes as unknown as {
+  bpm: number;
+  cases: {
+    name: string;
+    length: number;
+    looping: boolean;
+    overdub: boolean;
+    notes: PatternNote[];
+    script: { beat: number; do: "record" | "play" | "stop" | "finish" | "on" | "off"; note: number; velocity: number }[];
+    beats: number;
+    statuses: [number, PatternStatus][];
+    passes: { beat: number; notes: PatternNote[] }[];
+    final: PatternNote[];
+  }[];
 };
 
 /**

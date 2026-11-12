@@ -5,7 +5,7 @@ import type { Graph, Node, PatternNote } from "../protocol";
 import { patternBoxesFixture } from "./fixtures";
 import { noteFromItems, noteToItems } from "./noteItems";
 import { eventCableEnds, noteTakers, withHears } from "./noteWiring";
-import { boxFieldBefore, clampLength, newBox, nextBoxName, patternTitle, sameNotes, sanitize } from "./patternBoxes";
+import { boxFieldBefore, clampLength, newBox, nextBoxName, patternTitle, recordsKeys, sameNotes, sanitize } from "./patternBoxes";
 import type { PatternBoxNode } from "./patternBoxes";
 
 const note = (start: number, length: number, pitch: number, velocity: number): PatternNote => ({ start, length, note: pitch, velocity });
@@ -198,6 +198,21 @@ describe("the links that a source has to what hears every source", () => {
     const once = withHears({ ...boxed, edges: boxed.edges.filter((e) => e.kind !== "events") });
     const twice = withHears(once);
     expect(twice.edges).toEqual(once.edges);
+  });
+});
+
+describe("the keys that a pattern box records", () => {
+  test("are every input when no cable of notes ends at the box, whatever cables there are elsewhere, and else the sources that the cables that end at it start at", () => {
+    // (Bass has a cable from the keys, the plain box has none: the cables of the lanes are from the boxes.)
+    expect(recordsKeys(boxed, BASS)).toBe(true);
+    expect(recordsKeys(boxed, PLAIN)).toBe(true);
+    // A cable from the device in place of the keys: Bass records nothing of the keys here, and the plain box, which has none that ends at it, still records them, though the only cable from a source is not to it.
+    const fromDevice: Graph = { ...boxed, edges: boxed.edges.map((e) => (e.kind === "events" && e.to.node === BASS ? { ...e, from: { ...e.from, node: DEVICE } } : e)) };
+    expect(recordsKeys(fromDevice, BASS)).toBe(false);
+    expect(recordsKeys(fromDevice, PLAIN)).toBe(true);
+    // A cable from the keys to the plain box and one from the device: it records the keys.
+    expect(recordsKeys(cable(cable(fromDevice, DEVICE, PLAIN), KEYS, PLAIN), PLAIN)).toBe(true);
+    expect(recordsKeys(cable(fromDevice, DEVICE, PLAIN), PLAIN)).toBe(false);
   });
 });
 

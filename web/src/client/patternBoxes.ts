@@ -2,7 +2,8 @@
 // (`newBox`, `nextBoxName`, as `PatternBox::new` and `SessionModel::next_pattern_name`), the name that a person gives it (`patternTitle`, as `pattern_title`), the length and the notes as a box holds them (`clampLength` and `sanitize`,
 // as `BoxPlan::clamp_length` and `patternbox::sanitize`), and the words of the steps that its settings make in the history (`boxFieldBefore`, as `pattern_field_before`).
 import { PATTERN_BOX_DEFAULT_LENGTH, PATTERN_BOX_LENGTH_RANGE, PATTERN_BOX_NOTE_LIMIT } from "../protocol";
-import type { Node, NodeId, PatternBoxField, PatternNote } from "../protocol";
+import type { Graph, Node, NodeId, PatternBoxField, PatternNote } from "../protocol";
+import { isNotesCable } from "./cables";
 import { tidyName } from "./modules";
 
 /** A pattern box, as the graph has it. */
@@ -62,6 +63,15 @@ export function nextBoxName(nodes: readonly Node[]): string {
 /** A box that is new, as `AddPattern` makes it: no note, a loop of `PATTERN_BOX_DEFAULT_LENGTH` beats that goes round on its own clock, overwrites and clicks, and does nothing (`PatternBox::new`). */
 export function newBox(id: NodeId, name: string): PatternBoxNode {
   return { id, parent: null, name, kind: "pattern", looping: true, sync: "own", overdub: false, click: true, lengthBeats: PATTERN_BOX_DEFAULT_LENGTH, notes: [], status: "stopped" };
+}
+
+/**
+ * Whether the pattern box `box` records the keys (`SessionModel::box_inputs`): every input if no cable of notes ends at it, and else the sources that the cables that end at it start at. The mock has the keys, which the page plays, and no device
+ * that sends anything: a box that has a cable from a device and none from the keys records nothing here.
+ */
+export function recordsKeys(graph: Graph, box: NodeId): boolean {
+  const cables = graph.edges.filter((e) => isNotesCable(e) && e.to.node === box);
+  return cables.length === 0 || cables.some((e) => graph.nodes.some((n) => n.id === e.from.node && n.kind === "source" && n.source.type === "keys"));
 }
 
 /** What a setting of a box is about to be set to: the words for the step, the setting as the box has it now (what undo sets) and whether the box has what is asked for already (no step is kept for it), as `pattern_field_before` says. */
