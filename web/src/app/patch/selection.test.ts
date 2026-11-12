@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { moduleGraphsFixture } from "../../client/fixtures";
+import { newBox } from "../../client/patternBoxes";
 import type { Graph, Node } from "../../protocol";
 import { effect, lane, master as theMaster, modulator as lfo, moduleNode } from "./boxesKit";
 import { collapsePlace, collapseTitle, collapseWhyNot, collapseWords, collapsibleOf, modulePluginsOf } from "./selection";
@@ -36,7 +37,9 @@ describe("what a module holds of what is chosen", () => {
     expect(modulePluginsOf(graph, [modulator.id])).toEqual({ nodes: [modulator.id], plugins: 0, left: 0 });
   });
 
-  test("leaves out what a module has none of, and counts it: a group and the bus effect in it, a source of notes, an empty lane, the lane of effects alone, and the master", () => {
+  test("leaves out what a module has none of, and counts it: a group and the bus effect in it, a source of notes, a pattern box, an empty lane, the lane of effects alone, and the master", () => {
+    const pattern = newBox(88_888, "Bass");
+    expect(modulePluginsOf({ ...graph, nodes: [...graph.nodes, pattern] }, [pattern.id, filter.id])).toEqual({ nodes: [filter.id], plugins: 1, left: 1 });
     for (const other of [group, bus, source, empty, holder, master]) {
       expect(modulePluginsOf(graph, [other.id]), `${other.kind} ${other.name}`).toEqual({ nodes: [], plugins: 0, left: 1 });
     }
@@ -112,12 +115,16 @@ describe("what collapsing the nodes that are chosen into one module takes (step 
     expect(collapsibleOf(graph, [first.id])).toMatchObject({ lanes: 0, modulators: 1, brought: 0 });
   });
 
-  test("leaves out and counts what a module cannot take: a group, the bus effect in it, a source of notes, the master, a box and a node that the session does not have", () => {
+  test("leaves out and counts what a module cannot take: a group, the bus effect in it, a source of notes, a pattern box, the master, a box and a node that the session does not have", () => {
     const box = moduleNode(77_777, "Voice", [empty.id]);
-    const withBox: Graph = { ...graph, nodes: [...graph.nodes, box] };
-    for (const other of [group, bus, source, master, box]) {
+    const pattern = newBox(88_888, "Bass");
+    const withBox: Graph = { ...graph, nodes: [...graph.nodes, box, pattern] };
+    for (const other of [group, bus, source, master, box, pattern]) {
       expect(collapsibleOf(withBox, [other.id]), `${other.kind} ${other.name}`).toMatchObject({ nodes: [], lanes: 0, modulators: 0, brought: 0, left: 1 });
     }
+    // (A pattern box that is chosen with a lane is left out, and the lane is taken: the controller refuses a box in the nodes it is asked for, so that the page does not ask.)
+    expect(collapsibleOf(withBox, [pattern.id, oscillator.id])).toMatchObject({ lanes: 1, left: 1 });
+    expect(collapsibleOf(withBox, [pattern.id, oscillator.id]).nodes).not.toContain(pattern.id);
     expect(collapsibleOf(graph, [99_999])).toMatchObject({ nodes: [], left: 1 });
     expect(collapsibleOf(graph, [filter.id, bus.id, first.id, master.id, source.id])).toMatchObject({ nodes: [filter.id, first.id], lanes: 1, modulators: 1, left: 3 });
   });

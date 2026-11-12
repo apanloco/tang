@@ -4,7 +4,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { Client } from "../client/connection";
 import type { ClientOptions } from "../client/connection";
-import { groupsFixture, nodeNamed, sourcesFixture, tracerSnapshot } from "../client/fixtures";
+import { groupsFixture, nodeNamed, patternBoxesFixture, sourcesFixture, tracerSnapshot } from "../client/fixtures";
 import { MockServer } from "../client/mock";
 import type { MockOptions } from "../client/mock";
 import type { Notices } from "../client/notices";
@@ -406,6 +406,55 @@ describe("the page", () => {
     });
     expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Add a source of notes" }));
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Add a source of notes" }).disabled).toBe(false);
+  });
+
+  test("has a button in the bar that adds a pattern box at once, with nothing to choose: the box is on the canvas when the server has made it, with its controls, and the button keeps the focus", async () => {
+    const { server } = page();
+    const patch = await screen.findByTestId("patch");
+    await waitFor(() => {
+      expect(patch.querySelectorAll(".react-flow__node")).toHaveLength(4);
+    });
+    const button = await screen.findByRole("button", { name: "Add a pattern box" });
+    expect(button.textContent).toBe("+ Pattern");
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(patch.querySelectorAll(".react-flow__node")).toHaveLength(5);
+    });
+    expect(server.received.flatMap((message) => (message.type === "request" ? [message.intent] : []))).toEqual([{ type: "addPattern" }]);
+    expect(await screen.findByRole("group", { name: "Pattern box Pattern 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Record into Pattern 1" })).toBeTruthy();
+    expect(document.activeElement).toBe(button);
+    // (Another is the next number: "Pattern 2", and neither is called what the other is.)
+    fireEvent.click(button);
+    expect(await screen.findByRole("group", { name: "Pattern box Pattern 2" })).toBeTruthy();
+  });
+
+  test("says why a pattern box could not be added, among the notices: a session has at most sixteen, and the page was not connected", async () => {
+    const full = patternBoxesFixture.cases.find((entry) => entry.name === "full");
+    if (!full) throw new Error("the fixture has a session with sixteen boxes");
+    page({ snapshot: full.snapshot });
+    fireEvent.click(await screen.findByRole("button", { name: "Add a pattern box" }));
+    expect(await screen.findByText("Could not add a pattern box: a session has at most 16 pattern boxes")).toBeTruthy();
+    cleanup();
+    const { server } = page({}, { reconnectDelay: () => 60_000 });
+    await screen.findByText("Connected");
+    server.drop();
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).not.toBe("Connected");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add a pattern box" }));
+    expect(await screen.findByText("Could not add a pattern box: Not connected to the server.")).toBeTruthy();
+  });
+
+  test("gives the focus to the button that adds a pattern box when a box is taken out", async () => {
+    page();
+    fireEvent.click(await screen.findByRole("button", { name: "Add a pattern box" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Pattern 1" }));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add a pattern box" }));
+    });
+    expect(screen.queryByRole("group", { name: /^Pattern box / })).toBeNull();
   });
 
   test("gives the focus to the button that adds a source when a source is taken out", async () => {

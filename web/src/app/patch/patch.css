@@ -81,6 +81,11 @@
   --kind: var(--tang-notes);
 }
 
+/* A pattern box is a place that notes are kept in, like a source of them is a place they come from: the colour of notes. */
+.tang-node--pattern {
+  --kind: var(--tang-notes);
+}
+
 .tang-node--module {
   --kind: var(--tang-module);
   /* The room under the line that says what is in it (`NODE_PADDING`). */
@@ -627,6 +632,39 @@
   white-space: nowrap;
   font-size: var(--tang-text-small);
   color: var(--tang-text-muted);
+}
+
+/*
+ * The pattern box is the pattern cell of a lane with a picture of its notes between its switches and its line (`PATTERN_BOX_HEIGHT` in toFlow.ts: the roll is `PATTERN_ROLL_HEIGHT` tall, and the grid's gap is before it).
+ * The play button keeps its width when it says Stop, so that the row does not move under a pointer that is about to press it.
+ */
+.tang-patternbox__play {
+  min-width: 56px;
+}
+
+.tang-roll {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 40px;
+  border: 1px solid var(--tang-border);
+  border-radius: 4px;
+  background: var(--tang-bg);
+}
+
+/* The lines of the beats, and a heavier one at each bar; the picture is stretched to the node (the strokes are not: `vector-effect`). */
+.tang-roll__line {
+  stroke: var(--tang-border);
+  stroke-width: 1;
+}
+
+.tang-roll__line--bar {
+  stroke: var(--tang-text-muted);
+  stroke-opacity: 0.55;
+}
+
+.tang-roll__note {
+  fill: var(--tang-notes);
 }
 
 /* Ports: where a cable starts or ends. */

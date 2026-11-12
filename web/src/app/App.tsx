@@ -6,6 +6,7 @@ import { AddFreeEffectMenu } from "./AddFreeEffect";
 import { AddFreeModulatorMenu } from "./AddFreeModulator";
 import { AddInstrumentMenu } from "./AddInstrument";
 import { AddModuleMenu } from "./AddModule";
+import { AddPatternButton } from "./AddPattern";
 import { AddSourceMenu } from "./AddSource";
 import { BusyLight } from "./BusyLight";
 import { useClientState, useNotices } from "./ClientProvider";
@@ -60,6 +61,7 @@ export function App({ engine }: { engine: EngineKind }) {
         <AddFreeEffectMenu />
         <AddFreeModulatorMenu />
         <AddSourceMenu />
+        <AddPatternButton />
         <AddModuleMenu />
         <span className="tang-app__keys" title={KEYS_HINT}>
           Keys: octave {octave}

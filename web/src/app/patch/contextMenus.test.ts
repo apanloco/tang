@@ -2,7 +2,8 @@ import { describe, expect, test } from "vitest";
 
 import { MODULE_FORMAT } from "../../client/catalog";
 import type { ClientState } from "../../client/connection";
-import { builtinCatalog, moduleGraphsFixture, nodeNamed, tracerSnapshot } from "../../client/fixtures";
+import { builtinCatalog, moduleGraphsFixture, nodeNamed, patternBoxesFixture, tracerSnapshot } from "../../client/fixtures";
+import type { PatternBoxNode } from "../../client/patternBoxes";
 import type { CatalogEntry, Graph, Node, NodeId, Snapshot } from "../../protocol";
 import type { ContextItem } from "../../ui/ContextMenu";
 import { effect, lane, link, master as theMaster, moduleNode } from "./boxesKit";
@@ -37,6 +38,10 @@ function recorder(): { editor: MenuEditor; asked: Ask[] } {
     addModule: added("addModule"),
     addFreeModulator: added("addFreeModulator"),
     addSource: added("addSource"),
+    addPattern: added("addPattern"),
+    setPatternBoxField: done("setPatternBoxField"),
+    patternBoxTransport: done("patternBoxTransport"),
+    clearPatternBox: done("clearPatternBox"),
     addEffect: added("addEffect"),
     replaceInstrument: done("replaceInstrument"),
     clearInstrument: done("clearInstrument"),
@@ -174,11 +179,11 @@ function dataOf(found: Node, overrides: Partial<PatchNodeData> = {}): PatchNodeD
 }
 
 describe("the menu of the canvas", () => {
-  test("adds an instrument, an effect, a modulator, a source of notes and a module, goes back and forward, chooses nodes, arranges them and shows them all, in that order", () => {
+  test("adds an instrument, an effect, a modulator, a source of notes, a pattern box and a module, goes back and forward, chooses nodes, arranges them and shows them all, in that order", () => {
     const { deps } = rig(tracerSnapshot);
     const items = paneMenu(deps);
-    expect(idsOf(items)).toEqual(["add-instrument", "add-effect", "add-modulator", "add-source", "add-module", "undo", "redo", "choose-all", "choosing", "arrange", "fit"]);
-    expect(labelsOf(items)).toEqual(["Add an instrument", "Add an effect", "Add a modulator", "Add a source of notes", "Add a module", "Undo", "Redo", "Choose every node", "Choose nodes with a box", "Arrange the nodes", "Show every node"]);
+    expect(idsOf(items)).toEqual(["add-instrument", "add-effect", "add-modulator", "add-source", "add-pattern", "add-module", "undo", "redo", "choose-all", "choosing", "arrange", "fit"]);
+    expect(labelsOf(items)).toEqual(["Add an instrument", "Add an effect", "Add a modulator", "Add a source of notes", "Add a pattern box", "Add a module", "Undo", "Redo", "Choose every node", "Choose nodes with a box", "Arrange the nodes", "Show every node"]);
     // (The rules that set the sections apart: adding, history, choosing, the view.)
     expect(items.filter((item) => item.rule === true).map((item) => item.id)).toEqual(["undo", "choose-all", "arrange"]);
   });
@@ -302,7 +307,7 @@ describe("the menu of the canvas", () => {
     const held = modulePluginsOf(session.graph, [oscillator.id, node("Delay").id]);
     const { deps, naming, asked, canvasAsked } = rig(session, { canvas: { chosen: [oscillator.id, node("Delay").id], held } });
     const items = paneMenu(deps);
-    expect(idsOf(items).slice(5, 11)).toEqual(["undo", "redo", "save-chosen", "collapse-chosen", "choose-none", "choose-all"]);
+    expect(idsOf(items).slice(6, 12)).toEqual(["undo", "redo", "save-chosen", "collapse-chosen", "choose-none", "choose-all"]);
     expect(find(items, "save-chosen")).toMatchObject({ label: "Save the 2 chosen as a module…", disabled: false, rule: true });
     choose(items, "save-chosen");
     expect(naming.map((name) => name.label)).toEqual([SAVE_CHOSEN]);
@@ -881,5 +886,142 @@ describe("the menu of a plugin that has a window of its own (step 112)", () => {
     const ids = idsOf(items);
     expect(ids).toContain("window");
     expect(ids.indexOf("window")).toBeLessThan(ids.indexOf("parameters"));
+  });
+});
+
+describe("the menus of a pattern box (step 124 C)", () => {
+  // The fixture's session with boxes: the keys (2), a device (3), a box that has notes (4, "Bass", with a cable of notes from the keys and one to the first lane), an empty one (5, "Pattern", which no cable of notes ends at: it records
+  // every source, and has a cable to the second lane), and two lanes.
+  const boxes = patternBoxesFixture.cases.find((each) => each.name === "boxes")?.snapshot;
+  if (!boxes) throw new Error("the fixture has a session with boxes");
+  const BASS = 4;
+  const EMPTY = 5;
+  /** The session with the empty box changed (what it is doing, what it is set to) and the session's meta. */
+  const withEmpty = (change: Partial<PatternBoxNode>, meta: Partial<Snapshot["meta"]> = {}): Snapshot => ({
+    ...boxes,
+    meta: { ...boxes.meta, ...meta },
+    graph: { ...boxes.graph, nodes: boxes.graph.nodes.map((n) => (n.id === EMPTY && n.kind === "pattern" ? { ...n, ...change } : n)) },
+  });
+  const at = (snapshot: Snapshot, id: NodeId): Node => {
+    const found = snapshot.graph.nodes.find((n) => n.id === id);
+    if (!found) throw new Error(`no node ${String(id)}`);
+    return found;
+  };
+  const menuOf = (snapshot: Snapshot, id: NodeId) => {
+    const made = rig(snapshot);
+    return { ...made, items: nodeMenu(made.deps, id, dataOf(at(snapshot, id))) };
+  };
+
+  test("the canvas adds one where the pointer was, and where the layout puts it when the pointer was not on the canvas", () => {
+    const placed = rig(tracerSnapshot, { at: { x: 5, y: 6 } });
+    choose(paneMenu(placed.deps), "add-pattern");
+    expect(placed.asked).toEqual([["addPattern", { x: 5, y: 6 }]]);
+    const left = rig(tracerSnapshot);
+    choose(paneMenu(left.deps), "add-pattern");
+    expect(left.asked).toEqual([["addPattern", undefined]]);
+  });
+
+  test("has records, plays, clears, its three switches, the notes it takes and sends, and its removal, in that order, with a rule above what takes it away", () => {
+    const { items } = menuOf(boxes, BASS);
+    expect(idsOf(items)).toEqual(["record", "play", "clear", "looping", "overdub", "click", "notes-from", "notes", "remove"]);
+    expect(labelsOf(items).slice(0, 3)).toEqual(["Record into Bass", "Play Bass", "Clear the notes of Bass"]);
+    expect(items.filter((item) => item.rule === true).map((item) => item.id)).toEqual(["remove"]);
+    expect(find(items, "remove").label).toBe("Remove Bass");
+  });
+
+  test("records and plays while it is stopped, and finishes the recording and stops while it records: the words of its buttons", () => {
+    const stopped = menuOf(withEmpty({ status: "stopped" }), EMPTY);
+    choose(stopped.items, "record");
+    choose(stopped.items, "play");
+    expect(stopped.asked).toEqual([
+      ["patternBoxTransport", EMPTY, "record"],
+      ["patternBoxTransport", EMPTY, "play"],
+    ]);
+    for (const status of ["countingIn", "waiting", "recording"] as const) {
+      const going = menuOf(withEmpty({ status }), EMPTY);
+      expect(find(going.items, "record").label, status).toBe("Finish recording Pattern");
+      expect(find(going.items, "play").label, status).toBe("Stop Pattern");
+      choose(going.items, "record");
+      choose(going.items, "play");
+      expect(going.asked, status).toEqual([
+        ["patternBoxTransport", EMPTY, "finishRecording"],
+        ["patternBoxTransport", EMPTY, "stop"],
+      ]);
+    }
+    // (A box that plays is stopped by Stop and records by Record: the count-in begins from the loop.)
+    const playing = menuOf(withEmpty({ status: "playing" }), EMPTY);
+    expect(find(playing.items, "record").label).toBe("Record into Pattern");
+    expect(find(playing.items, "play").label).toBe("Stop Pattern");
+  });
+
+  test("clears the notes it has, and cannot when it has none, and says why", () => {
+    const has = menuOf(boxes, BASS);
+    choose(has.items, "clear");
+    expect(has.asked).toEqual([["clearPatternBox", BASS]]);
+    const none = menuOf(boxes, EMPTY);
+    expect(find(none.items, "clear")).toMatchObject({ disabled: true, title: "It has no notes" });
+  });
+
+  test("turns looping, overdub and the click over, each a switch that says which it is, and sets each to the opposite of what it is", () => {
+    const { items, asked } = menuOf(boxes, BASS);
+    expect([find(items, "looping").checked, find(items, "overdub").checked, find(items, "click").checked]).toEqual([true, true, true]);
+    for (const id of ["looping", "overdub", "click"]) choose(items, id);
+    expect(asked).toEqual([
+      ["setPatternBoxField", BASS, { type: "looping", on: false }],
+      ["setPatternBoxField", BASS, { type: "overdub", on: false }],
+      ["setPatternBoxField", BASS, { type: "click", on: false }],
+    ]);
+    const off = menuOf(withEmpty({ looping: false, overdub: false, click: false }), EMPTY);
+    expect([find(off.items, "looping").checked, find(off.items, "overdub").checked, find(off.items, "click").checked]).toEqual([false, false, false]);
+    choose(off.items, "looping");
+    expect(off.asked).toEqual([["setPatternBoxField", EMPTY, { type: "looping", on: true }]]);
+  });
+
+  test("has the host's beat only where the session has a host's tempo or the box goes by it already, so that it can be put back", () => {
+    expect(idsOf(menuOf(boxes, EMPTY).items)).not.toContain("sync");
+    const hosted = menuOf(withEmpty({}, { hostTempo: true }), EMPTY);
+    expect(find(hosted.items, "sync")).toMatchObject({ label: "Follow the host's beat", checked: false });
+    choose(hosted.items, "sync");
+    expect(hosted.asked).toEqual([["setPatternBoxField", EMPTY, { type: "sync", sync: "host" }]]);
+    // (A file that says `sync = "host"`, loaded where there is no host: the box can be put back on its own clock.)
+    const stuck = menuOf(withEmpty({ sync: "host" }), EMPTY);
+    expect(find(stuck.items, "sync").checked).toBe(true);
+    choose(stuck.items, "sync");
+    expect(stuck.asked).toEqual([["setPatternBoxField", EMPTY, { type: "sync", sync: "own" }]]);
+  });
+
+  test("takes notes from a source that has no cable to it and sends them to a lane that has no cable from it, and is taken out", () => {
+    const { items, asked } = menuOf(boxes, EMPTY);
+    // (The keys and the device have each the faint link by which a box that has no cable in records them, and no cable: both can be drawn. The first lane is the one that has no cable from this box; the two lanes are
+    // called alike, and the canvas numbers them.)
+    expect(labelsOf(opened(items, "notes-from"))).toEqual(["Keys", "Launchkey Mini MK4 37"]);
+    expect(labelsOf(opened(items, "notes"))).toEqual(["Oscillator 1"]);
+    choose(opened(items, "notes-from"), "3");
+    choose(opened(items, "notes"), "0");
+    choose(items, "remove");
+    expect(asked).toEqual([
+      ["addNotesCable", 3, EMPTY],
+      ["addNotesCable", EMPTY, 0],
+      ["removeNode", EMPTY],
+    ]);
+  });
+
+  test("shuts the menu of what it takes and sends when there is nothing left to draw, and says why", () => {
+    // (Bass has a cable from the keys, and the device can still be drawn: its menu of sources lists it; the lanes: the first has a cable from Bass, the second has none.)
+    const bass = menuOf(boxes, BASS);
+    expect(labelsOf(opened(bass.items, "notes-from"))).toEqual(["Launchkey Mini MK4 37"]);
+    expect(labelsOf(opened(bass.items, "notes"))).toEqual(["Oscillator 2"]);
+    // A session where the box has every cable that can be drawn.
+    const full = structuredClone(boxes);
+    full.graph.nodes = full.graph.nodes.filter((n) => n.id === BASS || n.kind === "master" || n.id === 2 || n.id === 0);
+    full.graph.edges = full.graph.edges.filter((e) => e.from.node !== 3 && e.to.node !== 5 && e.from.node !== 5 && e.to.node !== 1 && e.from.node !== 1);
+    const shut = menuOf(full, BASS);
+    expect(find(shut.items, "notes-from")).toMatchObject({ disabled: true, title: "Every source has a cable of notes to it" });
+    expect(find(shut.items, "notes")).toMatchObject({ disabled: true, title: "Every lane has a cable of notes from it" });
+  });
+
+  test("is named for it, and a node that is no box has none of its items", () => {
+    expect(nodeMenu(rig(boxes).deps, 987654, dataOf(at(boxes, BASS)))).toEqual([]);
+    expect(idsOf(nodeMenu(rig(boxes).deps, 0, dataOf(at(boxes, 0))))).not.toContain("record");
   });
 });

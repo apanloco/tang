@@ -1,5 +1,5 @@
 // What a module can hold of the nodes that are chosen on the canvas (steps 105 and 106): the plugins, which are the instruments of the lanes that have one and the effects that are in a lane, and the modulators that go with them.
-// The server takes nothing else (`module::to_text_of`: a group's bus, a source of notes, an empty lane and the master are none of a module's), so that what is chosen with them in the box is left out here and the
+// The server takes nothing else (`module::to_text_of`: a group's bus, a source of notes, a pattern box, an empty lane and the master are none of a module's), so that what is chosen with them in the box is left out here and the
 // page says how many, and a module can still be made of the rest. A box (a module that is closed, step 108) that is chosen is what is in it: its instruments, its effects and its modulators.
 import type { Graph, Node, NodeId, NodeUi } from "../../protocol";
 
@@ -57,7 +57,7 @@ export interface Collapsible {
   readonly modulators: number;
   /** How many plugins of those lanes were not chosen and come along with them. */
   readonly brought: number;
-  /** How many of the chosen it cannot take: a box, a node that is in a module already, a source of notes, a group (and its bus) and the master. */
+  /** How many of the chosen it cannot take: a box, a node that is in a module already, a source of notes, a pattern box, a group (and its bus) and the master. */
   readonly left: number;
   /** Every node that is in the module once it is made, and so is not on the canvas while the module is closed: the lanes, the effects in them and the modulators. */
   readonly hides: ReadonlySet<NodeId>;
@@ -69,7 +69,7 @@ const NOTHING_TO_COLLAPSE: Collapsible = { nodes: [], lanes: 0, modulators: 0, b
 /**
  * What collapsing the nodes in `chosen` into one module takes, as the controller works it out (`collapse_into_module_intent`, step 109): the lane is the unit, so that an instrument or an effect that is chosen is its lane, with its instrument and
  * every effect it has, and a modulator is itself. A node that a module cannot take is left out and counted (`left`): a box (a module cannot hold a module yet), a node that is in a module already (a lane, an effect of its chain or a modulator of
- * one that is open, which has no box), a source of notes, a group, an effect on a group's bus and the master. A node that the session does not have is one that cannot be taken.
+ * one that is open, which has no box), a source of notes, a pattern box (a module holds lanes and modulators), a group, an effect on a group's bus and the master. A node that the session does not have is one that cannot be taken.
  */
 export function collapsibleOf(graph: Graph | null, chosen: readonly NodeId[]): Collapsible {
   if (graph === null) return NOTHING_TO_COLLAPSE;

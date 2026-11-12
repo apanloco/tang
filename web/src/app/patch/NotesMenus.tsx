@@ -16,10 +16,10 @@ export const notesToId = (node: NodeId): string => `notes-to-${String(node)}`;
 export const notesFromId = (node: NodeId): string => `notes-from-${String(node)}`;
 
 /**
- * The menu that draws a cable of notes from the source `node` to the lane that is chosen. A lane that has a cable from the source already is not listed; with none left the button is shut. A lane that has
- * no cable of notes hears every source by itself, and hears only those it has a cable from once it has one.
+ * The menu that draws a cable of notes from the source `node` (or the pattern box) to the lane that is chosen. A lane that has a cable from the source already is not listed; with none left the button is shut. A lane that has
+ * no cable of notes hears every source by itself, and hears only those it has a cable from once it has one. `glyph` is what the button shows: a box has a menu of each direction and tells them apart by it.
  */
-export function NotesToMenu({ node, name }: { node: NodeId; name: string }) {
+export function NotesToMenu({ node, name, glyph = "♫" }: { node: NodeId; name: string; glyph?: string }) {
   const editor = useEditor();
   const graph = useContext(StructureContext);
   const items = useMemo(() => (graph ? noteToItems(graph, node) : []), [graph, node]);
@@ -34,13 +34,13 @@ export function NotesToMenu({ node, name }: { node: NodeId; name: string }) {
         void editor.addNotesCable(node, Number(lane));
       }}
     >
-      ♫
+      {glyph}
     </MenuButton>
   );
 }
 
-/** The menu that draws a cable of notes into the lane `node` from the source that is chosen. A source that has a cable to the lane already is not listed; with none left the button is shut. */
-export function NotesFromMenu({ node, name }: { node: NodeId; name: string }) {
+/** The menu that draws a cable of notes into the lane `node` (or the pattern box) from the source that is chosen. A source that has a cable to the lane already is not listed; with none left the button is shut. */
+export function NotesFromMenu({ node, name, glyph = "♫" }: { node: NodeId; name: string; glyph?: string }) {
   const editor = useEditor();
   const graph = useContext(StructureContext);
   const items = useMemo(() => (graph ? noteFromItems(graph, node) : []), [graph, node]);
@@ -55,7 +55,7 @@ export function NotesFromMenu({ node, name }: { node: NodeId; name: string }) {
         void editor.addNotesCable(Number(source), node);
       }}
     >
-      ♫
+      {glyph}
     </MenuButton>
   );
 }

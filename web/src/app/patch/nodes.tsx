@@ -368,7 +368,7 @@ const renameMacroId = (node: NodeId): string => `rename-macro-${String(node)}`;
  * default. `done` is called once, with whether the focus goes back to the button that opened the field (it does, for Enter and Escape: the
  * person is still there).
  */
-function NameField({ name, rename, done }: { name: string; rename: (text: string) => Promise<boolean>; done: (focusBack: boolean) => void }) {
+export function NameField({ name, rename, done }: { name: string; rename: (text: string) => Promise<boolean>; done: (focusBack: boolean) => void }) {
   const finished = useRef(false);
   const [text, setText] = useState(name);
   const finish = (ask: boolean, focusBack: boolean): void => {
@@ -421,7 +421,7 @@ function MacroNameField({ node, name, done }: { node: NodeId; name: string; done
 }
 
 /** The button of a node that turns its name into a field (`id` is its own, which the focus goes back to). */
-function RenameButton({ id, name, onEdit }: { id: string; name: string; onEdit: () => void }) {
+export function RenameButton({ id, name, onEdit }: { id: string; name: string; onEdit: () => void }) {
   return (
     <button type="button" id={id} className="tang-menu-button tang-node__rename nodrag nopan" aria-label={`Rename ${name}`} title={`Rename ${name}`} onClick={onEdit}>
       ✎
