@@ -108,9 +108,15 @@ pub fn run() -> anyhow::Result<()> {
         buffer_size,
         sample_rate,
         debug,
+        verbose,
         command,
         ..
     } = cli;
+
+    // The subcommands that are no session log in plain text, and tell of errors unless they are told more (a session sets up its logger itself: `run_session`).
+    if !matches!(command, None | Some(Command::Play { .. }) | Some(Command::Serve { .. })) {
+        init_env_logger(verbose, "error");
+    }
 
     match command {
         None => {
@@ -123,10 +129,9 @@ pub fn run() -> anyhow::Result<()> {
             if let Some(args) = &tui_web {
                 web::preflight(args)?;
             }
-            run_session(session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, Mode::Tui(tui_web))
+            run_session(session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, verbose, Mode::Tui(tui_web))
         }
         Some(Command::Enumerate(target)) => {
-            env_logger::init();
             match target {
                 EnumerateTarget::Midi => enumerate::midi(),
                 EnumerateTarget::Audio => enumerate::audio(),
@@ -135,7 +140,6 @@ pub fn run() -> anyhow::Result<()> {
             }
         }
         Some(Command::Describe { plugin: source }) => {
-            env_logger::init();
             let p = plugin::load(&source, 48000.0, 512, &plugin::Runtime::default())?;
             println!("{}", p.name());
             println!(
@@ -191,20 +195,18 @@ pub fn run() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Listen { device, seconds }) => {
-            env_logger::init();
             plugin::builtin::listen_to_the_input(device.as_deref(), seconds, sample_rate)
         }
         Some(Command::Window { plugin: source, seconds, snapshot, no_focus, tree, size }) => {
-            env_logger::init();
             probe::window(&source, probe::WindowOptions { seconds, snapshot: snapshot.as_deref(), focus: !no_focus, tree, size }, sample_rate)
         }
         Some(Command::Play { session: play_session }) => {
-            run_session(play_session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, Mode::Play)
+            run_session(play_session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, verbose, Mode::Play)
         }
         #[cfg(feature = "web")]
         Some(Command::Serve { session: serve_session, web }) => {
             web::preflight(&web)?;
-            run_session(serve_session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, Mode::Serve(web))
+            run_session(serve_session, audio_device, jack, midi_device, buffer_size, sample_rate, debug, verbose, Mode::Serve(web))
         }
         #[cfg(not(feature = "web"))]
         Some(Command::Serve { .. }) => {
@@ -258,6 +260,26 @@ impl log::Log for RawModeLogger {
 }
 
 static RAW_MODE_LOGGER: RawModeLogger = RawModeLogger;
+
+/// How much the logger of a terminal in raw mode (the terminal interface, `play`) tells: what `-v` says, else what `RUST_LOG` says if it is a level alone (`info`), else `fallback`.
+fn log_level(verbose: Option<log::LevelFilter>, rust_log: Option<&str>, fallback: log::LevelFilter) -> log::LevelFilter {
+    verbose.or_else(|| rust_log.and_then(|text| text.parse().ok())).unwrap_or(fallback)
+}
+
+/// The logger of a server and of the subcommands: plain text, for a terminal that is not in raw mode. `-v` says how much it tells, and then nothing else does; without it `RUST_LOG` does
+/// (all of env_logger's syntax: `tang=debug,warn`), and without that `fallback`, which is written the same way.
+fn init_env_logger(verbose: Option<log::LevelFilter>, fallback: &str) {
+    let mut builder = match verbose {
+        // (`Builder::new` reads no variable of the environment: a level that is said is not changed by `RUST_LOG`, not even for one module.)
+        Some(level) => {
+            let mut builder = env_logger::Builder::new();
+            builder.filter_level(level);
+            builder
+        }
+        None => env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(fallback)),
+    };
+    builder.init();
+}
 
 /// Create a default in-memory session config and a path for saving later.
 /// The file is NOT written to disk — only created on Ctrl+S.
@@ -350,6 +372,7 @@ fn run_session(
     buffer_size: u32,
     sample_rate: u32,
     debug: bool,
+    verbose: Option<log::LevelFilter>,
     mode: Mode,
 ) -> anyhow::Result<()> {
     let use_tui = matches!(mode, Mode::Tui(_));
@@ -363,18 +386,15 @@ fn run_session(
     let serving = false;
 
     // Set up the logger early so plugin loading messages are visible. The terminal is in
-    // raw mode (and wants \r\n) in the TUI and in `play`; a server's log is plain text.
+    // raw mode (and wants \r\n) in the TUI and in `play`; a server's log is plain text. A session
+    // tells of warnings and errors unless it is told more (`-v info`: what it does as it does it,
+    // the MIDI that comes in among it: a controller that sends the clock fills a screen with it).
     if serving {
         #[cfg(feature = "web")]
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+        init_env_logger(verbose, "warn");
     } else {
         log::set_logger(&RAW_MODE_LOGGER).ok();
-        log::set_max_level(
-            std::env::var("RUST_LOG")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(log::LevelFilter::Info),
-        );
+        log::set_max_level(log_level(verbose, std::env::var("RUST_LOG").ok().as_deref(), log::LevelFilter::Warn));
     }
 
     let sample_rate_f = sample_rate as f32;
@@ -558,7 +578,8 @@ fn run_session(
         // Create virtual piano
         let mut virt_piano = piano::VirtualPiano::new(ctl.note_input(), kitty_supported);
 
-        log::info!("Playing. Ctrl+Q or Ctrl+C to quit.");
+        // (Said whatever the level is, and not by the logger: a log that tells of nothing but trouble leaves this the only word of how to stop.)
+        let _ = write!(std::io::stderr(), "Playing. Ctrl+Q or Ctrl+C to quit.\r\n");
 
         loop {
             // Poll crossterm events with 10ms timeout
@@ -619,6 +640,21 @@ mod tests {
         assert_eq!(dir(&[("XDG_CONFIG_HOME", "/x/config"), ("HOME", "/home/me")], false), Some("/x/config/tang".into()));
         assert_eq!(dir(&[("HOME", "/home/me")], false), Some("/home/me/.config/tang".into()));
         assert_eq!(dir(&[("XDG_CONFIG_HOME", "/x/config"), ("HOME", "/home/me")], true), Some("/home/me/.config/tang".into()), "macOS does not look at XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn the_terminal_is_told_what_v_says_and_else_what_rust_log_says_and_else_the_default() {
+        use log::LevelFilter::{Debug, Info, Off, Warn};
+        assert_eq!(log_level(None, None, Warn), Warn, "a session tells of warnings and errors unless it is told more");
+        assert_eq!(log_level(None, None, Info), Info, "the default is the caller's");
+        assert_eq!(log_level(Some(Info), None, Warn), Info);
+        assert_eq!(log_level(None, Some("info"), Warn), Info, "RUST_LOG, as it always was");
+        assert_eq!(log_level(Some(Off), Some("debug"), Warn), Off, "-v is the more explicit, and wins; off is a level as well");
+        assert_eq!(log_level(Some(Warn), Some("debug"), Info), Warn);
+        assert_eq!(log_level(None, Some("DEBUG"), Warn), Debug, "in any case, as the `log` crate reads it");
+        // RUST_LOG can say more than a level (`tang=debug`: env_logger's syntax, which a server reads): that is no level here, and the default stands.
+        assert_eq!(log_level(None, Some("tang=debug"), Warn), Warn);
+        assert_eq!(log_level(None, Some(""), Warn), Warn);
     }
 
     #[test]

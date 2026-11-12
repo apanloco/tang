@@ -190,3 +190,72 @@ fn window_opens_tangs_own_plugin_with_its_page_in_a_web_view_resizes_it_and_the_
     assert!(log.contains("The window's web view is made, 1100 x 720"), "{log}");
     assert!(log.contains("The window's page has loaded: http://127.0.0.1:"), "the page that the plugin serves was loaded by the view: {log}");
 }
+
+/// A session whose oscillator has not got the knob that it names: loading it is told of as a warning, and the rest that is told of its start is not a warning.
+#[cfg(unix)]
+const KNOB_THAT_IS_NOT_THERE: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n\n[instrument.params]\n\"no such knob\" = 1.0\n";
+
+/// What `tang play` writes to stderr on that session, with `flags` before the subcommand and `rust_log` in the environment (the person's who runs the test is not met: none if it is `None`).
+///
+/// With no terminal `play` is at an end as soon as the session is loaded and the engine runs, for it has no keys to take, and what it has told by then is the log of a session as far as the log goes. It is
+/// made the leader of a session of its own, which has no terminal for raw mode to find at `/dev/tty`: it would take that one, wait for keys at it, and leave the terminal of a person who runs the tests in raw mode.
+#[cfg(unix)]
+fn play_says(flags: &[&str], rust_log: Option<&str>) -> String {
+    use std::os::unix::process::CommandExt;
+    let dir = tempfile::tempdir().expect("a directory");
+    let session = dir.path().join("knob.toml");
+    std::fs::write(&session, KNOB_THAT_IS_NOT_THERE).expect("the session is written");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tang"));
+    command
+        .args(["--audio-device", "none", "--midi-device", "no such device"])
+        .args(flags)
+        .arg("play")
+        .arg(&session)
+        .env_remove("RUST_LOG")
+        .stdin(std::process::Stdio::null());
+    if let Some(filter) = rust_log {
+        command.env("RUST_LOG", filter);
+    }
+    // Safety: `setsid` is all that is done between the fork and the exec, and it is safe there; if it fails the program is not started (a process that leads its group has no session to make).
+    unsafe {
+        command.pre_exec(|| if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+    }
+    let output = command.output().expect("tang runs");
+    let said = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(said.contains("Error: "), "it went as far as it could, and ended with the error of having no terminal: {said}");
+    said
+}
+
+#[test]
+#[cfg(unix)]
+fn a_session_tells_of_warnings_and_errors_and_not_of_what_it_does_unless_it_is_told_to() {
+    let said = play_says(&[], None);
+    assert!(said.contains(" WARN] Unknown instrument parameter 'no such knob'"), "a warning is told: {said}");
+    assert!(!said.contains(" INFO]"), "and nothing that is only what the program does (the MIDI that comes in among it): {said}");
+    assert!(!said.contains("MIDI inputs connected") && !said.contains("Audio stream started"), "{said}");
+}
+
+#[test]
+#[cfg(unix)]
+fn v_says_how_much_a_session_tells_and_what_it_says_is_more_than_what_rust_log_says() {
+    // (The flags, RUST_LOG, whether the start of the program is told of and whether the warning is.)
+    for (flags, rust_log, start, warning) in [
+        (&["-v", "info"][..], None, true, true),
+        (&["--verbose=debug"][..], None, true, true),
+        (&["-v", "INFO"][..], None, true, true),
+        // RUST_LOG as it always was, when `-v` is not there.
+        (&[][..], Some("info"), true, true),
+        (&[][..], Some("error"), false, false),
+        // A RUST_LOG that is no level (env_logger's syntax is a server's) leaves the default.
+        (&[][..], Some("tang=debug"), false, true),
+        // `-v` is the more explicit: it wins over a RUST_LOG that says less and over one that says more.
+        (&["-v", "warn"][..], Some("info"), false, true),
+        (&["-v", "info"][..], Some("error"), true, true),
+        (&["-v", "error"][..], Some("info"), false, false),
+        (&["-v", "off"][..], None, false, false),
+    ] {
+        let said = play_says(flags, rust_log);
+        assert_eq!(said.contains("MIDI inputs connected"), start, "{flags:?} with RUST_LOG {rust_log:?}: the start of the program: {said}");
+        assert_eq!(said.contains("Unknown instrument parameter 'no such knob'"), warning, "{flags:?} with RUST_LOG {rust_log:?}: the warning: {said}");
+    }
+}

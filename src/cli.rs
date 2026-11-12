@@ -56,6 +56,15 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub debug: bool,
 
+    /// How much to log to the terminal: off, error, warn (a session's default), info, debug or trace.
+    ///
+    /// A session (`tang`, `play`, `serve`) tells of warnings and errors unless it is told more:
+    /// `-v info` is what the program does as it does it, the MIDI that comes in among it. Without
+    /// this flag the environment's RUST_LOG says (a level alone, or for `serve` all of env_logger's
+    /// syntax), and the flag wins over it.
+    #[arg(short = 'v', long = "verbose", value_name = "LEVEL", global = true, value_parser = parse_log_level)]
+    pub verbose: Option<log::LevelFilter>,
+
     /// Serve the session to a browser as well, while the terminal interface runs:
     /// what is changed in either shows in the other. Takes an address (an IP and a
     /// port) after an `=`, as in `--web=0.0.0.0:9000`; on its own, 127.0.0.1:8765.
@@ -184,6 +193,11 @@ pub enum EnumerateTarget {
     Plugins,
     /// List built-in plugins
     Builtins,
+}
+
+/// A level for `-v`: a name that the `log` crate has, in any case (`info`, `Debug`, `OFF`).
+fn parse_log_level(text: &str) -> Result<log::LevelFilter, String> {
+    text.parse().map_err(|_| format!("`{text}` is not a log level: off, error, warn, info, debug or trace"))
 }
 
 /// A size for `tang window --size`: two whole numbers above 0, as `900x600`.
@@ -331,10 +345,54 @@ mod tests {
         assert!(Cli::try_parse_from(["tang", "window", "x.vst3", "--sample-rate", "44100"]).is_ok());
     }
 
+    /// What the command line is refused with.
+    fn refused(args: &[&str]) -> String {
+        Cli::try_parse_from(args).err().unwrap_or_else(|| panic!("{args:?} was accepted")).to_string()
+    }
+
+    #[test]
+    fn the_log_level_is_said_with_v_wherever_it_is_written() {
+        for subcommand in [["play", "x.toml"], ["serve", "x.toml"]] {
+            for args in placements(&subcommand, &["-v", "info"]) {
+                let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+                assert_eq!(cli.verbose, Some(log::LevelFilter::Info), "{args:?}");
+            }
+        }
+        // The long name, with an `=` and without, for the terminal interface and for the commands that are no session.
+        assert_eq!(Cli::try_parse_from(["tang", "--verbose=debug", "x.toml"]).unwrap().verbose, Some(log::LevelFilter::Debug));
+        assert_eq!(Cli::try_parse_from(["tang", "--verbose", "trace"]).unwrap().verbose, Some(log::LevelFilter::Trace));
+        assert_eq!(Cli::try_parse_from(["tang", "describe", "builtin:osc", "-v", "warn"]).unwrap().verbose, Some(log::LevelFilter::Warn));
+        assert_eq!(Cli::try_parse_from(["tang", "-v", "off", "enumerate", "midi"]).unwrap().verbose, Some(log::LevelFilter::Off));
+    }
+
+    #[test]
+    fn a_log_level_is_one_of_the_six_names_in_any_case_and_no_other_word() {
+        for (word, level) in [
+            ("off", log::LevelFilter::Off),
+            ("error", log::LevelFilter::Error),
+            ("warn", log::LevelFilter::Warn),
+            ("info", log::LevelFilter::Info),
+            ("debug", log::LevelFilter::Debug),
+            ("trace", log::LevelFilter::Trace),
+            ("INFO", log::LevelFilter::Info),
+            ("Debug", log::LevelFilter::Debug),
+        ] {
+            assert_eq!(Cli::try_parse_from(["tang", "-v", word]).unwrap().verbose, Some(level), "{word}");
+        }
+        for bad in ["loud", "", "5", "info ", "warning"] {
+            let error = refused(&["tang", "-v", bad]);
+            assert!(error.contains(&format!("`{bad}` is not a log level: off, error, warn, info, debug or trace")), "{bad:?}: {error}");
+        }
+        // A level has to be said: `-v` is no switch that would take the session for its level, or go without one.
+        assert!(refused(&["tang", "-v", "x.toml"]).contains("`x.toml` is not a log level"));
+        assert!(refused(&["tang", "x.toml", "-v"]).contains("a value is required"));
+    }
+
     #[test]
     fn the_flags_are_as_before_when_they_are_not_given() {
         let cli = Cli::try_parse_from(["tang", "play", "x.toml"]).unwrap();
         assert_eq!((cli.audio_device, cli.midi_device, cli.sample_rate, cli.debug, cli.jack), (None, None, 48000, false, false));
+        assert_eq!(cli.verbose, None, "no level said: the environment's, and else the session's own");
         assert_eq!(cli.buffer_size.to_string(), DEFAULT_BUFFER_SIZE);
         assert!(Cli::try_parse_from(["tang", "x.toml", "--audio-device", "none"]).is_ok(), "and without a subcommand");
     }

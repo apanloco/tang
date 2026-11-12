@@ -88,8 +88,9 @@ impl Tang {
         let own_library = library.is_none().then(|| tempfile::tempdir().expect("a directory for the library"));
         let library = library.map(std::path::Path::to_path_buf).unwrap_or_else(|| own_library.as_ref().expect("made above").path().to_path_buf());
         let mut command = Command::new(env!("CARGO_BIN_EXE_tang"));
+        // (`-v info`: a server tells of warnings and errors and no more unless it is told to, and the tests read what the program does from its log: where it saved, which controller it opened, what it heard.)
         command
-            .args(["--audio-device", "none", "--midi-device", midi_device, "serve"])
+            .args(["--audio-device", "none", "--midi-device", midi_device, "-v", "info", "serve"])
             .arg(session)
             .args(["--web-bind", "127.0.0.1:0"])
             .env("TANG_MODULES_DIR", &library)
@@ -2744,4 +2745,70 @@ async fn a_plugins_state_is_kept_in_the_file_and_brings_a_value_back_when_the_fi
     tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "save"}})).await;
     assert_eq!(answer(&mut client, 1).await["type"], "ack");
     assert_eq!(state_in(&second), Some(state), "the state that was given back is the state that is saved");
+}
+
+/// A session whose oscillator has not got the knob that it names: loading it is told of as a warning, and the rest that is told of its start is not a warning.
+const KNOB_THAT_IS_NOT_THERE: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n\n[instrument.params]\n\"no such knob\" = 1.0\n";
+
+/// What `tang serve` has written to stderr by the time it says where it serves, on that session, with `flags` before the subcommand and `rust_log` in the environment (the person's who runs the test is not met: none if it is `None`).
+fn serve_says(flags: &[&str], rust_log: Option<&str>) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let session = dir.path().join("knob.toml");
+    std::fs::write(&session, KNOB_THAT_IS_NOT_THERE).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tang"));
+    command
+        .args(["--audio-device", "none", "--midi-device", "no such device"])
+        .args(flags)
+        .arg("serve")
+        .arg(&session)
+        .args(["--web-bind", "127.0.0.1:0"])
+        .env("TANG_MODULES_DIR", dir.path().join("modules"))
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(filter) = rust_log {
+        command.env("RUST_LOG", filter);
+    }
+    let mut child = Process(command.spawn().expect("tang starts"));
+    let mut stderr = child.0.stderr.take().unwrap();
+    let log = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).to_string()
+    });
+    let stdout = child.0.stdout.take().unwrap();
+    let (lines, first) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = lines.send(BufReader::new(stdout).lines().next().and_then(Result::ok));
+    });
+    let line = first.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| panic!("tang did not say where it serves within a minute")).expect("a first line");
+    assert!(line.starts_with("Web interface: http://"), "{line:?}");
+    // Killed, which ends its stderr: what it has told is all read.
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    log.join().unwrap()
+}
+
+#[test]
+fn a_server_tells_of_warnings_and_errors_unless_it_is_told_more_and_v_says_how_much_and_it_is_more_than_what_rust_log_says() {
+    // (The flags, RUST_LOG, whether the start of the program is told of, whether the loading of the session is, and whether the warning is.)
+    for (flags, rust_log, start, load, warning) in [
+        // Warnings and errors, and none of what the program does.
+        (&[][..], None, false, false, true),
+        (&["-v", "info"][..], None, true, true, true),
+        (&["--verbose=error"][..], None, false, false, false),
+        // RUST_LOG as it always was, when `-v` is not there: a level, and env_logger's syntax for a module.
+        (&[][..], Some("info"), true, true, true),
+        (&[][..], Some("tang::app::load=info"), false, true, true),
+        // `-v` is the more explicit: it wins over a RUST_LOG that says more, and over one that names a module.
+        (&["-v", "warn"][..], Some("info"), false, false, true),
+        (&["-v", "error"][..], Some("tang::app::load=trace"), false, false, false),
+        (&["-v", "info"][..], Some("error"), true, true, true),
+    ] {
+        let said = serve_says(flags, rust_log);
+        assert_eq!(said.contains("MIDI inputs connected"), start, "{flags:?} with RUST_LOG {rust_log:?}: the start of the program: {said}");
+        assert_eq!(said.contains("Loaded instrument for inst=0"), load, "{flags:?} with RUST_LOG {rust_log:?}: the loading of the session: {said}");
+        assert_eq!(said.contains("Unknown instrument parameter 'no such knob'"), warning, "{flags:?} with RUST_LOG {rust_log:?}: the warning: {said}");
+    }
 }

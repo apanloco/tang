@@ -50,7 +50,8 @@ function programOn(added: string) {
       const log = join(dir, "tang.log");
       const logFile = openSync(log, "w");
       const library = join(dir, "modules");
-      const child = spawn(join("..", "target", "debug", "tang"), ["--audio-device", "none", "--midi-device", "no such device", "serve", file, "--web-bind", "127.0.0.1:0"], {
+      // (`-v info`: a server tells of warnings and errors and no more unless it is told to, and what it did is what a test that failed is read by.)
+      const child = spawn(join("..", "target", "debug", "tang"), ["--audio-device", "none", "--midi-device", "no such device", "-v", "info", "serve", file, "--web-bind", "127.0.0.1:0"], {
         stdio: ["ignore", "pipe", logFile],
         env: { ...process.env, TANG_MODULES_DIR: library },
       });
