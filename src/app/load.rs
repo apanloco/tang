@@ -15,9 +15,10 @@ use crate::app::controller::outputs_fit_the_chain;
 use crate::app::model::{
     AudioCable, BPM_MAX, BPM_MIN, CABLE_GAIN_MAX, CEILING_MAX, CEILING_MIN, Driven, EdgeId, EventCable, FREE, GroupNode, InstrumentNode, MASTER_VOLUME_MAX, MAX_NAME, MasterNode, ModGain, ModSourceSlot,
     ModTargetSlot, ModuleInstance, ModulatorSlot, NEW_CABLE_GAIN, NodeId, NodeIds,
-    ParamKind, ParamSlot, PatternState, PluginSlot, SYNC_DIVISIONS, SessionModel, SourceKind, SourceNode, format_from_id, mod_source_slot_to_graph, modulator_slot_commands,
+    ParamKind, ParamSlot, PatternBox, PatternState, PluginSlot, SYNC_DIVISIONS, SessionModel, SourceKind, SourceNode, format_from_id, mod_source_slot_to_graph, modulator_slot_commands,
     setting_of, sync_from_name, sync_name, tempo_of_patterns,
 };
+use crate::patternbox::{self, BoxPlan, BoxPlayer, Settings as BoxSettings};
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo, GraphCommand, ModulatorLocation};
 use crate::session::{Feed, NodeUi, Route};
 use crate::telemetry::SlotAllocator;
@@ -671,9 +672,10 @@ pub fn load_session(
     if master != (MasterNode { limiter: false, ..MasterNode::default() }) {
         let _ = cmd_tx.send(crate::app::controller::master_command(&master, sample_rate));
     }
-    let mut model = SessionModel { instruments, groups, ids, slots, ui, bpm, master, cables: Vec::new(), sources: Vec::new(), event_cables: Vec::new(), free_modulators, modules: Vec::new() };
-    // The sources of notes, and then the cables: every lane, group, effect and source that one of them is at is there by now.
+    let mut model = SessionModel { instruments, groups, ids, slots, ui, bpm, master, cables: Vec::new(), sources: Vec::new(), patterns: Vec::new(), event_cables: Vec::new(), free_modulators, modules: Vec::new() };
+    // The sources of notes and the pattern boxes, and then the cables: every lane, group, effect, source and box that one of them is at is there by now.
     load_sources(config, &mut model);
+    load_patterns(config, &mut model, cmd_tx)?;
     load_cables(&config.cables, &mut model, cmd_tx)?;
     // The modules last (a record of what is there already, with a node of its own, so that a session that has none uses no id for them).
     load_modules(config, &mut model);
@@ -735,6 +737,30 @@ fn load_sources(config: &session::SessionConfig, model: &mut SessionModel) {
     }
 }
 
+/// Put the session's pattern boxes in the model, as nodes after the sources, in the order of the file (which is how a cable names them: `pattern[0]`), each at the lowest slot that is free, and tell the audio thread of each
+/// (`AddBox`: the notes and how it plays and records; the sources that it records are the controller's to send when it starts, as what a lane hears is: `sync_box_settings`). The length is held to the lengths that a box can
+/// have and the notes to what a box holds (`patternbox::sanitize`), as the intents hold them: a file can say what they refuse.
+fn load_patterns(config: &session::SessionConfig, model: &mut SessionModel, cmd_tx: &Sender<GraphCommand>) -> anyhow::Result<()> {
+    for (at, pattern) in config.patterns.iter().enumerate() {
+        let slot = model.free_pattern_slot().ok_or_else(|| anyhow::anyhow!("pattern[{at}]: a session has at most {} pattern boxes", crate::source::MAX_BOXES))?;
+        let node = model.alloc_node();
+        place(&mut model.ui, node, pattern.ui);
+        let mut made = PatternBox::new(node, slot, pattern.name.clone());
+        made.length_beats = BoxPlan::clamp_length(pattern.length_beats);
+        made.looping = pattern.looping;
+        made.sync = pattern.sync;
+        made.overdub = pattern.overdub;
+        made.click = pattern.click;
+        made.notes = patternbox::sanitize(&pattern.notes);
+        let mut player = BoxPlayer::new(made.source());
+        player.set_plan(BoxPlan::new(made.length_beats, &made.notes));
+        player.set_settings(BoxSettings { looping: made.looping, clock: made.sync, overdub: made.overdub, click: made.click, ..BoxSettings::default() });
+        model.patterns.push(made);
+        send(cmd_tx, GraphCommand::AddBox { node, player: Box::new(player) })?;
+    }
+    Ok(())
+}
+
 /// Draw the session's audio cables, in the order of the file: each end is a place of the file (`instrument[0].effect[1]`, `group[0]`, `master`), found among the nodes of the model, and the
 /// cable gets the next id of the series that the modulation cables have. A place that is not in the session, a start or an end that is not what a cable can start or end at, a cable
 /// between two places that another one is between already and a cable that would make the audio go round refuse the session, with the cable's place in the file (`cable[2].to: …`): a
@@ -765,16 +791,17 @@ fn load_cables(config: &[session::CableConfig], model: &mut SessionModel, cmd_tx
     Ok(())
 }
 
-/// Draw a cable of notes: from a source (`keys`, `device[0]`) to a lane (`instrument[1]`), under the next id of the series that the other cables have. A source that is not in the
-/// session, an end that is not a lane and a cable between two nodes that another is between already refuse the session, with the cable's place in the file, as the audio cables do.
+/// Draw a cable of notes: from a source (`keys`, `device[0]`) or a pattern box (`pattern[0]`) to a lane (`instrument[1]`), or from a source to a box, under the next id of the series that the other cables have. A start that is not in the
+/// session, an end that is not a lane or a box (and a box that is the end of a cable from a box: a box sends its notes to a lane) and a cable between two nodes that another is between already refuse the session, with the cable's
+/// place in the file, as the audio cables do.
 fn load_event_cable(i: usize, cable: &session::CableConfig, model: &mut SessionModel) -> anyhow::Result<()> {
     use session::CablePlace as Place;
     let from = match cable.from {
-        Place::Keys => model.sources.iter().find(|source| source.kind == SourceKind::Keys),
-        Place::Device(device) => model.sources.iter().filter(|source| matches!(source.kind, SourceKind::Device(_))).nth(device),
+        Place::Keys => model.sources.iter().find(|source| source.kind == SourceKind::Keys).map(|source| source.node),
+        Place::Device(device) => model.sources.iter().filter(|source| matches!(source.kind, SourceKind::Device(_))).nth(device).map(|source| source.node),
+        Place::Pattern(index) => model.patterns.get(index).map(|pattern| pattern.node),
         _ => None,
     }
-    .map(|source| source.node)
     .ok_or_else(|| anyhow::anyhow!("cable[{i}].from: {} is not in the session", cable.from))?;
     let to = match cable.to {
         Place::Instrument(lane) => {
@@ -784,7 +811,11 @@ fn load_event_cable(i: usize, cable: &session::CableConfig, model: &mut SessionM
             }
             node
         }
-        other => anyhow::bail!("cable[{i}].to: {other} has no input of notes: a cable of notes ends at a lane (instrument[0])"),
+        Place::Pattern(_) if matches!(cable.from, Place::Pattern(_)) => {
+            anyhow::bail!("cable[{i}].to: {} is a pattern box, and a pattern box does not send its notes to another box yet: it sends them to a lane (instrument[0])", cable.to)
+        }
+        Place::Pattern(index) => model.patterns.get(index).map(|pattern| pattern.node).ok_or_else(|| anyhow::anyhow!("cable[{i}].to: {} is not in the session", cable.to))?,
+        other => anyhow::bail!("cable[{i}].to: {other} has no input of notes: a cable of notes ends at a lane (instrument[0]) or a pattern box (pattern[0])"),
     };
     if model.event_cables.iter().any(|drawn| (drawn.from, drawn.to) == (from, to)) {
         anyhow::bail!("cable[{i}]: there is a cable from {} to {} already", cable.from, cable.to);
@@ -805,7 +836,7 @@ fn cable_start(place: session::CablePlace, model: &SessionModel) -> Result<Cable
         Place::BusEffect { group, effect } => Ok(CableFrom::Effect(model.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?.node)),
         Place::EffectSide { .. } | Place::BusEffectSide { .. } => Err(format!("{place} is an input: a cable starts at an output of audio")),
         Place::Master => Err("master has no output of audio".to_string()),
-        Place::Keys | Place::Device(_) => Err(format!("{place} is a source of notes, which has no output of audio")),
+        Place::Keys | Place::Device(_) | Place::Pattern(_) => Err(format!("{place} is a source of notes, which has no output of audio")),
     }
 }
 
@@ -831,6 +862,7 @@ fn cable_end(place: session::CablePlace, model: &SessionModel) -> Result<CableTo
         }
         Place::Master => Ok(CableTo::Master),
         Place::Keys | Place::Device(_) => Err(format!("{place} is a source of notes, which has no input of audio")),
+        Place::Pattern(_) => Err(format!("{place} is a pattern box, which has no input of audio: it takes notes")),
     }
 }
 
@@ -1230,7 +1262,7 @@ impl FreeSession<'_> {
                 let slot = self.groups.get(group).and_then(|bus| bus.effects.get(effect)).ok_or_else(missing)?;
                 Ok((slot.node, params_at(self.bus_params, group, effect)))
             }
-            Place::EffectSide { .. } | Place::BusEffectSide { .. } | Place::Group(_) | Place::Master | Place::Keys | Place::Device(_) => Err(format!("{place} is not a plugin: it is the second input of one")),
+            Place::EffectSide { .. } | Place::BusEffectSide { .. } | Place::Group(_) | Place::Master | Place::Keys | Place::Device(_) | Place::Pattern(_) => Err(format!("{place} is not a plugin: it is the second input of one")),
         }
     }
 }
@@ -4115,5 +4147,163 @@ mod_rate = 0
         )
         .expect_err("should fail");
         assert!(format!("{err:#}").contains("command channel closed"), "{err:#}");
+    }
+
+    // -- pattern boxes (`[[pattern]]`, step 123) --
+
+    #[test]
+    fn the_boxes_of_a_file_are_in_the_model_in_the_order_of_the_file_at_the_lowest_slots_with_their_places_and_the_audio_thread_is_told_of_each_with_its_notes() {
+        let run = load(testutil::PATTERNS);
+        let model = &run.model;
+        let (bass, plain) = (model.patterns[0].node, model.patterns[1].node);
+        assert_eq!(model.patterns.iter().map(|pattern| (pattern.name.as_str(), pattern.slot, pattern.notes.len())).collect::<Vec<_>>(), [("Bass", 0, 2), ("Pattern", 1, 0)]);
+        assert_eq!(run.commands.iter().filter(|command| command.starts_with("AddBox")).cloned().collect::<Vec<_>>(), [
+            format!("AddBox node={} source=48 length=8 notes=2 looping=true clock=own overdub=true click=true inputs=all", bass.0),
+            format!("AddBox node={} source=49 length=4 notes=0 looping=true clock=own overdub=false click=true inputs=all", plain.0)
+        ]);
+        assert_eq!(model.ui.get(&bass), Some(&NodeUi { x: 300.0, y: 40.0 }));
+        assert_eq!(model.ui.get(&plain), None, "a box that has no place has none");
+        assert!(bass.0 > model.sources[1].node.0 && plain.0 == bass.0 + 1, "the nodes of the boxes come after the sources' and before the cables' ids are spent");
+        assert_eq!(model.locate(bass), Some(NodePath::Pattern(0)));
+    }
+
+    #[test]
+    fn what_a_file_says_of_how_a_box_goes_is_the_boxes_in_the_model_and_in_what_the_audio_thread_is_told() {
+        let run = load("[[pattern]]\nlooping = false\nsync = \"host\"\noverdub = true\nclick = false\nlength_beats = 2.5\n");
+        let made = &run.model.patterns[0];
+        assert_eq!((made.looping, made.sync, made.overdub, made.click, made.length_beats), (false, crate::patternbox::Clock::Host, true, false, 2.5));
+        let told: Vec<String> = run.commands.iter().filter(|command| command.starts_with("AddBox")).cloned().collect();
+        assert_eq!(told, [format!("AddBox node={} source=48 length=2.5 notes=0 looping=false clock=host overdub=true click=false inputs=all", made.node.0)]);
+    }
+
+    #[test]
+    fn a_session_with_no_box_sends_the_audio_thread_nothing_of_boxes_and_spends_no_id_on_one() {
+        let run = load(SOURCES);
+        assert!(run.commands.iter().all(|command| !command.contains("Box")), "{:?}", run.commands);
+        assert!(run.model.patterns.is_empty());
+        let mut run = load(crate::app::testutil::SENDS);
+        let max = run.model.nodes().map(|(node, _)| node.0).max().unwrap();
+        assert_eq!(run.model.alloc_node().0, max + 1);
+    }
+
+    #[test]
+    fn what_a_file_says_of_a_box_that_an_intent_would_refuse_is_held_to_what_a_box_has_as_the_intents_hold_it() {
+        let text = r#"
+[[pattern]]
+length_beats = 1000
+[[pattern]]
+length_beats = 0
+[[pattern]]
+length_beats = 0.01
+[[pattern]]
+length_beats = 256
+notes = [
+  { at = 3, len = 1, note = "E4", vel = 0 },
+  { at = -2, len = -1, note = "C4", vel = 255 },
+]
+"#;
+        let model = load(text).model;
+        assert_eq!(model.patterns.iter().map(|pattern| pattern.length_beats).collect::<Vec<_>>(), [256.0, 0.25, 0.25, 256.0]);
+        assert_eq!(
+            model.patterns[3].notes,
+            [crate::patternbox::BoxNote { start: 0.0, length: 0.0, note: 60, velocity: 127 }, crate::patternbox::BoxNote { start: 3.0, length: 1.0, note: 64, velocity: 1 }],
+            "in range and in the order of their starts"
+        );
+        assert_eq!(model.patterns.iter().map(|pattern| pattern.slot).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn the_cables_of_notes_of_the_boxes_of_a_file_are_made_in_the_order_of_the_file_under_the_ids_of_the_series() {
+        let model = load(testutil::PATTERNS).model;
+        let (keys, bass, plain, lane0, lane1) = (model.sources[0].node, model.patterns[0].node, model.patterns[1].node, model.instruments[0].node, model.instruments[1].node);
+        assert_eq!(
+            model.event_cables,
+            [EventCable { id: EdgeId(0), from: keys, to: bass }, EventCable { id: EdgeId(1), from: bass, to: lane0 }, EventCable { id: EdgeId(2), from: plain, to: lane1 }]
+        );
+    }
+
+    #[test]
+    fn a_cable_of_notes_that_the_boxes_of_a_session_cannot_have_refuses_the_session_with_the_place_of_the_cable() {
+        let with = |cable: &str| format!("[keys]\n[[pattern]]\n[[pattern]]\n[[instrument]]\nplugin = \"builtin:osc\"\n[[group]]\n[[cable]]\n{cable}\n");
+        for (cable, why) in [
+            ("from = \"pattern[0]\"\nto = \"pattern[1]\"", "cable[0].to: pattern[1] is a pattern box, and a pattern box does not send its notes to another box yet: it sends them to a lane (instrument[0])"),
+            ("from = \"pattern[0]\"\nto = \"pattern[0]\"", "cable[0].to: pattern[0] is a pattern box, and a pattern box does not send its notes to another box yet"),
+            ("from = \"pattern[2]\"\nto = \"instrument[0]\"", "cable[0].from: pattern[2] is not in the session"),
+            ("from = \"keys\"\nto = \"pattern[2]\"", "cable[0].to: pattern[2] is not in the session"),
+            ("from = \"pattern[0]\"\nto = \"instrument[3]\"", "cable[0].to: instrument[3] is not in the session"),
+            ("from = \"pattern[0]\"\nto = \"master\"", "cable[0].to: master has no input of notes: a cable of notes ends at a lane (instrument[0]) or a pattern box (pattern[0])"),
+            ("from = \"pattern[0]\"\nto = \"group[0]\"", "cable[0].to: group[0] has no input of notes"),
+            ("from = \"keys\"\nto = \"group[0]\"", "cable[0].to: group[0] has no input of notes"),
+            ("from = \"instrument[0]\"\nto = \"pattern[0]\"", "cable[0].to: pattern[0] is a pattern box, which has no input of audio: it takes notes"),
+            ("from = \"keys\"\nto = \"pattern[0]\"\n[[cable]]\nfrom = \"keys\"\nto = \"pattern[0]\"", "cable[1]: there is a cable from keys to pattern[0] already"),
+            ("from = \"pattern[1]\"\nto = \"instrument[0]\"\n[[cable]]\nfrom = \"pattern[1]\"\nto = \"instrument[0]\"", "cable[1]: there is a cable from pattern[1] to instrument[0] already"),
+        ] {
+            let error = try_load(&with(cable)).expect_err(cable).to_string();
+            assert!(error.contains(why), "{error}\nfor:\n{cable}");
+        }
+        // The same cables that are fine are made: from the keys to a box and from a box to a lane.
+        let fine = load(&with("from = \"keys\"\nto = \"pattern[1]\"\n[[cable]]\nfrom = \"pattern[1]\"\nto = \"instrument[0]\""));
+        assert_eq!(fine.model.event_cables.len(), 2);
+    }
+
+    #[test]
+    fn a_box_sends_no_notes_to_a_lane_whose_instrument_takes_none_and_the_file_that_says_so_is_refused() {
+        let error = try_load("[[pattern]]\n[[instrument]]\nplugin = \"builtin:input\"\nroute = \"none\"\n[[cable]]\nfrom = \"pattern[0]\"\nto = \"instrument[0]\"\n").unwrap_err().to_string();
+        assert!(error.contains("cable[0].to: instrument[0] takes no notes: an audio input has no input of events"), "{error}");
+    }
+
+    #[test]
+    fn a_modulator_that_hears_a_box_or_has_a_cable_to_one_is_left_out_as_one_that_names_what_is_not_there_is() {
+        let run = load("[[pattern]]\n[[instrument]]\nplugin = \"builtin:osc\"\n[[modulator]]\nhears = \"pattern[0]\"\n[[modulator.target]]\nto = \"pattern[0]\"\nparam = \"detune\"\n");
+        assert_eq!(run.model.free_modulators[0].ear, None, "it hears every note: a box is not a lane or a group");
+        assert!(run.model.free_modulators[0].targets.is_empty(), "a box has no parameters to drive");
+    }
+
+    #[test]
+    fn a_session_that_the_parser_let_through_with_more_than_sixteen_boxes_is_refused_by_the_loader_with_the_place_of_the_box() {
+        let mut config = session::parse(&format!("{}[[instrument]]\nplugin = \"builtin:osc\"\n", "[[pattern]]\n".repeat(crate::source::MAX_BOXES))).unwrap();
+        config.patterns.push(session::PatternBoxConfig { name: "One too many".to_string(), length_beats: 4.0, looping: true, sync: crate::patternbox::Clock::Own, overdub: false, click: true, notes: Vec::new(), ui: None });
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let error = load_session(&config, Path::new("."), 48_000.0, 256, &plugin::Runtime::default(), &tx, &mut |_| {}).unwrap_err().to_string();
+        assert!(error.contains("pattern[16]: a session has at most 16 pattern boxes"), "{error}");
+    }
+
+    #[test]
+    fn what_a_session_with_boxes_is_saved_as_is_loaded_as_the_same_boxes_notes_cables_and_places_and_the_same_file() {
+        let model = load(testutil::PATTERNS).model;
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(&model);
+        let saved = session::to_toml(&instruments, &groups, &cables, &sources, None, model.master_ui(), model.bpm_to_save()).unwrap();
+        assert!(saved.contains("[[pattern]]\nname = \"Bass\"\nlength_beats = 8.0\nlooping = true\nsync = \"own\"\noverdub = true\nui = { x = 300, y = 40 }\nnotes = [\n  { at = 0.0, len = 1.0, note = \"C2\", vel = 100 },"), "{saved}");
+        let order: Vec<&str> = saved.lines().filter(|line| line.starts_with("from = ")).collect();
+        assert_eq!(order, ["from = \"keys\"", "from = \"pattern[0]\"", "from = \"pattern[1]\""], "the cables are in the order of their ids: {saved}");
+        let again = load(&saved).model;
+        assert_eq!(again.patterns, model.patterns, "the boxes, with their notes, settings, slots and nodes");
+        assert_eq!(again.event_cables, model.event_cables, "the cables of notes are the same, under the same ids");
+        assert_eq!(again.ui, model.ui);
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(&again);
+        assert_eq!(session::to_toml(&instruments, &groups, &cables, &sources, None, again.master_ui(), again.bpm_to_save()).unwrap(), saved, "and the file is the same");
+    }
+
+    #[test]
+    fn a_session_whose_boxes_were_changed_by_the_controller_is_saved_with_what_they_are_now() {
+        use crate::app::intent::{Intent, PatternBoxField};
+        let (handles, _engine) = testutil::stub_engine_of(4_096);
+        let mut ctl = crate::app::controller::Controller::new(load(testutil::PATTERNS).model, handles, None);
+        let bass = ctl.model.patterns[0].node;
+        ctl.apply(Intent::SetPatternBoxField { node: bass, field: PatternBoxField::Name { name: "Lead".to_string() } }).unwrap();
+        ctl.apply(Intent::SetPatternBoxField { node: bass, field: PatternBoxField::Click { on: false } }).unwrap();
+        ctl.apply(Intent::SetPatternBoxField { node: bass, field: PatternBoxField::LengthBeats { beats: 2.5 } }).unwrap();
+        ctl.apply(Intent::SetPatternBoxField { node: bass, field: PatternBoxField::Looping { on: false } }).unwrap();
+        ctl.apply(Intent::SetPatternBoxField { node: bass, field: PatternBoxField::Sync { sync: crate::app::graph::PatternSync::Host } }).unwrap();
+        ctl.apply(Intent::AddPattern).unwrap();
+        let (instruments, groups, cables, sources) = crate::app::save::to_save(&ctl.model);
+        let saved = session::to_toml(&instruments, &groups, &cables, &sources, None, ctl.model.master_ui(), ctl.model.bpm_to_save()).unwrap();
+        let again = load(&saved).model;
+        assert_eq!(
+            again.patterns.iter().map(|pattern| (pattern.name.as_str(), pattern.length_beats, pattern.click, pattern.looping, pattern.sync)).collect::<Vec<_>>(),
+            [("Lead", 2.5, false, false, crate::patternbox::Clock::Host), ("Pattern", 4.0, true, true, crate::patternbox::Clock::Own), ("Pattern 1", 4.0, true, true, crate::patternbox::Clock::Own)]
+        );
+        assert_eq!(again.patterns[2].slot, 2, "the slots are given again in the order of the file");
     }
 }

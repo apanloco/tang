@@ -52,6 +52,7 @@ use crate::held_notes::HeldNotes;
 use crate::midi::DeviceChanges;
 use crate::midi_monitor::MidiMonitor;
 use crate::note_input::NoteInput;
+use crate::patternbox::{BoxNotification, Settings as BoxSettings};
 use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::source::SourceSet;
 use crate::plugin::chain::{
@@ -112,6 +113,8 @@ pub struct EngineHandles {
     pub return_rx: Receiver<Box<dyn Plugin>>,
     /// Pattern recordings the audio thread has finished.
     pub pattern_rx: Receiver<PatternNotification>,
+    /// What the pattern boxes of the audio thread say: the notes of a pass that is over, and what a box is doing (P4h).
+    pub box_rx: Receiver<BoxNotification>,
     /// Controls the audio thread has captured for a MIDI-learn modulator.
     pub learn_rx: Receiver<MidiLearnedNotification>,
     /// What plugins are loaded with (the shared LV2 world).
@@ -271,6 +274,8 @@ pub struct Controller {
     pub cmd_tx: Sender<GraphCommand>,
     pub midi_tx: Sender<MidiEvent>,
     pub pattern_rx: Receiver<PatternNotification>,
+    /// What the pattern boxes of the audio thread have said (`app::patterns`).
+    pub(super) box_rx: Receiver<BoxNotification>,
     pub learn_rx: Receiver<MidiLearnedNotification>,
     pub runtime: Runtime,
     pub sample_rate: f32,
@@ -288,6 +293,10 @@ pub struct Controller {
     last_device_poll: Instant,
     /// What the audio thread was last told that each lane hears (`app::sources`), by the lane's node: a lane that is not here has not been told, and hears every source until it is.
     pub(super) sent_sources: Vec<(NodeId, SourceSet)>,
+    /// What the audio thread was last told that each pattern box is set to (`app::patterns`), by the box's node: a box that is not here has not been told its settings.
+    pub(super) sent_boxes: Vec<(NodeId, BoxSettings)>,
+    /// How many plans (the notes and the length) the audio thread has been given for each pattern box that has had more than the one it was made with (`app::patterns`), by the box's node: what a recording says it was made on.
+    pub(super) sent_plans: Vec<(NodeId, u32)>,
     /// Who hears what `apply` does.
     subscribers: Subscribers,
     /// What can be undone and redone (`app::history`).
@@ -330,6 +339,7 @@ impl Controller {
             midi_tx,
             return_rx,
             pattern_rx,
+            box_rx,
             learn_rx,
             runtime,
             sample_rate,
@@ -351,6 +361,7 @@ impl Controller {
             cmd_tx,
             midi_tx,
             pattern_rx,
+            box_rx,
             learn_rx,
             runtime,
             sample_rate,
@@ -364,6 +375,8 @@ impl Controller {
             devices: None,
             last_device_poll: now,
             sent_sources,
+            sent_boxes: Vec::new(),
+            sent_plans: Vec::new(),
             subscribers: Subscribers::default(),
             history: History::default(),
             made_last: Made::default(),
@@ -1083,7 +1096,7 @@ impl Controller {
                     let value = value_of(self.model.groups.get(group)?.effects.get(effect)?, index)?;
                     Some(GraphCommand::SetGroupParameter { group, index: effect, param_index: index, value })
                 }
-                NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Module(_) => None,
+                NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => None,
             },
             Driven::Setting { modulator, field } => {
                 let NodePath::Modulator { at, index } = self.model.locate(modulator)? else { return None };
@@ -1323,6 +1336,7 @@ impl Controller {
         while let Ok(capture) = self.learn_rx.try_recv() {
             changed |= self.bind_capture(capture);
         }
+        changed |= self.fold_in_box_notifications();
         changed
     }
 

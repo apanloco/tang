@@ -26,6 +26,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::app::model::{Driven, EdgeId, FieldTarget, ModGain, ModSetting, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, SourceKind};
+use crate::patternbox::{BoxNote, Clock, Status as BoxStatus};
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::{Feed, NodeUi, Route};
 
@@ -91,6 +92,10 @@ pub enum NodeKind {
     Master { volume: f32, limiter: bool, ceiling: f32 },
     /// A source of notes that a person put in the session: the keys, or a MIDI device. Its output of events is where the event cables start.
     Source { source: SourceInfo },
+    /// A pattern box (P4h of `docs/patch-graph.md` §11.6): it stores `notes` in beats and a loop `length_beats` long, records what its input of events is given (from the sources that cables of notes come from, or from every input
+    /// if none does) and plays it, as the notes of a source of its own, to the lanes that cables from its output of events go to. `looping` is whether it plays again at the end of its length, `sync` whose beat it goes by, `overdub` whether a recording keeps
+    /// what is there, `click` whether the metronome counts a recording in, and `status` what the audio thread last said it is doing (nothing of it is saved). Its name is the node's.
+    Pattern { looping: bool, sync: PatternSync, overdub: bool, click: bool, length_beats: f32, notes: Vec<PatternNote>, status: PatternStatus },
     /// A module that was added to the session as one thing (step 108): `name` is what it is called in the library, and `members` the lanes and the modulators that came with it, which a front-end draws as one
     /// box (the effects of a lane are in the lane: they are in the module with it). The nodes in it are in the graph as any are, and the cables to them: a module is the record of what came together, and has no
     /// part in the sound.
@@ -106,6 +111,80 @@ pub struct SideInfo {
     pub main: String,
     /// The second, which only cables end at.
     pub side: String,
+}
+
+/// A note of a pattern box: where it begins and how long it is, in beats from the start of the loop, its pitch (0 to 127) and its velocity (1 to 127).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PatternNote {
+    pub start: f32,
+    pub length: f32,
+    pub note: u8,
+    pub velocity: u8,
+}
+
+impl From<BoxNote> for PatternNote {
+    fn from(note: BoxNote) -> Self {
+        PatternNote { start: note.start, length: note.length, note: note.note, velocity: note.velocity }
+    }
+}
+
+impl From<PatternNote> for BoxNote {
+    fn from(note: PatternNote) -> Self {
+        BoxNote { start: note.start, length: note.length, note: note.note, velocity: note.velocity }
+    }
+}
+
+/// Whose beat a pattern box goes by: its own (from Play) or the host's (the host's beat modulo its length, while the host plays).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum PatternSync {
+    Own,
+    Host,
+}
+
+impl From<Clock> for PatternSync {
+    fn from(clock: Clock) -> Self {
+        match clock {
+            Clock::Own => PatternSync::Own,
+            Clock::Host => PatternSync::Host,
+        }
+    }
+}
+
+impl From<PatternSync> for Clock {
+    fn from(sync: PatternSync) -> Self {
+        match sync {
+            PatternSync::Own => Clock::Own,
+            PatternSync::Host => Clock::Host,
+        }
+    }
+}
+
+/// What a pattern box is doing, as the audio thread last said: stopped, playing, counting in a recording on its own clock, waiting for the start of the loop to record on the host's, or recording a pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum PatternStatus {
+    Stopped,
+    Playing,
+    CountingIn,
+    Waiting,
+    Recording,
+}
+
+impl From<BoxStatus> for PatternStatus {
+    fn from(status: BoxStatus) -> Self {
+        match status {
+            BoxStatus::Stopped => PatternStatus::Stopped,
+            BoxStatus::Playing => PatternStatus::Playing,
+            BoxStatus::CountingIn => PatternStatus::CountingIn,
+            BoxStatus::Waiting => PatternStatus::Waiting,
+            BoxStatus::Recording => PatternStatus::Recording,
+        }
+    }
 }
 
 /// What a source of notes is, as a front-end sees it.
@@ -470,6 +549,23 @@ impl SessionModel {
             kind: NodeKind::Source { source: SourceInfo::from(&source.kind) },
         }));
 
+        // The pattern boxes come after them: the notes go from a source to a box and from a box to a lane.
+        nodes.extend(self.patterns.iter().map(|pattern| Node {
+            id: pattern.node,
+            parent: None,
+            name: pattern.name.clone(),
+            ui: None,
+            kind: NodeKind::Pattern {
+                looping: pattern.looping,
+                sync: pattern.sync.into(),
+                overdub: pattern.overdub,
+                click: pattern.click,
+                length_beats: pattern.length_beats,
+                notes: pattern.notes.iter().copied().map(PatternNote::from).collect(),
+                status: pattern.status.into(),
+            },
+        }));
+
         for (g, group) in self.groups.iter().enumerate() {
             nodes.push(Node {
                 id: group.node,
@@ -530,13 +626,19 @@ impl SessionModel {
         Graph { nodes, edges }
     }
 
-    /// One edge from each source to each lane that no event cable ends at, which hears every source: the sources in order, and for each the lanes in order. A lane whose instrument takes no notes
-    /// (an audio input) has no input of events, and hears nothing that is drawn.
+    /// One edge from each source to each lane that no event cable ends at, which hears every source: the sources in order, and for each the lanes in order, and then the pattern boxes that no event cable ends at, which
+    /// record every source in the same way. A lane whose instrument takes no notes (an audio input) has no input of events, and hears nothing that is drawn. (A lane hears no box until a cable from it says so: there is no edge from a
+    /// box to a lane that has no cable.)
     fn hears_edges(&self, edges: &mut Vec<Edge>) {
         for source in &self.sources {
             for (inst, lane) in self.instruments.iter().enumerate() {
                 if self.lane_takes_notes(inst) && !self.event_cables.iter().any(|cable| cable.to == lane.node) {
                     edges.push(Edge { from: Endpoint { node: source.node, port: Port::EventsOut }, to: Endpoint { node: lane.node, port: Port::EventsIn }, kind: EdgeKind::Hears });
+                }
+            }
+            for pattern in &self.patterns {
+                if !self.event_cables.iter().any(|cable| cable.to == pattern.node) {
+                    edges.push(Edge { from: Endpoint { node: source.node, port: Port::EventsOut }, to: Endpoint { node: pattern.node, port: Port::EventsIn }, kind: EdgeKind::Hears });
                 }
             }
         }
@@ -968,6 +1070,104 @@ mod tests {
         let edges = model.graph().edges;
         let notes: Vec<&Edge> = edges.iter().filter(|e| matches!(e.kind, EdgeKind::Hears | EdgeKind::Events { .. })).collect();
         assert_eq!(notes, [&hears(notes_out(keys), notes_in(lanes[0])), &hears(notes_out(keys), notes_in(lanes[1]))]);
+    }
+
+    // -- pattern boxes (step 123, P4h-B) --
+
+    #[test]
+    fn a_session_with_no_box_has_no_node_of_one() {
+        for text in [crate::app::testutil::SOURCES, crate::app::testutil::SENDS, GROUPS, OSC] {
+            let graph = load(text).model.graph();
+            assert!(graph.nodes.iter().all(|n| !matches!(n.kind, NodeKind::Pattern { .. })), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_pattern_box_is_a_node_after_the_sources_with_its_settings_its_notes_and_what_it_is_doing_and_the_wire_says_it_in_the_words_a_client_reads() {
+        let model = load(crate::app::testutil::PATTERNS).model;
+        let graph = model.graph();
+        let (keys, device, bass, plain) = (model.sources[0].node, model.sources[1].node, model.patterns[0].node, model.patterns[1].node);
+        assert_eq!(graph.nodes[..4].iter().map(|n| n.id).collect::<Vec<_>>(), [keys, device, bass, plain], "the sources, and then the boxes, before everything else");
+        let node = &graph.nodes[2];
+        assert_eq!((node.name.as_str(), node.parent, node.ui), ("Bass", None, Some(NodeUi { x: 300.0, y: 40.0 })));
+        assert_eq!(
+            node.kind,
+            NodeKind::Pattern {
+                looping: true,
+                sync: PatternSync::Own,
+                overdub: true,
+                click: true,
+                length_beats: 8.0,
+                notes: vec![PatternNote { start: 0.0, length: 1.0, note: 36, velocity: 100 }, PatternNote { start: 2.0, length: 0.5, note: 43, velocity: 90 }],
+                status: PatternStatus::Stopped,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(node).unwrap(),
+            json!({
+                "id": bass.0, "parent": null, "name": "Bass", "ui": {"x": 300.0, "y": 40.0}, "kind": "pattern",
+                "looping": true, "sync": "own", "overdub": true, "click": true, "lengthBeats": 8.0,
+                "notes": [{"start": 0.0, "length": 1.0, "note": 36, "velocity": 100}, {"start": 2.0, "length": 0.5, "note": 43, "velocity": 90}],
+                "status": "stopped"
+            })
+        );
+        // The second box is a new box as the file says nothing of it, and its name is the one that a box has when it is not called.
+        let second = serde_json::to_value(&graph.nodes[3]).unwrap();
+        assert_eq!(second["name"], "Pattern");
+        assert_eq!((&second["sync"], &second["overdub"], &second["click"], &second["lengthBeats"], &second["notes"]), (&json!("own"), &json!(false), &json!(true), &json!(4.0), &json!([])));
+        assert!(second.get("ui").is_none(), "a box that has no place has none on the wire");
+        let mut moved = load(crate::app::testutil::PATTERNS).model;
+        moved.patterns[0].sync = crate::patternbox::Clock::Host;
+        moved.patterns[0].status = crate::patternbox::Status::CountingIn;
+        let json = serde_json::to_value(&moved.graph().nodes[2]).unwrap();
+        assert_eq!((&json["sync"], &json["status"]), (&json!("host"), &json!("countingIn")));
+    }
+
+    #[test]
+    fn the_cables_of_notes_of_a_box_are_edges_from_its_output_of_events_and_to_its_input_and_a_source_feeds_a_box_that_no_cable_ends_at() {
+        let model = load(crate::app::testutil::PATTERNS).model;
+        let (keys, device, bass, plain) = (model.sources[0].node, model.sources[1].node, model.patterns[0].node, model.patterns[1].node);
+        let (lane0, lane1) = (model.instruments[0].node, model.instruments[1].node);
+        let edges = model.graph().edges;
+        let drawn: Vec<&Edge> = edges.iter().filter(|e| matches!(e.kind, EdgeKind::Events { .. })).collect();
+        assert_eq!(
+            drawn,
+            [&events(notes_out(keys), notes_in(bass), 0), &events(notes_out(bass), notes_in(lane0), 1), &events(notes_out(plain), notes_in(lane1), 2)],
+            "in the order of their ids: a box starts a cable and ends one"
+        );
+        let heard: Vec<&Edge> = edges.iter().filter(|e| matches!(e.kind, EdgeKind::Hears)).collect();
+        assert_eq!(heard, [&hears(notes_out(keys), notes_in(plain)), &hears(notes_out(device), notes_in(plain))], "the second box has no cable in, and every source feeds it; the first has one, and no lane is fed: both have a cable");
+        assert_eq!(
+            serde_json::to_value(drawn[1]).unwrap(),
+            json!({"from": {"node": bass.0, "port": {"type": "eventsOut"}}, "to": {"node": lane0.0, "port": {"type": "eventsIn"}}, "kind": "events", "id": 1})
+        );
+    }
+
+    #[test]
+    fn a_box_that_has_lost_its_last_cable_in_is_fed_by_every_source_again_and_a_box_alone_has_no_edge_at_all() {
+        let mut model = load(crate::app::testutil::PATTERNS).model;
+        let id = model.event_cables[0].id;
+        model.remove_event_cable(id).unwrap();
+        let (keys, bass) = (model.sources[0].node, model.patterns[0].node);
+        let heard: Vec<(NodeId, NodeId)> = model.graph().edges.iter().filter(|e| matches!(e.kind, EdgeKind::Hears)).map(|e| (e.from.node, e.to.node)).collect();
+        assert!(heard.contains(&(keys, bass)), "{heard:?}");
+        // A session that has boxes and no source has nothing to feed them: no edge.
+        let alone = load("[[pattern]]\n[[instrument]]\nplugin = \"builtin:osc\"\n").model.graph();
+        assert!(alone.edges.iter().all(|e| !matches!(e.kind, EdgeKind::Hears | EdgeKind::Events { .. })));
+        assert_eq!(alone.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Pattern { .. })).count(), 1);
+    }
+
+    #[test]
+    fn every_node_of_the_model_is_a_node_of_the_graph_with_the_boxes_too_and_the_master_besides() {
+        for text in [crate::app::testutil::PATTERNS, "[keys]\n[[pattern]]\n[[pattern]]\n[[instrument]]\nplugin = \"builtin:osc\"\n"] {
+            let model = load(text).model;
+            let graph = model.graph();
+            let mut in_graph: Vec<NodeId> = graph.nodes.iter().map(|n| n.id).collect();
+            let mut in_model: Vec<NodeId> = model.nodes().map(|(id, _)| id).chain([NodeId::MASTER]).collect();
+            in_graph.sort();
+            in_model.sort();
+            assert_eq!(in_graph, in_model, "{text}");
+        }
     }
 
     #[test]

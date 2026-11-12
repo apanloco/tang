@@ -1,20 +1,26 @@
 //! Test helpers shared by the app and TUI tests.
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::app::controller::EngineHandles;
+use crate::app::controller::{DeviceWatcher, EngineHandles};
 use crate::app::load::{Progress, load_session};
 use crate::app::model::{NodeId, SessionModel};
 use crate::audio::MidiEvent;
 use crate::held_notes::HeldNotes;
+use crate::midi::DeviceChanges;
 use crate::midi_monitor::MidiMonitor;
+use crate::patternbox::BoxNotification;
 use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::plugin::chain::{GraphCommand, GroupFacts, LaneFacts, MidiLearnedNotification, ModulatorLocation, PatternNotification};
 use crate::scale::ScaleSetting;
+use crate::source::{Source, SourceSet};
 use crate::telemetry::Telemetry;
 use crate::{plugin, session};
 
@@ -172,10 +178,21 @@ pub fn describe(cmd: &GraphCommand) -> String {
             format!("SetLaneSources inst={inst} sources={heard}")
         }
         C::ReleaseSource { source } => format!("ReleaseSource source={}", source.number()),
+        C::AddBox { node, player } => format!("AddBox node={} source={} length={} notes={} {}", node.0, player.source().number(), player.length(), player.notes().len(), box_settings_words(&player.settings())),
+        C::RemoveBox { node } => format!("RemoveBox node={}", node.0),
+        C::SetBoxPlan { node, plan } => format!("SetBoxPlan node={} length={} notes={}", node.0, plan.length(), plan.notes().len()),
+        C::SetBoxSettings { node, settings } => format!("SetBoxSettings node={} {}", node.0, box_settings_words(settings)),
+        C::BoxTransport { node, action } => format!("BoxTransport node={} {action:?}", node.0),
         C::SetProbe { target, ring } => format!("SetProbe ring={ring} {target:?}"),
         C::ClearProbes => "ClearProbes".to_string(),
         _ => "<other>".to_string(),
     }
+}
+
+/// What a pattern box is set to, in the words that `describe` says it in (`AddBox` and `SetBoxSettings`): whether it loops, whose beat it goes by, whether it overdubs and clicks, and the sources it records (`all` or their numbers).
+fn box_settings_words(settings: &crate::patternbox::Settings) -> String {
+    let inputs = if settings.inputs == crate::source::SourceSet::ALL { "all".to_string() } else { format!("{:?}", settings.inputs.iter().map(|source| source.number()).collect::<Vec<_>>()) };
+    format!("looping={} clock={} overdub={} click={} inputs={inputs}", settings.looping, settings.clock.word(), settings.overdub, settings.click)
 }
 
 /// The command that tells the audio thread what the output mix is (step 102). A session is loaded with one whenever its limiter is in the sound, which is unless it says it is not, so that the lists of
@@ -279,6 +296,8 @@ pub struct StubEngine {
     pub return_tx: Sender<Box<dyn plugin::Plugin>>,
     /// Where it reports finished pattern recordings.
     pub pattern_tx: Sender<PatternNotification>,
+    /// Where the pattern boxes report what they recorded and what they are doing.
+    pub box_tx: Sender<BoxNotification>,
     /// Where it reports captured MIDI-learn controls.
     pub learn_tx: Sender<MidiLearnedNotification>,
 }
@@ -317,12 +336,14 @@ pub fn stub_engine_of(capacity: usize) -> (EngineHandles, StubEngine) {
     let (midi_tx, midi_rx) = crossbeam_channel::bounded(1024);
     let (return_tx, return_rx) = crossbeam_channel::bounded(16);
     let (pattern_tx, pattern_rx) = crossbeam_channel::unbounded();
+    let (box_tx, box_rx) = crossbeam_channel::unbounded();
     let (learn_tx, learn_rx) = crossbeam_channel::unbounded();
     let handles = EngineHandles {
         cmd_tx,
         midi_tx,
         return_rx,
         pattern_rx,
+        box_rx,
         learn_rx,
         runtime: plugin::Runtime::default(),
         sample_rate: 48_000.0,
@@ -334,7 +355,7 @@ pub fn stub_engine_of(capacity: usize) -> (EngineHandles, StubEngine) {
         // (Nobody runs the audio thread that hands a plugin back, unless a test does it by hand: it is not waited for.)
         recovery_wait: std::time::Duration::ZERO,
     };
-    (handles, StubEngine { cmd_rx, midi_rx, return_tx, pattern_tx, learn_tx })
+    (handles, StubEngine { cmd_rx, midi_rx, return_tx, pattern_tx, box_tx, learn_tx })
 }
 
 pub const GROUPS: &str = r#"
@@ -1021,6 +1042,81 @@ from = "instrument[2]"
 to = "master"
 "#;
 
+/// MIDI ports that a test plugs in and out, by name, each with the source it has; what a look at them finds (`looks`) is told by the test.
+#[derive(Clone, Default)]
+pub struct Ports {
+    pub open: Rc<RefCell<Vec<(String, Source)>>>,
+    pub looks: Rc<RefCell<VecDeque<DeviceChanges>>>,
+}
+
+impl Ports {
+    pub fn plug_in(&self, name: &str, source: Source) {
+        self.open.borrow_mut().push((name.to_string(), source));
+        self.looks.borrow_mut().push_back(DeviceChanges { came: vec![source], gone: vec![] });
+    }
+
+    pub fn unplug(&self, name: &str) {
+        let at = self.open.borrow().iter().position(|(open, _)| open == name).expect("a port that is open");
+        let (_, source) = self.open.borrow_mut().remove(at);
+        self.looks.borrow_mut().push_back(DeviceChanges { came: vec![], gone: vec![source] });
+    }
+}
+
+impl DeviceWatcher for Ports {
+    fn poll_new_devices(&mut self) -> DeviceChanges {
+        self.looks.borrow_mut().pop_front().unwrap_or_default()
+    }
+
+    fn sources_of(&self, name: &str) -> SourceSet {
+        self.open.borrow().iter().filter(|(open, _)| open.contains(name)).fold(SourceSet::NONE, |set, (_, source)| set.with(*source))
+    }
+
+    fn open_names(&self) -> Vec<String> {
+        self.open.borrow().iter().map(|(name, _)| name.clone()).collect()
+    }
+}
+
+/// A session with pattern boxes (step 123, P4h-B): the keys and a device, two boxes (the first called Bass, 8 beats long, overdubbing, placed, with two notes, and recording the keys; the second as a new box is, recording every input),
+/// two lanes, and cables of notes: from the keys to the first box, from the first box to the first lane and from the second box to the second lane.
+pub const PATTERNS: &str = r#"
+[keys]
+
+[[device]]
+name = "Launchkey Mini MK4 37"
+
+[[pattern]]
+name = "Bass"
+length_beats = 8
+looping = true
+sync = "own"
+overdub = true
+ui = { x = 300, y = 40 }
+notes = [
+  { at = 0, len = 1, note = "C2", vel = 100 },
+  { at = 2, len = 0.5, note = "G2", vel = 90 },
+]
+
+[[pattern]]
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[cable]]
+from = "keys"
+to = "pattern[0]"
+
+[[cable]]
+from = "pattern[0]"
+to = "instrument[0]"
+
+[[cable]]
+from = "pattern[1]"
+to = "instrument[1]"
+"#;
+
 /// A session with sources of notes among everything that a cable of notes could be drawn to or from by mistake (P4c: the fixture of what sources and cables of notes come to,
 /// `web/src/client/fixtures/sources.json`): the keys (placed) and a device, a group ("Pad") with a reverb on its bus, lane 0 in it with a filter and an LFO that drives the filter, a plain lane (1)
 /// and an empty one (2), a cable of notes from the keys to lane 1 and an audio cable from lane 1 to the filter of lane 0 (the two kinds of cable have ids of one series, in the order of the file).
@@ -1653,6 +1749,27 @@ pub fn model_lanes(model: &SessionModel) -> Vec<LaneFacts> {
             has_instrument: lane.instrument.is_some(),
             effects: lane.effects.len(),
             pattern_index: i,
+        })
+        .collect()
+}
+
+/// What each lane hears, as the controller works it out (`Controller::lane_sources`: the cables of notes, and the ports that the devices stand for, of which the oracle's controller has none open).
+pub fn model_lane_sources(ctl: &crate::app::controller::Controller) -> Vec<SourceSet> {
+    (0..ctl.model.instruments.len()).map(|lane| ctl.lane_sources(lane)).collect()
+}
+
+/// What each pattern box is as the model has it and the controller told the engine, in the terms `AudioGraph::facts` uses.
+pub fn model_boxes(ctl: &crate::app::controller::Controller) -> Vec<crate::plugin::chain::BoxFacts> {
+    ctl.model
+        .patterns
+        .iter()
+        .enumerate()
+        .map(|(index, pattern)| crate::plugin::chain::BoxFacts {
+            node: pattern.node,
+            source: pattern.source(),
+            length: pattern.length_beats,
+            notes: pattern.notes.clone(),
+            settings: ctl.box_settings(index),
         })
         .collect()
 }

@@ -167,6 +167,12 @@ export const NAME_LIMIT = 64;
 /** How many characters the name of a MIDI device, as a source of notes is called by it, can have: what the controller refuses more than (`MAX_DEVICE_NAME`). */
 export const DEVICE_NAME_LIMIT = 256;
 
+/** How many pattern boxes a session has at the most (`MAX_BOXES`: the engine has a source of notes for each), the shortest and the longest loop a box has, in beats, how long a new one is, and how many notes it holds (`MIN_LENGTH_BEATS`, `MAX_LENGTH_BEATS`, `DEFAULT_LENGTH_BEATS`, `MAX_NOTES`): what the controller holds a box to. */
+export const PATTERN_BOX_LIMIT = 16;
+export const PATTERN_BOX_LENGTH_RANGE: readonly [number, number] = [0.25, 256];
+export const PATTERN_BOX_DEFAULT_LENGTH = 4;
+export const PATTERN_BOX_NOTE_LIMIT = 4096;
+
 /** How many frames of each side a frame of the scope channel has (`SCOPE_FRAME_LENGTH`): the left side and then the right, the latest frame of each last. */
 export const SCOPE_FRAME_LENGTH = 2048;
 

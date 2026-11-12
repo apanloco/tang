@@ -13,9 +13,10 @@
 
 use crate::app::intent::{Intent, IntentError, ModulatorField};
 use crate::plugin;
+use crate::patternbox::{BoxNote, Clock, Status as BoxStatus};
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo, CrossModField, GroupWiring, LaneWiring, ModTargetKind, ModulatorLocation};
 use crate::session::{NodeUi, Route};
-use crate::source::SourceSet;
+use crate::source::{MAX_BOXES, Source, SourceSet};
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -104,6 +105,8 @@ pub enum NodePath {
     Modulator { at: ModulatorLocation, index: usize },
     /// A source of notes: the keys, or a MIDI device.
     Source(usize),
+    /// A pattern box (P4h of `docs/patch-graph.md` §11.6): a node that stores notes, takes notes in and sends notes out.
+    Pattern(usize),
     /// A module that was added to the session as one thing (step 108): the box that a front-end draws in place of its lanes and modulators.
     Module(usize),
 }
@@ -197,7 +200,10 @@ pub struct SessionModel {
     /// The sources of notes that a person put in the session (P4b of `docs/patch-graph.md` §11.6): the keys, and the MIDI devices that it names. None until one is added, and then a lane
     /// that no event cable ends at hears every source (the program is as it was), and one that has some hears the sources they start at.
     pub sources: Vec<SourceNode>,
-    /// The event cables that have been drawn, in the order of their ids: the notes of a source go to a lane.
+    /// The pattern boxes (P4h of `docs/patch-graph.md` §11.6), in the order they were made: each stores notes in beats, records what the sources that its cables come from play, and plays them to the lanes that its
+    /// cables go to. At most `MAX_BOXES`.
+    pub patterns: Vec<PatternBox>,
+    /// The event cables that have been drawn, in the order of their ids: the notes of a source or a box go to a lane, or the notes of a source go to a box.
     pub event_cables: Vec<EventCable>,
     /// The modulators that belong to no lane and no group (P5b-2 of `docs/patch-graph.md` §11.6), in the order they were made: each hears every note, and its cables drive any plugin
     /// of the session and the settings of the other free modulators and the depths of their cables.
@@ -219,6 +225,7 @@ impl Default for SessionModel {
             master: MasterNode::default(),
             cables: Vec::new(),
             sources: Vec::new(),
+            patterns: Vec::new(),
             event_cables: Vec::new(),
             free_modulators: Vec::new(),
             modules: Vec::new(),
@@ -278,6 +285,45 @@ pub struct EventCable {
     pub from: NodeId,
     /// The node of the lane it ends at (the lane's instrument is the lane's own node).
     pub to: NodeId,
+}
+
+/// A pattern box that a session has (P4h of `docs/patch-graph.md` §11.6): a node of the graph with an input of events, which the notes of the sources that it records come in at, and an output of events, which the
+/// lanes that hear it are cabled to. It stores **notes in beats** and a loop length in beats, so that it goes by the tempo. Its id is from the series that the other nodes' are.
+///
+/// What a box is doing (`status`) is the audio thread's to say and is not saved; everything else is the session's. The notes are as `patternbox::sanitize` makes them, which is as the audio thread's box keeps them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PatternBox {
+    pub node: NodeId,
+    /// Which of the engine's `MAX_BOXES` box sources this is (`Source::pattern(slot)`): the lowest that was free when the box was made, kept as long as the box is in the session. It is not saved, and a client is not told it.
+    pub slot: u8,
+    /// What the box is called: "Pattern 1" and so on until a person says another.
+    pub name: String,
+    /// The loop's length in beats, `MIN_LENGTH_BEATS` to `MAX_LENGTH_BEATS`.
+    pub length_beats: f32,
+    /// Whether it plays again from the start at the end of its length (the own clock; the host's beat goes round by itself).
+    pub looping: bool,
+    /// Whose beat it goes by: its own, from Play, or the host's.
+    pub sync: Clock,
+    /// Whether a recording keeps the notes that are there and goes on pass after pass until it is finished, and not takes them out and makes one pass.
+    pub overdub: bool,
+    /// Whether the metronome clicks while a recording is counted in and made.
+    pub click: bool,
+    /// The notes, in the order of their starts.
+    pub notes: Vec<BoxNote>,
+    /// What the audio thread last said that the box is doing.
+    pub status: BoxStatus,
+}
+
+impl PatternBox {
+    /// A box that has no note, 4 beats long, that loops on its own clock, overwrites and clicks: what `AddPattern` makes.
+    pub fn new(node: NodeId, slot: u8, name: String) -> PatternBox {
+        PatternBox { node, slot, name, length_beats: crate::patternbox::DEFAULT_LENGTH_BEATS, looping: true, sync: Clock::Own, overdub: false, click: true, notes: Vec::new(), status: BoxStatus::Stopped }
+    }
+
+    /// The source that its notes are heard as.
+    pub fn source(&self) -> Source {
+        Source::pattern(self.slot as usize)
+    }
 }
 
 /// An audio cable that a session has: a send from one place of the audio to another (P3c of `docs/patch-graph.md` §11.6). Its id is from the series that the modulation
@@ -503,6 +549,33 @@ impl SessionModel {
         index
     }
 
+    /// The pattern box whose node is `node`, if there is one.
+    pub fn pattern(&self, node: NodeId) -> Option<&PatternBox> {
+        self.patterns.iter().find(|pattern| pattern.node == node)
+    }
+
+    /// The same, to change.
+    pub fn pattern_mut(&mut self, node: NodeId) -> Option<&mut PatternBox> {
+        self.patterns.iter_mut().find(|pattern| pattern.node == node)
+    }
+
+    /// Put a pattern box among the boxes at `index` (at the end for one past it): the place it went to.
+    pub fn insert_pattern_at(&mut self, index: usize, pattern: PatternBox) -> usize {
+        let index = index.min(self.patterns.len());
+        self.patterns.insert(index, pattern);
+        index
+    }
+
+    /// The lowest of the engine's box sources that no box of the session has, or none when every one is taken (`MAX_BOXES` boxes).
+    pub fn free_pattern_slot(&self) -> Option<u8> {
+        (0..MAX_BOXES as u8).find(|slot| self.patterns.iter().all(|pattern| pattern.slot != *slot))
+    }
+
+    /// What a new box is called: "Pattern N" for the lowest N, from 1, that no box is called.
+    pub fn next_pattern_name(&self) -> String {
+        (1..).map(|n| format!("Pattern {n}")).find(|name| self.patterns.iter().all(|pattern| pattern.name != *name)).expect("there are only so many boxes")
+    }
+
     /// The place among the modules of the one that `member` came with: a lane or a modulator (a node is in at most one module).
     pub fn module_of(&self, member: NodeId) -> Option<usize> {
         self.modules.iter().position(|module| module.members.contains(&member))
@@ -536,9 +609,9 @@ impl SessionModel {
         self.event_cables.binary_search_by_key(&id, |cable| cable.id).ok().map(|at| &self.event_cables[at])
     }
 
-    /// The ends that a cable from the port `from` to the port `to` of the graph has, if it is a cable of notes: the node of the source that it starts at (`EventsOut`) and the node of the
-    /// lane that it ends at (`EventsIn`; a lane's instrument is the lane's own node). The reason, if they are not that: a node that is not there is not found, and a port or a node of
-    /// another kind is invalid.
+    /// The ends that a cable from the port `from` to the port `to` of the graph has, if it is a cable of notes: the node of the source or the pattern box that it starts at (`EventsOut`) and the node of the
+    /// lane or the box that it ends at (`EventsIn`; a lane's instrument is the lane's own node). A box takes the notes of a source (and no box's: there is no cable from a box to a box), and sends its own to a lane.
+    /// The reason, if they are not that: a node that is not there is not found, and a port or a node of another kind is invalid.
     pub fn event_cable_ends(&self, from: crate::app::graph::Endpoint, to: crate::app::graph::Endpoint) -> Result<(NodeId, NodeId), IntentError> {
         use crate::app::graph::Port;
         let invalid = |why: &str| IntentError::Invalid(why.to_string());
@@ -551,7 +624,7 @@ impl SessionModel {
         if from.node == NodeId::MASTER {
             return Err(invalid("the mix has no output of events"));
         }
-        if self.source(from.node).is_none() {
+        if self.source(from.node).is_none() && self.pattern(from.node).is_none() {
             return Err(match self.locate(from.node) {
                 Some(_) => invalid("only a source of notes has an output of events"),
                 None => IntentError::NotFound(from.node),
@@ -563,6 +636,8 @@ impl SessionModel {
         match self.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
             NodePath::Instrument(inst) if !self.lane_takes_notes(inst) => Err(invalid("that instrument takes no notes: an audio input has no input of events")),
             NodePath::Instrument(_) => Ok((from.node, to.node)),
+            NodePath::Pattern(_) if self.pattern(from.node).is_some() => Err(invalid("a pattern box cannot send its notes to another box yet: it sends them to a lane")),
+            NodePath::Pattern(_) => Ok((from.node, to.node)),
             _ => Err(invalid("a cable of notes ends at a lane: it is the lanes that have an input of events")),
         }
     }
@@ -575,13 +650,29 @@ impl SessionModel {
     /// The sources that lane `inst` hears (P4b of `docs/patch-graph.md` §11.6): every source if no event cable ends at it, and otherwise the sources of the nodes that the cables that end at it start at,
     /// as `resolve` says them (the keys are one source, a device is the sources of the open ports that its name stands for, and none while it is not plugged in: a lane that has a cable from it
     /// and no other does not hear the others in the meantime). A lane that is not there hears every source, as it will when it is.
+    /// A pattern box is a source too: a lane that a cable from one ends at hears its notes (`Source::pattern(slot)`), with the sources of its other cables and no others (a lane that has a cable from a box and none
+    /// from a source hears no key).
     pub fn lane_sources(&self, inst: usize, mut resolve: impl FnMut(&SourceKind) -> SourceSet) -> SourceSet {
         let Some(lane) = self.instruments.get(inst) else { return SourceSet::ALL };
-        let mut cables = self.event_cables.iter().filter(|cable| cable.to == lane.node).peekable();
-        if cables.peek().is_none() {
-            return SourceSet::ALL;
-        }
-        cables.filter_map(|cable| self.source(cable.from)).fold(SourceSet::NONE, |heard, source| heard.or(resolve(&source.kind)))
+        self.sources_cabled_into(lane.node, &mut resolve).unwrap_or(SourceSet::ALL)
+    }
+
+    /// The sources that the pattern box at `index` records: every input if no event cable ends at it (as a lane that has none hears every input), and otherwise the sources of the nodes that the cables that end at it
+    /// start at, as `resolve` says them. A box that is not there records every input, as it will when it is.
+    pub fn box_inputs(&self, index: usize, mut resolve: impl FnMut(&SourceKind) -> SourceSet) -> SourceSet {
+        let Some(pattern) = self.patterns.get(index) else { return SourceSet::ALL };
+        self.sources_cabled_into(pattern.node, &mut resolve).unwrap_or(SourceSet::ALL)
+    }
+
+    /// The sources of the nodes that the event cables that end at `node` start at: a source's own (`resolve`) and a box's `Source::pattern`. None if no cable ends at it.
+    fn sources_cabled_into(&self, node: NodeId, resolve: &mut impl FnMut(&SourceKind) -> SourceSet) -> Option<SourceSet> {
+        let mut cables = self.event_cables.iter().filter(|cable| cable.to == node).peekable();
+        cables.peek()?;
+        Some(cables.fold(SourceSet::NONE, |heard, cable| match (self.source(cable.from), self.pattern(cable.from)) {
+            (Some(source), _) => heard.or(resolve(&source.kind)),
+            (None, Some(pattern)) => heard.with(pattern.source()),
+            (None, None) => heard,
+        }))
     }
 
     /// Take the event cable `id` out: what it was. None if there is no such cable.
@@ -648,6 +739,7 @@ impl SessionModel {
                 NodePath::Group(_) => CableFrom::Group(from.node),
                 NodePath::Modulator { .. } => return Err(invalid("a modulator has no output of audio")),
                 NodePath::Source(_) => return Err(invalid("a source of notes has no output of audio: it has an output of events")),
+                NodePath::Pattern(_) => return Err(invalid("a pattern box has no output of audio: it has an output of events")),
                 NodePath::Module(_) => return Err(invalid("a module has no output of audio of its own: cables start at the plugins in it")),
             }
         };
@@ -672,6 +764,7 @@ impl SessionModel {
                 NodePath::Instrument(_) => return Err(invalid("a lane has no input of audio: a cable ends at an effect, a group or the mix")),
                 NodePath::Modulator { .. } => return Err(invalid("a modulator has no input of audio")),
                 NodePath::Source(_) => return Err(invalid("a source of notes has no input of audio")),
+                NodePath::Pattern(_) => return Err(invalid("a pattern box has no input of audio: it has an input of events")),
                 NodePath::Module(_) => return Err(invalid("a module has no input of audio of its own: cables end at the plugins in it")),
             }
         };
@@ -712,7 +805,7 @@ impl SessionModel {
     }
 
     /// Every node and where it sits: the groups with their bus effects, then the lanes with
-    /// their effects, the sources of notes, the modulators and the modules. (A lane's instrument plugin
+    /// their effects, the sources of notes, the pattern boxes, the modulators and the modules. (A lane's instrument plugin
     /// shares the lane's id.)
     pub fn nodes(&self) -> impl Iterator<Item = (NodeId, NodePath)> + '_ {
         let groups = self.groups.iter().enumerate().flat_map(|(group, g)| {
@@ -728,9 +821,10 @@ impl SessionModel {
                 }))
         });
         let sources = self.sources.iter().enumerate().map(|(index, source)| (source.node, NodePath::Source(index)));
+        let patterns = self.patterns.iter().enumerate().map(|(index, pattern)| (pattern.node, NodePath::Pattern(index)));
         let free = self.free_modulators.iter().enumerate().map(|(index, m)| (m.node, NodePath::Modulator { at: ModulatorLocation::Free, index }));
         let modules = self.modules.iter().enumerate().map(|(index, module)| (module.node, NodePath::Module(index)));
-        groups.chain(lanes).chain(sources).chain(free).chain(modules)
+        groups.chain(lanes).chain(sources).chain(patterns).chain(free).chain(modules)
     }
 
     /// Where the node `id` sits, if it is still in the session.
@@ -864,7 +958,25 @@ impl SessionModel {
                 }
             }
         }
-        // The event cables: ids from the same series, each from a source to a lane, none twice between the same two.
+        // The pattern boxes: at most `MAX_BOXES`, each with a source of its own and a loop that is in range.
+        if self.patterns.len() > MAX_BOXES {
+            return Err(format!("the session has {} pattern boxes, and no more than {MAX_BOXES} are heard", self.patterns.len()));
+        }
+        for (at, pattern) in self.patterns.iter().enumerate() {
+            if pattern.slot as usize >= MAX_BOXES {
+                return Err(format!("{:?} has the slot {}, and there are {MAX_BOXES}", pattern.node, pattern.slot));
+            }
+            if self.patterns[..at].iter().any(|earlier| earlier.slot == pattern.slot) {
+                return Err(format!("{:?} has the slot {}, which another box has too", pattern.node, pattern.slot));
+            }
+            if !(crate::patternbox::MIN_LENGTH_BEATS..=crate::patternbox::MAX_LENGTH_BEATS).contains(&pattern.length_beats) {
+                return Err(format!("{:?} is {} beats long", pattern.node, pattern.length_beats));
+            }
+            if pattern.notes != crate::patternbox::sanitize(&pattern.notes) {
+                return Err(format!("{:?} has notes that are not as a box holds them", pattern.node));
+            }
+        }
+        // The event cables: ids from the same series, each from a source or a box to a lane or a box (never a box to a box), none twice between the same two.
         for (at, cable) in self.event_cables.iter().enumerate() {
             let whose = format!("event cable {:?}", cable.id);
             if cable.id.0 >= self.ids.next_edge {
@@ -873,11 +985,14 @@ impl SessionModel {
             if !edges.insert(cable.id) {
                 return Err(format!("{whose} has an id which another edge has too"));
             }
-            if !self.sources.iter().any(|source| source.node == cable.from) {
-                return Err(format!("{whose} starts at {:?}, which is not a source", cable.from));
+            if !self.sources.iter().any(|source| source.node == cable.from) && self.pattern(cable.from).is_none() {
+                return Err(format!("{whose} starts at {:?}, which is not a source or a box", cable.from));
             }
-            if !self.instruments.iter().any(|lane| lane.node == cable.to) {
-                return Err(format!("{whose} ends at {:?}, which is not a lane", cable.to));
+            if !self.instruments.iter().any(|lane| lane.node == cable.to) && self.pattern(cable.to).is_none() {
+                return Err(format!("{whose} ends at {:?}, which is not a lane or a box", cable.to));
+            }
+            if self.pattern(cable.from).is_some() && self.pattern(cable.to).is_some() {
+                return Err(format!("{whose} goes from a box to a box"));
             }
             if self.event_cables[..at].iter().any(|earlier| (earlier.from, earlier.to) == (cable.from, cable.to)) {
                 return Err(format!("{whose} is between two nodes that another event cable is between"));
@@ -967,7 +1082,7 @@ impl SessionModel {
             NodePath::Instrument(inst) => self.instruments.get(inst)?.instrument.as_ref(),
             NodePath::Effect { inst, index } => self.instruments.get(inst)?.effects.get(index),
             NodePath::GroupEffect { group, index } => self.groups.get(group)?.effects.get(index),
-            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Module(_) => None,
+            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => None,
         }
     }
 
@@ -3855,5 +3970,199 @@ mod_rate = 0
         ] {
             assert_eq!(format_from_id(id), format, "{id}");
         }
+    }
+
+    // -- pattern boxes (step 123, P4h-B) --
+
+    fn boxes() -> SessionModel {
+        load(crate::app::testutil::PATTERNS).model
+    }
+
+    /// What the sources of the session are, as the controller resolves them with every port open: the keys are the keys' source, and a device the first two ports.
+    fn resolved(kind: &SourceKind) -> SourceSet {
+        match kind {
+            SourceKind::Keys => SourceSet::NONE.with(Source::KEYS),
+            SourceKind::Device(_) => SourceSet::NONE.with(Source::device(0)).with(Source::device(1)),
+        }
+    }
+
+    #[test]
+    fn a_new_box_is_four_beats_long_loops_on_its_own_clock_overwrites_clicks_and_is_the_source_of_its_slot() {
+        let pattern = PatternBox::new(NodeId(5), 3, "Pattern 4".to_string());
+        assert_eq!(
+            (pattern.node, pattern.slot, pattern.name.as_str(), pattern.length_beats, pattern.looping, pattern.sync, pattern.overdub, pattern.click, pattern.status),
+            (NodeId(5), 3, "Pattern 4", 4.0, true, Clock::Own, false, true, BoxStatus::Stopped)
+        );
+        assert!(pattern.notes.is_empty());
+        assert_eq!(pattern.source(), Source::pattern(3));
+        assert_eq!(pattern.source().number(), 51, "after the 48 inputs");
+    }
+
+    #[test]
+    fn the_lowest_free_slot_and_name_go_to_the_next_box_and_none_when_the_sixteen_are_there() {
+        let mut model = SessionModel::default();
+        assert_eq!((model.free_pattern_slot(), model.next_pattern_name().as_str()), (Some(0), "Pattern 1"));
+        for _ in 0..MAX_BOXES {
+            let (slot, name, node) = (model.free_pattern_slot().unwrap(), model.next_pattern_name(), model.alloc_node());
+            model.patterns.push(PatternBox::new(node, slot, name));
+        }
+        assert_eq!(model.free_pattern_slot(), None);
+        assert_eq!((model.patterns[0].name.as_str(), model.patterns[15].name.as_str(), model.patterns[15].slot), ("Pattern 1", "Pattern 16", 15));
+        model.patterns.remove(3);
+        assert_eq!((model.free_pattern_slot(), model.next_pattern_name().as_str()), (Some(3), "Pattern 4"), "the box that was the fourth leaves its slot and its name");
+        model.patterns[0].name = "Bass".to_string();
+        assert_eq!(model.next_pattern_name(), "Pattern 1", "a box that is called something else leaves its number");
+        model.patterns[1].name = "Pattern 1".to_string();
+        assert_eq!(model.next_pattern_name(), "Pattern 2", "a name that a box has is not given again, and the number that a box left is the lowest that is free");
+    }
+
+    #[test]
+    fn a_box_is_put_among_the_boxes_at_its_place_or_at_the_end_for_one_past_it_and_is_found_by_its_node() {
+        let mut model = boxes();
+        let (bass, plain) = (model.patterns[0].node, model.patterns[1].node);
+        let order = |model: &SessionModel| -> Vec<NodeId> { model.patterns.iter().map(|pattern| pattern.node).collect() };
+        assert_eq!(model.insert_pattern_at(1, PatternBox::new(NodeId(90), 5, "A".to_string())), 1);
+        assert_eq!(order(&model), [bass, NodeId(90), plain]);
+        assert_eq!(model.insert_pattern_at(100, PatternBox::new(NodeId(91), 6, "B".to_string())), 3, "past the end is the end");
+        assert_eq!(model.insert_pattern_at(0, PatternBox::new(NodeId(92), 7, "C".to_string())), 0);
+        assert_eq!(order(&model), [NodeId(92), bass, NodeId(90), plain, NodeId(91)]);
+        assert_eq!(model.pattern(NodeId(90)).map(|pattern| pattern.name.as_str()), Some("A"));
+        assert!(model.pattern(NodeId(900)).is_none() && model.pattern(model.instruments[0].node).is_none());
+        model.pattern_mut(NodeId(91)).unwrap().name = "Z".to_string();
+        assert_eq!(model.patterns[4].name, "Z");
+        assert!(model.pattern_mut(NodeId(900)).is_none());
+    }
+
+    #[test]
+    fn the_boxes_are_nodes_after_the_sources_and_before_the_modulators_and_each_is_found_by_its_place() {
+        let model = load("[keys]\n[[pattern]]\n[[pattern]]\n[[modulator]]\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let places: Vec<NodePath> = model.nodes().map(|(_, path)| path).collect();
+        let at = |wanted: fn(&NodePath) -> bool| places.iter().position(wanted).expect("a node of that kind");
+        let (source, pattern, modulator) = (at(|path| matches!(path, NodePath::Source(_))), at(|path| matches!(path, NodePath::Pattern(_))), at(|path| matches!(path, NodePath::Modulator { .. })));
+        assert!(source < pattern && pattern < modulator, "{places:?}");
+        assert_eq!(model.locate(model.patterns[1].node), Some(NodePath::Pattern(1)));
+        assert_eq!(model.nodes().filter(|(_, path)| matches!(path, NodePath::Pattern(_))).count(), 2);
+        model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_of_notes_joins_a_source_or_a_box_to_a_lane_and_a_source_to_a_box_and_never_a_box_to_a_box() {
+        use crate::app::graph::{Endpoint, Port};
+        let model = boxes();
+        let (keys, device, bass, plain, lane) = (model.sources[0].node, model.sources[1].node, model.patterns[0].node, model.patterns[1].node, model.instruments[0].node);
+        let (out, into) = (|node| Endpoint { node, port: Port::EventsOut }, |node| Endpoint { node, port: Port::EventsIn });
+        let invalid = |why: &str| Err(IntentError::Invalid(why.to_string()));
+        assert_eq!(model.event_cable_ends(out(keys), into(bass)), Ok((keys, bass)));
+        assert_eq!(model.event_cable_ends(out(device), into(plain)), Ok((device, plain)));
+        assert_eq!(model.event_cable_ends(out(bass), into(lane)), Ok((bass, lane)));
+        assert_eq!(model.event_cable_ends(out(keys), into(lane)), Ok((keys, lane)), "as before");
+        let box_to_box = "a pattern box cannot send its notes to another box yet: it sends them to a lane";
+        assert_eq!(model.event_cable_ends(out(bass), into(plain)), invalid(box_to_box));
+        assert_eq!(model.event_cable_ends(out(bass), into(bass)), invalid(box_to_box), "nor to itself");
+        assert_eq!(model.event_cable_ends(out(lane), into(bass)), invalid("only a source of notes has an output of events"));
+        assert_eq!(model.event_cable_ends(out(bass), into(NodeId::MASTER)), invalid("the mix has no input of events"));
+        assert_eq!(model.event_cable_ends(out(NodeId::MASTER), into(bass)), invalid("the mix has no output of events"));
+        assert_eq!(model.event_cable_ends(out(bass), into(keys)), invalid("a cable of notes ends at a lane: it is the lanes that have an input of events"));
+        assert_eq!(model.event_cable_ends(out(NodeId(900)), into(bass)), Err(IntentError::NotFound(NodeId(900))));
+        assert_eq!(model.event_cable_ends(out(keys), into(NodeId(901))), Err(IntentError::NotFound(NodeId(901))));
+        assert_eq!(model.event_cable_ends(Endpoint { node: bass, port: Port::AudioOut }, into(lane)), invalid("a cable of notes starts at an output of events"));
+        assert_eq!(model.event_cable_ends(out(keys), Endpoint { node: bass, port: Port::AudioIn }), invalid("a cable of notes ends at an input of events"));
+    }
+
+    #[test]
+    fn a_box_has_no_audio_to_start_or_end_a_cable_at_and_says_what_it_has() {
+        use crate::app::graph::{Endpoint, Port};
+        let model = boxes();
+        let (bass, lane) = (model.patterns[0].node, model.instruments[0].node);
+        let invalid = |why: &str| Err(IntentError::Invalid(why.to_string()));
+        assert_eq!(model.cable_ends(Endpoint { node: bass, port: Port::AudioOut }, Endpoint { node: NodeId::MASTER, port: Port::AudioIn }), invalid("a pattern box has no output of audio: it has an output of events"));
+        assert_eq!(model.cable_ends(Endpoint { node: lane, port: Port::AudioOut }, Endpoint { node: bass, port: Port::AudioIn }), invalid("a pattern box has no input of audio: it has an input of events"));
+        assert!(model.cable_ends(Endpoint { node: lane, port: Port::AudioOut }, Endpoint { node: NodeId::MASTER, port: Port::AudioIn }).is_ok(), "a lane's audio goes to the mix as it did");
+    }
+
+    #[test]
+    fn a_lane_hears_the_boxes_that_its_cables_come_from_and_a_box_records_the_sources_that_its_cables_come_from_and_every_input_when_none_does() {
+        let mut model = boxes();
+        assert_eq!(model.lane_sources(0, resolved), SourceSet::NONE.with(Source::pattern(0)), "a lane that has a cable from a box and none from a source hears no key");
+        assert_eq!(model.lane_sources(1, resolved), SourceSet::NONE.with(Source::pattern(1)));
+        assert_eq!(model.box_inputs(0, resolved), SourceSet::NONE.with(Source::KEYS));
+        assert_eq!(model.box_inputs(1, resolved), SourceSet::ALL, "a box that has no cable in records every input, as a lane hears every source");
+        assert_eq!(model.box_inputs(9, resolved), SourceSet::ALL, "and one that is not there does");
+        assert_eq!(model.lane_sources(9, resolved), SourceSet::ALL);
+        let (keys, device, bass, lane) = (model.sources[0].node, model.sources[1].node, model.patterns[0].node, model.instruments[0].node);
+        // A cable from the keys as well: the lane hears the keys and the box, and a cable from a device into the box adds the ports of the device.
+        let id = model.alloc_edge();
+        model.insert_event_cable(EventCable { id, from: keys, to: lane });
+        assert_eq!(model.lane_sources(0, resolved), SourceSet::NONE.with(Source::KEYS).with(Source::pattern(0)));
+        let id = model.alloc_edge();
+        model.insert_event_cable(EventCable { id, from: device, to: bass });
+        assert_eq!(model.box_inputs(0, resolved), SourceSet::NONE.with(Source::KEYS).with(Source::device(0)).with(Source::device(1)));
+        assert_eq!(model.box_inputs(0, |_| SourceSet::NONE), SourceSet::NONE, "a device that is not plugged in is no source: a box that is cabled from it and from nothing else records nothing, and not every input");
+    }
+
+    #[test]
+    fn a_cable_from_what_is_neither_a_source_nor_a_box_brings_a_lane_nothing_and_leaves_it_hearing_nothing_and_not_everything() {
+        let mut model = load("[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let id = model.alloc_edge();
+        let lane = model.instruments[0].node;
+        model.insert_event_cable(EventCable { id, from: NodeId(777), to: lane });
+        assert_eq!(model.lane_sources(0, resolved), SourceSet::NONE);
+    }
+
+    #[test]
+    fn a_box_that_the_check_does_not_like_is_told_with_the_reason() {
+        boxes().check_ids().unwrap();
+        let broken = |change: &dyn Fn(&mut SessionModel)| -> String {
+            let mut model = boxes();
+            change(&mut model);
+            model.check_ids().expect_err("the check says what is wrong")
+        };
+        assert!(broken(&|model| model.patterns[1].slot = 16).contains("has the slot 16, and there are 16"));
+        assert!(broken(&|model| model.patterns[1].slot = 0).contains("which another box has too"));
+        assert!(broken(&|model| model.patterns[0].length_beats = 0.1).contains("is 0.1 beats long"));
+        assert!(broken(&|model| model.patterns[0].length_beats = 300.0).contains("beats long"));
+        assert!(broken(&|model| model.patterns[0].length_beats = f32::NAN).contains("beats long"));
+        assert!(broken(&|model| model.patterns[0].notes[0].velocity = 0).contains("notes that are not as a box holds them"));
+        assert!(broken(&|model| model.patterns[0].notes.swap(0, 1)).contains("notes that are not as a box holds them"), "in the order of their starts");
+        assert!(broken(&|model| model.patterns[1].node = model.patterns[0].node).contains("which another node has too"));
+        assert!(broken(&|model| model.patterns[1].node = NodeId(model.ids.next + 3)).contains("which was never allocated"));
+        let too_many = broken(&|model| {
+            for _ in 0..15 {
+                let node = model.alloc_node();
+                model.patterns.push(PatternBox::new(node, 0, "x".to_string()));
+            }
+        });
+        assert!(too_many.contains("the session has 17 pattern boxes"), "{too_many}");
+    }
+
+    #[test]
+    fn a_box_may_be_the_shortest_and_the_longest_that_a_box_is() {
+        let mut model = boxes();
+        for beats in [crate::patternbox::MIN_LENGTH_BEATS, crate::patternbox::MAX_LENGTH_BEATS, 1.0] {
+            model.patterns[0].length_beats = beats;
+            model.check_ids().unwrap_or_else(|why| panic!("{beats}: {why}"));
+        }
+    }
+
+    #[test]
+    fn a_cable_of_notes_that_the_check_does_not_like_is_told_with_the_reason_and_the_cables_of_the_boxes_are_liked() {
+        let broken = |from: fn(&SessionModel) -> NodeId, to: fn(&SessionModel) -> NodeId| -> String {
+            let mut model = boxes();
+            let id = model.alloc_edge();
+            let (from, to) = (from(&model), to(&model));
+            model.insert_event_cable(EventCable { id, from, to });
+            model.check_ids().expect_err("the check says what is wrong")
+        };
+        let (bass, plain, lane, keys) = (|m: &SessionModel| m.patterns[0].node, |m: &SessionModel| m.patterns[1].node, |m: &SessionModel| m.instruments[0].node, |m: &SessionModel| m.sources[0].node);
+        assert!(broken(bass, plain).contains("goes from a box to a box"));
+        assert!(broken(lane, bass).contains("which is not a source or a box"));
+        assert!(broken(keys, keys).contains("which is not a lane or a box"));
+        assert!(broken(|_| NodeId::MASTER, bass).contains("which is not a source or a box"));
+        // The cables that the fixture has (keys to a box, a box to a lane) and one from a device into a box are the kinds that are liked.
+        let mut model = boxes();
+        let (device, plain) = (model.sources[1].node, model.patterns[1].node);
+        let id = model.alloc_edge();
+        model.insert_event_cable(EventCable { id, from: device, to: plain });
+        model.check_ids().unwrap();
     }
 }

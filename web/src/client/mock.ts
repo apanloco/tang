@@ -1640,6 +1640,8 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
   if (intent.type === "setBpm") return bpmOutcome(intent.bpm);
   if (intent.type === "setRecording" || intent.type === "clearPattern" || intent.type === "setPatternField") return patternOutcome(snapshot, intent);
+  // (The pattern boxes are not in the mock yet: the mock that does what the controller does with them, and the page that has them, are step 124 of `docs/patch-graph.md`.)
+  if (intent.type === "addPattern" || intent.type === "setPatternBoxField" || intent.type === "patternBoxTransport" || intent.type === "clearPatternBox" || intent.type === "setPatternBoxNotes") return invalid("pattern boxes are not in the mock yet");
   if (intent.type === "setNodeUi") return placeOutcome(snapshot, intent.node, intent.ui);
   if (intent.type === "setPinned") return pinnedOutcome(snapshot, intent.node, intent.params);
   if (intent.type === "renameGroup") return renameGroupOutcome(snapshot, intent.node, intent.name);

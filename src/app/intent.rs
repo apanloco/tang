@@ -16,7 +16,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::graph::{Endpoint, NoteRange, PatternInfo, SourceInfo};
+use crate::app::graph::{Endpoint, NoteRange, PatternInfo, PatternNote, PatternSync, SourceInfo};
 use crate::app::model::{EdgeId, MAX_FADE, ModSourceSlot, NodeId, SYNC_DIVISIONS};
 use crate::plugin::chain::{MAX_STEPS, MidiBindSource};
 use crate::session::{Feed, NodeUi, Route};
@@ -201,6 +201,26 @@ pub enum Intent {
     /// setting, so that the length of its first recording can be chosen. Refused, with nothing changed, for a node that is not a lane and for a value that is
     /// not a number.
     SetPatternField { node: NodeId, field: PatternField, value: f32 },
+    /// Add a pattern box (P4h of `docs/patch-graph.md` §11.6) at the end of the session's boxes: a node that stores notes in beats, records what its input of events is given and plays it to the lanes that cables from its output of events
+    /// go to. It starts empty, 4 beats long, looping on its own clock, overwriting when it records and clicking in a count-in, called "Pattern 1" (the lowest number that no box is called), and takes the lowest of the engine's `MAX_BOXES`
+    /// box sources. A box with no cable into it records every input; one with cables records the sources they come from; a lane hears a box only if a cable from the box ends at it. A step of the history ("add a pattern"): undo takes it out.
+    /// Refused, with nothing changed (nothing is made, and no id is used), when the session has `MAX_BOXES` boxes.
+    AddPattern,
+    /// Set one setting of the pattern box `node` (`PatternBoxField`): its name, its length in beats, whether it loops, whose beat it goes by, whether a recording keeps what is there and whether the metronome counts a recording in. Saved with the
+    /// session. A step of the history in the words of the setting, merged with the next change of it soon after (typing a name, dragging a length). What is as it is asked to be changes nothing and keeps no step. Refused, with nothing
+    /// changed, for a node that is not a pattern box, a name of more than `MAX_NAME` characters or with a control character in it (a name of nothing is "Pattern"), and a length that is not a number (it is held to `MIN_LENGTH_BEATS` to
+    /// `MAX_LENGTH_BEATS`). A change of the clock stops the box, and a change of the length is told to the audio thread, which goes on from where it is.
+    SetPatternBoxField { node: NodeId, field: PatternBoxField },
+    /// The transport of the pattern box `node` (`PatternBoxAction`): record (counted in, one pass; the box then plays what it took), finish a recording that goes on (a pass of an overdub is the last), play from the start, or stop (a pass
+    /// that is going on is lost). What the box does is the audio thread's to say, and comes back as the box's `status` and, when a pass is over, as its notes; the model is not changed by this, so that it is no step of the history, the session is
+    /// not marked and the clients are told nothing but that a revision is used. Refused, with nothing changed, for a node that is not a pattern box.
+    PatternBoxTransport { node: NodeId, action: PatternBoxAction },
+    /// Take every note out of the pattern box `node`. A step of the history (undo gives them back). A box that has none is not changed and no step is kept. Refused, with nothing changed, for a node that is not a pattern box.
+    ClearPatternBox { node: NodeId },
+    /// Replace the notes of the pattern box `node` with `notes`, as a whole: what an editor of the notes asks, and what undo puts back. The notes are held as a box holds them (`patternbox::sanitize`: what is not a note is left out, a velocity is brought
+    /// into 1 to 127, a start and a length that are below 0 to 0, at most 4,096, in the order of their starts), so that the box in the model is the box in the engine. A step of the history, merged with the next change soon after (a note that is dragged). Refused,
+    /// with nothing changed, for a node that is not a pattern box.
+    SetPatternBoxNotes { node: NodeId, notes: Vec<PatternNote> },
     /// Say where a front-end draws a node, in the pixels of its canvas, or `None` to give the node back to the
     /// front-end's own layout. `node` is any node of the session, the master (`NodeId::MASTER`) included. A place is
     /// kept to a tenth of a pixel and to 100 000 either way, which the controller does for the client; the engine has
@@ -391,6 +411,40 @@ impl ModulatorKind {
             ModulatorKind::Steps => "a step sequencer",
         }
     }
+}
+
+/// A setting of a pattern box, with the value it is to have (`Intent::SetPatternBoxField`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum PatternBoxField {
+    /// What the box is called.
+    Name { name: String },
+    /// How long the loop is, in beats: `MIN_LENGTH_BEATS` (0.25) to `MAX_LENGTH_BEATS` (256).
+    LengthBeats { beats: f32 },
+    /// Whether it plays again from the start at the end of its length (on its own clock: the host's beat goes round by itself).
+    Looping { on: bool },
+    /// Whose beat it goes by.
+    Sync { sync: PatternSync },
+    /// Whether a recording keeps the notes that are there and goes on pass after pass until it is finished.
+    Overdub { on: bool },
+    /// Whether the metronome clicks while a recording is counted in and made.
+    Click { on: bool },
+}
+
+/// What a pattern box is told to do (`Intent::PatternBoxTransport`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum PatternBoxAction {
+    /// Count in and take one pass (or pass after pass, if the box overdubs), and then play what it took.
+    Record,
+    /// The pass that is going on is the last one (a count-in, or a wait, is given up).
+    FinishRecording,
+    /// Play from the start (on its own clock), or with the host's beat.
+    Play,
+    /// Stop, and let go of what sounds; a pass that is going on is lost.
+    Stop,
 }
 
 /// A setting of the pattern of a lane, by name (the rows of the terminal's pattern pane).
@@ -921,6 +975,32 @@ mod tests {
             (Intent::SetBpm { bpm: 96.5 }, json!({"type": "setBpm", "bpm": 96.5})),
             (Intent::SetRecording { node: NodeId(2), recording: true }, json!({"type": "setRecording", "node": 2, "recording": true})),
             (Intent::ClearPattern { node: NodeId(2) }, json!({"type": "clearPattern", "node": 2})),
+            (Intent::AddPattern, json!({"type": "addPattern"})),
+            (
+                Intent::SetPatternBoxField { node: NodeId(7), field: PatternBoxField::Name { name: "Bass".to_string() } },
+                json!({"type": "setPatternBoxField", "node": 7, "field": {"type": "name", "name": "Bass"}}),
+            ),
+            (
+                Intent::SetPatternBoxField { node: NodeId(7), field: PatternBoxField::LengthBeats { beats: 8.0 } },
+                json!({"type": "setPatternBoxField", "node": 7, "field": {"type": "lengthBeats", "beats": 8.0}}),
+            ),
+            (
+                Intent::SetPatternBoxField { node: NodeId(7), field: PatternBoxField::Sync { sync: PatternSync::Host } },
+                json!({"type": "setPatternBoxField", "node": 7, "field": {"type": "sync", "sync": "host"}}),
+            ),
+            (
+                Intent::SetPatternBoxField { node: NodeId(7), field: PatternBoxField::Overdub { on: true } },
+                json!({"type": "setPatternBoxField", "node": 7, "field": {"type": "overdub", "on": true}}),
+            ),
+            (
+                Intent::PatternBoxTransport { node: NodeId(7), action: PatternBoxAction::FinishRecording },
+                json!({"type": "patternBoxTransport", "node": 7, "action": "finishRecording"}),
+            ),
+            (Intent::ClearPatternBox { node: NodeId(7) }, json!({"type": "clearPatternBox", "node": 7})),
+            (
+                Intent::SetPatternBoxNotes { node: NodeId(7), notes: vec![PatternNote { start: 0.5, length: 0.25, note: 60, velocity: 100 }] },
+                json!({"type": "setPatternBoxNotes", "node": 7, "notes": [{"start": 0.5, "length": 0.25, "note": 60, "velocity": 100}]}),
+            ),
             (
                 Intent::SetPatternField { node: NodeId(2), field: PatternField::Transpose, value: 1.0 },
                 json!({"type": "setPatternField", "node": 2, "field": "transpose", "value": 1.0}),

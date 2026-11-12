@@ -422,6 +422,21 @@ pub struct Facts {
     pub ears: Vec<(NodeId, Option<NodeId>)>,
     /// What the output mix is (step 102): its volume, whether its limiter is in the sound and its ceiling as a level.
     pub master: MasterFacts,
+    /// The sources that each lane hears (`SetLaneSources`), in the order of the lanes (step 123: a box's source is the slot that the controller gave it, and the lanes' sets must say the same).
+    pub lane_sources: Vec<SourceSet>,
+    /// The pattern boxes (P4h), in the order that they were made in the engine.
+    pub boxes: Vec<BoxFacts>,
+}
+
+/// What a pattern box is in the engine, for a test to compare with the model's: the node it is, the source its notes are heard as, the length of its loop, its notes and what it is set to.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub struct BoxFacts {
+    pub node: NodeId,
+    pub source: Source,
+    pub length: f32,
+    pub notes: Vec<patternbox::BoxNote>,
+    pub settings: patternbox::Settings,
 }
 
 /// What the output mix is, for a test to compare with the model's.
@@ -2015,30 +2030,25 @@ pub enum GraphCommand {
     /// Put a pattern box in the graph (P4h of `docs/patch-graph.md` §11.6): `player` is made where memory may be asked for (it has all the room that it needs), and its notes are heard, as those of the source that it was made
     /// with (`Source::pattern`), by the lanes that hear that source (`SetLaneSources`: no lane hears a box until it is told to). A box that is there under `node` is replaced, and the lanes let go of what it had sounding; more than
     /// `MAX_BOXES` are not taken.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
     AddBox {
         node: NodeId,
         player: Box<BoxPlayer>,
     },
     /// Take a pattern box out: the lanes that heard it let go of what it had sounding.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
     RemoveBox {
         node: NodeId,
     },
     /// A box's notes and length, made ready (`BoxPlan::new`): what it has sounding is let go of, and it goes on from where it is.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
     SetBoxPlan {
         node: NodeId,
         plan: Box<BoxPlan>,
     },
     /// What a box is set to: whether it loops, whose beat it goes by, whether a recording keeps what is there, whether it clicks, and the sources that it records.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
     SetBoxSettings {
         node: NodeId,
         settings: patternbox::Settings,
     },
     /// A box's transport: play, stop, record, and finish a recording.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
     BoxTransport {
         node: NodeId,
         action: BoxAction,
@@ -2047,7 +2057,6 @@ pub enum GraphCommand {
 
 /// What a pattern box is told to do (`GraphCommand::BoxTransport`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
 pub enum BoxAction {
     /// Play from the start (own clock) or with the host's beat, if it is stopped.
     Play,
@@ -3675,7 +3684,6 @@ impl AudioGraph {
     }
 
     /// Set the channel on which the pattern boxes tell what they have recorded and what they are doing (`BoxNotification`).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
     pub fn set_box_tx(&mut self, tx: Sender<BoxNotification>) {
         self.box_tx = Some(tx);
     }
@@ -3702,7 +3710,7 @@ impl AudioGraph {
             }
             if let Some(tx) = &self.box_tx {
                 if slot.player.take_finished() {
-                    let _ = tx.try_send(BoxNotification::Recorded { node: slot.node, notes: slot.player.notes().to_vec() });
+                    let _ = tx.try_send(BoxNotification::Recorded { node: slot.node, notes: slot.player.notes().to_vec(), plans: slot.player.plans() });
                 }
                 let status = slot.player.status();
                 if status != slot.status {
@@ -3805,7 +3813,21 @@ impl AudioGraph {
     /// What the engine has of the model's nodes and cables.
     #[cfg(test)]
     pub fn facts(&self) -> Facts {
-        Facts { lanes: self.lanes(), groups: self.groups(), cables: self.audio_cables(), racks: self.cables(), bases: self.cable_bases(), ears: self.ears(), master: self.master.facts() }
+        Facts {
+            lanes: self.lanes(),
+            groups: self.groups(),
+            cables: self.audio_cables(),
+            racks: self.cables(),
+            bases: self.cable_bases(),
+            ears: self.ears(),
+            master: self.master.facts(),
+            lane_sources: self.instruments.iter().map(|lane| lane.sources).collect(),
+            boxes: self
+                .boxes
+                .iter()
+                .map(|slot| BoxFacts { node: slot.node, source: slot.player.source(), length: slot.player.length(), notes: slot.player.notes().to_vec(), settings: slot.player.settings() })
+                .collect(),
+        }
     }
 
     /// The names of the effects of each lane, in the order of its chain, for a test to compare with the model's.
@@ -9804,7 +9826,7 @@ mod tests {
             told.extend(rx.try_iter());
         }
         use patternbox::Status::{CountingIn, Playing, Recording};
-        let [BoxNotification::Status { status: first, .. }, BoxNotification::Status { status: second, .. }, BoxNotification::Recorded { node, notes }, BoxNotification::Status { status: last, .. }] = &told[..] else {
+        let [BoxNotification::Status { status: first, .. }, BoxNotification::Status { status: second, .. }, BoxNotification::Recorded { node, notes, .. }, BoxNotification::Status { status: last, .. }] = &told[..] else {
             panic!("{told:?}");
         };
         assert_eq!((*first, *second, *last), (CountingIn, Recording, Playing));
@@ -9813,6 +9835,36 @@ mod tests {
         assert!((f64::from(taken.start) - 94.0 * BEATS_A_BLOCK).abs() < 1e-4 && (f64::from(taken.length) - 94.0 * BEATS_A_BLOCK).abs() < 1e-4, "{taken:?}");
         assert_eq!((taken.note, taken.velocity), (60, 90), "and the note that the box had is gone");
         assert_eq!(graph.boxes[0].player.notes().len(), 1);
+    }
+
+    #[test]
+    fn what_a_recording_says_of_the_plans_the_box_has_had_is_the_one_it_was_made_with_and_each_that_the_graph_was_told_since() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        graph.set_box_tx(tx);
+        add_box(&cmd_tx, 0, 1.0, &[]);
+        let plans_of_the_passes = |told: &[BoxNotification]| -> Vec<u32> {
+            told.iter()
+                .filter_map(|told| match told {
+                    BoxNotification::Recorded { plans, .. } => Some(*plans),
+                    BoxNotification::Status { .. } => None,
+                })
+                .collect()
+        };
+        transport(&cmd_tx, 0, BoxAction::Record);
+        for _ in 0..5 * BLOCKS_A_BEAT {
+            process_from(&mut graph, &[]);
+        }
+        let first: Vec<BoxNotification> = rx.try_iter().collect();
+        assert_eq!(plans_of_the_passes(&first), [1], "the plan that it was made with");
+        // The graph is told another plan, and the next recording is made on two; the notes of the pass that ended were not a plan.
+        cmd_tx.send(GraphCommand::SetBoxPlan { node: box_node(0), plan: Box::new(BoxPlan::new(1.0, &[box_note(0.0, 0.5, 72)])) }).unwrap();
+        transport(&cmd_tx, 0, BoxAction::Record);
+        for _ in 0..5 * BLOCKS_A_BEAT {
+            process_from(&mut graph, &[]);
+        }
+        let second: Vec<BoxNotification> = rx.try_iter().collect();
+        assert_eq!(plans_of_the_passes(&second), [2]);
     }
 
     #[test]

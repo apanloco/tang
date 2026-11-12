@@ -33,12 +33,14 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::alloc_guard::allocations_in;
 use crate::app::controller::Controller;
-use crate::app::intent::{Gain, ModulatorKind};
+use crate::app::graph::PatternSync;
+use crate::app::intent::{Gain, ModulatorKind, PatternBoxAction, PatternBoxField};
 use crate::app::load::load_session;
 use crate::app::testutil;
 use crate::audio::{Engine, MidiEvent, Renderer};
 use crate::source::Events;
 use self::edits::{Counts, Edit, Hears};
+use crate::patternbox::BoxNotification;
 use crate::piano_filter::PianoFilter;
 use crate::plugin::chain::{AudioGraph, GraphCommand, MidiLearnedNotification, PatternNotification};
 use crate::plugin::{Plugin, Runtime};
@@ -51,6 +53,7 @@ pub struct Wiring {
     pub cmd_rx: Receiver<GraphCommand>,
     pub return_tx: Sender<Box<dyn Plugin>>,
     pub pattern_tx: Sender<PatternNotification>,
+    pub box_tx: Sender<BoxNotification>,
     pub learn_tx: Sender<MidiLearnedNotification>,
     pub telemetry: Arc<Telemetry>,
     pub piano_filter: Arc<PianoFilter>,
@@ -60,6 +63,7 @@ pub struct Wiring {
 fn graph(wiring: Wiring) -> AudioGraph {
     let mut graph = AudioGraph::new(wiring.channels, wiring.cmd_rx, wiring.return_tx);
     graph.set_pattern_tx(wiring.pattern_tx);
+    graph.set_box_tx(wiring.box_tx);
     graph.set_learn_tx(wiring.learn_tx);
     graph.set_piano_filter(wiring.piano_filter);
     graph.set_telemetry(wiring.telemetry);
@@ -184,9 +188,15 @@ impl Scenario {
         self.session.contains("[master]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::Limiter { .. } | Edit::Master { .. }))
     }
 
-    /// Whether the loop that the plan replaced can run it: it has no audio cables, no way out that is cut, no link of a chain that is cut, no modulator and no master that is set, which that loop is from before.
+    /// Whether it has pattern boxes, in its file or put in by its edits (step 123): the loop that the plan replaced does not run them (`AudioGraph::run_boxes` is a step of `process`).
+    pub fn has_boxes(&self) -> bool {
+        self.session.contains("[[pattern]]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddPattern))
+    }
+
+    /// Whether the loop that the plan replaced can run it: it has no audio cables, no way out that is cut, no link of a chain that is cut, no modulator, no master that is set and no pattern box,
+    /// which that loop is from before.
     pub fn is_in_the_old_loop(&self) -> bool {
-        !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds() && !self.has_free_modulators() && !self.has_master()
+        !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds() && !self.has_free_modulators() && !self.has_master() && !self.has_boxes()
     }
 }
 
@@ -576,6 +586,37 @@ const MASTER_EDITS: [(u64, Edit); 14] = [
     (42_000, Edit::Master { gain: Gain::MasterVolume, value: 1.0 }),
 ];
 
+/// What is done to pattern boxes in `CABLED` while it plays, through the real engine (step 123; the tempo is 300 beats a minute, so that a beat is 9 600 frames): a box is made and given four notes of
+/// a beat's half each (C4, E4, G4 and C5) in a loop of two beats; lane 1, which hears every source, is cabled from it and hears nothing else (it lets go of the chord that the keys hold in it); the box plays on
+/// its own clock, so that lane 1 sounds the four notes, a pass at a time; the keys are put in as a source and cabled to the box (it records them, and plays on); the box stops looping (it plays a pass, and is
+/// silent); a cable from it to lane 0, which is in the group, is drawn (lane 0 hears the box only); the box plays again; it is made to go by the host's beat, which the oracle has none of (it is stopped by
+/// the change, and silent), and by its own clock again; it is taken out with its cables (both lanes hear every source again) and put back by Undo (stopped, with its cables, and the lanes hear it again); it
+/// plays; its notes are cleared (it goes on, with none) and put back by Undo and cleared again by Redo; and the box is taken out again by Redo and put back by Undo. Each is made (`Counts` says so: none is skipped
+/// or refused), and after each block the engine's boxes, and what its lanes hear, are the model's.
+const PATTERN_EDITS: [(u64, Edit); 21] = [
+    (2_000, Edit::Bpm { bpm: 300.0 }),
+    (3_000, Edit::AddPattern),
+    (3_500, Edit::PatternNotes { pattern: 0, notes: &[(0.0, 0.5, 60, 100), (0.5, 0.5, 64, 100), (1.0, 0.5, 67, 100), (1.5, 0.5, 72, 100)] }),
+    (4_000, Edit::PatternField { pattern: 0, field: PatternBoxField::LengthBeats { beats: 2.0 } }),
+    (6_000, Edit::PatternToLane { pattern: 0, lane: 1 }),
+    (7_000, Edit::PatternTransport { pattern: 0, action: PatternBoxAction::Play }),
+    (14_000, Edit::AddSource { device: None }),
+    (15_000, Edit::SourceToPattern { source: 0, pattern: 0 }),
+    (20_000, Edit::PatternField { pattern: 0, field: PatternBoxField::Looping { on: false } }),
+    (24_500, Edit::PatternToLane { pattern: 0, lane: 0 }),
+    (27_000, Edit::PatternTransport { pattern: 0, action: PatternBoxAction::Play }),
+    (31_000, Edit::PatternField { pattern: 0, field: PatternBoxField::Sync { sync: PatternSync::Host } }),
+    (32_000, Edit::PatternField { pattern: 0, field: PatternBoxField::Sync { sync: PatternSync::Own } }),
+    (33_000, Edit::PatternField { pattern: 0, field: PatternBoxField::Looping { on: true } }),
+    (34_000, Edit::PatternTransport { pattern: 0, action: PatternBoxAction::Play }),
+    (36_000, Edit::RemovePattern { pattern: 0 }),
+    (37_500, Edit::Undo),
+    (38_500, Edit::PatternTransport { pattern: 0, action: PatternBoxAction::Play }),
+    (40_000, Edit::ClearPatternBox { pattern: 0 }),
+    (41_500, Edit::Undo),
+    (43_000, Edit::Redo),
+];
+
 /// What the keys play into `edited:sources`: `performance`, and a key (E4) that is hit and let go of after the pedal is up, which a lane that has been given the keys again plays.
 fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     let mut events = performance();
@@ -597,7 +638,7 @@ pub fn edited() -> Vec<Scenario> {
         edits: edits.to_vec(),
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS), scenario("gains", &GAIN_EDITS), scenario("input", &INPUT_EDITS), scenario("master", &MASTER_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS), scenario("gains", &GAIN_EDITS), scenario("input", &INPUT_EDITS), scenario("master", &MASTER_EDITS), scenario("patterns", &PATTERN_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -696,8 +737,10 @@ impl Rig {
         handles.max_block_size = scenario.block;
         // The channels that the engine reports on are the program's own, bounded, and not the stub's unbounded ones (a send on an unbounded channel allocates when it needs room).
         let (pattern_tx, pattern_rx) = crossbeam_channel::bounded(64);
+        let (box_tx, box_rx) = crossbeam_channel::bounded(64);
         let (learn_tx, learn_rx) = crossbeam_channel::bounded(64);
         handles.pattern_rx = pattern_rx;
+        handles.box_rx = box_rx;
         handles.learn_rx = learn_rx;
         let mut config = session::parse(&scenario.session).unwrap_or_else(|e| panic!("{}: the session does not parse: {e:#}", scenario.id));
         // The corpus is rendered with the limiter on the output out of the sound, as every file in it was written before there was one (a session without a `[master]` table has it in, as the program
@@ -712,6 +755,7 @@ impl Rig {
             cmd_rx: stub.cmd_rx.clone(),
             return_tx: stub.return_tx.clone(),
             pattern_tx,
+            box_tx,
             learn_tx,
             telemetry: telemetry.clone(),
             piano_filter: handles.piano_filter.clone(),
@@ -779,6 +823,10 @@ impl Rig {
             assert_eq!(facts.ears, testutil::model_ears(&self.ctl.model), "{what}: the ears of the engine's modulators are not the model's");
             // And what the output mix is: its volume, its limiter and its ceiling.
             assert_eq!(facts.master, testutil::model_master(&self.ctl.model), "{what}: the output mix of the engine is not the model's");
+            // And what each lane hears and what each pattern box is (step 123): the source that a box has is the slot that the controller gave it, which the lanes' sets name, and the notes, the length and the
+            // settings are what the controller told. (A pass of recording that ends in a block is the model's after the `poll` that follows it: no scenario records.)
+            assert_eq!(facts.lane_sources, testutil::model_lane_sources(&self.ctl), "{what}: what the engine's lanes hear is not what the model says");
+            assert_eq!(facts.boxes, testutil::model_boxes(&self.ctl), "{what}: the pattern boxes of the engine are not the model's");
             // And their depths, but for those that another cable drives (the engine's is the one that cable has made of it this block, and the model's what the user set).
             for ((at, modulator, _, engine), (_, _, _, model)) in facts.racks.iter().zip(&model_racks) {
                 for (place, ((edge, _, engine), (_, _, model))) in engine.iter().zip(model).enumerate() {
@@ -1556,6 +1604,27 @@ mod tests {
         // (The lane that hears nothing is the one with the transposed saw and the delay: what is left is lane 0.)
         let (heard, alone) = (window(&plain, 16_500, 21_500), window(&with, 16_500, 21_500));
         assert!(alone < 0.75 * heard, "lane 1 hears nothing from 16 000 to 22 000: {alone} against {heard}");
+    }
+
+    #[test]
+    fn the_patterns_scenario_is_heard_through_the_box_from_the_block_that_plays_it_and_a_lane_that_is_cabled_from_a_box_lets_go_of_the_chord_the_keys_hold_in_it() {
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:patterns")).expect("a scenario of the corpus");
+        assert!(scenario.has_boxes() && !scenario.is_in_the_old_loop(), "the loop that the plan replaced does not run boxes");
+        // (A box is in the scenario's file or made by its edits, and a scenario that has none is what the loop can run.)
+        let plain = Scenario { session: "[[instrument]]\nplugin = \"builtin:osc\"\n".to_string(), edits: Vec::new(), ..sessions().remove(0) };
+        assert!(!plain.has_boxes() && plain.is_in_the_old_loop());
+        let with_a_box = Scenario { session: format!("{}[[pattern]]\n", plain.session), ..plain.clone() };
+        assert!(with_a_box.has_boxes() && !with_a_box.is_in_the_old_loop(), "a box in the file");
+        assert!(Scenario { edits: vec![(1_000, Edit::AddPattern)], ..plain }.has_boxes(), "a box that an edit makes");
+        let with = render(&scenario, &engine);
+        let without = |frame: u64| render(&Scenario { edits: scenario.edits.iter().filter(|(at, _)| *at != frame).cloned().collect(), ..scenario.clone() }, &engine);
+        let first_difference = |other: &Render| with.samples.iter().zip(&other.samples).position(|(x, y)| x.to_bits() != y.to_bits()).map(|at| at / 2);
+        // Without the cable (frame 6 000) lane 1 hears every source, the keys among them, and not the box: it goes on with the chord, and the box that plays is heard by no lane. The lane lets go of the chord in the
+        // block that has the edit.
+        assert_eq!(first_difference(&without(6_000)), Some(6_000 - 6_000 % BLOCK), "the first frame that differs");
+        // Without the first Play (frame 7 000) the box makes no sound until the second (27 000): nothing is different before the block that has the first, and the box is heard from its first frames.
+        let silent = first_difference(&without(7_000)).expect("the box is heard");
+        assert!((7_000 - 7_000 % BLOCK..7_000 - 7_000 % BLOCK + 1_000).contains(&silent), "the first frame that differs is {silent}");
     }
 
     #[test]

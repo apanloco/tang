@@ -33,6 +33,9 @@ edited:master@64 5b58ddd9b892487a 17b965d4d887ae6e
 edited:math@1024 d67c87864191820b 41052a5f62b02982
 edited:math@256 038e6276be3278e6 d2661d53978940f0
 edited:math@64 4fd706deec58fc51 8dee3aa695ee3efe
+edited:patterns@1024 1847eebc145c186e 715915bfd87d3c58
+edited:patterns@256 6bc3ca348df4c4bd 937c2d2b08a31426
+edited:patterns@64 8b32b7cfedc438e1 bf51dae0a0169900
 edited:routes@1024 d5352eb7c38c3f15 41fc91179affd4b7
 edited:routes@256 651a235dd99f615a f22b1ce0541421c8
 edited:routes@64 6dfb8de39077878a d6bf5595da3f16c0

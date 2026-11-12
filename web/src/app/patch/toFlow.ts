@@ -87,7 +87,7 @@ export const CABLE_ROW_HEIGHT = 20;
 /** ...and the list has this much room before it, as much as the rest of what is in the body of the node (`.tang-node__body`'s gap). */
 export const CABLES_GAP = 8;
 
-export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "master" | "source" | "module";
+export type PatchNodeKind = "instrument" | "effect" | "modulator" | "group" | "master" | "source" | "pattern" | "module";
 
 export interface PatchNodeData extends Record<string, unknown> {
   /** The node of the session this one is the picture of. */
