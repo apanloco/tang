@@ -89,3 +89,23 @@ export const test = programOn("");
 
 /** `test` for a program that is started on the tracer's file with `count` groups added to it (the page has no way to make one). */
 export const testWithGroups = (count: number): typeof test => programOn(withGroups(count));
+
+/**
+ * What a file has to say for a pattern box called Bass, four beats long, with one note in it, and a cable of notes from the box to the tracer's lane: added to the end of the tracer's file (step 124; the file format is "Pattern boxes
+ * (`[[pattern]]`)" in `docs/reference/session-file.md`). The keys are not a node of the file: a box that no cable of notes ends at records every input, the keys among them.
+ */
+export const withPatterns = (): string => `
+[[pattern]]
+name = "Bass"
+length_beats = 4.0
+notes = [
+  { at = 0.0, len = 0.5, note = "C3", vel = 100 },
+]
+
+[[cable]]
+from = "pattern[0]"
+to = "instrument[0]"
+`;
+
+/** `test` for a program that is started on the tracer's file with a pattern box added to it (`withPatterns`). */
+export const testWithPatterns = (): typeof test => programOn(withPatterns());
