@@ -16,6 +16,7 @@ mod ids;
 mod midi;
 mod midi_monitor;
 mod note_input;
+mod notesplit;
 #[cfg(test)]
 mod oracle;
 mod patternbox;
