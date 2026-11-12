@@ -12,6 +12,7 @@ import { isRecording } from "../../client/patternWords";
 import { keptWords, removalWords } from "../../client/removal";
 import { chainLengthOf, chainPlaceOf, flagsOf, hasWindowOf, limiterOf, paramCountOf, presetsOf, removalOf } from "../../client/selectors";
 import { sendItems, sendTarget } from "../../client/sends";
+import type { SplitterNode } from "../../client/splitters";
 import type { NodeId, NodeUi } from "../../protocol";
 import type { ContextItem } from "../../ui/ContextMenu";
 import type { MenuItem } from "../../ui/MenuButton";
@@ -33,6 +34,8 @@ export type MenuEditor = Pick<
   | "addFreeModulator"
   | "addSource"
   | "addPattern"
+  | "addSplitter"
+  | "setSplitterField"
   | "setPatternBoxField"
   | "patternBoxTransport"
   | "clearPatternBox"
@@ -533,6 +536,70 @@ function patternBoxMenu(deps: MenuDeps, node: NodeId, data: PatchNodeData, box: 
   ];
 }
 
+/**
+ * The menu of the note splitter `splitter` (the node `node`): the note that it picks, the cables of notes to it and from each of its outputs, and taking it out. The switch is in the node; the menu is for a person who has it open already, and
+ * for whoever does not aim.
+ */
+function splitterMenu(deps: MenuDeps, node: NodeId, data: PatchNodeData, splitter: SplitterNode): ContextItem[] {
+  const { editor, state } = deps;
+  const graph = state.snapshot?.graph;
+  const first = splitter.pick === "highest" ? "the highest note" : "the lowest note";
+  return [
+    toggle(
+      "pick-lowest",
+      "Pick the lowest note",
+      splitter.pick === "lowest",
+      () => {
+        void editor.setSplitterField(node, { type: "pick", pick: "lowest" });
+      },
+      "The lowest key that is held goes to the first output (the bass of a chord), and every other key to the second",
+    ),
+    toggle(
+      "pick-highest",
+      "Pick the highest note",
+      splitter.pick === "highest",
+      () => {
+        void editor.setSplitterField(node, { type: "pick", pick: "highest" });
+      },
+      "The highest key that is held goes to the first output (the top of a chord), and every other key to the second",
+    ),
+    submenu(
+      "notes-from",
+      "Take notes from",
+      graph
+        ? choosing(noteFromItems(graph, node), (chosen) => {
+            const start = noteFromChosen(chosen);
+            void editor.addNotesCable(start.node, node, start.output);
+          })
+        : [],
+      "Every source has a cable of notes to it",
+    ),
+    submenu(
+      "notes",
+      `Send ${first} to`,
+      graph
+        ? choosing(noteToItems(graph, node), (lane) => {
+            void editor.addNotesCable(node, Number(lane));
+          })
+        : [],
+      "Every lane has a cable of notes from it",
+    ),
+    submenu(
+      "notes-rest",
+      "Send the other notes to",
+      graph
+        ? choosing(noteToItems(graph, node, "rest"), (lane) => {
+            void editor.addNotesCable(node, Number(lane), "rest");
+          })
+        : [],
+      "Every lane has a cable of notes from it",
+    ),
+    removing("remove", `Remove ${data.name}`, () => {
+      void editor.removeNode(node);
+    }),
+  ];
+}
+
 /** The menu of what is chosen: a module of it, and none of it chosen. */
 export function selectionMenu(deps: MenuDeps): ContextItem[] {
   const { canvas, editor } = deps;
@@ -567,12 +634,47 @@ export function selectionMenu(deps: MenuDeps): ContextItem[] {
   ];
 }
 
+/**
+ * What the `MIDI` submenu of the canvas's menu holds (the user: "lets have a 'Midi' submenu in right-click where we add and keep midi-related things"): the sources of notes that can be added (the keys, if the session has none, and each MIDI input that is
+ * open and that no device of the session stands for: under a heading), and then the nodes that move notes about: a pattern box and a note splitter. What is MIDI and comes later is to be put here. Each goes where the pointer was.
+ */
+function midiItems(deps: MenuDeps): ContextItem[] {
+  const { state, editor, at } = deps;
+  const graph = state.snapshot?.graph;
+  const sources = (graph ? sourceItems(graph, state.inputs) : []).map(
+    (item): ContextItem => ({
+      ...item,
+      run: () => {
+        void editor.addSource(sourceChosen(item.id), at);
+      },
+    }),
+  );
+  const nodes: ContextItem[] = [
+    {
+      id: "add-pattern",
+      label: "Pattern box",
+      title: "A box that stores notes: record into it, play it back, and send its notes to lanes",
+      run: () => {
+        void editor.addPattern(at);
+      },
+    },
+    {
+      id: "add-splitter",
+      label: "Note splitter",
+      title: "Sends the lowest (or the highest) key that is held to one output and the other keys to a second: the bass of a chord to one synth, and the rest to another",
+      run: () => {
+        void editor.addSplitter(at);
+      },
+    },
+  ];
+  // (A rule between the sources and the nodes, when there are sources to set them apart from.)
+  return [...sources, ...nodes.map((item, index) => (index === 0 && sources.length > 0 ? { ...item, rule: true } : item))];
+}
+
 /** The menu of the canvas, where nothing is: adding to the session, going back and forward, what is chosen, and the view. */
 export function paneMenu(deps: MenuDeps): ContextItem[] {
   const { state, editor, canvas, at } = deps;
   const entries = state.catalog?.entries ?? [];
-  const graph = state.snapshot?.graph;
-  const sources = graph ? sourceItems(graph, state.inputs) : [];
   const { undo, redo } = state.history;
   return [
     submenu(
@@ -598,24 +700,7 @@ export function paneMenu(deps: MenuDeps): ContextItem[] {
         void editor.addFreeModulator(kind, null, at);
       }),
     },
-    submenu(
-      "add-source",
-      "Add a source of notes",
-      sources.map((item) => ({
-        ...item,
-        run: () => {
-          void editor.addSource(sourceChosen(item.id), at);
-        },
-      })),
-      "The keys and every input that is open are sources already",
-    ),
-    {
-      id: "add-pattern",
-      label: "Add a pattern box",
-      run: () => {
-        void editor.addPattern(at);
-      },
-    },
+    submenu("midi", "MIDI", midiItems(deps), "Nothing MIDI can be added"),
     submenu(
       "add-module",
       "Add a module",
@@ -722,6 +807,8 @@ function ownMenu(deps: MenuDeps, node: NodeId, data: PatchNodeData): ContextItem
       return sourceMenu(deps, node, data);
     case "pattern":
       return patternBoxMenu(deps, node, data, found);
+    case "splitter":
+      return splitterMenu(deps, node, data, found);
     case "module":
       return moduleMenu(deps, node, data);
     case "master": {

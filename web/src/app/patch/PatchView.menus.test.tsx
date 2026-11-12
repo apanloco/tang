@@ -72,7 +72,7 @@ describe("the menu of the canvas", () => {
     expect(fireEvent.contextMenu(canvas, { clientX: 300, clientY: 200 })).toBe(false);
     const opened = menu("the canvas");
     expect(opened.parentElement).toBe(document.body);
-    expect(within(opened).getAllByRole("menuitem").slice(0, 4).map((entry) => entry.textContent)).toEqual(["Add an instrument", "Add an effect", "Add a modulator", "Add a source of notes"]);
+    expect(within(opened).getAllByRole("menuitem").slice(0, 4).map((entry) => entry.textContent)).toEqual(["Add an instrument", "Add an effect", "Add a modulator", "MIDI"]);
   });
 
   test("is the menu of the canvas for a cable that has no menu of its own", async () => {
@@ -116,8 +116,43 @@ describe("the menu of the canvas", () => {
       expect(asked(requests).map((intent) => intent.type)).toEqual(["addFreeEffect", "setNodeUi"]);
     });
     fireEvent.contextMenu(await pane(), { clientX: 200, clientY: 100 });
-    // (The keys are a source of notes that the tracer has not got: there is something to add.)
-    expect(screen.getByRole("menuitem", { name: "Add a source of notes" }).getAttribute("aria-disabled")).toBeNull();
+    // (The MIDI menu is never shut: the keys are a source of notes that the tracer has not got, and a box and a splitter can always be added.)
+    expect(screen.getByRole("menuitem", { name: "MIDI" }).getAttribute("aria-disabled")).toBeNull();
+  });
+
+  // The user, while step 128 was going: "lets have a 'Midi' submenu in right-click where we add and keep midi-related things".
+  test("adds a note splitter, a pattern box and the keys where the pointer was, from the MIDI menu: each asks for the node and then for it to be put there, and the menu is gone", async () => {
+    const { requests, client } = await rigged();
+    for (const [name, intent, kind] of [
+      ["Note splitter", "addSplitter", "splitter"],
+      ["Pattern box", "addPattern", "pattern"],
+      ["Keys", "addSource", "source"],
+    ] as const) {
+      fireEvent.contextMenu(await pane(), { clientX: 420, clientY: 310 });
+      fireEvent.click(item("MIDI"));
+      // (The menu that opens is the MIDI menu's: the tracer has no keys, so they are there to add until the last of the three.)
+      expect(within(menu("MIDI")).getAllByRole("menuitem").map((entry) => entry.textContent)).toEqual(["Keys", "Pattern box", "Note splitter"]);
+      fireEvent.click(screen.getByRole("menuitem", { name }));
+      await waitFor(() => {
+        expect(client.state.snapshot?.graph.nodes.some((each) => each.kind === kind)).toBe(true);
+      });
+      expect(screen.queryByRole("menu")).toBeNull();
+      const types = asked(requests).map((each) => each.type);
+      expect(types.slice(-2), name).toEqual([intent, "setNodeUi"]);
+    }
+  });
+
+  test("has a MIDI menu that has no keys to add once the session has them, and adds nothing of the canvas's own: the box and the splitter are among the items", async () => {
+    await rigged();
+    fireEvent.contextMenu(await pane(), { clientX: 100, clientY: 100 });
+    fireEvent.click(item("MIDI"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Keys" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    fireEvent.contextMenu(await pane(), { clientX: 100, clientY: 100 });
+    fireEvent.click(item("MIDI"));
+    expect(within(menu("MIDI")).getAllByRole("menuitem").map((entry) => entry.textContent)).toEqual(["Pattern box", "Note splitter"]);
   });
 
   test("puts a module where the pointer was, from a menu of its own (step 111): it asks for the module, and then for the box to be put there, and a menu with no module in it is shut", async () => {

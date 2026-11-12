@@ -132,6 +132,8 @@ export interface Anchor {
 }
 
 const RIGHT: Anchor = { fx: 1, fy: 0.5, side: "right" };
+/** The second output of a note splitter, which is in the last row of its cell and not at the middle of its edge: `SPLITTER_REST_AT` of `SPLITTER_HEIGHT` in toFlow.ts, which this module does not import (a test holds the two together). */
+const RIGHT_REST: Anchor = { fx: 1, fy: 124 / 147, side: "right" };
 const LEFT: Anchor = { fx: 0, fy: 0.5, side: "left" };
 const LEFT_PAIR: Anchor = { fx: 0, fy: 1 / 3, side: "left" };
 const LEFT_SIDE: Anchor = { fx: 0, fy: 2 / 3, side: "left" };
@@ -149,6 +151,8 @@ export function anchorOf(handle: string): Anchor {
     case "audioOut":
     case "eventsOut":
       return RIGHT;
+    case "eventsOutRest":
+      return RIGHT_REST;
     case "audioIn":
     case "eventsIn":
       return LEFT;

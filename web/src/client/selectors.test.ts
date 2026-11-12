@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
-import { MASTER, audioCablesFixture, groupsFixture, movesFixture, nodeNamed, patternBoxesFixture, reachFixture, tracerSnapshot } from "./fixtures";
-import { audibleAt, cableDepthOf, canOpenSession, cableGainOf, cableSourceOf, chainLengthOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, hasWindowOf, isKnob, limiterOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternBoxOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, samePatternBox, sameRemoval, sameStages, soundLibraries, stepsOf } from "./selectors";
+import { MASTER, audioCablesFixture, groupsFixture, movesFixture, nodeNamed, patternBoxesFixture, reachFixture, splittersFixture, tracerSnapshot } from "./fixtures";
+import { audibleAt, cableDepthOf, canOpenSession, cableGainOf, cableSourceOf, chainLengthOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, hasWindowOf, isKnob, limiterOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternBoxOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, samePatternBox, sameRemoval, sameStages, soundLibraries, splitterPickOf, stepsOf } from "./selectors";
 import type { Node, Snapshot, SoundLibrary } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -979,5 +979,29 @@ describe("soundLibraries (step 116)", () => {
     expect(soundLibraries({ ...state, hello: null })).toBe(before);
     const told = hello([]);
     expect(soundLibraries({ ...state, hello: told })).toBe(told?.libraries);
+  });
+});
+
+describe("what a note splitter picks", () => {
+  const found = splittersFixture.cases.find((entry) => entry.name === "splitters");
+  if (!found) throw new Error("the fixture has the session of the splitters");
+  const withSplitters = stateOf(found.snapshot);
+
+  test("is the note the session says, by the node of each splitter: the first picks the lowest and the second the highest", () => {
+    expect(splitterPickOf(withSplitters, 6)).toBe("lowest");
+    expect(splitterPickOf(withSplitters, 7)).toBe("highest");
+  });
+
+  test("is nothing for a node that is no splitter, or is not there, or while there is no session", () => {
+    for (const id of [0, 3, 4, 5, MASTER, 424242]) expect(splitterPickOf(withSplitters, id), String(id)).toBeUndefined();
+    expect(splitterPickOf(stateOf(null), 6)).toBeUndefined();
+  });
+
+  test("follows the session as it changes: it is read from the snapshot that there is", () => {
+    const picking = structuredClone(found.snapshot);
+    const first = picking.graph.nodes.find((n) => n.id === 6);
+    if (first?.kind !== "splitter") throw new Error("the fixture has a splitter as node 6");
+    first.pick = "highest";
+    expect(splitterPickOf(stateOf(picking), 6)).toBe("highest");
   });
 });

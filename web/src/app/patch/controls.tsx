@@ -8,6 +8,8 @@ import { memo, useContext, useId, useMemo, useRef, useState, useSyncExternalStor
 import { modulationExtent, modulationsAt, modulationsOn, settingExtent } from "../../client/modulation";
 import type { Modulation } from "../../client/modulation";
 import { gainName } from "../../client/names";
+import { portOfOutput } from "../../client/noteWiring";
+import type { NotesOutput } from "../../client/noteWiring";
 import { NOTE_NAMES } from "../../client/notes";
 import { gainPorts } from "../../client/reach";
 import type { Drivable, GainPort } from "../../client/reach";
@@ -791,9 +793,9 @@ export function AudioPort({ node, direction, pair }: { node: NodeId; direction: 
 /**
  * The place on the edge of a node where notes leave it (`out`, on the right of a source: a cable of notes is started there and none ends there) or come in (`in`, on the left of a lane: a cable of notes
  * ends there and none is started there): a handle of the node named `eventsOut` or `eventsIn`, and, while a cable is dragged, an input saying whether it takes that one (an output never does: a cable
- * that is dragged from one ends at an input).
+ * that is dragged from one ends at an input). A note splitter has a second output, the notes that are not its pick: a handle named `eventsOutRest` (`output` is "rest").
  */
-export function NotesPort({ node, direction }: { node: NodeId; direction: "in" | "out" }) {
+export function NotesPort({ node, direction, output = "pick" }: { node: NodeId; direction: "in" | "out"; output?: NotesOutput }) {
   const input = direction === "in";
   const takes = useContext(ConnectingContext)?.has(keyOf(node, "eventsIn")) ?? false;
   const classes = ["tang-port", "tang-port--notes", input ? "tang-port--in" : "tang-port--out", ...(input && takes ? ["tang-port--takes"] : [])];
@@ -803,7 +805,7 @@ export function NotesPort({ node, direction }: { node: NodeId; direction: "in" |
       isConnectableEnd={input}
       type={input ? "target" : "source"}
       position={input ? Position.Left : Position.Right}
-      id={input ? "eventsIn" : "eventsOut"}
+      id={input ? "eventsIn" : handleOf(portOfOutput(output))}
       className={classes.join(" ")}
     />
   );

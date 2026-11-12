@@ -1,7 +1,7 @@
 // Reading the session in the client's store: the parts of it a view shows, found by the id of
 // the node they are of. Pure, on the state, so that a view can hand one to a store hook.
 import { WAVEFORMS } from "../protocol";
-import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, PatternInfo, Preset, SoundLibrary } from "../protocol";
+import type { EdgeId, Gain, ModulatorField, Node, NodeId, NoteRange, Param, PatternInfo, Preset, SoundLibrary, SplitterPick } from "../protocol";
 import type { ClientState } from "./connection";
 import type { Stages } from "./envelope";
 import { audibleOf, ownAudibleOf } from "./audible";
@@ -171,6 +171,12 @@ export function samePatternBox(a: PatternBoxNode | undefined, b: PatternBoxNode 
     a.status === b.status &&
     sameNotes(a.notes, b.notes)
   );
+}
+
+/** The note that the splitter `id` picks for its first output, or undefined if the node is no splitter (its name is the node's data's, which is the structure). */
+export function splitterPickOf(state: ClientState, id: NodeId): SplitterPick | undefined {
+  const node = nodeById(state, id);
+  return node?.kind === "splitter" ? node.pick : undefined;
 }
 
 /** What a lane's or a group's mute and solo are set to. */

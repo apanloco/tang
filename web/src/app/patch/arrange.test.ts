@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { GAP_X, GAP_Y, GRID, MARGIN, SIDE_ROOM, TOTAL_WORK, anchorOf, arrange, descend, measure, roomForAnother, score, shuffled } from "./arrange";
+import { SPLITTER_HEIGHT, SPLITTER_REST_AT } from "./toFlow";
 import type { Block, Wire } from "./arrange";
 
 const WIDTH = 304;
@@ -24,6 +25,8 @@ describe("where a cable is joined to a node", () => {
   test("audio and notes leave by the middle of the right edge and arrive by the middle of the left edge, and the second input of an effect is lower", () => {
     expect(anchorOf("audioOut")).toEqual({ fx: 1, fy: 0.5, side: "right" });
     expect(anchorOf("eventsOut")).toEqual({ fx: 1, fy: 0.5, side: "right" });
+    // (The second output of a note splitter is in the last row of its cell, on the right edge: `SPLITTER_REST_AT` of `SPLITTER_HEIGHT`.)
+    expect(anchorOf("eventsOutRest")).toEqual({ fx: 1, fy: SPLITTER_REST_AT / SPLITTER_HEIGHT, side: "right" });
     expect(anchorOf("audioIn")).toEqual({ fx: 0, fy: 0.5, side: "left" });
     expect(anchorOf("eventsIn")).toEqual({ fx: 0, fy: 0.5, side: "left" });
     expect(anchorOf("audioInSide")).toEqual({ fx: 0, fy: 2 / 3, side: "left" });

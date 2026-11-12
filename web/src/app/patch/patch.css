@@ -86,6 +86,11 @@
   --kind: var(--tang-notes);
 }
 
+/* A note splitter is a place that notes pass through on their way to the lanes: the colour of notes, as a source and a box are. */
+.tang-node--splitter {
+  --kind: var(--tang-notes);
+}
+
 .tang-node--module {
   --kind: var(--tang-module);
   /* The room under the line that says what is in it (`NODE_PADDING`). */
@@ -632,6 +637,39 @@
   white-space: nowrap;
   font-size: var(--tang-text-small);
   color: var(--tang-text-muted);
+}
+
+/*
+ * The body of a note splitter (`SPLITTER_HEIGHT` in toFlow.ts): the cell that a pattern box has (a line above it, the padding, rows of 22 pixels and the gap between them), with the switch of the note it picks in the first row and a row for
+ * each of its two outputs: its name and the menu that sends its notes at the end of the row, and the port that a cable is dragged from on the edge of the node (the row ends at the padding of the cell: the port is shifted out by it).
+ */
+.tang-splitter {
+  display: grid;
+  gap: var(--tang-space-2);
+  padding: var(--tang-space-2) var(--tang-space-3) var(--tang-space-3);
+  border-top: 1px solid var(--tang-border);
+}
+
+.tang-splitter__row {
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-2);
+  min-width: 0;
+  height: 22px;
+}
+
+.tang-splitter__label {
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+}
+
+.tang-splitter__out {
+  position: relative;
+  justify-content: flex-end;
+}
+
+.tang-splitter__out .tang-port {
+  right: calc(-1 * var(--tang-space-3));
 }
 
 /*
