@@ -885,6 +885,20 @@ mod tests {
     }
 
     #[test]
+    fn the_example_of_a_chord_split_into_its_bass_and_the_rest_loads_and_the_lanes_hear_the_outputs_it_cables_them_from() {
+        let (engine, ctl, _) = controller(include_str!("../../examples/note-splitter.toml"));
+        let splitter = &ctl.model.splitters[0];
+        assert_eq!((splitter.name.as_str(), splitter.slot, splitter.pick), ("Bass and chord", 0, Pick::Lowest));
+        assert_eq!(ctl.model.event_cables.iter().map(|cable| cable.output).collect::<Vec<_>>(), [Output::Pick, Output::Pick, Output::Rest], "the keys into the splitter, its pick to the bass and its rest to the pad");
+        assert_eq!(
+            told(&engine),
+            ["SetLaneSources inst=0 sources=[64]".to_string(), "SetLaneSources inst=1 sources=[65]".to_string(), settings_line(splitter.node, "lowest", "[0]")],
+            "the bass hears the pick, the pad the rest, and the splitter the keys"
+        );
+        ctl.model.check_ids().unwrap();
+    }
+
+    #[test]
     fn the_graph_a_client_gets_has_a_node_for_each_splitter_after_the_boxes_and_an_edge_for_each_cable_at_the_port_it_starts_at() {
         let (_engine, ctl, _) = controller(SPLITTERS);
         let graph = ctl.model.graph();

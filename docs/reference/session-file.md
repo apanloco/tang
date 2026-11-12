@@ -572,6 +572,7 @@ velocity = 0
 |---------|---------------|
 | `basic.toml` | the built-in sine, and nothing else |
 | `split.toml` | two instruments on a split keyboard |
+| `note-splitter.toml` | a chord split into its bass note and the rest (step 127): the keys into a note splitter, its pick (the lowest key) to a saw with a sub that sounds an octave under the key, its rest (`splitter[0].rest`) to a soft triangle through a reverb; a test loads it and holds what each lane hears |
 | `echo.toml` | a filter into a ping-pong delay, with an LFO on the filter and one on the delay's time |
 | `supersaw.toml` | a saw with a unison of seven (`unison`, `spread`, `width`), a low-pass filter that a slow LFO moves, a reverb |
 | `wind.toml` | the oscillator's `noise` through a band-pass filter that two slow random LFOs move, into a big reverb (hold a key: it swells in over 2.5 s) |

@@ -1,0 +1,46 @@
+# Example: a chord split into its bass note and the rest (a note splitter).
+# The lowest key that is pressed goes to the bass, a saw with a sub that sounds an octave under the key; every other key goes to the pad, a soft triangle through a reverb.
+# Play a chord: its lowest note is the bass and the rest is the pad. A note stays on the instrument that it began on until you let go of it.
+# For the top note of a chord (a melody over the pad) put `pick = "highest"` in the splitter, and swap what the two outputs are cabled to.
+# On the page the splitter is a node with two outputs (the pick, and the rest); in this file they are `splitter[0]` and `splitter[0].rest`.
+
+[keys]
+
+[[splitter]]
+name = "Bass and chord"
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.4
+transpose = -12
+
+[instrument.params]
+waveform = 3.0 # saw
+sub = 1.0
+attack = 0.004
+release = 0.15
+
+[[instrument]]
+plugin = "builtin:osc"
+volume = 0.25
+
+[instrument.params]
+waveform = 1.0 # triangle
+attack = 0.08
+release = 0.5
+
+[[instrument.effect]]
+plugin = "builtin:reverb"
+mix = 0.35
+
+[[cable]]
+from = "keys"
+to = "splitter[0]"
+
+[[cable]]
+from = "splitter[0]" # the first output: the lowest note
+to = "instrument[0]"
+
+[[cable]]
+from = "splitter[0].rest" # the second output: every other note
+to = "instrument[1]"
