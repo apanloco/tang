@@ -7326,6 +7326,23 @@ size = 0.5
         let device = |name: &str| SourceInfo::Device { name: name.to_string() };
         let notes = |from: NodeId, to: NodeId| Op::Do(Intent::AddCable { from: Endpoint { node: from, port: Port::EventsOut }, to: Endpoint { node: to, port: Port::EventsIn }, gain: None });
         let place = |node: NodeId, x: f32, y: f32| Op::Do(Intent::SetNodeUi { node, ui: Some(NodeUi { x, y }) });
+        // And one for pattern boxes (step 124): `PATTERNS`, which has the keys and a device, two boxes (Bass, with two notes, and a plain one), two lanes and three cables of notes (the keys to Bass, Bass to the first lane and the second box to
+        // the second lane). The ids go on from the last node there is, and the cables start at 0.
+        let (_engine, boxed, _clock) = controller_over(load(testutil::PATTERNS).model);
+        let (b_bass, b_plain) = (boxed.model.patterns[0].node, boxed.model.patterns[1].node);
+        let (b_keys, b_device) = (boxed.model.sources[0].node, boxed.model.sources[1].node);
+        let b_lane = [node(&boxed, NodePath::Instrument(0)), node(&boxed, NodePath::Instrument(1))];
+        let b_cable: Vec<EdgeId> = boxed.model.event_cables.iter().map(|cable| cable.id).collect();
+        assert_eq!(b_cable.len(), 3);
+        let box_field = |node: NodeId, field: crate::app::intent::PatternBoxField| Op::Do(Intent::SetPatternBoxField { node, field });
+        let box_name = |node: NodeId, name: &str| box_field(node, crate::app::intent::PatternBoxField::Name { name: name.to_string() });
+        let box_length = |node: NodeId, beats: f32| box_field(node, crate::app::intent::PatternBoxField::LengthBeats { beats });
+        let box_looping = |node: NodeId, on: bool| box_field(node, crate::app::intent::PatternBoxField::Looping { on });
+        let box_notes = |node: NodeId, notes: Vec<crate::app::graph::PatternNote>| Op::Do(Intent::SetPatternBoxNotes { node, notes });
+        let box_note = |start: f32, length: f32, note: u8, velocity: u8| crate::app::graph::PatternNote { start, length, note, velocity };
+        let box_told = |node: NodeId, action: crate::app::intent::PatternBoxAction| Op::Do(Intent::PatternBoxTransport { node, action });
+        let notes_cable = |from: NodeId, to: NodeId| Op::Do(Intent::AddCable { from: Endpoint { node: from, port: Port::EventsOut }, to: Endpoint { node: to, port: Port::EventsIn }, gain: None });
+        let bass_notes = || vec![box_note(0.0, 1.0, 36, 100), box_note(2.0, 0.5, 43, 90)];
         let own_sessions: Vec<(&str, &str, Vec<Op>)> = vec![
             (
                 "an audio cable that is drawn is taken out by undo and drawn again by redo under its id and at its level, and what was done before it is still to be undone",
@@ -7664,6 +7681,160 @@ size = 0.5
                 "an instrument that the cables of its group and of its lane drive is put back with them, and a lane that had none is emptied again",
                 INSTRUMENTS,
                 vec![replace(member_lane, "builtin:osc"), undo(), redo(), undo(), replace(empty_lane, "builtin:osc"), undo(), redo(), undo()],
+            ),
+            (
+                "a pattern box that is added is taken out by undo and added again by redo under its node, called by the lowest number that no box is called by, and one that was taken out leaves its name free",
+                testutil::PATTERNS,
+                vec![Op::Do(Intent::AddPattern), undo(), redo(), Op::Do(Intent::AddPattern), Op::Do(Intent::AddPattern), undo(), undo(), undo(), redo(), redo(), redo()],
+            ),
+            (
+                "the settings of a pattern box are steps in the words of each, a drag or a name that is typed is one step, two boxes are two, and each is put back and set again",
+                testutil::PATTERNS,
+                vec![
+                    box_name(b_bass, "Lead"),
+                    Op::Wait(16),
+                    box_name(b_bass, "Lead 2"),
+                    pause(),
+                    box_length(b_bass, 2.0),
+                    Op::Wait(16),
+                    box_length(b_bass, 3.0),
+                    Op::Wait(16),
+                    box_length(b_bass, 1000.0),
+                    pause(),
+                    box_looping(b_bass, false),
+                    box_looping(b_plain, false),
+                    box_field(b_bass, crate::app::intent::PatternBoxField::Sync { sync: crate::app::graph::PatternSync::Host }),
+                    box_field(b_bass, crate::app::intent::PatternBoxField::Overdub { on: false }),
+                    box_field(b_bass, crate::app::intent::PatternBoxField::Click { on: false }),
+                    box_field(b_plain, crate::app::intent::PatternBoxField::Sync { sync: crate::app::graph::PatternSync::Host }),
+                    box_name(b_plain, ""),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                ],
+            ),
+            (
+                "a setting that a pattern box has already, a name that is too long or has a control character in it and a node that is no box leave no step, and the history is as it was",
+                testutil::PATTERNS,
+                vec![
+                    box_looping(b_bass, false),
+                    box_looping(b_bass, false),
+                    box_field(b_bass, crate::app::intent::PatternBoxField::Overdub { on: true }),
+                    box_name(b_bass, "Bass"),
+                    box_name(b_bass, "  Bass "),
+                    box_length(b_bass, 8.0),
+                    box_length(b_bass, 8.000_000_1),
+                    box_name(b_bass, &"x".repeat(crate::app::model::MAX_NAME + 1)),
+                    box_name(b_bass, "a\u{1}b"),
+                    box_looping(b_lane[0], false),
+                    box_looping(b_keys, false),
+                    box_looping(NodeId(9_999), false),
+                    box_name(b_plain, "Pattern"),
+                    undo(),
+                    undo(),
+                ],
+            ),
+            (
+                "the notes of a pattern box are a step that is put back as it had them, what is set as a roll sets them is one step while it goes on, and notes that it has already, and a box that has none to clear, are no step",
+                testutil::PATTERNS,
+                vec![
+                    Op::Do(Intent::ClearPatternBox { node: b_plain }),
+                    box_notes(b_plain, Vec::new()),
+                    box_notes(b_plain, vec![box_note(0.0, 1.0, 60, 100)]),
+                    Op::Wait(16),
+                    box_notes(b_plain, vec![box_note(1.0, 1.0, 62, 0), box_note(0.0, 1.0, 60, 100), box_note(0.5, 0.5, 200, 100)]),
+                    pause(),
+                    box_notes(b_plain, vec![box_note(1.0, 1.0, 62, 1), box_note(0.0, 1.0, 60, 100)]),
+                    box_notes(b_bass, bass_notes()),
+                    Op::Do(Intent::ClearPatternBox { node: b_bass }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                ],
+            ),
+            (
+                "a pattern box that is taken out comes back by undo as it was, with its notes, its settings, its place and the cables of notes that started or ended at it, and goes again by redo; so do a source and a lane that it had cables with",
+                testutil::PATTERNS,
+                vec![
+                    box_name(b_bass, "Lead"),
+                    pause(),
+                    Op::Do(Intent::RemoveNode { node: b_bass }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: b_plain }),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: b_keys }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: b_lane[0] }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    undo(),
+                ],
+            ),
+            (
+                "the cables of notes of a pattern box are drawn and taken out as other cables are, put back by undo under their ids, and a cable that a box cannot have is refused and leaves no step",
+                testutil::PATTERNS,
+                vec![
+                    notes_cable(b_device, b_plain),
+                    notes_cable(b_device, b_bass),
+                    notes_cable(b_bass, b_lane[1]),
+                    notes_cable(b_bass, b_plain),
+                    notes_cable(b_plain, b_bass),
+                    notes_cable(b_lane[0], b_bass),
+                    notes_cable(b_keys, b_bass),
+                    Op::Do(Intent::RemoveEdge { edge: b_cable[0] }),
+                    Op::Do(Intent::RemoveEdge { edge: b_cable[1] }),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                ],
+            ),
+            (
+                "what a pattern box is told to do is no step, and does not forget what was done before it",
+                testutil::PATTERNS,
+                vec![
+                    box_looping(b_bass, false),
+                    box_told(b_bass, crate::app::intent::PatternBoxAction::Record),
+                    box_told(b_bass, crate::app::intent::PatternBoxAction::FinishRecording),
+                    box_told(b_bass, crate::app::intent::PatternBoxAction::Play),
+                    box_told(b_plain, crate::app::intent::PatternBoxAction::Stop),
+                    box_told(b_lane[0], crate::app::intent::PatternBoxAction::Play),
+                    undo(),
+                    redo(),
+                ],
             ),
         ];
 

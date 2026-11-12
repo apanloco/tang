@@ -1409,8 +1409,8 @@ function run(snapshot: Snapshot, rows: readonly HistoryRow[]): string[] {
         if (JSON.stringify(shape.feeds ?? []) !== JSON.stringify(row.shape.feeds ?? [])) wrong.push(`${what}: the feeds that are cut are ${JSON.stringify(shape.feeds ?? [])}, not ${JSON.stringify(row.shape.feeds ?? [])}`);
         // (The modulators that hear a lane or a group: likewise.)
         if (JSON.stringify(shape.ears ?? []) !== JSON.stringify(row.shape.ears ?? [])) wrong.push(`${what}: the ears are ${JSON.stringify(shape.ears ?? [])}, not ${JSON.stringify(row.shape.ears ?? [])}`);
-        // (The sources of notes, the cables of notes and the links of the lanes that hear every source: likewise.)
-        for (const list of ["sources", "notes", "hears", "order"] as const) {
+        // (The sources of notes, the pattern boxes, the cables of notes and the links of the lanes that hear every source: likewise.)
+        for (const list of ["sources", "patterns", "notes", "hears", "order"] as const) {
           if (JSON.stringify(shape[list] ?? []) !== JSON.stringify(row.shape[list] ?? [])) wrong.push(`${what}: ${list} are ${JSON.stringify(shape[list] ?? [])}, not ${JSON.stringify(row.shape[list] ?? [])}`);
         }
       }
@@ -1451,6 +1451,10 @@ describe("the mock engine's history", () => {
       "addCable",
       "setCableGain",
       "addSource",
+      "addPattern",
+      "setPatternBoxField",
+      "clearPatternBox",
+      "setPatternBoxNotes",
       "modulate",
       "addGroup",
       "setLaneGroup",
@@ -1459,7 +1463,8 @@ describe("the mock engine's history", () => {
       "loadPreset",
     ];
     const barriers: Intent["type"][] = ["addGroup", "setLaneGroup", "removeNode"];
-    const kinds: Intent["type"][] = [...undoable, ...barriers, "undo", "redo"];
+    // (What a pattern box is told to do is no step, and is in the fixture for that.)
+    const kinds: Intent["type"][] = [...undoable, ...barriers, "patternBoxTransport", "undo", "redo"];
     for (const type of kinds) expect(intents.has(type), type).toBe(true);
     const refusals = new Set(rows.flatMap((row) => ("error" in row ? [row.error] : [])));
     expect(refusals).toContain("there is nothing to undo");

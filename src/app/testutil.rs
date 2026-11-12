@@ -1608,7 +1608,7 @@ impl plugin::Plugin for DropProbe {
 /// (`routes`, likewise), whom each modulator of the session's own hears (`ears`, likewise), the sources of notes (`sources`: what each is, the keys or a device by its name), the cables of notes (`notes`) and the links from each source to each lane that hears
 /// every source (`hears`), each a list only when there is something in it, and the order of the kinds of edge (`order`, for a session that has a source), and the two lists of the layout of
 /// the telemetry (without its fingerprint), each entry as a line of text the web client's tests make of its own copy by the same rules (`shapeOf` in
-/// `web/src/client/fixtures.ts`).
+/// `web/src/client/fixtures.ts`); and, for a session that has pattern boxes, a line for each (`patterns`: its length, settings and notes: step 124).
 pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value {
     use serde_json::Value;
     let wire: Value = self::wire(snapshot);
@@ -1715,7 +1715,27 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
         }
         runs.into_iter().map(|(kind, count)| format!("{kind}×{count}")).collect()
     };
-    for (name, lines) in [("sources", sources), ("notes", notes), ("hears", hears), ("order", order)] {
+    // The pattern boxes (step 124): a line each, what the controller keeps of a box (its length, its settings and its notes, each note as `start/length/note/velocity`) and not what the audio thread says that it is doing, which no
+    // fixture of the controller's can have; and no list at all for a session that has none, so that the fixtures of the sessions that have none are as they were.
+    let flag = |value: &Value| if value.as_bool() == Some(true) { "1" } else { "0" };
+    let patterns: Vec<String> = list(&wire["graph"]["nodes"])
+        .iter()
+        .filter(|n| text(&n["kind"]) == "pattern")
+        .map(|n| {
+            let notes: Vec<String> = list(&n["notes"]).iter().map(|note| format!("{}/{}/{}/{}", number(&note["start"]), number(&note["length"]), note["note"], note["velocity"])).collect();
+            format!(
+                "{} len={} loop={} sync={} overdub={} click={} notes={}",
+                n["id"],
+                number(&n["lengthBeats"]),
+                flag(&n["looping"]),
+                text(&n["sync"]),
+                flag(&n["overdub"]),
+                flag(&n["click"]),
+                notes.join(",")
+            )
+        })
+        .collect();
+    for (name, lines) in [("sources", sources), ("patterns", patterns), ("notes", notes), ("hears", hears), ("order", order)] {
         if !lines.is_empty() {
             shape[name] = serde_json::json!(lines);
         }

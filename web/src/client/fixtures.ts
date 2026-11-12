@@ -28,6 +28,7 @@ import moduleGraphs from "./fixtures/moduleGraphs.json";
 import modules from "./fixtures/modules.json";
 import moves from "./fixtures/moves.json";
 import noise from "./fixtures/noise.json";
+import patternBoxes from "./fixtures/patternBoxes.json";
 import patterns from "./fixtures/patterns.json";
 import pins from "./fixtures/pins.json";
 import reach from "./fixtures/reach.json";
@@ -252,6 +253,17 @@ export const sourcesFixture = sources as unknown as {
 };
 
 /**
+ * Three sessions, one with the keys, a device, two pattern boxes (the first called Bass, 8 beats long, with two notes), two lanes and cables of notes among its cables ("boxes", `testutil::PATTERNS`), one with two lanes and no source
+ * ("bare") and one with the sixteen boxes that a session can have ("full"), and what the controller makes of intents about pattern boxes tried on each, one on each fresh session: each setting of a box set to what it is and to what it is
+ * not, to what is too much and to what is no name, the notes cleared and set as a recording leaves them, what a box is told to do, every start of a cable of notes with every end that has a box in it, the cables and the nodes
+ * taken out, and every intent that names a node and is not for a box, with a box as the node. For one that is refused its words; else the events it made (stamped), whether it changed the structure and what the session comes
+ * to after it (`shapeOf`: what the boxes are, and not what they are doing). Written by the controller (`the_web_clients_fixture_of_what_pattern_boxes_come_to_is_current`).
+ */
+export const patternBoxesFixture = patternBoxes as unknown as {
+  cases: { name: string; snapshot: Snapshot; rows: ({ intent: Intent } & ({ error: string } | { events: StampedEvent[]; restructured: boolean; after: Shape }))[] }[];
+};
+
+/**
  * One op of a script of the history fixture: time going by (in milliseconds), or an intent and what the controller made of it: its words if it
  * was refused, else the events it made, whether it changed the structure and, if it did, what the session comes to then (`shapeOf`).
  */
@@ -317,7 +329,9 @@ export interface Shape {
   ears?: string[];
   /** The sources of notes, a line each (`id keys` or `id device Name`); none at all for a session that has none, as the controller's fixtures write it. */
   sources?: string[];
-  /** The cables of notes that have been drawn from a source to a lane, a line each (`#id from>to`); none at all for a session that has none. */
+  /** The pattern boxes, a line each (`id len=4 loop=1 sync=own overdub=0 click=1 notes=start/length/note/velocity,…`): what the controller keeps of a box, not what it is doing; none at all for a session that has none. */
+  patterns?: string[];
+  /** The cables of notes that have been drawn from a source or a box to a lane or a box, a line each (`#id from>to`); none at all for a session that has none. */
   notes?: string[];
   /** The links from each source to each lane that hears every source, a line each (`from>to`); none at all for a session that has none. */
   hears?: string[];
@@ -334,7 +348,7 @@ const portKey = (port: Port): string => `${port.type}${"index" in port ? String(
  * parent, its name), each link of the audio path (the node it leaves, the node it goes to, its kind), each cable (its id, the node it leaves
  * and the one it goes to, the port, its depth), each audio cable that has been drawn between two places (its id, the nodes, its level: `sends`, a list only when there are some), each lane
  * and group whose way out is cut (`routes`, likewise), each effect whose feed is cut (`feeds`, likewise) and each
- * entry of the two lists of the layout of the telemetry (the slot, the node, the port, the kind); the fingerprint of the layout is not part of it.
+ * entry of the two lists of the layout of the telemetry (the slot, the node, the port, the kind); the fingerprint of the layout is not part of it. A session that has pattern boxes has a line for each (`patterns`: its length, its settings and its notes).
  */
 export function shapeOf(snapshot: Snapshot): Shape {
   const { nodes, edges } = snapshot.graph;
@@ -346,6 +360,13 @@ export function shapeOf(snapshot: Snapshot): Shape {
   const feeds = nodes.flatMap((n) => (n.kind === "effect" && n.feed === "none" ? [`${String(n.id)} none`] : []));
   const ears = nodes.flatMap((n) => (n.kind === "modulator" && n.hears !== undefined ? [`${String(n.id)} ${String(n.hears)}`] : []));
   const sources = nodes.flatMap((n) => (n.kind === "source" ? [n.source.type === "keys" ? `${String(n.id)} keys` : `${String(n.id)} device ${n.source.name}`] : []));
+  const patterns = nodes.flatMap((n) =>
+    n.kind === "pattern"
+      ? [
+          `${String(n.id)} len=${String(n.lengthBeats)} loop=${n.looping ? "1" : "0"} sync=${n.sync} overdub=${n.overdub ? "1" : "0"} click=${n.click ? "1" : "0"} notes=${n.notes.map((note) => [note.start, note.length, note.note, note.velocity].map(String).join("/")).join(",")}`,
+        ]
+      : [],
+  );
   const notes = edges.flatMap((e) => (e.kind === "events" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)}`] : []));
   const hears = edges.flatMap((e) => (e.kind === "hears" ? [`${String(e.from.node)}>${String(e.to.node)}`] : []));
   // The kinds of edge in the order they come in, a run of one kind as one entry.
@@ -365,6 +386,7 @@ export function shapeOf(snapshot: Snapshot): Shape {
     ...(feeds.length > 0 ? { feeds } : {}),
     ...(ears.length > 0 ? { ears } : {}),
     ...(sources.length > 0 ? { sources } : {}),
+    ...(patterns.length > 0 ? { patterns } : {}),
     ...(notes.length > 0 ? { notes } : {}),
     ...(hears.length > 0 ? { hears } : {}),
     ...(sources.length > 0 || notes.length > 0 || hears.length > 0 ? { order } : {}),
