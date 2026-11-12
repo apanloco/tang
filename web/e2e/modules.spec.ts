@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { expect, test as mock } from "@playwright/test";
 
-import { audioIn, audioOut, boxIn, boxOut, cables, centre, drag, node, open, showAll } from "./canvas";
+import { audioIn, audioOut, boxIn, boxOut, cables, centre, drag, node, open, sends, showAll, still } from "./canvas";
 import { addEffect, addFree, addModuleButton, boxRound, choose, names, save, saveChosen } from "./modules";
 import { test } from "./own";
 import { heardAt, silentAt } from "./sound";
@@ -92,7 +92,14 @@ test("a chain of effects is saved as a file of the library of the real program, 
   await showAll(page);
   await silentAt(page, "the module that is added, with no cable");
   await drag(page, audioOut(node(page, "Oscillator")), boxIn(node(page, "Tracer filter")));
+  // (The page has the first cable when the program has made it, and the canvas lays out again for it: the second is dragged to ports that have stopped, and not to where the master was a moment before. Without the wait this
+  // test failed one run in eight, and one in three on a program that took a little longer to answer, which is when the layout came after the drag began.)
+  await expect(sends(page)).toHaveCount(1);
+  await still(node(page, "Tracer filter"));
+  await still(node(page, "Master"));
   await drag(page, boxOut(node(page, "Tracer filter")), audioIn(node(page, "Master")));
+  // (This one is the way out of the module's lane, a link of the audio path and no send, and the filters are called by their numbers now that there are two.)
+  await expect(page.getByRole("button", { name: "Remove cable Filter 2 → Master", exact: true })).toBeVisible();
   await heardAt(page, "the lane through the module");
 
   // The file of the session keeps the lane that the module made: no instrument, the filter, and the cable into it.
