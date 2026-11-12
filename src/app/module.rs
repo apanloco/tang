@@ -130,7 +130,7 @@ pub struct ModuleCable {
     pub gain: f32,
 }
 
-/// What a module's text says, or why it is not a module: a session file of lanes that have effects or an instrument, with no group and no source of notes, no cable that is not between two of its plugins (a
+/// What a module's text says, or why it is not a module: a session file of lanes that have effects or an instrument, with no group, no source of notes, no pattern box and no note splitter, no cable that is not between two of its plugins (a
 /// cable starts at an instrument or an effect and ends at an effect or at the second input of one), and modulators whose cables drive plugins and modulators that the module has and whose ears are lanes that it has.
 pub fn parse(text: &str) -> Result<Module, String> {
     let config = session::parse(text).map_err(|error| error.to_string())?;
@@ -140,6 +140,10 @@ pub fn parse(text: &str) -> Result<Module, String> {
     // (A lane's own modulators are moved to the session's own when a file is read, `session::parse`: a module that has any has `free_modulators`, which are the module's.)
     if !config.groups.is_empty() || config.keys.is_some() || !config.devices.is_empty() {
         return Err("a module is effects and instruments with the cables between them and the modulators that go with them, and nothing else: it has no group and no source of notes".to_string());
+    }
+    // (A pattern box and a note splitter are nodes of the session that a module is not made of: a file that has one has a table that would be left out without a word.)
+    if !config.patterns.is_empty() || !config.splitters.is_empty() {
+        return Err("a module is effects and instruments with the cables between them and the modulators that go with them, and nothing else: it has no pattern box and no note splitter".to_string());
     }
     if let Some(empty) = config.instruments.iter().position(|lane| lane.instrument.is_none() && lane.effects.is_empty()) {
         return Err(format!("lane {empty} of the module has no instrument and no effect: a module has at least one plugin in each lane"));
@@ -297,6 +301,7 @@ pub fn to_text_of(model: &SessionModel, nodes: &[NodeId]) -> Result<String, Stri
             }
             Some(NodePath::Source(_)) => return Err("a source of notes is not part of a module: a module is made of effects and instruments, and the modulators that go with them".to_string()),
             Some(NodePath::Pattern(_)) => return Err("a pattern box is not part of a module: a module is made of effects and instruments, and the modulators that go with them".to_string()),
+            Some(NodePath::Splitter(_)) => return Err("a note splitter is not part of a module: a module is made of effects and instruments, and the modulators that go with them".to_string()),
             Some(NodePath::Module(_)) => return Err("a module that was added is not a plugin: choose the plugins and modulators in it".to_string()),
             None => return Err(format!("there is no node {}", node.0)),
         }
@@ -591,6 +596,11 @@ mod tests {
         // (A source of notes and a device are not the module's; a modulator is, since step 106.)
         assert!(refused(&format!("[keys]\n{one}")).contains("nothing else"), "{}", refused(&format!("[keys]\n{one}")));
         assert!(refused(&format!("[[device]]\nname = \"Launchkey\"\n{one}")).contains("nothing else"));
+        // (Nor is a pattern box, or a note splitter: a table of either would be left out without a word.)
+        for table in ["[[pattern]]", "[[splitter]]"] {
+            let error = refused(&format!("{table}\n{one}"));
+            assert!(error.contains("nothing else") && error.contains("no pattern box and no note splitter"), "{table}: {error}");
+        }
         assert_eq!(parse(&format!("[[modulator]]\n{one}")).map(|module| module.modulators.len()), Ok(1), "a modulator that drives nothing is one all the same");
         // A lane's own modulator is moved to the session's own when a file is read, `session::parse`, and hears the lane that it was in: the older file's module has it so.
         let moved = parse(&format!("{one}[[instrument.modulator]]\ntype = \"lfo\"\n")).unwrap();

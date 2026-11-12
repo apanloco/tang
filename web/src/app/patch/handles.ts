@@ -24,6 +24,7 @@ export function handleOf(port: Port): string {
     case "audioOut":
     case "eventsIn":
     case "eventsOut":
+    case "eventsOutRest":
     case "modOut":
     case "rate":
     case "attack":

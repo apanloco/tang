@@ -9,8 +9,9 @@ use crate::app::model::{EdgeId, InstrumentNode, ModSourceSlot, ModulatorSlot, No
 use crate::plugin::chain::{CableFrom, CableTo, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::{
     CablePlace, Feed, MemberPlace, NodeUi, SaveCable, SaveDevice, SaveEffect, SaveGroup, SaveInstrument, SaveInstrumentSlot, SaveKeys, SaveModSource, SaveModTarget, SaveModule, SaveModulator,
-    SavePattern, SavePatternBox, SaveSources,
+    SavePattern, SavePatternBox, SaveSources, SaveSplitter,
 };
+use crate::source::Output;
 use std::collections::{BTreeMap, HashMap};
 
 /// The lanes and groups of a session as `session::save` writes them, with where each node is drawn, its cables (the audio cables and the cables of notes) and its sources of notes. The piano
@@ -67,8 +68,8 @@ pub fn to_save(model: &SessionModel) -> (Vec<SaveInstrumentSlot>, Vec<SaveGroup>
     (save_instruments, save_groups, cables_to_save(model), sources_to_save(model))
 }
 
-/// The sources of notes of a session: the keys, if it has them, and its devices in the order that the file's cables name them in, each with where it is drawn; and its pattern boxes, in the order of their places
-/// (which is how the cables name them: `pattern[0]`).
+/// The sources of notes of a session: the keys, if it has them, and its devices in the order that the file's cables name them in, each with where it is drawn; and its pattern boxes and its note splitters, in the order of
+/// their places (which is how the cables name them: `pattern[0]`, `splitter[0]`).
 fn sources_to_save(model: &SessionModel) -> SaveSources {
     let ui = |node: NodeId| model.ui.get(&node).copied();
     SaveSources {
@@ -95,6 +96,7 @@ fn sources_to_save(model: &SessionModel) -> SaveSources {
                 ui: ui(pattern.node),
             })
             .collect(),
+        splitters: model.splitters.iter().map(|splitter| SaveSplitter { name: splitter.name.clone(), pick: splitter.pick, ui: ui(splitter.node) }).collect(),
         modulators: modulators_to_save(model, ModulatorLocation::Free),
         modules: modules_to_save(model),
         master: model.master_to_save(),
@@ -146,16 +148,22 @@ fn plugin_place_of(model: &SessionModel, node: NodeId) -> Option<CablePlace> {
     lane_place_of(model, node).or_else(|| effect_place_of(model, node))
 }
 
-/// The cables of a session as the file names their places: by the place of a lane, a group or an effect among those of the session, the keys, a device or a pattern box among the sources, in the order of
-/// the cables' ids (an audio cable and a cable of notes are of one series).
+/// The cables of a session as the file names their places: by the place of a lane, a group or an effect among those of the session, the keys, a device, a pattern box or a note splitter (and which of its two outputs) among the
+/// sources, in the order of the cables' ids (an audio cable and a cable of notes are of one series).
 fn cables_to_save(model: &SessionModel) -> Vec<SaveCable> {
     let effect_place = |node: NodeId| effect_place_of(model, node);
     let lane_place = |node: NodeId| lane_place_of(model, node);
     let group_place = |node: NodeId| model.groups.iter().position(|group| group.node == node).map(CablePlace::Group);
     let pattern_place = |node: NodeId| model.patterns.iter().position(|pattern| pattern.node == node).map(CablePlace::Pattern);
-    // (A box is a start of a cable of notes too, and an end of one.)
-    let source_place = |node: NodeId| {
-        let Some(at) = model.sources.iter().position(|source| source.node == node) else { return pattern_place(node) };
+    // (A box is a start of a cable of notes too, and an end of one, and so is a splitter, which starts one at either of its two outputs.)
+    let splitter_place = |node: NodeId| model.splitters.iter().position(|splitter| splitter.node == node).map(CablePlace::Splitter);
+    let source_place = |node: NodeId, output: Output| {
+        let Some(at) = model.sources.iter().position(|source| source.node == node) else {
+            return pattern_place(node).or_else(|| match (splitter_place(node), output) {
+                (Some(CablePlace::Splitter(at)), Output::Rest) => Some(CablePlace::SplitterRest(at)),
+                (place, _) => place,
+            });
+        };
         match model.sources[at].kind {
             SourceKind::Keys => Some(CablePlace::Keys),
             SourceKind::Device(_) => Some(CablePlace::Device(model.sources[..at].iter().filter(|source| matches!(source.kind, SourceKind::Device(_))).count())),
@@ -181,7 +189,7 @@ fn cables_to_save(model: &SessionModel) -> Vec<SaveCable> {
         Some((cable.id, SaveCable { from: from?, to: to?, gain: cable.gain }))
     });
     // (A cable of notes has no level: its `gain` is the 1 that is not written.)
-    let notes = model.event_cables.iter().filter_map(|cable| Some((cable.id, SaveCable { from: source_place(cable.from)?, to: lane_place(cable.to).or_else(|| pattern_place(cable.to))?, gain: 1.0 })));
+    let notes = model.event_cables.iter().filter_map(|cable| Some((cable.id, SaveCable { from: source_place(cable.from, cable.output)?, to: lane_place(cable.to).or_else(|| pattern_place(cable.to)).or_else(|| splitter_place(cable.to))?, gain: 1.0 })));
     let mut cables: Vec<(EdgeId, SaveCable)> = audio.chain(notes).collect();
     cables.sort_by_key(|(id, _)| *id);
     cables.into_iter().map(|(_, cable)| cable).collect()

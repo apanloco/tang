@@ -111,6 +111,7 @@ export function portName(graph: Graph, node: NodeId, port: Port): string | null 
     case "modOut":
     case "eventsIn":
     case "eventsOut":
+    case "eventsOutRest":
     case "audioOut":
       return null;
   }

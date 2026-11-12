@@ -9,7 +9,7 @@
 
 use crate::app::controller::Controller;
 use crate::app::graph::{Endpoint, NoteRange, PatternNote, Port, SourceInfo};
-use crate::app::intent::{Gain, Intent, ModulatorKind, PatternBoxAction, PatternBoxField};
+use crate::app::intent::{Gain, Intent, ModulatorKind, PatternBoxAction, PatternBoxField, SplitterField};
 use crate::app::model::{NodeId, ParamKind, PluginSlot};
 use crate::session::{Feed, Route};
 
@@ -112,6 +112,18 @@ pub enum Edit {
     PatternToLane { pattern: usize, lane: usize },
     /// A pattern box, by its place among the boxes that there are, taken out with the cables of notes that start or end at it.
     RemovePattern { pattern: usize },
+    /// A note splitter added at the end of the session's splitters (step 127).
+    AddSplitter,
+    /// A setting of a note splitter (a place among the splitters, wrapped round them).
+    SplitterField { splitter: usize, field: SplitterField },
+    /// A cable of notes from a place among the sources to a place among the splitters, both wrapped round the ones there are.
+    SourceToSplitter { source: usize, splitter: usize },
+    /// A cable of notes from a place among the pattern boxes to a place among the splitters, both wrapped round the ones there are.
+    PatternToSplitter { pattern: usize, splitter: usize },
+    /// A cable of notes from the first output of a splitter (the pick), or from the second (the rest, when `rest` is set), to a place among the lanes: the splitter and the lane are places, wrapped round the ones there are.
+    SplitterToLane { splitter: usize, rest: bool, lane: usize },
+    /// A note splitter, by its place among the splitters that there are, taken out with the cables of notes that start or end at it.
+    RemoveSplitter { splitter: usize },
     Undo,
     Redo,
 }
@@ -201,6 +213,7 @@ impl Edit {
         let lane = |n: usize| (!model.instruments.is_empty()).then(|| &model.instruments[n % model.instruments.len()]);
         let group = |n: usize| (!model.groups.is_empty()).then(|| &model.groups[n % model.groups.len()]);
         let pattern_box = |n: usize| (!model.patterns.is_empty()).then(|| &model.patterns[n % model.patterns.len()]);
+        let splitter = |n: usize| (!model.splitters.is_empty()).then(|| &model.splitters[n % model.splitters.len()]);
         Some(match self {
             Edit::Param { lane: l, slot, param, fraction } => {
                 let plugin = plugin_at(lane(*l)?, *slot)?;
@@ -399,6 +412,30 @@ impl Edit {
                 gain: None,
             },
             Edit::RemovePattern { pattern } => Intent::RemoveNode { node: pattern_box(*pattern)?.node },
+            Edit::AddSplitter => Intent::AddSplitter,
+            Edit::SplitterField { splitter: s, field } => Intent::SetSplitterField { node: splitter(*s)?.node, field: field.clone() },
+            Edit::SourceToSplitter { source, splitter: s } => {
+                let sources = &model.sources;
+                if sources.is_empty() {
+                    return None;
+                }
+                Intent::AddCable {
+                    from: Endpoint { node: sources[source % sources.len()].node, port: Port::EventsOut },
+                    to: Endpoint { node: splitter(*s)?.node, port: Port::EventsIn },
+                    gain: None,
+                }
+            }
+            Edit::PatternToSplitter { pattern, splitter: s } => Intent::AddCable {
+                from: Endpoint { node: pattern_box(*pattern)?.node, port: Port::EventsOut },
+                to: Endpoint { node: splitter(*s)?.node, port: Port::EventsIn },
+                gain: None,
+            },
+            Edit::SplitterToLane { splitter: s, rest, lane: l } => Intent::AddCable {
+                from: Endpoint { node: splitter(*s)?.node, port: if *rest { Port::EventsOutRest } else { Port::EventsOut } },
+                to: Endpoint { node: lane(*l)?.node, port: Port::EventsIn },
+                gain: None,
+            },
+            Edit::RemoveSplitter { splitter: s } => Intent::RemoveNode { node: splitter(*s)?.node },
             Edit::Undo => Intent::Undo,
             Edit::Redo => Intent::Redo,
         })
@@ -777,6 +814,69 @@ plugin = "builtin:osc"
         assert_eq!(Edit::RemovePattern { pattern: 0 }.make(&mut ctl), Outcome::Applied);
         assert_eq!(ctl.model.patterns.len(), 1);
         assert_eq!(ctl.model.event_cables.len(), 0, "the cables of the box that went are gone with it");
+    }
+
+    #[test]
+    fn a_note_splitter_is_a_place_among_the_splitters_and_what_is_asked_of_one_names_it_by_its_place_wrapped_round_and_skips_when_there_is_none() {
+        use crate::app::graph::SplitterPick;
+        let mut ctl = controller(TWO_LANES);
+        let (lane0, lane1) = (ctl.model.instruments[0].node, ctl.model.instruments[1].node);
+        let pick = SplitterField::Pick { pick: SplitterPick::Highest };
+        let asks = [
+            Edit::SplitterField { splitter: 0, field: pick.clone() },
+            Edit::SplitterToLane { splitter: 0, rest: false, lane: 0 },
+            Edit::SplitterToLane { splitter: 0, rest: true, lane: 0 },
+            Edit::SourceToSplitter { source: 0, splitter: 0 },
+            Edit::PatternToSplitter { pattern: 0, splitter: 0 },
+            Edit::RemoveSplitter { splitter: 0 },
+        ];
+        // There is nothing to aim at while there is no splitter.
+        for edit in &asks {
+            assert_eq!(edit.resolve(&ctl), None, "{edit:?}");
+            assert_eq!(edit.make(&mut ctl), Outcome::Skipped, "{edit:?}");
+        }
+        assert_eq!(Edit::AddSplitter.resolve(&ctl), Some(Intent::AddSplitter));
+        assert_eq!(Edit::AddSplitter.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddSplitter.make(&mut ctl), Outcome::Applied);
+        let (first, second) = (ctl.model.splitters[0].node, ctl.model.splitters[1].node);
+        let expect = |edit: Edit, intent: Intent| assert_eq!(edit.resolve(&ctl), Some(intent), "{edit:?}");
+        expect(Edit::SplitterField { splitter: 1, field: pick.clone() }, Intent::SetSplitterField { node: second, field: pick.clone() });
+        expect(Edit::SplitterField { splitter: 2, field: SplitterField::Name { name: "x".to_string() } }, Intent::SetSplitterField { node: first, field: SplitterField::Name { name: "x".to_string() } });
+        expect(Edit::RemoveSplitter { splitter: 3 }, Intent::RemoveNode { node: second });
+        expect(Edit::RemoveSplitter { splitter: 4 }, Intent::RemoveNode { node: first });
+        // The two outputs of a splitter are two ports, and a lane is a place among the lanes.
+        let out = |node| Endpoint { node, port: Port::EventsOut };
+        let rest = |node| Endpoint { node, port: Port::EventsOutRest };
+        let into = |node| Endpoint { node, port: Port::EventsIn };
+        expect(Edit::SplitterToLane { splitter: 1, rest: false, lane: 0 }, Intent::AddCable { from: out(second), to: into(lane0), gain: None });
+        expect(Edit::SplitterToLane { splitter: 1, rest: true, lane: 0 }, Intent::AddCable { from: rest(second), to: into(lane0), gain: None });
+        expect(Edit::SplitterToLane { splitter: 2, rest: true, lane: 3 }, Intent::AddCable { from: rest(first), to: into(lane1), gain: None });
+        // A cable into a splitter needs a source (or a box) to start at.
+        assert_eq!(Edit::SourceToSplitter { source: 0, splitter: 0 }.make(&mut ctl), Outcome::Skipped, "no source to start at");
+        assert_eq!(Edit::PatternToSplitter { pattern: 0, splitter: 0 }.make(&mut ctl), Outcome::Skipped, "no box to start at");
+        assert_eq!(Edit::AddSource { device: None }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddSource { device: Some("Seaboard") }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddPattern.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddPattern.make(&mut ctl), Outcome::Applied);
+        let (keys, seaboard, bass, plain) = (ctl.model.sources[0].node, ctl.model.sources[1].node, ctl.model.patterns[0].node, ctl.model.patterns[1].node);
+        let expect = |edit: Edit, intent: Intent| assert_eq!(edit.resolve(&ctl), Some(intent), "{edit:?}");
+        expect(Edit::SourceToSplitter { source: 2, splitter: 3 }, Intent::AddCable { from: out(keys), to: into(second), gain: None });
+        expect(Edit::SourceToSplitter { source: 3, splitter: 0 }, Intent::AddCable { from: out(seaboard), to: into(first), gain: None });
+        expect(Edit::PatternToSplitter { pattern: 0, splitter: 1 }, Intent::AddCable { from: out(bass), to: into(second), gain: None });
+        expect(Edit::PatternToSplitter { pattern: 3, splitter: 0 }, Intent::AddCable { from: out(plain), to: into(first), gain: None });
+        // A cable twice is refused, as a front-end's request would be, and the two outputs of a splitter to one lane are two cables.
+        assert_eq!(Edit::SourceToSplitter { source: 0, splitter: 0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::SourceToSplitter { source: 0, splitter: 0 }.make(&mut ctl), Outcome::Refused);
+        assert_eq!(Edit::PatternToSplitter { pattern: 0, splitter: 1 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::SplitterToLane { splitter: 0, rest: false, lane: 0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::SplitterToLane { splitter: 0, rest: false, lane: 0 }.make(&mut ctl), Outcome::Refused);
+        assert_eq!(Edit::SplitterToLane { splitter: 0, rest: true, lane: 0 }.make(&mut ctl), Outcome::Applied);
+        // The rest are made through the controller.
+        assert_eq!(Edit::SplitterField { splitter: 0, field: pick }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.splitters[0].pick, crate::notesplit::Pick::Highest);
+        assert_eq!(Edit::RemoveSplitter { splitter: 0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.splitters.len(), 1);
+        assert_eq!(ctl.model.event_cables.len(), 1, "the cables of the splitter that went are gone with it: the box's cable into the second one is left");
     }
 
     #[test]

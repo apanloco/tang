@@ -326,6 +326,7 @@ fn default_session() -> anyhow::Result<(session::SessionConfig, std::path::PathB
         keys: None,
         devices: vec![],
         patterns: vec![],
+        splitters: vec![],
         free_modulators: vec![],
         modules: vec![],
     };

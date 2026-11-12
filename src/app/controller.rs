@@ -52,6 +52,7 @@ use crate::held_notes::HeldNotes;
 use crate::midi::DeviceChanges;
 use crate::midi_monitor::MidiMonitor;
 use crate::note_input::NoteInput;
+use crate::notesplit::Settings as SplitterSettings;
 use crate::patternbox::{BoxNotification, Settings as BoxSettings};
 use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::source::SourceSet;
@@ -295,6 +296,8 @@ pub struct Controller {
     pub(super) sent_sources: Vec<(NodeId, SourceSet)>,
     /// What the audio thread was last told that each pattern box is set to (`app::patterns`), by the box's node: a box that is not here has not been told its settings.
     pub(super) sent_boxes: Vec<(NodeId, BoxSettings)>,
+    /// What the audio thread was last told that each note splitter is set to (`app::splitters`), by the splitter's node: a splitter that is not here has not been told its settings.
+    pub(super) sent_splitters: Vec<(NodeId, SplitterSettings)>,
     /// How many plans (the notes and the length) the audio thread has been given for each pattern box that has had more than the one it was made with (`app::patterns`), by the box's node: what a recording says it was made on.
     pub(super) sent_plans: Vec<(NodeId, u32)>,
     /// Who hears what `apply` does.
@@ -376,6 +379,7 @@ impl Controller {
             last_device_poll: now,
             sent_sources,
             sent_boxes: Vec::new(),
+            sent_splitters: Vec::new(),
             sent_plans: Vec::new(),
             subscribers: Subscribers::default(),
             history: History::default(),
@@ -1096,7 +1100,7 @@ impl Controller {
                     let value = value_of(self.model.groups.get(group)?.effects.get(effect)?, index)?;
                     Some(GraphCommand::SetGroupParameter { group, index: effect, param_index: index, value })
                 }
-                NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => None,
+                NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Splitter(_) | NodePath::Module(_) => None,
             },
             Driven::Setting { modulator, field } => {
                 let NodePath::Modulator { at, index } = self.model.locate(modulator)? else { return None };

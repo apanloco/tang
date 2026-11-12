@@ -233,6 +233,7 @@ function drivenName(snapshot: Snapshot, to: Endpoint): string | undefined {
     case "modOut":
     case "eventsIn":
     case "eventsOut":
+    case "eventsOutRest":
     case "audioIn":
     case "audioInSide":
     case "audioOut":
@@ -329,6 +330,10 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
     // as a setting is. (A node that is no box is refused, and the plan is not looked at.)
     case "addPattern":
       return added("add a pattern");
+    // (A note splitter is not in the page's mock until step 128, which answers these intents as refused, and a refusal leaves no step.)
+    case "addSplitter":
+    case "setSplitterField":
+      return "nothing";
     case "setPatternBoxField": {
       const box = nodeOf(intent.node);
       if (box?.kind !== "pattern") return "nothing";
@@ -350,7 +355,7 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       return added(intent.source.type === "keys" ? "add Keys" : `add ${trimmed(intent.source.name)}`);
     // A cable that is drawn is an add too, and its level (an audio cable's: a cable of notes has none) a step that a drag makes one of, put back to the level it found. The ports tell which cable it is.
     case "addCable":
-      return added(intent.from.port.type === "eventsOut" || intent.to.port.type === "eventsIn" ? "draw a cable of notes" : "draw an audio cable");
+      return added(intent.from.port.type === "eventsOut" || intent.from.port.type === "eventsOutRest" || intent.to.port.type === "eventsIn" ? "draw a cable of notes" : "draw an audio cable");
     case "setCableGain": {
       const cable = snapshot.graph.edges.find((e) => isAudioCable(e) && e.id === intent.edge);
       if (cable?.kind !== "cable") return "nothing";

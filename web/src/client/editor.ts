@@ -79,6 +79,8 @@ const DOING: Record<Intent["type"], string> = {
   patternBoxTransport: "record or play a pattern box",
   clearPatternBox: "clear a pattern box",
   setPatternBoxNotes: "change the notes of a pattern box",
+  addSplitter: "add a note splitter",
+  setSplitterField: "change a note splitter's setting",
   setNodeUi: "move a node",
   setPinned: "choose the knobs of a node",
   addGroup: "add a group",

@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::notesplit::Pick;
 use crate::patternbox::{BoxNote, Clock, MAX_NOTES};
 use crate::plugin::Plugin;
 use crate::plugin::chain::MAX_STEPS;
-use crate::source::MAX_BOXES;
+use crate::source::{MAX_BOXES, MAX_SPLITTERS};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RemapTarget {
@@ -229,6 +230,8 @@ pub struct SessionConfig {
     pub devices: Vec<DeviceConfig>,
     /// The pattern boxes that the session has (`[[pattern]]`, step 123), in the order of the file, which is how a cable names them (`pattern[0]`).
     pub patterns: Vec<PatternBoxConfig>,
+    /// The note splitters that the session has (`[[splitter]]`, step 127), in the order of the file, which is how a cable names them (`splitter[0]`, and `splitter[0].rest` for their second output).
+    pub splitters: Vec<SplitterConfig>,
     /// The modulators that belong to no lane and no group (the top-level `[[modulator]]`), in the order of the file, which is how the cables of one of them name another (`mod_rate = 1`).
     /// Each hears every note unless it says whose (`hears`), and its cables name the plugin they drive by its place in the session (`to = "instrument[0].effect[1]"`).
     /// `move_modulators_to_the_session` puts the modulators of the lanes and of the groups here too.
@@ -281,6 +284,14 @@ pub struct PatternBoxConfig {
     pub overdub: bool,
     pub click: bool,
     pub notes: Vec<BoxNote>,
+    /// Where the node is drawn.
+    pub ui: Option<NodeUi>,
+}
+
+/// A note splitter (`[[splitter]]`, step 127): what it is called, which note it sends to its first output and where it is drawn.
+pub struct SplitterConfig {
+    pub name: String,
+    pub pick: Pick,
     /// Where the node is drawn.
     pub ui: Option<NodeUi>,
 }
@@ -351,16 +362,20 @@ pub enum CablePlace {
     Device(usize),
     /// `pattern[0]`: a pattern box, the first of the `[[pattern]]` tables (step 123): where a cable of notes starts (it plays them to a lane) and where one ends (a source's notes are what it records).
     Pattern(usize),
+    /// `splitter[0]`: a note splitter, the first of the `[[splitter]]` tables (step 127): where a cable of notes starts, at its first output (the note that it picks), and where one ends (the notes that it splits).
+    Splitter(usize),
+    /// `splitter[0].rest`: the second output of a note splitter (step 127), which has the notes that are not the pick: where a cable of notes starts.
+    SplitterRest(usize),
 }
 
 impl CablePlace {
-    /// Whether it is a source of notes, which only a cable of notes starts at: the keys, a device and a pattern box.
+    /// Whether it is a source of notes, which only a cable of notes starts at: the keys, a device, a pattern box and a note splitter (either output). (A splitter and a box are where a cable of notes ends too.)
     pub fn is_source(self) -> bool {
-        matches!(self, CablePlace::Keys | CablePlace::Device(_) | CablePlace::Pattern(_))
+        matches!(self, CablePlace::Keys | CablePlace::Device(_) | CablePlace::Pattern(_) | CablePlace::Splitter(_) | CablePlace::SplitterRest(_))
     }
 
-    /// The place that `text` names, if it names one: `master`, `keys`, `device[0]`, `pattern[0]`, `instrument[0]`, `instrument[0].effect[1]`, `instrument[0].effect[1].side`, `group[0]`, `group[0].effect[1]` or
-    /// `group[0].effect[1].side`, the numbers whole and from 0.
+    /// The place that `text` names, if it names one: `master`, `keys`, `device[0]`, `pattern[0]`, `splitter[0]`, `splitter[0].rest`, `instrument[0]`, `instrument[0].effect[1]`, `instrument[0].effect[1].side`, `group[0]`,
+    /// `group[0].effect[1]` or `group[0].effect[1].side`, the numbers whole and from 0.
     pub fn parse(text: &str) -> Option<CablePlace> {
         fn indexed(text: &str) -> Option<(&str, usize)> {
             let (word, rest) = text.split_once('[')?;
@@ -376,6 +391,13 @@ impl CablePlace {
         }
         if text == "keys" {
             return Some(CablePlace::Keys);
+        }
+        // (`splitter[0].rest` is the one place that has a word after the node that is not an effect's.)
+        if let Some(head) = text.strip_suffix(".rest") {
+            return match indexed(head)? {
+                ("splitter", splitter) => Some(CablePlace::SplitterRest(splitter)),
+                _ => None,
+            };
         }
         let mut parts = text.split('.');
         let head = parts.next()?;
@@ -403,6 +425,7 @@ impl CablePlace {
             (("group", group), Some(effect), true) => Some(CablePlace::BusEffectSide { group, effect }),
             (("device", device), None, _) => Some(CablePlace::Device(device)),
             (("pattern", pattern), None, _) => Some(CablePlace::Pattern(pattern)),
+            (("splitter", splitter), None, _) => Some(CablePlace::Splitter(splitter)),
             _ => None,
         }
     }
@@ -421,6 +444,8 @@ impl std::fmt::Display for CablePlace {
             CablePlace::Keys => f.write_str("keys"),
             CablePlace::Device(device) => write!(f, "device[{device}]"),
             CablePlace::Pattern(pattern) => write!(f, "pattern[{pattern}]"),
+            CablePlace::Splitter(splitter) => write!(f, "splitter[{splitter}]"),
+            CablePlace::SplitterRest(splitter) => write!(f, "splitter[{splitter}].rest"),
         }
     }
 }
@@ -467,6 +492,16 @@ pub fn pattern_name(text: &str) -> String {
     let name: String = text.chars().filter(|c| !c.is_control()).collect();
     let name = name.trim();
     if name.is_empty() { DEFAULT_PATTERN_NAME.to_string() } else { name.to_string() }
+}
+
+/// What a note splitter is called when the file has no name for it, or a blank one, and what a name of nothing becomes when a person sets one.
+pub const DEFAULT_SPLITTER_NAME: &str = "Splitter";
+
+/// The name that a note splitter is called by, from the text a file has: the text without its control characters and the spaces round it, and `DEFAULT_SPLITTER_NAME` for one that is nothing then.
+pub fn splitter_name(text: &str) -> String {
+    let name: String = text.chars().filter(|c| !c.is_control()).collect();
+    let name = name.trim();
+    if name.is_empty() { DEFAULT_SPLITTER_NAME.to_string() } else { name.to_string() }
 }
 
 /// What a module that was added as one thing is called when the file has no name for it, or a blank one.
@@ -743,6 +778,8 @@ struct SessionRaw {
     devices: Vec<DeviceRaw>,
     #[serde(default, rename = "pattern")]
     patterns: Vec<PatternBoxRaw>,
+    #[serde(default, rename = "splitter")]
+    splitters: Vec<SplitterRaw>,
     #[serde(default)]
     piano: Option<PianoConfig>,
     #[serde(default, deserialize_with = "lenient_table")]
@@ -816,6 +853,17 @@ struct PatternBoxRaw {
     click: bool,
     #[serde(default)]
     notes: Vec<BoxNoteRaw>,
+    #[serde(default, deserialize_with = "lenient_ui")]
+    ui: Option<NodeUi>,
+}
+
+/// A `[[splitter]]` table as the file has it.
+#[derive(Deserialize)]
+struct SplitterRaw {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    pick: Option<String>,
     #[serde(default, deserialize_with = "lenient_ui")]
     ui: Option<NodeUi>,
 }
@@ -1193,6 +1241,17 @@ pub fn parse_raw(content: &str) -> anyhow::Result<SessionConfig> {
             ui: pattern.ui,
         });
     }
+    if raw.splitters.len() > MAX_SPLITTERS {
+        anyhow::bail!("splitter[{MAX_SPLITTERS}]: a session has at most {MAX_SPLITTERS} note splitters");
+    }
+    let mut splitters: Vec<SplitterConfig> = Vec::with_capacity(raw.splitters.len());
+    for (at, splitter) in raw.splitters.into_iter().enumerate() {
+        let pick = match splitter.pick.as_deref() {
+            None => Pick::Lowest,
+            Some(word) => Pick::parse(word).ok_or_else(|| anyhow::anyhow!("splitter[{at}].pick is \"{word}\": a note splitter picks the \"lowest\" note or the \"highest\""))?,
+        };
+        splitters.push(SplitterConfig { name: splitter_name(splitter.name.as_deref().unwrap_or("")), pick, ui: splitter.ui });
+    }
     let cables = raw
         .cables
         .into_iter()
@@ -1200,7 +1259,7 @@ pub fn parse_raw(content: &str) -> anyhow::Result<SessionConfig> {
         .map(|(i, cable)| {
             let place = |end: &str, text: &str| {
                 CablePlace::parse(text).ok_or_else(|| {
-                    anyhow::anyhow!("cable[{i}].{end}: \"{text}\" is not a place of the session (instrument[0], instrument[0].effect[1], group[0], group[0].effect[1], master, keys, device[0] or pattern[0])")
+                    anyhow::anyhow!("cable[{i}].{end}: \"{text}\" is not a place of the session (instrument[0], instrument[0].effect[1], group[0], group[0].effect[1], master, keys, device[0], pattern[0], splitter[0] or splitter[0].rest)")
                 })
             };
             let (from, to) = (place("from", &cable.from)?, place("to", &cable.to)?);
@@ -1232,7 +1291,7 @@ pub fn parse_raw(content: &str) -> anyhow::Result<SessionConfig> {
         .collect();
     let keys = raw.keys.map(|keys| KeysConfig { ui: keys.ui });
     let master = raw.master.map(|master| MasterConfig { volume: master.volume.map(|volume| volume as f32), limiter: master.limiter, ceiling: master.ceiling.map(|ceiling| ceiling as f32) });
-    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), master, cables, keys, devices, patterns, free_modulators: raw.modulators, modules })
+    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), master, cables, keys, devices, patterns, splitters, free_modulators: raw.modulators, modules })
 }
 
 /// A place in a rack that no modulator is at: a cable that names it is left out by the loader, as one that names a modulator that is not there is.
@@ -1596,6 +1655,8 @@ pub struct SaveSources {
     pub devices: Vec<SaveDevice>,
     /// The pattern boxes (`[[pattern]]`, step 123), in the order that a cable names them in (`pattern[0]`).
     pub patterns: Vec<SavePatternBox>,
+    /// The note splitters (`[[splitter]]`, step 127), in the order that a cable names them in (`splitter[0]`).
+    pub splitters: Vec<SaveSplitter>,
     /// The modulators, in order: each cable names the plugin it drives by its place (`SaveModTarget::to`).
     pub modulators: Vec<SaveModulator>,
     /// The modules that were added as one thing (`[[module]]`, step 108), in order, each naming the lanes and the modulators that came with it by their places.
@@ -1635,6 +1696,14 @@ pub struct SavePatternBox {
     pub overdub: bool,
     pub click: bool,
     pub notes: Vec<BoxNote>,
+    /// Where the node is drawn.
+    pub ui: Option<NodeUi>,
+}
+
+/// A note splitter (`[[splitter]]`).
+pub struct SaveSplitter {
+    pub name: String,
+    pub pick: Pick,
     /// Where the node is drawn.
     pub ui: Option<NodeUi>,
 }
@@ -1730,6 +1799,9 @@ struct SessionOut {
     /// The pattern boxes are sources too: they come after the devices that they record and before the lanes that they play to.
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "pattern")]
     patterns: Vec<PatternBoxOut>,
+    /// The note splitters take the notes of the sources and the boxes above them and send them to the lanes below.
+    #[serde(skip_serializing_if = "Vec::is_empty", rename = "splitter")]
+    splitters: Vec<SplitterOut>,
     #[serde(rename = "instrument")]
     instruments: Vec<InstrumentSlotOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "group")]
@@ -1790,6 +1862,16 @@ struct PatternBoxOut {
     ui: Option<NodeUiOut>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     notes: Vec<BoxNoteOut>,
+}
+
+/// One `[[splitter]]` table in the output: the pick is written only when it is not the lowest note, which is what a new splitter picks.
+#[derive(Serialize)]
+struct SplitterOut {
+    name: String,
+    #[serde(skip_serializing_if = "is_lowest")]
+    pick: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ui: Option<NodeUiOut>,
 }
 
 /// A note of a `[[pattern]]` in the output: `{ at = 0, len = 0.5, note = "C4", vel = 100 }`.
@@ -2234,6 +2316,15 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
         .collect()
 }
 
+fn splitter_to_out(splitter: &SaveSplitter) -> SplitterOut {
+    SplitterOut { name: splitter.name.clone(), pick: splitter.pick.word(), ui: splitter.ui.map(NodeUiOut::from) }
+}
+
+/// Whether the word of a splitter's pick is the one that a new splitter has (`serde`'s `skip_serializing_if` takes a reference).
+fn is_lowest(word: &&'static str) -> bool {
+    *word == Pick::Lowest.word()
+}
+
 fn pattern_box_to_out(pattern: &SavePatternBox) -> PatternBoxOut {
     PatternBoxOut {
         name: pattern.name.clone(),
@@ -2276,6 +2367,7 @@ pub fn to_toml(
         keys: sources.keys.as_ref().map(|keys| KeysOut { ui: keys.ui.map(NodeUiOut::from) }),
         devices: sources.devices.iter().map(|device| DeviceOut { name: device.name.clone(), ui: device.ui.map(NodeUiOut::from) }).collect(),
         patterns: sources.patterns.iter().map(pattern_box_to_out).collect(),
+        splitters: sources.splitters.iter().map(splitter_to_out).collect(),
         cables: cables.iter().map(|cable| CableOut { from: cable.from.to_string(), to: cable.to.to_string(), gain: cable.gain }).collect(),
         piano: piano.map(|p| PianoOut { scale: p.scale.clone(), locked: p.locked }),
         ui: master_ui.map(|ui| UiOut { master: ui.into() }),
@@ -4141,6 +4233,11 @@ plugin = "builtin:osc"
             ("pattern[0]", CablePlace::Pattern(0)),
             ("pattern[15]", CablePlace::Pattern(15)),
             (" pattern[2] ", CablePlace::Pattern(2)),
+            ("splitter[0]", CablePlace::Splitter(0)),
+            ("splitter[15]", CablePlace::Splitter(15)),
+            ("splitter[0].rest", CablePlace::SplitterRest(0)),
+            ("splitter[12].rest", CablePlace::SplitterRest(12)),
+            (" splitter[2].rest ", CablePlace::SplitterRest(2)),
         ] {
             assert_eq!(CablePlace::parse(text), Some(place), "{text:?}");
             assert_eq!(CablePlace::parse(&place.to_string()), Some(place), "{text:?} is written and read back the same");
@@ -4155,14 +4252,18 @@ plugin = "builtin:osc"
         assert_eq!(CablePlace::Keys.to_string(), "keys");
         assert_eq!(CablePlace::Device(3).to_string(), "device[3]");
         assert_eq!(CablePlace::Pattern(4).to_string(), "pattern[4]");
+        assert_eq!(CablePlace::Splitter(5).to_string(), "splitter[5]");
+        assert_eq!(CablePlace::SplitterRest(5).to_string(), "splitter[5].rest");
     }
 
     #[test]
-    fn only_the_keys_the_devices_and_the_boxes_are_sources_of_notes() {
+    fn only_the_keys_the_devices_the_boxes_and_the_splitters_are_sources_of_notes() {
         for (place, source) in [
             (CablePlace::Keys, true),
             (CablePlace::Device(0), true),
             (CablePlace::Pattern(0), true),
+            (CablePlace::Splitter(0), true),
+            (CablePlace::SplitterRest(0), true),
             (CablePlace::Instrument(0), false),
             (CablePlace::Effect { instrument: 0, effect: 0 }, false),
             (CablePlace::Group(0), false),
@@ -4184,6 +4285,9 @@ plugin = "builtin:osc"
             "keys.effect[0]", "devices[0]", "instrument[0].side", "group[0].side", "instrument[0].effect[0].sides", "instrument[0].effect[0].Side", "instrument[0].effect[0].side.x", "instrument[0].effect[0].",
             "instrument[0].effect[0].side[0]", "device[0].effect[0].side", "master.side", "keys.side", "instrument[0].side.effect[0]",
             "pattern", "pattern[]", "pattern[x]", "pattern[-1]", "pattern[+1]", "pattern[ 1 ]", "Pattern[0]", "patterns[0]", "pattern[0].effect[0]", "pattern[0].side", "pattern[0].effect[0].side", "pattern[99999999999999999999]",
+            "splitter", "splitter[]", "splitter[x]", "splitter[-1]", "splitter[+1]", "splitter[ 1 ]", "Splitter[0]", "splitters[0]", "splitter[0].effect[0]", "splitter[0].side", "splitter[99999999999999999999]",
+            "splitter[0].Rest", "splitter[0].rest.rest", "splitter[0].rest[0]", "splitter[0].res", "splitter[0]rest", "splitter[0] .rest", "splitter[0]. rest", "splitter[0].rests", "splitter[0].rest.side", "splitter[-1].rest",
+            "splitter[x].rest", "splitter.rest", "splitter[].rest", "keys.rest", "pattern[0].rest", "device[0].rest", "instrument[0].rest", "instrument[0].effect[0].rest", "group[0].rest", "master.rest", ".rest", "rest", "rest[0]",
         ] {
             assert_eq!(CablePlace::parse(text), None, "{text:?}");
         }
@@ -4347,11 +4451,11 @@ to = "instrument[1]"
         // (The audio cable that is drawn after it has one, as it always had, and the place that a cable names is told in the words of the file.)
         parse(&format!("{OSC}[[cable]]\nfrom = \"instrument[0]\"\nto = \"master\"\ngain = 0.5\n")).unwrap();
         let error = parse(&format!("{OSC}[[cable]]\nfrom = \"mic\"\nto = \"instrument[0]\"\n")).err().unwrap().to_string();
-        assert!(error.contains("cable[0].from: \"mic\" is not a place of the session") && error.contains("keys, device[0] or pattern[0]"), "{error}");
+        assert!(error.contains("cable[0].from: \"mic\" is not a place of the session") && error.contains("keys, device[0], pattern[0], splitter[0] or splitter[0].rest"), "{error}");
     }
 
     fn sources(keys: Option<Option<NodeUi>>, devices: &[(&str, Option<NodeUi>)]) -> SaveSources {
-        SaveSources { keys: keys.map(|ui| SaveKeys { ui }), devices: devices.iter().map(|(name, ui)| SaveDevice { name: name.to_string(), ui: *ui }).collect(), patterns: Vec::new(), modulators: Vec::new(), modules: Vec::new(), master: None }
+        SaveSources { keys: keys.map(|ui| SaveKeys { ui }), devices: devices.iter().map(|(name, ui)| SaveDevice { name: name.to_string(), ui: *ui }).collect(), patterns: Vec::new(), splitters: Vec::new(), modulators: Vec::new(), modules: Vec::new(), master: None }
     }
 
     #[test]
@@ -4907,5 +5011,120 @@ notes = [
         let saved = SaveSources { patterns: vec![pattern_box(name, vec![])], ..SaveSources::default() };
         let text = to_toml(&one_lane(), &[], &[], &saved, None, None, None).unwrap();
         assert_eq!(parse(&text).unwrap().patterns[0].name, name);
+    }
+
+    // -- note splitters (step 127, P4i-B): `[[splitter]]` --
+
+    fn splitter(name: &str, pick: Pick) -> SaveSplitter {
+        SaveSplitter { name: name.to_string(), pick, ui: None }
+    }
+
+    #[test]
+    fn a_splitter_a_file_says_nothing_of_is_a_new_one_and_what_it_says_is_read_as_it_is() {
+        let config = parse(&format!("[[splitter]]\n{OSC}")).unwrap();
+        let plain = &config.splitters[0];
+        assert_eq!((plain.name.as_str(), plain.pick, plain.ui), (DEFAULT_SPLITTER_NAME, Pick::Lowest, None));
+        let text = "[[splitter]]\nname = \"  Bass line \"\npick = \"highest\"\nui = { x = 300, y = 40.5 }\n";
+        let config = parse(&format!("{text}{OSC}")).unwrap();
+        let bass = &config.splitters[0];
+        assert_eq!((bass.name.as_str(), bass.pick, bass.ui), ("Bass line", Pick::Highest, Some(NodeUi { x: 300.0, y: 40.5 })));
+        // The tables are read in the order of the file, which is how a cable names them.
+        let two = parse(&format!("[[splitter]]\nname = \"A\"\n[[splitter]]\nname = \"B\"\npick = \"lowest\"\n{OSC}")).unwrap();
+        assert_eq!(two.splitters.iter().map(|splitter| (splitter.name.as_str(), splitter.pick)).collect::<Vec<_>>(), [("A", Pick::Lowest), ("B", Pick::Lowest)]);
+        assert!(parse(OSC).unwrap().splitters.is_empty());
+        // A place that is not a number is not placed (a layout is not worth refusing a session for), as for every node.
+        assert_eq!(parse(&format!("[[splitter]]\nui = {{ x = \"a\", y = 1 }}\n{OSC}")).unwrap().splitters[0].ui, None);
+    }
+
+    #[test]
+    fn the_name_of_a_splitter_is_the_text_without_its_control_characters_and_the_spaces_round_it_and_the_default_for_nothing() {
+        for (text, name) in [("A", "A"), ("  A b  ", "A b"), ("A\u{7}B", "AB"), ("", DEFAULT_SPLITTER_NAME), ("   ", DEFAULT_SPLITTER_NAME), ("\u{7}\t", DEFAULT_SPLITTER_NAME), ("Å ö 😀", "Å ö 😀")] {
+            assert_eq!(splitter_name(text), name, "{text:?}");
+        }
+        let long = "x".repeat(500);
+        assert_eq!(splitter_name(&long), long, "what the intent takes, the file takes: the name is not cut");
+    }
+
+    #[test]
+    fn a_splitter_that_says_a_pick_that_is_none_refuses_the_session_with_its_place() {
+        for (text, why) in [
+            ("[[splitter]]\npick = \"middle\"\n", "splitter[0].pick is \"middle\": a note splitter picks the \"lowest\" note or the \"highest\""),
+            ("[[splitter]]\n[[splitter]]\npick = \"Highest\"\n", "splitter[1].pick is \"Highest\""),
+            ("[[splitter]]\npick = \"\"\n", "splitter[0].pick is \"\""),
+        ] {
+            let error = parse(&format!("{text}{OSC}")).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
+            assert!(error.contains(why), "{error}\nfor:\n{text}");
+        }
+        for (word, pick) in [("lowest", Pick::Lowest), ("highest", Pick::Highest)] {
+            assert_eq!(parse(&format!("[[splitter]]\npick = \"{word}\"\n{OSC}")).unwrap().splitters[0].pick, pick, "{word}");
+            assert_eq!(pick.word(), word, "and the word is the one that is written");
+        }
+        // (A pick that is not text is a mistake of the file's types, which refuses it as any key of the wrong type does.)
+        assert!(parse(&format!("[[splitter]]\npick = 3\n{OSC}")).is_err());
+    }
+
+    #[test]
+    fn a_session_has_sixteen_splitters_at_the_most_and_more_refuses_the_session() {
+        let sixteen = "[[splitter]]\n".repeat(MAX_SPLITTERS);
+        assert_eq!(parse(&format!("{sixteen}{OSC}")).unwrap().splitters.len(), MAX_SPLITTERS);
+        let error = parse(&format!("{sixteen}[[splitter]]\n{OSC}")).err().unwrap().to_string();
+        assert!(error.contains("splitter[16]: a session has at most 16 note splitters"), "{error}");
+    }
+
+    #[test]
+    fn a_cable_is_read_that_starts_at_a_splitter_or_at_its_second_output_and_one_that_ends_at_it_and_a_cable_of_notes_has_no_level() {
+        let text = format!(
+            "[keys]\n[[splitter]]\n{OSC}[[cable]]\nfrom = \"keys\"\nto = \"splitter[0]\"\n[[cable]]\nfrom = \"splitter[0]\"\nto = \"instrument[0]\"\n[[cable]]\nfrom = \"splitter[0].rest\"\nto = \"instrument[0]\"\n"
+        );
+        let config = parse(&text).unwrap();
+        let places: Vec<(CablePlace, CablePlace)> = config.cables.iter().map(|cable| (cable.from, cable.to)).collect();
+        assert_eq!(
+            places,
+            [(CablePlace::Keys, CablePlace::Splitter(0)), (CablePlace::Splitter(0), CablePlace::Instrument(0)), (CablePlace::SplitterRest(0), CablePlace::Instrument(0))]
+        );
+        for from in ["splitter[0]", "splitter[0].rest"] {
+            let error = parse(&format!("[[splitter]]\n{OSC}[[cable]]\nfrom = \"{from}\"\nto = \"instrument[0]\"\ngain = 0.5\n")).err().unwrap().to_string();
+            assert!(error.contains("cable[0].gain: a cable of notes has no level"), "{error}");
+        }
+        let error = parse(&format!("{OSC}[[cable]]\nfrom = \"splitter[0].second\"\nto = \"instrument[0]\"\n")).err().unwrap().to_string();
+        assert!(error.contains("cable[0].from: \"splitter[0].second\" is not a place of the session") && error.contains("splitter[0] or splitter[0].rest"), "{error}");
+    }
+
+    #[test]
+    fn a_splitter_is_written_after_the_boxes_and_before_the_lanes_and_the_pick_that_a_new_splitter_has_is_not_written() {
+        let placed = SaveSplitter { name: "Bass".to_string(), pick: Pick::Highest, ui: Some(NodeUi { x: 300.0, y: 40.0 }) };
+        let saved = SaveSources { keys: Some(SaveKeys { ui: None }), patterns: vec![pattern_box("Box", vec![])], splitters: vec![placed, splitter("Plain", Pick::Lowest)], ..SaveSources::default() };
+        let cables = [
+            cable(CablePlace::Keys, CablePlace::Splitter(0), 1.0),
+            cable(CablePlace::Splitter(0), CablePlace::Instrument(0), 1.0),
+            cable(CablePlace::SplitterRest(0), CablePlace::Instrument(0), 1.0),
+            cable(CablePlace::Pattern(0), CablePlace::Splitter(1), 1.0),
+        ];
+        let text = to_toml(&one_lane(), &[], &cables, &saved, None, None, None).unwrap();
+        assert!(
+            text.contains(
+                "sync = \"own\"\n\n[[splitter]]\nname = \"Bass\"\npick = \"highest\"\nui = { x = 300, y = 40 }\n\n[[splitter]]\nname = \"Plain\"\n\n[[instrument]]"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("pick = \"lowest\""), "{text}");
+        for pair in ["from = \"keys\"\nto = \"splitter[0]\"", "from = \"splitter[0]\"\nto = \"instrument[0]\"", "from = \"splitter[0].rest\"\nto = \"instrument[0]\"", "from = \"pattern[0]\"\nto = \"splitter[1]\""] {
+            assert!(text.contains(pair), "{pair}\n{text}");
+        }
+        let read = parse(&text).unwrap();
+        assert_eq!(read.splitters.iter().map(|splitter| (splitter.name.as_str(), splitter.pick, splitter.ui)).collect::<Vec<_>>(), [("Bass", Pick::Highest, Some(NodeUi { x: 300.0, y: 40.0 })), ("Plain", Pick::Lowest, None)]);
+        assert_eq!(read.cables.iter().map(|cable| cable.from).collect::<Vec<_>>(), [CablePlace::Keys, CablePlace::Splitter(0), CablePlace::SplitterRest(0), CablePlace::Pattern(0)], "each cable at the output it started at");
+        // A session that has none writes none, and is the file it was.
+        let none = to_toml(&one_lane(), &[], &[], &SaveSources::default(), None, None, None).unwrap();
+        assert!(!none.contains("splitter"), "{none}");
+    }
+
+    #[test]
+    fn a_splitter_with_a_name_that_needs_quoting_is_written_and_read_back_the_same() {
+        let name = "A \"quoted\" \\ name, ünïcode 😀";
+        let saved = SaveSources { splitters: vec![splitter(name, Pick::Highest)], ..SaveSources::default() };
+        let text = to_toml(&one_lane(), &[], &[], &saved, None, None, None).unwrap();
+        let read = &parse(&text).unwrap().splitters[0];
+        assert_eq!((read.name.as_str(), read.pick), (name, Pick::Highest));
     }
 }

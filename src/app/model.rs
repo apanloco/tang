@@ -13,10 +13,11 @@
 
 use crate::app::intent::{Intent, IntentError, ModulatorField};
 use crate::plugin;
+use crate::notesplit::Pick;
 use crate::patternbox::{BoxNote, Clock, Status as BoxStatus};
 use crate::plugin::chain::{CableFrom, CableProblem, CableTo, CrossModField, GroupWiring, LaneWiring, ModTargetKind, ModulatorLocation};
 use crate::session::{NodeUi, Route};
-use crate::source::{MAX_BOXES, Source, SourceSet};
+use crate::source::{MAX_BOXES, MAX_SPLITTERS, Output, Source, SourceSet};
 use crate::telemetry::{MeterSlots, Slot, SlotAllocator};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -107,6 +108,8 @@ pub enum NodePath {
     Source(usize),
     /// A pattern box (P4h of `docs/patch-graph.md` §11.6): a node that stores notes, takes notes in and sends notes out.
     Pattern(usize),
+    /// A note splitter (P4i of `docs/patch-graph.md` §11.6): a node that takes notes in and sends the lowest (or the highest) of them out on one output and the others on a second.
+    Splitter(usize),
     /// A module that was added to the session as one thing (step 108): the box that a front-end draws in place of its lanes and modulators.
     Module(usize),
 }
@@ -203,7 +206,11 @@ pub struct SessionModel {
     /// The pattern boxes (P4h of `docs/patch-graph.md` §11.6), in the order they were made: each stores notes in beats, records what the sources that its cables come from play, and plays them to the lanes that its
     /// cables go to. At most `MAX_BOXES`.
     pub patterns: Vec<PatternBox>,
-    /// The event cables that have been drawn, in the order of their ids: the notes of a source or a box go to a lane, or the notes of a source go to a box.
+    /// The note splitters (P4i of `docs/patch-graph.md` §11.6), in the order they were made: each takes the notes of the sources that its cables come from and sends the lowest (or the highest) of them to the lanes that
+    /// the cables from its first output go to, and the others to the lanes that the cables from its second go to. At most `MAX_SPLITTERS`.
+    pub splitters: Vec<NoteSplitter>,
+    /// The event cables that have been drawn, in the order of their ids: the notes of a source or a box go to a lane, or the notes of a source go to a box, and a splitter takes the notes of a source or a box and
+    /// sends them, on the output that a cable starts at, to a lane.
     pub event_cables: Vec<EventCable>,
     /// The modulators that belong to no lane and no group (P5b-2 of `docs/patch-graph.md` §11.6), in the order they were made: each hears every note, and its cables drive any plugin
     /// of the session and the settings of the other free modulators and the depths of their cables.
@@ -226,6 +233,7 @@ impl Default for SessionModel {
             cables: Vec::new(),
             sources: Vec::new(),
             patterns: Vec::new(),
+            splitters: Vec::new(),
             event_cables: Vec::new(),
             free_modulators: Vec::new(),
             modules: Vec::new(),
@@ -281,10 +289,48 @@ impl SourceKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EventCable {
     pub id: EdgeId,
-    /// The node of the source it starts at.
+    /// The node of the source, the pattern box or the note splitter it starts at.
     pub from: NodeId,
-    /// The node of the lane it ends at (the lane's instrument is the lane's own node).
+    /// Which of its outputs it starts at: a note splitter has two (the pick and the rest), and every other node one, which is `Output::Pick`.
+    pub output: Output,
+    /// The node of the lane, the pattern box or the note splitter it ends at (the lane's instrument is the lane's own node).
     pub to: NodeId,
+}
+
+impl EventCable {
+    /// A cable that starts at the first (or only) output of `from`.
+    #[cfg(test)]
+    pub fn new(id: EdgeId, from: NodeId, to: NodeId) -> EventCable {
+        EventCable { id, from, output: Output::Pick, to }
+    }
+}
+
+/// A note splitter that a session has (P4i of `docs/patch-graph.md` §11.6): a node of the graph with an input of events, which the notes of the sources that it splits come in at, and **two outputs of events**, which the
+/// lanes that hear the pick and the lanes that hear the rest are cabled to. Its id is from the series that the other nodes' are.
+///
+/// The pick is the note that it sends to its first output: the lowest of the notes that are held, or the highest (`pick`); the other notes go to the second. What it does with a chord is the audio thread's (`notesplit`), and nothing of
+/// that is the session's: everything here is saved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteSplitter {
+    pub node: NodeId,
+    /// Which of the engine's `MAX_SPLITTERS` splitters this is (`Source::splitter(slot, …)`): the lowest that was free when the splitter was made, kept as long as it is in the session. It is not saved, and a client is not told it.
+    pub slot: u8,
+    /// What the splitter is called: "Splitter 1" and so on until a person says another.
+    pub name: String,
+    /// Which note goes to the first output.
+    pub pick: Pick,
+}
+
+impl NoteSplitter {
+    /// A splitter that picks the lowest note: what `AddSplitter` makes.
+    pub fn new(node: NodeId, slot: u8, name: String) -> NoteSplitter {
+        NoteSplitter { node, slot, name, pick: Pick::Lowest }
+    }
+
+    /// The source that the notes of one of its outputs are heard as.
+    pub fn source(&self, output: Output) -> Source {
+        Source::splitter(self.slot as usize, output)
+    }
 }
 
 /// A pattern box that a session has (P4h of `docs/patch-graph.md` §11.6): a node of the graph with an input of events, which the notes of the sources that it records come in at, and an output of events, which the
@@ -576,6 +622,28 @@ impl SessionModel {
         (1..).map(|n| format!("Pattern {n}")).find(|name| self.patterns.iter().all(|pattern| pattern.name != *name)).expect("there are only so many boxes")
     }
 
+    /// The note splitter whose node is `node`, if there is one.
+    pub fn splitter(&self, node: NodeId) -> Option<&NoteSplitter> {
+        self.splitters.iter().find(|splitter| splitter.node == node)
+    }
+
+    /// Put a note splitter among the splitters at `index` (at the end for one past it): the place it went to.
+    pub fn insert_splitter_at(&mut self, index: usize, splitter: NoteSplitter) -> usize {
+        let index = index.min(self.splitters.len());
+        self.splitters.insert(index, splitter);
+        index
+    }
+
+    /// The lowest of the engine's splitters that no splitter of the session has, or none when every one is taken (`MAX_SPLITTERS` splitters).
+    pub fn free_splitter_slot(&self) -> Option<u8> {
+        (0..MAX_SPLITTERS as u8).find(|slot| self.splitters.iter().all(|splitter| splitter.slot != *slot))
+    }
+
+    /// What a new splitter is called: "Splitter N" for the lowest N, from 1, that no splitter is called.
+    pub fn next_splitter_name(&self) -> String {
+        (1..).map(|n| format!("Splitter {n}")).find(|name| self.splitters.iter().all(|splitter| splitter.name != *name)).expect("there are only so many splitters")
+    }
+
     /// The place among the modules of the one that `member` came with: a lane or a modulator (a node is in at most one module).
     pub fn module_of(&self, member: NodeId) -> Option<usize> {
         self.modules.iter().position(|module| module.members.contains(&member))
@@ -609,37 +677,59 @@ impl SessionModel {
         self.event_cables.binary_search_by_key(&id, |cable| cable.id).ok().map(|at| &self.event_cables[at])
     }
 
-    /// The ends that a cable from the port `from` to the port `to` of the graph has, if it is a cable of notes: the node of the source or the pattern box that it starts at (`EventsOut`) and the node of the
-    /// lane or the box that it ends at (`EventsIn`; a lane's instrument is the lane's own node). A box takes the notes of a source (and no box's: there is no cable from a box to a box), and sends its own to a lane.
-    /// The reason, if they are not that: a node that is not there is not found, and a port or a node of another kind is invalid.
-    pub fn event_cable_ends(&self, from: crate::app::graph::Endpoint, to: crate::app::graph::Endpoint) -> Result<(NodeId, NodeId), IntentError> {
+    /// The ends that a cable from the port `from` to the port `to` of the graph has, if it is a cable of notes: the node of the source, the pattern box or the note splitter that it starts at (`EventsOut`, or `EventsOutRest`, the second
+    /// output of a splitter, which no other node has) with the output that it is, and the node of the lane, the box or the splitter that it ends at (`EventsIn`; a lane's instrument is the lane's own node). A box takes the notes of a source
+    /// (and no box's: there is no cable from a box to a box), a splitter takes the notes of a source or a box (and no splitter's: it could make a loop), and a box and a splitter send their own to a lane (a splitter does not send them to a
+    /// box yet). The reason, if they are not that: a node that is not there is not found, and a port or a node of another kind is invalid.
+    pub fn event_cable_ends(&self, from: crate::app::graph::Endpoint, to: crate::app::graph::Endpoint) -> Result<(NodeId, Output, NodeId), IntentError> {
         use crate::app::graph::Port;
         let invalid = |why: &str| IntentError::Invalid(why.to_string());
-        if from.port != Port::EventsOut {
-            return Err(invalid("a cable of notes starts at an output of events"));
-        }
+        let output = match from.port {
+            Port::EventsOut => Output::Pick,
+            Port::EventsOutRest => Output::Rest,
+            _ => return Err(invalid("a cable of notes starts at an output of events")),
+        };
         if to.port != Port::EventsIn {
             return Err(invalid("a cable of notes ends at an input of events"));
         }
         if from.node == NodeId::MASTER {
             return Err(invalid("the mix has no output of events"));
         }
-        if self.source(from.node).is_none() && self.pattern(from.node).is_none() {
+        if self.source(from.node).is_none() && self.pattern(from.node).is_none() && self.splitter(from.node).is_none() {
             return Err(match self.locate(from.node) {
                 Some(_) => invalid("only a source of notes has an output of events"),
                 None => IntentError::NotFound(from.node),
             });
+        }
+        if output == Output::Rest && self.splitter(from.node).is_none() {
+            return Err(invalid("only a note splitter has a second output of events"));
         }
         if to.node == NodeId::MASTER {
             return Err(invalid("the mix has no input of events"));
         }
         match self.locate(to.node).ok_or(IntentError::NotFound(to.node))? {
             NodePath::Instrument(inst) if !self.lane_takes_notes(inst) => Err(invalid("that instrument takes no notes: an audio input has no input of events")),
-            NodePath::Instrument(_) => Ok((from.node, to.node)),
+            NodePath::Instrument(_) => Ok((from.node, output, to.node)),
             NodePath::Pattern(_) if self.pattern(from.node).is_some() => Err(invalid("a pattern box cannot send its notes to another box yet: it sends them to a lane")),
-            NodePath::Pattern(_) => Ok((from.node, to.node)),
+            NodePath::Pattern(_) if self.splitter(from.node).is_some() => Err(invalid("a note splitter cannot send its notes to a pattern box yet: it sends them to a lane")),
+            NodePath::Pattern(_) => Ok((from.node, output, to.node)),
+            NodePath::Splitter(_) if self.splitter(from.node).is_some() => Err(invalid("a note splitter cannot take the notes of another splitter: it takes those of a source or a pattern box")),
+            NodePath::Splitter(_) => Ok((from.node, output, to.node)),
             _ => Err(invalid("a cable of notes ends at a lane: it is the lanes that have an input of events")),
         }
+    }
+
+    /// Whether the event cable `cable` can be among the cables of this session as it is: it starts at a source, a box or a splitter that is there (at the second output only if it is a splitter) and ends at a lane, a box or a splitter
+    /// that is there, and is not from a box to a box, from a splitter to a splitter or from a splitter to a box. What undo puts back is looked at with it, since the session may have been changed without the history.
+    pub fn event_cable_fits(&self, cable: &EventCable) -> bool {
+        let from_splitter = self.splitter(cable.from).is_some();
+        let starts_at_something = self.source(cable.from).is_some() || self.pattern(cable.from).is_some() || from_splitter;
+        let ends_at = self.locate(cable.to);
+        let ends_at_something = matches!(ends_at, Some(NodePath::Instrument(_) | NodePath::Pattern(_) | NodePath::Splitter(_)));
+        let box_to_box = self.pattern(cable.from).is_some() && matches!(ends_at, Some(NodePath::Pattern(_)));
+        let splitter_to_a_node_that_takes_a_source = from_splitter && matches!(ends_at, Some(NodePath::Pattern(_) | NodePath::Splitter(_)));
+        let second_output_of_one_output = cable.output == Output::Rest && !from_splitter;
+        starts_at_something && ends_at_something && !box_to_box && !splitter_to_a_node_that_takes_a_source && !second_output_of_one_output
     }
 
     /// Whether lane `inst` takes notes: its instrument says (`PluginSlot::takes_notes`), and a lane that has none, which may be given one, does. A lane that is not there does.
@@ -664,14 +754,22 @@ impl SessionModel {
         self.sources_cabled_into(pattern.node, &mut resolve).unwrap_or(SourceSet::ALL)
     }
 
-    /// The sources of the nodes that the event cables that end at `node` start at: a source's own (`resolve`) and a box's `Source::pattern`. None if no cable ends at it.
+    /// The sources that the note splitter at `index` hears: every input if no event cable ends at it (as a lane that has none hears every input), and otherwise the sources of the nodes that the cables that end at it
+    /// start at, as `resolve` says them. A splitter that is not there hears every input, as it will when it is.
+    pub fn splitter_inputs(&self, index: usize, mut resolve: impl FnMut(&SourceKind) -> SourceSet) -> SourceSet {
+        let Some(splitter) = self.splitters.get(index) else { return SourceSet::ALL };
+        self.sources_cabled_into(splitter.node, &mut resolve).unwrap_or(SourceSet::ALL)
+    }
+
+    /// The sources of the nodes that the event cables that end at `node` start at: a source's own (`resolve`), a box's `Source::pattern` and the source of the output of a splitter that the cable starts at. None if no cable ends at it.
     fn sources_cabled_into(&self, node: NodeId, resolve: &mut impl FnMut(&SourceKind) -> SourceSet) -> Option<SourceSet> {
         let mut cables = self.event_cables.iter().filter(|cable| cable.to == node).peekable();
         cables.peek()?;
-        Some(cables.fold(SourceSet::NONE, |heard, cable| match (self.source(cable.from), self.pattern(cable.from)) {
-            (Some(source), _) => heard.or(resolve(&source.kind)),
-            (None, Some(pattern)) => heard.with(pattern.source()),
-            (None, None) => heard,
+        Some(cables.fold(SourceSet::NONE, |heard, cable| match (self.source(cable.from), self.pattern(cable.from), self.splitter(cable.from)) {
+            (Some(source), _, _) => heard.or(resolve(&source.kind)),
+            (None, Some(pattern), _) => heard.with(pattern.source()),
+            (None, None, Some(splitter)) => heard.with(splitter.source(cable.output)),
+            (None, None, None) => heard,
         }))
     }
 
@@ -740,6 +838,7 @@ impl SessionModel {
                 NodePath::Modulator { .. } => return Err(invalid("a modulator has no output of audio")),
                 NodePath::Source(_) => return Err(invalid("a source of notes has no output of audio: it has an output of events")),
                 NodePath::Pattern(_) => return Err(invalid("a pattern box has no output of audio: it has an output of events")),
+                NodePath::Splitter(_) => return Err(invalid("a note splitter has no output of audio: it has two outputs of events")),
                 NodePath::Module(_) => return Err(invalid("a module has no output of audio of its own: cables start at the plugins in it")),
             }
         };
@@ -765,6 +864,7 @@ impl SessionModel {
                 NodePath::Modulator { .. } => return Err(invalid("a modulator has no input of audio")),
                 NodePath::Source(_) => return Err(invalid("a source of notes has no input of audio")),
                 NodePath::Pattern(_) => return Err(invalid("a pattern box has no input of audio: it has an input of events")),
+                NodePath::Splitter(_) => return Err(invalid("a note splitter has no input of audio: it has an input of events")),
                 NodePath::Module(_) => return Err(invalid("a module has no input of audio of its own: cables end at the plugins in it")),
             }
         };
@@ -805,7 +905,7 @@ impl SessionModel {
     }
 
     /// Every node and where it sits: the groups with their bus effects, then the lanes with
-    /// their effects, the sources of notes, the pattern boxes, the modulators and the modules. (A lane's instrument plugin
+    /// their effects, the sources of notes, the pattern boxes, the note splitters, the modulators and the modules. (A lane's instrument plugin
     /// shares the lane's id.)
     pub fn nodes(&self) -> impl Iterator<Item = (NodeId, NodePath)> + '_ {
         let groups = self.groups.iter().enumerate().flat_map(|(group, g)| {
@@ -822,9 +922,10 @@ impl SessionModel {
         });
         let sources = self.sources.iter().enumerate().map(|(index, source)| (source.node, NodePath::Source(index)));
         let patterns = self.patterns.iter().enumerate().map(|(index, pattern)| (pattern.node, NodePath::Pattern(index)));
+        let splitters = self.splitters.iter().enumerate().map(|(index, splitter)| (splitter.node, NodePath::Splitter(index)));
         let free = self.free_modulators.iter().enumerate().map(|(index, m)| (m.node, NodePath::Modulator { at: ModulatorLocation::Free, index }));
         let modules = self.modules.iter().enumerate().map(|(index, module)| (module.node, NodePath::Module(index)));
-        groups.chain(lanes).chain(sources).chain(patterns).chain(free).chain(modules)
+        groups.chain(lanes).chain(sources).chain(patterns).chain(splitters).chain(free).chain(modules)
     }
 
     /// Where the node `id` sits, if it is still in the session.
@@ -976,7 +1077,20 @@ impl SessionModel {
                 return Err(format!("{:?} has notes that are not as a box holds them", pattern.node));
             }
         }
-        // The event cables: ids from the same series, each from a source or a box to a lane or a box (never a box to a box), none twice between the same two.
+        // The note splitters: at most `MAX_SPLITTERS`, each with a source of its own (two numbers: the pick's and the rest's).
+        if self.splitters.len() > MAX_SPLITTERS {
+            return Err(format!("the session has {} note splitters, and no more than {MAX_SPLITTERS} are heard", self.splitters.len()));
+        }
+        for (at, splitter) in self.splitters.iter().enumerate() {
+            if splitter.slot as usize >= MAX_SPLITTERS {
+                return Err(format!("{:?} has the slot {}, and there are {MAX_SPLITTERS}", splitter.node, splitter.slot));
+            }
+            if self.splitters[..at].iter().any(|earlier| earlier.slot == splitter.slot) {
+                return Err(format!("{:?} has the slot {}, which another splitter has too", splitter.node, splitter.slot));
+            }
+        }
+        // The event cables: ids from the same series, each from a source, a box or a splitter to a lane, a box or a splitter (never a box to a box, a splitter to a splitter or a splitter to a box, and only a splitter's
+        // cable starts at its second output), none twice between the same two outputs and inputs.
         for (at, cable) in self.event_cables.iter().enumerate() {
             let whose = format!("event cable {:?}", cable.id);
             if cable.id.0 >= self.ids.next_edge {
@@ -985,16 +1099,22 @@ impl SessionModel {
             if !edges.insert(cable.id) {
                 return Err(format!("{whose} has an id which another edge has too"));
             }
-            if !self.sources.iter().any(|source| source.node == cable.from) && self.pattern(cable.from).is_none() {
-                return Err(format!("{whose} starts at {:?}, which is not a source or a box", cable.from));
+            if !self.sources.iter().any(|source| source.node == cable.from) && self.pattern(cable.from).is_none() && self.splitter(cable.from).is_none() {
+                return Err(format!("{whose} starts at {:?}, which is not a source, a box or a splitter", cable.from));
             }
-            if !self.instruments.iter().any(|lane| lane.node == cable.to) && self.pattern(cable.to).is_none() {
-                return Err(format!("{whose} ends at {:?}, which is not a lane or a box", cable.to));
+            if !self.instruments.iter().any(|lane| lane.node == cable.to) && self.pattern(cable.to).is_none() && self.splitter(cable.to).is_none() {
+                return Err(format!("{whose} ends at {:?}, which is not a lane, a box or a splitter", cable.to));
             }
             if self.pattern(cable.from).is_some() && self.pattern(cable.to).is_some() {
                 return Err(format!("{whose} goes from a box to a box"));
             }
-            if self.event_cables[..at].iter().any(|earlier| (earlier.from, earlier.to) == (cable.from, cable.to)) {
+            if self.splitter(cable.from).is_some() && (self.splitter(cable.to).is_some() || self.pattern(cable.to).is_some()) {
+                return Err(format!("{whose} goes from a splitter to a splitter or a box"));
+            }
+            if cable.output == Output::Rest && self.splitter(cable.from).is_none() {
+                return Err(format!("{whose} starts at the second output of {:?}, which has one output", cable.from));
+            }
+            if self.event_cables[..at].iter().any(|earlier| (earlier.from, earlier.output, earlier.to) == (cable.from, cable.output, cable.to)) {
                 return Err(format!("{whose} is between two nodes that another event cable is between"));
             }
             if at > 0 && self.event_cables[at - 1].id >= cable.id {
@@ -1082,7 +1202,7 @@ impl SessionModel {
             NodePath::Instrument(inst) => self.instruments.get(inst)?.instrument.as_ref(),
             NodePath::Effect { inst, index } => self.instruments.get(inst)?.effects.get(index),
             NodePath::GroupEffect { group, index } => self.groups.get(group)?.effects.get(index),
-            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => None,
+            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Splitter(_) | NodePath::Module(_) => None,
         }
     }
 
@@ -2864,10 +2984,10 @@ param = "pan"
         let first = model.alloc_edge();
         let second = model.alloc_edge();
         assert_eq!((first, second), (EdgeId(10), EdgeId(11)));
-        assert_eq!(model.insert_event_cable(EventCable { id: second, from: n.keys, to: n.lane[1] }), 3, "at the end: the id is the highest");
-        assert_eq!(model.insert_event_cable(EventCable { id: EdgeId(5), from: n.keys, to: n.lane[2] }), 3, "in the middle, before the one that has a higher id");
+        assert_eq!(model.insert_event_cable(EventCable::new(second, n.keys, n.lane[1])), 3, "at the end: the id is the highest");
+        assert_eq!(model.insert_event_cable(EventCable::new(EdgeId(5), n.keys, n.lane[2])), 3, "in the middle, before the one that has a higher id");
         assert_eq!(model.event_cables.iter().map(|cable| cable.id.0).collect::<Vec<_>>(), [0, 1, 2, 5, 11]);
-        let place = model.insert_event_cable(EventCable { id: EdgeId(5), from: n.devices[0], to: n.lane[2] });
+        let place = model.insert_event_cable(EventCable::new(EdgeId(5), n.devices[0], n.lane[2]));
         assert_eq!(place, 3);
         assert_eq!(model.event_cables.len(), 5, "replaced");
         assert_eq!((model.event_cables[3].from, model.event_cables[3].to), (n.devices[0], n.lane[2]));
@@ -2892,10 +3012,10 @@ param = "pan"
         assert!(model.check_ids().unwrap_err().contains("another node has too"));
         // An id that nothing handed out, and one that an audio cable has.
         let (mut model, n) = the_sources();
-        model.insert_event_cable(EventCable { id: EdgeId(9_999), from: n.keys, to: n.lane[2] });
+        model.insert_event_cable(EventCable::new(EdgeId(9_999), n.keys, n.lane[2]));
         assert!(model.check_ids().unwrap_err().contains("never allocated"));
         let (mut model, n) = the_sources();
-        model.insert_event_cable(EventCable { id: EdgeId(3), from: n.keys, to: n.lane[2] });
+        model.insert_event_cable(EventCable::new(EdgeId(3), n.keys, n.lane[2]));
         assert!(model.check_ids().unwrap_err().contains("another edge has too"));
         // A start that is not a source (a lane, a stranger) and an end that is not a lane (a source, a stranger).
         let (mut model, n) = the_sources();
@@ -2912,7 +3032,7 @@ param = "pan"
         assert!(model.check_ids().unwrap_err().contains("which is not a lane"));
         // Two between the same nodes, and out of the order of their ids.
         let (mut model, n) = the_sources();
-        model.event_cables[1] = EventCable { id: EdgeId(1), from: n.keys, to: n.lane[0] };
+        model.event_cables[1] = EventCable::new(EdgeId(1), n.keys, n.lane[0]);
         assert!(model.check_ids().unwrap_err().contains("between two nodes that another event cable is between"));
         let (mut model, _) = the_sources();
         model.event_cables.swap(1, 2);
@@ -3002,7 +3122,7 @@ param = "pan"
     #[test]
     fn an_event_cable_is_found_by_its_id_among_the_event_cables_and_an_audio_cables_id_is_not_one_of_them() {
         let (model, n) = the_sources();
-        assert_eq!(model.event_cable(EdgeId(1)), Some(&EventCable { id: EdgeId(1), from: n.devices[0], to: n.lane[1] }));
+        assert_eq!(model.event_cable(EdgeId(1)), Some(&EventCable::new(EdgeId(1), n.devices[0], n.lane[1])));
         assert_eq!(model.event_cable(EdgeId(3)), None, "the audio cable's");
         assert_eq!(model.event_cable(EdgeId(9)), None, "none at all");
     }
@@ -4052,10 +4172,10 @@ mod_rate = 0
         let (keys, device, bass, plain, lane) = (model.sources[0].node, model.sources[1].node, model.patterns[0].node, model.patterns[1].node, model.instruments[0].node);
         let (out, into) = (|node| Endpoint { node, port: Port::EventsOut }, |node| Endpoint { node, port: Port::EventsIn });
         let invalid = |why: &str| Err(IntentError::Invalid(why.to_string()));
-        assert_eq!(model.event_cable_ends(out(keys), into(bass)), Ok((keys, bass)));
-        assert_eq!(model.event_cable_ends(out(device), into(plain)), Ok((device, plain)));
-        assert_eq!(model.event_cable_ends(out(bass), into(lane)), Ok((bass, lane)));
-        assert_eq!(model.event_cable_ends(out(keys), into(lane)), Ok((keys, lane)), "as before");
+        assert_eq!(model.event_cable_ends(out(keys), into(bass)), Ok((keys, Output::Pick, bass)));
+        assert_eq!(model.event_cable_ends(out(device), into(plain)), Ok((device, Output::Pick, plain)));
+        assert_eq!(model.event_cable_ends(out(bass), into(lane)), Ok((bass, Output::Pick, lane)));
+        assert_eq!(model.event_cable_ends(out(keys), into(lane)), Ok((keys, Output::Pick, lane)), "as before");
         let box_to_box = "a pattern box cannot send its notes to another box yet: it sends them to a lane";
         assert_eq!(model.event_cable_ends(out(bass), into(plain)), invalid(box_to_box));
         assert_eq!(model.event_cable_ends(out(bass), into(bass)), invalid(box_to_box), "nor to itself");
@@ -4092,10 +4212,10 @@ mod_rate = 0
         let (keys, device, bass, lane) = (model.sources[0].node, model.sources[1].node, model.patterns[0].node, model.instruments[0].node);
         // A cable from the keys as well: the lane hears the keys and the box, and a cable from a device into the box adds the ports of the device.
         let id = model.alloc_edge();
-        model.insert_event_cable(EventCable { id, from: keys, to: lane });
+        model.insert_event_cable(EventCable::new(id, keys, lane));
         assert_eq!(model.lane_sources(0, resolved), SourceSet::NONE.with(Source::KEYS).with(Source::pattern(0)));
         let id = model.alloc_edge();
-        model.insert_event_cable(EventCable { id, from: device, to: bass });
+        model.insert_event_cable(EventCable::new(id, device, bass));
         assert_eq!(model.box_inputs(0, resolved), SourceSet::NONE.with(Source::KEYS).with(Source::device(0)).with(Source::device(1)));
         assert_eq!(model.box_inputs(0, |_| SourceSet::NONE), SourceSet::NONE, "a device that is not plugged in is no source: a box that is cabled from it and from nothing else records nothing, and not every input");
     }
@@ -4105,7 +4225,7 @@ mod_rate = 0
         let mut model = load("[[instrument]]\nplugin = \"builtin:osc\"\n").model;
         let id = model.alloc_edge();
         let lane = model.instruments[0].node;
-        model.insert_event_cable(EventCable { id, from: NodeId(777), to: lane });
+        model.insert_event_cable(EventCable::new(id, NodeId(777), lane));
         assert_eq!(model.lane_sources(0, resolved), SourceSet::NONE);
     }
 
@@ -4150,19 +4270,233 @@ mod_rate = 0
             let mut model = boxes();
             let id = model.alloc_edge();
             let (from, to) = (from(&model), to(&model));
-            model.insert_event_cable(EventCable { id, from, to });
+            model.insert_event_cable(EventCable::new(id, from, to));
             model.check_ids().expect_err("the check says what is wrong")
         };
         let (bass, plain, lane, keys) = (|m: &SessionModel| m.patterns[0].node, |m: &SessionModel| m.patterns[1].node, |m: &SessionModel| m.instruments[0].node, |m: &SessionModel| m.sources[0].node);
         assert!(broken(bass, plain).contains("goes from a box to a box"));
-        assert!(broken(lane, bass).contains("which is not a source or a box"));
-        assert!(broken(keys, keys).contains("which is not a lane or a box"));
-        assert!(broken(|_| NodeId::MASTER, bass).contains("which is not a source or a box"));
+        assert!(broken(lane, bass).contains("which is not a source, a box or a splitter"));
+        assert!(broken(keys, keys).contains("which is not a lane, a box or a splitter"));
+        assert!(broken(|_| NodeId::MASTER, bass).contains("which is not a source, a box or a splitter"));
         // The cables that the fixture has (keys to a box, a box to a lane) and one from a device into a box are the kinds that are liked.
         let mut model = boxes();
         let (device, plain) = (model.sources[1].node, model.patterns[1].node);
         let id = model.alloc_edge();
-        model.insert_event_cable(EventCable { id, from: device, to: plain });
+        model.insert_event_cable(EventCable::new(id, device, plain));
         model.check_ids().unwrap();
+    }
+
+    // -- note splitters (step 127, P4i-B) --
+
+    fn splitters() -> SessionModel {
+        load(crate::app::testutil::SPLITTERS).model
+    }
+
+    #[test]
+    fn a_new_splitter_picks_the_lowest_note_and_has_the_two_sources_of_its_slot() {
+        let splitter = NoteSplitter::new(NodeId(5), 3, "Splitter 4".to_string());
+        assert_eq!((splitter.node, splitter.slot, splitter.name.as_str(), splitter.pick), (NodeId(5), 3, "Splitter 4", Pick::Lowest));
+        assert_eq!(splitter.source(Output::Pick), Source::splitter(3, Output::Pick));
+        assert_eq!((splitter.source(Output::Pick).number(), splitter.source(Output::Rest).number()), (70, 71), "after the 48 inputs and the 16 boxes, two for each splitter");
+    }
+
+    #[test]
+    fn the_lowest_free_slot_and_name_go_to_the_next_splitter_and_none_when_the_sixteen_are_there() {
+        let mut model = SessionModel::default();
+        assert_eq!((model.free_splitter_slot(), model.next_splitter_name().as_str()), (Some(0), "Splitter 1"));
+        for _ in 0..MAX_SPLITTERS {
+            let (slot, name, node) = (model.free_splitter_slot().unwrap(), model.next_splitter_name(), model.alloc_node());
+            model.splitters.push(NoteSplitter::new(node, slot, name));
+        }
+        assert_eq!(model.free_splitter_slot(), None);
+        assert_eq!((model.splitters[0].name.as_str(), model.splitters[15].name.as_str(), model.splitters[15].slot), ("Splitter 1", "Splitter 16", 15));
+        model.splitters.remove(3);
+        assert_eq!((model.free_splitter_slot(), model.next_splitter_name().as_str()), (Some(3), "Splitter 4"), "the splitter that was the fourth leaves its slot and its name");
+        model.splitters[0].name = "Bass".to_string();
+        assert_eq!(model.next_splitter_name(), "Splitter 1", "a splitter that is called something else leaves its number");
+        model.splitters[1].name = "Splitter 1".to_string();
+        assert_eq!(model.next_splitter_name(), "Splitter 2", "a name that a splitter has is not given again, and the number that a splitter left is the lowest that is free");
+    }
+
+    #[test]
+    fn a_splitter_is_put_among_the_splitters_at_its_place_or_at_the_end_for_one_past_it_and_is_found_by_its_node() {
+        let mut model = splitters();
+        let (first, second) = (model.splitters[0].node, model.splitters[1].node);
+        let order = |model: &SessionModel| -> Vec<NodeId> { model.splitters.iter().map(|splitter| splitter.node).collect() };
+        assert_eq!(model.insert_splitter_at(1, NoteSplitter::new(NodeId(90), 5, "A".to_string())), 1);
+        assert_eq!(order(&model), [first, NodeId(90), second]);
+        assert_eq!(model.insert_splitter_at(100, NoteSplitter::new(NodeId(91), 6, "B".to_string())), 3, "past the end is the end");
+        assert_eq!(model.insert_splitter_at(0, NoteSplitter::new(NodeId(92), 7, "C".to_string())), 0);
+        assert_eq!(order(&model), [NodeId(92), first, NodeId(90), second, NodeId(91)]);
+        assert_eq!(model.splitter(NodeId(90)).map(|splitter| splitter.name.as_str()), Some("A"));
+        assert!(model.splitter(NodeId(900)).is_none() && model.splitter(model.instruments[0].node).is_none() && model.splitter(model.patterns[0].node).is_none());
+    }
+
+    #[test]
+    fn the_splitters_are_nodes_after_the_boxes_and_before_the_modulators_and_each_is_found_by_its_place() {
+        let model = load("[keys]\n[[pattern]]\n[[splitter]]\n[[splitter]]\n[[modulator]]\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let places: Vec<NodePath> = model.nodes().map(|(_, path)| path).collect();
+        let at = |wanted: fn(&NodePath) -> bool| places.iter().position(wanted).expect("a node of that kind");
+        let (pattern, splitter, modulator) = (at(|path| matches!(path, NodePath::Pattern(_))), at(|path| matches!(path, NodePath::Splitter(_))), at(|path| matches!(path, NodePath::Modulator { .. })));
+        assert!(pattern < splitter && splitter < modulator, "{places:?}");
+        assert_eq!(model.locate(model.splitters[1].node), Some(NodePath::Splitter(1)));
+        assert_eq!(model.nodes().filter(|(_, path)| matches!(path, NodePath::Splitter(_))).count(), 2);
+        model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_cable_of_notes_joins_a_source_or_a_box_to_a_splitter_and_an_output_of_a_splitter_to_a_lane_and_never_a_splitter_to_a_splitter_or_a_box() {
+        use crate::app::graph::{Endpoint, Port};
+        let model = splitters();
+        let (keys, bass, first, second, lane) = (model.sources[0].node, model.patterns[0].node, model.splitters[0].node, model.splitters[1].node, model.instruments[0].node);
+        let (out, rest, into) = (|node| Endpoint { node, port: Port::EventsOut }, |node| Endpoint { node, port: Port::EventsOutRest }, |node| Endpoint { node, port: Port::EventsIn });
+        let invalid = |why: &str| Err(IntentError::Invalid(why.to_string()));
+        assert_eq!(model.event_cable_ends(out(keys), into(first)), Ok((keys, Output::Pick, first)));
+        assert_eq!(model.event_cable_ends(out(bass), into(second)), Ok((bass, Output::Pick, second)), "a box into a splitter");
+        assert_eq!(model.event_cable_ends(out(first), into(lane)), Ok((first, Output::Pick, lane)), "the first output is the pick");
+        assert_eq!(model.event_cable_ends(rest(first), into(lane)), Ok((first, Output::Rest, lane)), "the second output is the rest");
+        assert_eq!(model.event_cable_ends(out(keys), into(lane)), Ok((keys, Output::Pick, lane)), "as before");
+        assert_eq!(model.event_cable_ends(out(bass), into(lane)), Ok((bass, Output::Pick, lane)), "as before");
+        let to_a_splitter = "a note splitter cannot take the notes of another splitter: it takes those of a source or a pattern box";
+        assert_eq!(model.event_cable_ends(out(first), into(second)), invalid(to_a_splitter));
+        assert_eq!(model.event_cable_ends(rest(first), into(second)), invalid(to_a_splitter));
+        assert_eq!(model.event_cable_ends(out(first), into(first)), invalid(to_a_splitter), "nor to itself");
+        let to_a_box = "a note splitter cannot send its notes to a pattern box yet: it sends them to a lane";
+        assert_eq!(model.event_cable_ends(out(first), into(bass)), invalid(to_a_box));
+        assert_eq!(model.event_cable_ends(rest(first), into(bass)), invalid(to_a_box));
+        let only_a_splitters = "only a note splitter has a second output of events";
+        assert_eq!(model.event_cable_ends(rest(keys), into(first)), invalid(only_a_splitters));
+        assert_eq!(model.event_cable_ends(rest(bass), into(lane)), invalid(only_a_splitters));
+        assert_eq!(model.event_cable_ends(rest(lane), into(first)), invalid("only a source of notes has an output of events"), "a lane has no output of events, of either port");
+        assert_eq!(model.event_cable_ends(rest(NodeId::MASTER), into(first)), invalid("the mix has no output of events"));
+        assert_eq!(model.event_cable_ends(rest(NodeId(900)), into(first)), Err(IntentError::NotFound(NodeId(900))));
+        assert_eq!(model.event_cable_ends(rest(first), into(NodeId(901))), Err(IntentError::NotFound(NodeId(901))));
+        assert_eq!(model.event_cable_ends(rest(first), into(NodeId::MASTER)), invalid("the mix has no input of events"));
+        assert_eq!(model.event_cable_ends(rest(first), into(keys)), invalid("a cable of notes ends at a lane: it is the lanes that have an input of events"));
+        assert_eq!(model.event_cable_ends(rest(first), Endpoint { node: lane, port: Port::AudioIn }), invalid("a cable of notes ends at an input of events"));
+        assert_eq!(model.event_cable_ends(Endpoint { node: first, port: Port::AudioOut }, into(lane)), invalid("a cable of notes starts at an output of events"));
+        assert_eq!(model.event_cable_ends(out(keys), Endpoint { node: first, port: Port::EventsOutRest }), invalid("a cable of notes ends at an input of events"));
+    }
+
+    #[test]
+    fn a_splitter_has_no_audio_to_start_or_end_a_cable_at_and_says_what_it_has() {
+        use crate::app::graph::{Endpoint, Port};
+        let model = splitters();
+        let (first, lane) = (model.splitters[0].node, model.instruments[0].node);
+        let invalid = |why: &str| Err(IntentError::Invalid(why.to_string()));
+        assert_eq!(model.cable_ends(Endpoint { node: first, port: Port::AudioOut }, Endpoint { node: NodeId::MASTER, port: Port::AudioIn }), invalid("a note splitter has no output of audio: it has two outputs of events"));
+        assert_eq!(model.cable_ends(Endpoint { node: lane, port: Port::AudioOut }, Endpoint { node: first, port: Port::AudioIn }), invalid("a note splitter has no input of audio: it has an input of events"));
+        assert!(model.cable_ends(Endpoint { node: lane, port: Port::AudioOut }, Endpoint { node: NodeId::MASTER, port: Port::AudioIn }).is_ok(), "a lane's audio goes to the mix as it did");
+    }
+
+    #[test]
+    fn a_lane_hears_the_outputs_of_the_splitters_that_cables_from_them_end_at_and_a_splitter_hears_the_sources_that_cables_into_it_start_at() {
+        let model = splitters();
+        // The lanes: the pick of the first splitter (64), its rest (65), and the pick of the second (66); a device is the first two ports, as `resolved` says.
+        assert_eq!(model.lane_sources(0, resolved), set_of(&[Source::splitter(0, Output::Pick)]));
+        assert_eq!(model.lane_sources(1, resolved), set_of(&[Source::splitter(0, Output::Rest)]));
+        assert_eq!(model.lane_sources(2, resolved), set_of(&[Source::splitter(1, Output::Pick)]));
+        // The splitters: the first the keys, the second the box and the device's two ports.
+        assert_eq!(model.splitter_inputs(0, resolved), set_of(&[Source::KEYS]));
+        assert_eq!(model.splitter_inputs(1, resolved), set_of(&[Source::device(0), Source::device(1), Source::pattern(0)]));
+        // A splitter that no cable ends at hears every input (and no box), and one that is not there does too.
+        let bare = load("[keys]\n[[pattern]]\n[[splitter]]\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        assert_eq!(bare.splitter_inputs(0, resolved), SourceSet::ALL);
+        assert_eq!(bare.splitter_inputs(7, resolved), SourceSet::ALL);
+        assert!(!SourceSet::ALL.contains(Source::pattern(0)) && !SourceSet::ALL.contains(Source::splitter(0, Output::Pick)));
+    }
+
+    /// The set of exactly these sources.
+    fn set_of(sources: &[Source]) -> SourceSet {
+        sources.iter().fold(SourceSet::NONE, |set, source| set.with(*source))
+    }
+
+    #[test]
+    fn a_lane_cabled_from_both_outputs_of_a_splitter_and_from_a_key_hears_the_three() {
+        let mut model = splitters();
+        let (keys, first, lane) = (model.sources[0].node, model.splitters[0].node, model.instruments[2].node);
+        for (from, output) in [(first, Output::Pick), (first, Output::Rest), (keys, Output::Pick)] {
+            let id = model.alloc_edge();
+            model.insert_event_cable(EventCable { id, from, output, to: lane });
+        }
+        assert_eq!(model.lane_sources(2, resolved), set_of(&[Source::splitter(1, Output::Pick), Source::splitter(0, Output::Pick), Source::splitter(0, Output::Rest), Source::KEYS]));
+        model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn a_splitter_that_the_check_does_not_like_is_told_with_the_reason() {
+        splitters().check_ids().unwrap();
+        let broken = |change: &dyn Fn(&mut SessionModel)| -> String {
+            let mut model = splitters();
+            change(&mut model);
+            model.check_ids().expect_err("the check says what is wrong")
+        };
+        assert!(broken(&|model| model.splitters[1].slot = 16).contains("has the slot 16, and there are 16"));
+        assert!(broken(&|model| model.splitters[1].slot = 0).contains("which another splitter has too"));
+        assert!(broken(&|model| model.splitters[1].node = model.splitters[0].node).contains("which another node has too"));
+        assert!(broken(&|model| model.splitters[1].node = NodeId(model.ids.next + 3)).contains("which was never allocated"));
+        let too_many = broken(&|model| {
+            for _ in 0..15 {
+                let node = model.alloc_node();
+                model.splitters.push(NoteSplitter::new(node, 0, "x".to_string()));
+            }
+        });
+        assert!(too_many.contains("the session has 17 note splitters"), "{too_many}");
+    }
+
+    #[test]
+    fn a_cable_of_notes_at_a_splitter_that_the_check_does_not_like_is_told_with_the_reason_and_the_cables_of_the_splitters_are_liked() {
+        let broken = |from: fn(&SessionModel) -> NodeId, output: Output, to: fn(&SessionModel) -> NodeId| -> String {
+            let mut model = splitters();
+            let id = model.alloc_edge();
+            let (from, to) = (from(&model), to(&model));
+            model.insert_event_cable(EventCable { id, from, output, to });
+            model.check_ids().expect_err("the check says what is wrong")
+        };
+        let (first, second, bass, keys, lane) = (|m: &SessionModel| m.splitters[0].node, |m: &SessionModel| m.splitters[1].node, |m: &SessionModel| m.patterns[0].node, |m: &SessionModel| m.sources[0].node, |m: &SessionModel| m.instruments[0].node);
+        assert!(broken(first, Output::Pick, second).contains("goes from a splitter to a splitter or a box"));
+        assert!(broken(first, Output::Rest, second).contains("goes from a splitter to a splitter or a box"));
+        assert!(broken(second, Output::Pick, second).contains("goes from a splitter to a splitter or a box"));
+        assert!(broken(first, Output::Pick, bass).contains("goes from a splitter to a splitter or a box"));
+        assert!(broken(keys, Output::Rest, first).contains("starts at the second output of"), "a key has one output");
+        assert!(broken(bass, Output::Rest, lane).contains("starts at the second output of"), "and so has a box");
+        assert!(broken(lane, Output::Pick, first).contains("which is not a source, a box or a splitter"));
+        assert!(broken(keys, Output::Pick, keys).contains("which is not a lane, a box or a splitter"));
+        // The same two nodes at the same output, twice, are one cable too many, and the two outputs of one splitter to one lane are two cables.
+        assert!(broken(keys, Output::Pick, first).contains("between two nodes that another event cable is between"));
+        assert!(broken(first, Output::Pick, lane).contains("between two nodes that another event cable is between"));
+        let mut model = splitters();
+        let (first, second_lane) = (model.splitters[0].node, model.instruments[1].node);
+        let id = model.alloc_edge();
+        model.insert_event_cable(EventCable { id, from: first, output: Output::Pick, to: second_lane });
+        model.check_ids().unwrap();
+    }
+
+    #[test]
+    fn an_event_cable_fits_the_session_when_both_ends_are_there_and_are_what_a_cable_of_notes_is_between() {
+        let model = splitters();
+        let (keys, bass, first, second, lane) = (model.sources[0].node, model.patterns[0].node, model.splitters[0].node, model.splitters[1].node, model.instruments[0].node);
+        let cable = |from: NodeId, output: Output, to: NodeId| EventCable { id: EdgeId(99), from, output, to };
+        for (from, output, to, fits) in [
+            (keys, Output::Pick, first, true),
+            (bass, Output::Pick, second, true),
+            (first, Output::Pick, lane, true),
+            (first, Output::Rest, lane, true),
+            (keys, Output::Pick, lane, true),
+            (bass, Output::Pick, lane, true),
+            (first, Output::Pick, second, false),
+            (first, Output::Rest, first, false),
+            (first, Output::Pick, bass, false),
+            (keys, Output::Rest, first, false),
+            (bass, Output::Rest, lane, false),
+            (bass, Output::Pick, bass, false),
+            (lane, Output::Pick, first, false),
+            (keys, Output::Pick, keys, false),
+            (NodeId(900), Output::Pick, lane, false),
+            (keys, Output::Pick, NodeId(900), false),
+            (first, Output::Rest, NodeId(900), false),
+        ] {
+            assert_eq!(model.event_cable_fits(&cable(from, output, to)), fits, "{from:?} {output:?} to {to:?}");
+        }
     }
 }

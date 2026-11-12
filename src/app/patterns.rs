@@ -1022,7 +1022,7 @@ mod tests {
         assert_eq!((ctl.rev, ctl.model.event_cables.clone(), told(&engine)), (rev, cables, Vec::new()));
         draw(&mut ctl, first, lane).unwrap();
         assert_eq!(ctl.model.event_cables.last().unwrap().id, EdgeId(1), "no id was used by the refusals");
-        assert_eq!(ctl.model.event_cables.last().copied(), Some(EventCable { id: EdgeId(1), from: first, to: lane }));
+        assert_eq!(ctl.model.event_cables.last().copied(), Some(EventCable::new(EdgeId(1), first, lane)));
     }
 
     #[test]

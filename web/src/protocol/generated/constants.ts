@@ -173,6 +173,9 @@ export const PATTERN_BOX_LENGTH_RANGE: readonly [number, number] = [0.25, 256];
 export const PATTERN_BOX_DEFAULT_LENGTH = 4;
 export const PATTERN_BOX_NOTE_LIMIT = 4096;
 
+/** How many note splitters a session has at the most (`MAX_SPLITTERS`: the engine has two sources of notes for each, the pick's and the rest's): what the controller holds the splitters to. */
+export const SPLITTER_LIMIT = 16;
+
 /** How many frames of each side a frame of the scope channel has (`SCOPE_FRAME_LENGTH`): the left side and then the right, the latest frame of each last. */
 export const SCOPE_FRAME_LENGTH = 2048;
 

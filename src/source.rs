@@ -57,7 +57,6 @@ impl Source {
     }
 
     /// The source of an output of the note splitter that has the number `nth`, 0 to 15 (`MAX_SPLITTERS`; a session refuses more, and a number past it is the last splitter's): the numbers 64 to 95, the pick and then the rest of each.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
     pub const fn splitter(nth: usize, output: Output) -> Source {
         let nth = if nth >= MAX_SPLITTERS { MAX_SPLITTERS - 1 } else { nth };
         Source((INPUT_SOURCES + MAX_BOXES + 2 * nth + output as usize) as u8)
@@ -70,7 +69,7 @@ impl Source {
     }
 
     /// Whether this is an output of a note splitter, and which: the splitter's number and the output.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
+    #[cfg(test)]
     pub const fn splitter_output(self) -> Option<(usize, Output)> {
         let first = INPUT_SOURCES + MAX_BOXES;
         if (self.0 as usize) < first || self.0 as usize >= MAX_SOURCES {

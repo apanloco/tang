@@ -36,8 +36,26 @@ pub enum Pick {
     #[default]
     Lowest,
     /// The highest: the top of a chord, its melody.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
     Highest,
+}
+
+impl Pick {
+    /// The word that a session file has for it (`pick = "highest"`).
+    pub fn word(self) -> &'static str {
+        match self {
+            Pick::Lowest => "lowest",
+            Pick::Highest => "highest",
+        }
+    }
+
+    /// The pick that a word of a session file names, if it names one.
+    pub fn parse(word: &str) -> Option<Pick> {
+        match word {
+            "lowest" => Some(Pick::Lowest),
+            "highest" => Some(Pick::Highest),
+            _ => None,
+        }
+    }
 }
 
 /// What a splitter is set to.
@@ -92,7 +110,6 @@ pub struct Splitter {
 
 impl Splitter {
     /// The splitter that has the number `nth` (0 to 15): its outputs are the sources `Source::splitter(nth, …)`. Made where memory may be asked for.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
     pub fn new(nth: usize) -> Splitter {
         Splitter {
             sources: [Source::splitter(nth, Output::Pick), Source::splitter(nth, Output::Rest)],
@@ -110,6 +127,12 @@ impl Splitter {
     /// The source of an output.
     pub fn source(&self, output: Output) -> Source {
         self.sources[output as usize]
+    }
+
+    /// What it is set to.
+    #[cfg(test)]
+    pub fn settings(&self) -> Settings {
+        self.settings
     }
 
     /// What it made for the block that was run last, in the order of the events that it heard.

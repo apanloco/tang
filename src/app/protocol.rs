@@ -686,6 +686,8 @@ mod typescript {
                  export const PATTERN_BOX_LENGTH_RANGE: readonly [number, number] = [{}, {}];\n\
                  export const PATTERN_BOX_DEFAULT_LENGTH = {};\n\
                  export const PATTERN_BOX_NOTE_LIMIT = {};\n\n\
+                 /** How many note splitters a session has at the most (`MAX_SPLITTERS`: the engine has two sources of notes for each, the pick's and the rest's): what the controller holds the splitters to. */\n\
+                 export const SPLITTER_LIMIT = {};\n\n\
                  /** How many frames of each side a frame of the scope channel has (`SCOPE_FRAME_LENGTH`): the left side and then the right, the latest frame of each last. */\n\
                  export const SCOPE_FRAME_LENGTH = {};\n\n\
                  /** How long after one change of a thing, in seconds, the next change of it is still one step of the history (`history::SAME_STEP`). */\n\
@@ -717,6 +719,7 @@ mod typescript {
                 crate::patternbox::MAX_LENGTH_BEATS,
                 crate::patternbox::DEFAULT_LENGTH_BEATS,
                 crate::patternbox::MAX_NOTES,
+                crate::source::MAX_SPLITTERS,
                 super::SCOPE_FRAME_LENGTH,
                 crate::app::history::SAME_STEP.as_secs_f64(),
                 crate::app::history::MAX_STEPS,

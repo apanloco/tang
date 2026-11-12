@@ -1709,6 +1709,8 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "setBpm") return bpmOutcome(intent.bpm);
   if (intent.type === "setRecording" || intent.type === "clearPattern" || intent.type === "setPatternField") return patternOutcome(snapshot, intent);
   if (intent.type === "addPattern") return addPatternOutcome(snapshot, counters);
+  // (A note splitter is not in the mock yet: step 128 puts it there, pinned to the engine's by a fixture that a test of the Rust side writes.)
+  if (intent.type === "addSplitter" || intent.type === "setSplitterField") return invalid("a note splitter is not in the mock yet");
   if (intent.type === "setPatternBoxField") return patternBoxFieldOutcome(snapshot, intent.node, intent.field);
   if (intent.type === "clearPatternBox") return patternBoxNotesOutcome(snapshot, intent.node, []);
   if (intent.type === "setPatternBoxNotes") return patternBoxNotesOutcome(snapshot, intent.node, intent.notes);
@@ -1739,7 +1741,7 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "addModEdge") return addModEdgeOutcome(snapshot, intent.modulator, intent.to, counters);
   if (intent.type === "addSource") return addSourceOutcome(snapshot, intent.source, counters);
   // (A cable that has a port of events at either end is a cable of notes, and is judged as one: from a source to a lane, with no level.)
-  if (intent.type === "addCable" && (intent.from.port.type === "eventsOut" || intent.to.port.type === "eventsIn")) return addNotesCableOutcome(snapshot, intent.from, intent.to, intent.gain, counters);
+  if (intent.type === "addCable" && (intent.from.port.type === "eventsOut" || intent.from.port.type === "eventsOutRest" || intent.to.port.type === "eventsIn")) return addNotesCableOutcome(snapshot, intent.from, intent.to, intent.gain, counters);
   if (intent.type === "addCable") return addCableOutcome(snapshot, intent.from, intent.to, intent.gain, counters);
   if (intent.type === "setCableGain") return cableGainOutcome(snapshot, intent.edge, intent.gain);
   // The limiter on the output mix, and the master's own gains: the master is the one node that the controller's `set_gain` looks for before it looks in the model.

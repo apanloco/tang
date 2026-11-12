@@ -1576,6 +1576,95 @@ async fn a_browser_wires_a_lane_to_a_device_that_is_not_there_and_the_lane_goes_
     assert!(quiet < 0.001, "the lane is wired to a device that is not there: {quiet}");
 }
 
+/// The note splitters of a snapshot message, as (node, name, pick): the nodes that are of kind `splitter`.
+fn splitters_of(snapshot: &Value) -> Vec<(u64, String, String)> {
+    let nodes = snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap();
+    nodes.iter().filter(|n| n["kind"] == "splitter").map(|n| (n["id"].as_u64().unwrap(), n["name"].as_str().unwrap().to_string(), n["pick"].as_str().unwrap().to_string())).collect()
+}
+
+#[tokio::test]
+async fn a_browser_makes_a_note_splitter_and_cables_its_second_output_to_a_lane_and_hears_the_notes_that_are_not_the_pick_and_the_saved_file_has_it_and_a_program_started_on_it_has_it() {
+    // One sine, at a level of 0.2: a steady tone for the notes that reach it.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("splitter.toml");
+    std::fs::write(&file, "[[instrument]]\nplugin = \"builtin:osc\"\nvolume = 0.2\n").unwrap();
+    let tang = Tang::start_on(&file);
+    let (mut client, at, snapshot) = listening(&tang).await;
+    assert!(splitters_of(&snapshot).is_empty(), "a session that has none has none");
+    let lane = id_of(&snapshot, "Oscillator");
+
+    // A splitter is added: told as a snapshot, picking the lowest note and called by the lowest number that nothing is called.
+    tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addSplitter"}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 1).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("a splitter is told as a snapshot");
+    let splitters = splitters_of(told);
+    assert_eq!(splitters.iter().map(|(_, name, pick)| (name.as_str(), pick.as_str())).collect::<Vec<_>>(), [("Splitter 1", "lowest")]);
+    let splitter = splitters[0].0;
+
+    // The lane is cabled from the second output (the rest), by the port that says so: it hears the notes that are not the lowest, and no key. The edge is told at that port.
+    let (rest, into) = (|node: u64| json!({"node": node, "port": {"type": "eventsOutRest"}}), |node: u64| json!({"node": node, "port": {"type": "eventsIn"}}));
+    tell(&mut client, json!({"type": "request", "reqId": 2, "intent": {"type": "addCable", "from": rest(splitter), "to": into(lane), "gain": null}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 2).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("a cable of notes is told as a snapshot");
+    let drawn: Vec<Value> = notes_edges_of(told).into_iter().filter(|e| e["kind"] == "events").collect();
+    assert_eq!(drawn.len(), 1, "{told}");
+    assert_eq!((drawn[0]["from"].clone(), drawn[0]["to"].clone()), (rest(splitter), into(lane)), "the cable starts at the second output");
+
+    // A second output is no other node's, and a splitter does not take the notes of another: refused, in the controller's words.
+    tell(&mut client, json!({"type": "request", "reqId": 3, "intent": {"type": "addCable", "from": rest(lane), "to": into(splitter), "gain": null}})).await;
+    assert_eq!(answer(&mut client, 3).await["error"]["message"], "only a source of notes has an output of events");
+
+    // The lowest key is the pick, so it is not heard by a lane that hears the rest; the next key is, and is heard from the moment it is hit.
+    tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    let quiet = peak_after(&mut client, at, Duration::from_millis(600)).await;
+    assert!(quiet < 0.001, "the lowest key is the pick, and the lane hears the rest: {quiet}");
+    tell(&mut client, json!({"type": "noteOn", "note": 64, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "the second key, which is not the lowest", |peak| peak > 0.02).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 60})).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 64})).await;
+    peak_until(&mut client, &tang, at, SOON, "the keys let go of", |peak| peak < 0.001).await;
+
+    // The splitter is made to pick the highest note: with a key held, the next that is higher is the pick (it is not heard) and the next that is lower is the rest (it is).
+    tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "setSplitterField", "node": splitter, "field": {"type": "pick", "pick": "highest"}}})).await;
+    let (answered, said) = answer_with_what_came_before(&mut client, 4).await;
+    assert_eq!(answered["type"], "ack", "{answered}");
+    let told = said.iter().rev().find(|m| m["type"] == "snapshot").expect("a setting of a splitter is told as a snapshot");
+    assert_eq!(splitters_of(told).iter().map(|(_, _, pick)| pick.as_str()).collect::<Vec<_>>(), ["highest"]);
+    // (A pause between the two keys: the keys that come in one block of the engine are judged together, and the lower of two that are hit at once is not the pick of the highest.)
+    tell(&mut client, json!({"type": "noteOn", "note": 64, "velocity": 100})).await;
+    let quiet = peak_after(&mut client, at, Duration::from_millis(300)).await;
+    assert!(quiet < 0.001, "the first key is the pick, whatever it is: {quiet}");
+    tell(&mut client, json!({"type": "noteOn", "note": 67, "velocity": 100})).await;
+    let quiet = peak_after(&mut client, at, Duration::from_millis(600)).await;
+    assert!(quiet < 0.001, "a key above the one that is held is the pick, which the lane does not hear: {quiet}");
+    tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "a key below the ones that are held, which is the rest", |peak| peak > 0.02).await;
+    for note in [60, 64, 67] {
+        tell(&mut client, json!({"type": "noteOff", "note": note})).await;
+    }
+
+    // Saved: the file has the splitter, the pick that is not the lowest, and the cable at the second output; a program that is started on it has them, and the lane hears the rest of it.
+    tell(&mut client, json!({"type": "request", "reqId": 5, "intent": {"type": "save"}})).await;
+    assert_eq!(answer(&mut client, 5).await["type"], "ack");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("[[splitter]]\nname = \"Splitter 1\"\npick = \"highest\"\n"), "{saved}");
+    assert!(saved.contains("[[cable]]\nfrom = \"splitter[0].rest\"\nto = \"instrument[0]\"\n"), "{saved}");
+    drop(client);
+    drop(tang);
+    let again = Tang::start_on(&file);
+    let (mut browser, at, snapshot) = listening(&again).await;
+    assert_eq!(splitters_of(&snapshot).iter().map(|(_, name, pick)| (name.as_str(), pick.as_str())).collect::<Vec<_>>(), [("Splitter 1", "highest")]);
+    let drawn: Vec<Value> = notes_edges_of(&snapshot).into_iter().filter(|e| e["kind"] == "events").collect();
+    assert_eq!(drawn.iter().map(|e| e["from"]["port"]["type"].clone()).collect::<Vec<_>>(), [json!("eventsOutRest")], "the cable that the file has, at the second output");
+    tell(&mut browser, json!({"type": "noteOn", "note": 64, "velocity": 100})).await;
+    let quiet = peak_after(&mut browser, at, Duration::from_millis(600)).await;
+    assert!(quiet < 0.001, "the first key is the pick, whatever it is, and the lane hears the rest: {quiet}");
+    tell(&mut browser, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
+    peak_until(&mut browser, &again, at, SOON, "the lower key, which is the rest of a splitter that picks the highest", |peak| peak > 0.02).await;
+}
+
 /// The names of the nodes of a snapshot message, in the order of its graph.
 fn node_names(snapshot: &Value) -> Vec<&str> {
     snapshot["snapshot"]["graph"]["nodes"].as_array().unwrap().iter().map(|n| n["name"].as_str().unwrap()).collect()

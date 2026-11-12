@@ -22,6 +22,7 @@ pub mod save;
 pub mod snapshot;
 pub mod sounds;
 pub mod sources;
+pub mod splitters;
 pub mod subscribers;
 mod states;
 pub mod windows;
