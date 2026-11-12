@@ -131,9 +131,9 @@ bundle, which sessions without LV2 plugins shouldn't pay for.
 
 MIDI-to-audio communication via bounded MPSC channel (crossbeam-channel, capacity 1024); each message carries the source it came from (see "MIDI routing").
 
-Audio thread logging uses `log::debug!()` for per-event messages (filtered out at default
-Info level) and `log::info!()` only once on first callback. No real-time safety issue at
-default log levels.
+Audio thread logging uses `log::debug!()` for per-event messages (filtered out at the default
+level, `warn`, and at `-v info`) and `log::info!()` only once on first callback. No real-time safety issue at
+default log levels (see "Logging" in `terminal-ui.md`: `-v debug` and `-v trace` are for finding something, not for playing).
 
 **The scope ring.** The audio thread keeps the last 8192 frames of the output mix (`telemetry::ScopeRing`, `Telemetry.scope`: 170 ms at 48 kHz, both sides, every sample a 32-bit cell of its own), stored at the end of
 `AudioGraph::process`, after the master meter, with no lock and no allocation, and any thread copies the latest frames out (`latest`: at most `SCOPE_READ_MAX`, 2048, a quarter of the ring, so that what is read is not written over

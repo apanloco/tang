@@ -40,6 +40,7 @@ none`):
 | `--buffer-size <frames>` | 1024 (Linux), 256 (macOS/Windows) | Audio buffer size in frames |
 | `--sample-rate <hz>` | 48000 | Sample rate |
 | `--debug` | off | Show a live incoming-MIDI monitor at the bottom of the TUI (diagnoses what a controller actually sends) |
+| `-v, --verbose <level>` | `warn` | How much is logged to the terminal: `off`, `error`, `warn`, `info`, `debug` or `trace`. A session (the TUI, `play`, `serve`) tells of warnings and errors and no more; `-v info` is what the program does as it does it, the MIDI that comes in among it (a controller that sends the clock fills a screen). Without it `RUST_LOG` says, and `-v` wins over it (the other subcommands tell of errors unless told more). See "Logging" in `docs/reference/terminal-ui.md` |
 
 `--debug` adds a strip at the bottom of the TUI tallying incoming MIDI by kind
 (note / pitch bend / channel pressure / poly aftertouch / each CC number), each
@@ -89,7 +90,8 @@ one of `plugins`, `builtins`, `midi`, or `audio`.
 **play** `<session.toml>` — loads a session and plays it in the terminal.
 No editing, no TUI. Accepts input from any connected MIDI device, and the
 computer keyboard doubles as a virtual piano (Amiga tracker layout).
-Logs MIDI events and audio info to the screen.
+With `-v info` it logs MIDI events and audio info to the screen; without it, only
+warnings and errors, and the line that says how to quit.
 
 **serve** `[session.toml] [--web-bind <ip:port>] [--web-origin <origin>]...` —
 loads a session like every mode and serves it to browsers, with no terminal
