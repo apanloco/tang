@@ -4,7 +4,7 @@
 // to a plain request is what a person needs: the node that was made (the intent does not name it:
 // a client finds it in the session it is then given), and, when the server refuses, a notice that
 // says what could not be done and why, in the names the canvas shows.
-import type { EdgeId, Endpoint, Feed, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternField, Plugin, Port, Route, SoundEntry, SoundLibrary, SourceInfo } from "../protocol";
+import type { EdgeId, Endpoint, Feed, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternBoxAction, PatternBoxField, PatternField, PatternNote, Plugin, Port, Route, SoundEntry, SoundLibrary, SourceInfo } from "../protocol";
 import type { Client } from "./connection";
 import { isModulation } from "./cables";
 import { trimmed } from "./inputs";
@@ -407,6 +407,53 @@ export class Editor {
       transpose: `transpose ${pattern} ${value === 0 ? "by semitones" : "by the degrees of the scale"}`,
     };
     return this.#attempt(what[field], { type: "setPatternField", node, field, value });
+  }
+
+  /**
+   * Add a pattern box to the session: a node that stores notes in beats, takes notes in and sends notes out, empty, `PATTERN_BOX_DEFAULT_LENGTH` beats long, called "Pattern N". Resolves with the id of the node it made, which the canvas is asked to
+   * show, or with null if it was refused (the page says why: a session has at most `PATTERN_BOX_LIMIT` boxes). The node is the last box there is (a box goes after the others): two clients adding at once may be given each other's, which is as good.
+   * With `place` (a menu on the canvas, where the pointer was: the canvas's pixels) the node is put there, which is a move of its own in the history, and the canvas is not moved to show it.
+   */
+  async addPattern(place?: NodeUi): Promise<NodeId | null> {
+    if (!(await this.#attempt(DOING.addPattern, { type: "addPattern" }))) return null;
+    return this.#placed(this.#graph?.nodes.findLast((node) => node.kind === "pattern")?.id, place);
+  }
+
+  /**
+   * Set a setting of the pattern box `node`: its name (the spaces round it go; nothing is "Pattern"), its length in beats (held to `PATTERN_BOX_LENGTH_RANGE`), whether it goes round (`looping`), whose beat it goes by (`sync`: its own or
+   * the host's), whether a recording is added to what it has (`overdub`) or replaces it, and whether the metronome clicks. What the box has already is no change. True if it was done (the page says why if it was not).
+   */
+  setPatternBoxField(node: NodeId, field: PatternBoxField): Promise<boolean> {
+    const box = this.#name(node);
+    const what: Record<PatternBoxField["type"], string> = {
+      name: `rename ${box}`,
+      lengthBeats: `set the length of ${box}`,
+      looping: `turn looping on or off for ${box}`,
+      sync: `set whose beat ${box} goes by`,
+      overdub: `turn overdub on or off for ${box}`,
+      click: `turn the click on or off for ${box}`,
+    };
+    return this.#attempt(what[field.type], { type: "setPatternBoxField", node, field });
+  }
+
+  /**
+   * Tell the pattern box `node` to record, to finish the recording that is going on (the pass it is making is the last), to play from the start or to stop. What it does comes back as what it is doing and, when a pass is over, as the notes it
+   * made (the session tells it: a step of the history, "record into" the box). True if it was told (the page says why if it was not).
+   */
+  patternBoxTransport(node: NodeId, action: PatternBoxAction): Promise<boolean> {
+    const box = this.#name(node);
+    const what: Record<PatternBoxAction, string> = { record: `record into ${box}`, finishRecording: `finish recording into ${box}`, play: `play ${box}`, stop: `stop ${box}` };
+    return this.#attempt(what[action], { type: "patternBoxTransport", node, action });
+  }
+
+  /** Take every note out of the pattern box `node`; undo gives them back. True if it was done (the page says why if it was not: a node that is no box). */
+  clearPatternBox(node: NodeId): Promise<boolean> {
+    return this.#attempt(`clear ${this.#name(node)}`, { type: "clearPatternBox", node });
+  }
+
+  /** Give the pattern box `node` these notes, as it holds them (what is not a note out, each brought into range, in the order of their starts): what a roll asks. True if it was done (the page says why if it was not). */
+  setPatternBoxNotes(node: NodeId, notes: readonly PatternNote[]): Promise<boolean> {
+    return this.#attempt(`edit the notes of ${this.#name(node)}`, { type: "setPatternBoxNotes", node, notes: [...notes] });
   }
 
   /**

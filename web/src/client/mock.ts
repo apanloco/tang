@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { BPM_RANGE, CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, KEY_CENTRE, KEY_SPAN, MAX_STEPS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, MODULATOR_WHOLE_FIELDS, NEW_CABLE_GAIN, NEW_STEPS, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH, STEP_RANGE } from "../protocol";
+import { BPM_RANGE, CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, KEY_CENTRE, KEY_SPAN, MAX_STEPS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, MODULATOR_WHOLE_FIELDS, NEW_CABLE_GAIN, NEW_STEPS, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_BOX_LIMIT, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH, STEP_RANGE } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -26,7 +26,9 @@ import type {
   NodeId,
   NodeUi,
   NoteRange,
+  PatternBoxField,
   PatternInfo,
+  PatternNote,
   Plugin,
   Port,
   Route,
@@ -57,6 +59,7 @@ import { MODULATOR_LABELS, kindOf } from "./modulatorKinds";
 import { DEFAULT_MODULE_NAME, cleanModuleName, moduleNameOf, moduleOf, moduleOfNodes, pluginCount, tidyName, withModules } from "./modules";
 import type { Module, ModuleEffect, ModuleInstrument, ModuleOutput, ModuleTarget } from "./modules";
 import { noteName } from "./notes";
+import { clampLength, newBox, nextBoxName, patternTitle, sanitize } from "./patternBoxes";
 import { fieldsOf, gainPorts, isGainPort, samePort } from "./reach";
 import { applyEvent, withValues } from "./reducers";
 import { parseScale } from "./scales";
@@ -105,9 +108,10 @@ export interface MockLibrary extends SoundLibrary {
 /**
  * What an intent comes to: the event it makes; or, if it changed the structure of the session, the session
  * as it is then, which the clients are given whole (the controller leaves that to its one projection of the
- * graph, `Applied::restructured`); or why it cannot be done.
+ * graph, `Applied::restructured`); or that it changed nothing, and only used a revision (what a pattern box is told to do: the
+ * engine's, not the session's); or why it cannot be done.
  */
-type Outcome = { event: Event } | { restructured: Snapshot } | { error: WireError };
+type Outcome = { event: Event } | { restructured: Snapshot } | { unchanged: true } | { error: WireError };
 
 const clamp = (value: number, low: number, high: number): number => Math.min(Math.max(value, low), high);
 
@@ -291,6 +295,68 @@ function addSourceOutcome(snapshot: Snapshot, source: SourceInfo, counters: Coun
   const added: Node = { id: counters.node(), parent: null, name, kind: "source", source: info };
   const at = nodes.findLastIndex((n) => n.kind === "source") + 1;
   return { restructured: { ...snapshot, graph: { ...snapshot.graph, nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)] } } };
+}
+
+/**
+ * A pattern box added, as the controller does it (`add_pattern`): empty, `Pattern N` for the lowest N that no box is called, after the boxes there are (the graph lists the sources first and then the boxes), and refused, before an id is
+ * used, when the session has `PATTERN_BOX_LIMIT` already. A box that no cable of notes ends at records every source, and no lane hears it until a cable from it says so (`withHears`).
+ */
+function addPatternOutcome(snapshot: Snapshot, counters: Counters): Outcome {
+  const { nodes } = snapshot.graph;
+  if (nodes.filter((n) => n.kind === "pattern").length >= PATTERN_BOX_LIMIT) return invalid(`a session has at most ${String(PATTERN_BOX_LIMIT)} pattern boxes`);
+  const added = newBox(counters.node(), nextBoxName(nodes));
+  const at = nodes.findLastIndex((n) => n.kind === "source" || n.kind === "pattern") + 1;
+  return { restructured: { ...snapshot, graph: { ...snapshot.graph, nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)] } } };
+}
+
+/** The pattern box that `node` is, or why it is none, in the controller's words (`pattern_index`): the master and a node that is not there are not found, and any other node is not a box. */
+function patternBoxOf(snapshot: Snapshot, node: NodeId): Extract<Node, { kind: "pattern" }> | { error: WireError } {
+  const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
+  if (!found) return { error: { code: "notFound", message: `there is no node ${String(node)}` } };
+  return found.kind === "pattern" ? found : { error: { code: "invalid", message: "that node is not a pattern box" } };
+}
+
+/** The session with the pattern box `box` as `changed` says it is. */
+function withBox(snapshot: Snapshot, box: Extract<Node, { kind: "pattern" }>, changed: Partial<Extract<Node, { kind: "pattern" }>>): Outcome {
+  return { restructured: { ...snapshot, graph: { ...snapshot.graph, nodes: snapshot.graph.nodes.map((n) => (n === box ? { ...box, ...changed } : n)) } } };
+}
+
+/**
+ * A setting of a pattern box set, as the controller does it (`set_pattern_box_field_intent`): the node is looked for first, and then the setting: a name is tidied by a group's rule (`Pattern` for a name of nothing), a length that is no
+ * number is refused and any other is held to the lengths there can be, and a switch or a clock is what it is told. What the box has already is no change (the answer is the same, as a snapshot).
+ */
+function patternBoxFieldOutcome(snapshot: Snapshot, node: NodeId, field: PatternBoxField): Outcome {
+  const box = patternBoxOf(snapshot, node);
+  if ("error" in box) return box;
+  switch (field.type) {
+    case "name": {
+      const title = patternTitle(field.name);
+      return "error" in title ? invalid(title.error) : withBox(snapshot, box, { name: title.name });
+    }
+    case "lengthBeats":
+      return holds(field.beats) ? withBox(snapshot, box, { lengthBeats: clampLength(field.beats) }) : invalid(`${shown(field.beats)} is not a length in beats`);
+    case "looping":
+      return withBox(snapshot, box, { looping: field.on });
+    case "sync":
+      return withBox(snapshot, box, { sync: field.sync });
+    case "overdub":
+      return withBox(snapshot, box, { overdub: field.on });
+    case "click":
+      return withBox(snapshot, box, { click: field.on });
+  }
+}
+
+/** The notes of a pattern box set, as the controller does it (`set_pattern_box_notes_intent`, and `clear_pattern_box_intent` with none): the box is looked for, and the notes are held as a box holds them (`sanitize`). */
+function patternBoxNotesOutcome(snapshot: Snapshot, node: NodeId, notes: readonly PatternNote[]): Outcome {
+  const box = patternBoxOf(snapshot, node);
+  if ("error" in box) return box;
+  return withBox(snapshot, box, { notes: sanitize(notes) });
+}
+
+/** A pattern box told to record, play or stop (`pattern_box_transport_intent`): the box is looked for, and a revision is used. What it does is the engine's (`MockServer`), and changes nothing that the session keeps. */
+function patternBoxTransportOutcome(snapshot: Snapshot, node: NodeId): Outcome {
+  const box = patternBoxOf(snapshot, node);
+  return "error" in box ? box : { unchanged: true };
 }
 
 /** A place on a node, as one key: a parameter, a setting of a modulator, the depth of one of its cables (the layout names a value once for each). */
@@ -616,8 +682,8 @@ function removeOtherNodeOutcome(snapshot: Snapshot, found: Node): Outcome {
   if (found.kind === "effect") return removeEffectOutcome(snapshot, found);
   if (found.kind === "instrument") return removeLaneOutcome(snapshot, found);
   if (found.kind === "group") return removeGroupOutcome(snapshot, found);
-  // A source of notes goes with the cables of notes that start at it, and the lanes that heard it hear what their other cables bring, or every source if they have none (`withHears`).
-  if (found.kind === "source") return { restructured: without(snapshot, new Set(), new Set([found.id])) };
+  // A source of notes goes with the cables of notes that start at it, and the lanes that heard it hear what their other cables bring, or every source if they have none (`withHears`). A pattern box goes with the cables of notes that start or end at it, in the same way.
+  if (found.kind === "source" || found.kind === "pattern") return { restructured: without(snapshot, new Set(), new Set([found.id])) };
   // (What is left is a modulator: the master is no node of the model, as far as the controller goes.)
   if (found.kind !== "modulator") return noNode(node);
   const touching = snapshot.graph.edges.filter((e) => isModulation(e) && (e.from.node === node || e.to.node === node)).map((e) => (e as { id: EdgeId }).id);
@@ -681,6 +747,7 @@ function collapseIntoModuleOutcome(snapshot: Snapshot, nodes: readonly NodeId[],
     // (An effect that is not in a lane's chain is on a group's bus.)
     else if (node.kind === "group" || node.kind === "effect") return invalid("a group is not collapsed into a module: a module holds lanes and modulators");
     else if (node.kind === "source") return invalid("a source of notes is not collapsed into a module: a module holds lanes and modulators");
+    else if (node.kind === "pattern") return invalid("a pattern box is not collapsed into a module: a module holds lanes and modulators");
     else return invalid("a module cannot hold another module yet: ungroup it first");
   }
   if (nodes.length === 0) return invalid("nothing is chosen: choose the lanes, plugins and modulators to collapse into a module");
@@ -774,7 +841,7 @@ function modulateOutcome(snapshot: Snapshot, to: Edge["to"], kind: ModulatorKind
   const target = snapshot.graph.nodes.find((n) => n.id === to.node && n.kind !== "master");
   if (!target) return noNode(to.node);
   // (A group has no plugin: what a cable can drive in it is its volume and its pan, and the modulator hears the group.)
-  if ((target.kind === "group" && !isGainPort(to.port)) || target.kind === "source") return invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them");
+  if ((target.kind === "group" && !isGainPort(to.port)) || target.kind === "source" || target.kind === "pattern") return invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them");
   // The new one hears the lane of a lane's instrument or of an effect of its chain, the group of a bus effect or a group, and what a modulator hears.
   if (target.kind === "effect" && target.parent === null) return invalid("that node is in no lane or group");
   const hears = target.kind === "instrument" || target.kind === "group" ? target.id : target.kind === "effect" ? target.parent : target.kind === "modulator" ? (target.hears ?? null) : null;
@@ -1640,8 +1707,11 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "setLocked") return { event: { type: "lockedSet", locked: intent.locked } };
   if (intent.type === "setBpm") return bpmOutcome(intent.bpm);
   if (intent.type === "setRecording" || intent.type === "clearPattern" || intent.type === "setPatternField") return patternOutcome(snapshot, intent);
-  // (The pattern boxes are not in the mock yet: the mock that does what the controller does with them, and the page that has them, are step 124 of `docs/patch-graph.md`.)
-  if (intent.type === "addPattern" || intent.type === "setPatternBoxField" || intent.type === "patternBoxTransport" || intent.type === "clearPatternBox" || intent.type === "setPatternBoxNotes") return invalid("pattern boxes are not in the mock yet");
+  if (intent.type === "addPattern") return addPatternOutcome(snapshot, counters);
+  if (intent.type === "setPatternBoxField") return patternBoxFieldOutcome(snapshot, intent.node, intent.field);
+  if (intent.type === "clearPatternBox") return patternBoxNotesOutcome(snapshot, intent.node, []);
+  if (intent.type === "setPatternBoxNotes") return patternBoxNotesOutcome(snapshot, intent.node, intent.notes);
+  if (intent.type === "patternBoxTransport") return patternBoxTransportOutcome(snapshot, intent.node);
   if (intent.type === "setNodeUi") return placeOutcome(snapshot, intent.node, intent.ui);
   if (intent.type === "setPinned") return pinnedOutcome(snapshot, intent.node, intent.params);
   if (intent.type === "renameGroup") return renameGroupOutcome(snapshot, intent.node, intent.name);
@@ -2354,6 +2424,11 @@ export class MockServer {
         }
       }
       return { rev, told: { events: [], restructured: true } };
+    }
+    // (A pattern box that is told what to do is neither: a revision is used, and the clients are told only that.)
+    if ("unchanged" in outcome) {
+      this.#snapshot = { ...this.#snapshot, rev };
+      return { rev, told: { events: [], restructured: false } };
     }
     const stamped: StampedEvent = { ...outcome.event, rev };
     const applied = applyEvent(this.#snapshot, stamped);

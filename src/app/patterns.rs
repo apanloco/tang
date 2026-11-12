@@ -1286,4 +1286,208 @@ mod tests {
         assert!(ctl.poll_at(Instant::now()).model_changed);
         assert_eq!(ctl.model.patterns[0].status, Status::Recording);
     }
+
+    // -- the web client's fixture --
+
+    /// The sessions that the fixture of what pattern boxes come to is made of, and the intents tried on each (each on a fresh controller): "boxes" is `PATTERNS` (the keys and a device, two boxes, two lanes and the cables of notes
+    /// between them: from the keys to the first box, from the first box to the first lane and from the second box to the second lane) with an ask of every kind that a box takes and of every kind that it refuses; "bare" has
+    /// no source and no box; "full" has the sixteen boxes that a session can have.
+    fn pattern_box_fixture_cases() -> Vec<(&'static str, String, Vec<Intent>)> {
+        use crate::app::graph::{NoteRange, PatternNote};
+        use crate::app::intent::{Gain, ModulatorField, ModulatorKind, PatternField};
+        let (_engine, base, _) = controller(PATTERNS);
+        let (bass, plain) = (box_node(&base, 0), box_node(&base, 1));
+        let (keys, device) = (base.model.sources[0].node, base.model.sources[1].node);
+        let (lane0, lane1) = (lane_node(&base, 0), lane_node(&base, 1));
+        let cables: Vec<EdgeId> = base.model.event_cables.iter().map(|cable| cable.id).collect();
+        let (master, ghost) = (NodeId::MASTER, NodeId(900));
+        let out = |node: NodeId| Endpoint { node, port: Port::EventsOut };
+        let into = |node: NodeId| Endpoint { node, port: Port::EventsIn };
+        let cable = |from: Endpoint, to: Endpoint| Intent::AddCable { from, to, gain: None };
+        let field = |node: NodeId, field: PatternBoxField| Intent::SetPatternBoxField { node, field };
+        let notes = |node: NodeId, notes: Vec<PatternNote>| Intent::SetPatternBoxNotes { node, notes };
+        let note = |start: f32, length: f32, note: u8, velocity: u8| PatternNote { start, length, note, velocity };
+        let transport = |node: NodeId, action: PatternBoxAction| Intent::PatternBoxTransport { node, action };
+        let audio_in = Endpoint { node: bass, port: Port::AudioIn };
+        let audio_out = Endpoint { node: bass, port: Port::AudioOut };
+        let rate = Endpoint { node: bass, port: Port::Rate };
+        let mut boxes = vec![Intent::AddPattern];
+        // The settings: each is set to what it is not and to what it is, to what is too long or too short and to what is no name, on a box that has it and on one that has not, and on what is no box.
+        let (longest, too_long) = ("x".repeat(crate::app::model::MAX_NAME), "x".repeat(crate::app::model::MAX_NAME + 1));
+        for (node, name) in [(bass, "Lead"), (bass, "  Lead  "), (bass, ""), (bass, "Bass"), (plain, "Pad"), (bass, longest.as_str()), (bass, too_long.as_str()), (bass, "a\u{1}b")] {
+            boxes.push(field(node, PatternBoxField::Name { name: name.to_string() }));
+        }
+        for beats in [2.5, 8.0, 1000.0, 0.0, -3.0, 0.25, 256.0, 0.1] {
+            boxes.push(field(bass, PatternBoxField::LengthBeats { beats }));
+        }
+        boxes.push(field(plain, PatternBoxField::LengthBeats { beats: 4.0 }));
+        boxes.push(field(plain, PatternBoxField::LengthBeats { beats: 6.0 }));
+        for on in [false, true] {
+            boxes.extend([
+                field(bass, PatternBoxField::Looping { on }),
+                field(plain, PatternBoxField::Looping { on }),
+                field(bass, PatternBoxField::Overdub { on }),
+                field(plain, PatternBoxField::Overdub { on }),
+                field(bass, PatternBoxField::Click { on }),
+                field(plain, PatternBoxField::Click { on }),
+            ]);
+        }
+        for sync in [PatternSync::Host, PatternSync::Own] {
+            boxes.extend([field(bass, PatternBoxField::Sync { sync }), field(plain, PatternBoxField::Sync { sync })]);
+        }
+        for node in [lane0, keys, device, master, ghost] {
+            boxes.extend([field(node, PatternBoxField::Looping { on: false }), field(node, PatternBoxField::Name { name: "x".to_string() })]);
+        }
+        // The notes: cleared, the same, as a recording would leave them (unsorted, a velocity that is none, a pitch that is no pitch, a length below nothing) and set on the box that has none.
+        boxes.extend([
+            Intent::ClearPatternBox { node: bass },
+            Intent::ClearPatternBox { node: plain },
+            Intent::ClearPatternBox { node: lane0 },
+            Intent::ClearPatternBox { node: ghost },
+            notes(bass, Vec::new()),
+            notes(bass, vec![note(0.0, 1.0, 36, 100), note(2.0, 0.5, 43, 90)]),
+            notes(bass, vec![note(2.0, 1.0, 60, 0), note(0.0, 1.0, 200, 100), note(1.0, 0.5, 62, 90), note(1.0, 0.25, 61, 255), note(-1.0, -2.0, 64, 100)]),
+            notes(plain, vec![note(0.5, 0.5, 72, 127)]),
+            notes(plain, vec![note(0.5, 0.5, 72, 127), note(0.5, 0.5, 72, 127), note(0.0, 0.0, 12, 1)]),
+            notes(keys, Vec::new()),
+            notes(ghost, Vec::new()),
+        ]);
+        // The transport: what a box is told to do changes nothing that the controller keeps; what is no box is refused.
+        for action in [PatternBoxAction::Record, PatternBoxAction::FinishRecording, PatternBoxAction::Play, PatternBoxAction::Stop] {
+            boxes.extend([transport(bass, action), transport(plain, action), transport(lane0, action), transport(ghost, action)]);
+        }
+        // The cables of notes: into a box from a source, from a box to a lane, and every way that is not.
+        boxes.extend([
+            cable(out(keys), into(plain)),
+            cable(out(device), into(bass)),
+            cable(out(device), into(plain)),
+            cable(out(keys), into(bass)),
+            cable(out(bass), into(lane1)),
+            cable(out(plain), into(lane0)),
+            cable(out(bass), into(lane0)),
+            cable(out(plain), into(lane1)),
+            cable(out(bass), into(plain)),
+            cable(out(plain), into(bass)),
+            cable(out(bass), into(bass)),
+            cable(out(lane0), into(bass)),
+            cable(out(lane0), into(lane1)),
+            cable(out(keys), into(master)),
+            cable(out(bass), into(master)),
+            cable(out(master), into(bass)),
+            cable(out(keys), into(lane0)),
+            cable(out(keys), into(ghost)),
+            cable(out(ghost), into(bass)),
+            cable(out(ghost), into(lane0)),
+            cable(Endpoint { node: keys, port: Port::AudioOut }, into(bass)),
+            cable(out(keys), Endpoint { node: bass, port: Port::AudioIn }),
+            cable(Endpoint { node: lane0, port: Port::AudioOut }, Endpoint { node: bass, port: Port::AudioIn }),
+            Intent::AddCable { from: out(keys), to: into(bass), gain: Some(0.5) },
+            Intent::AddCable { from: out(keys), to: into(plain), gain: Some(0.5) },
+        ]);
+        // Cables taken out, and nodes taken out with the cables that start or end at them: a lane that no cable ends at hears every source again, and a box with none records every source.
+        for edge in &cables {
+            boxes.push(Intent::RemoveEdge { edge: *edge });
+        }
+        boxes.push(Intent::RemoveEdge { edge: EdgeId(900) });
+        for node in [bass, plain, keys, device, lane0, lane1, ghost, master] {
+            boxes.push(Intent::RemoveNode { node });
+        }
+        // Moving a box, which is a node like another.
+        boxes.extend([
+            Intent::SetNodeUi { node: bass, ui: Some(crate::session::NodeUi { x: 12.3, y: 45.6 }) },
+            Intent::SetNodeUi { node: plain, ui: Some(crate::session::NodeUi { x: 1.0, y: 2.0 }) },
+            Intent::SetNodeUi { node: bass, ui: None },
+            Intent::SetNodeUi { node: plain, ui: None },
+        ]);
+        // What a box is not: every kind of ask that names a node and is not for a box is refused when it names one (and a module is not made of one).
+        let asks = vec![
+            Intent::SetParam { node: bass, param: 0, value: 0.5 },
+            Intent::SetGain { node: bass, gain: Gain::Volume, value: 0.5 },
+            Intent::SetGain { node: bass, gain: Gain::Mix, value: 0.5 },
+            Intent::SetGain { node: bass, gain: Gain::GroupVolume, value: 0.5 },
+            Intent::LoadPreset { node: bass, preset: "x".to_string() },
+            Intent::SetModulatorField { node: bass, field: ModulatorField::Rate, value: 1.0 },
+            Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: Some(bass) },
+            Intent::AddModEdge { modulator: bass, to: audio_in },
+            Intent::Modulate { to: rate, kind: ModulatorKind::Lfo, depth: None },
+            Intent::AddCable { from: audio_out, to: Endpoint { node: master, port: Port::AudioIn }, gain: None },
+            Intent::AddCable { from: Endpoint { node: lane0, port: Port::AudioOut }, to: audio_in, gain: None },
+            Intent::AddEffect { parent: bass, plugin: "builtin:reverb".to_string() },
+            Intent::ReplaceInstrument { node: bass, plugin: "builtin:osc".to_string() },
+            Intent::ClearInstrument { node: bass },
+            Intent::SetRange { node: bass, range: Some(NoteRange { low: 0, high: 60 }) },
+            Intent::SetMute { node: bass, muted: true },
+            Intent::SetSolo { node: bass, solo: true },
+            Intent::SetRoute { node: bass, route: crate::session::Route::None },
+            Intent::SetModulatorEar { node: bass, ear: None },
+            Intent::SetFeed { node: bass, feed: crate::session::Feed::None },
+            Intent::SetRecording { node: bass, recording: true },
+            Intent::ClearPattern { node: bass },
+            Intent::SetPatternField { node: bass, field: PatternField::Length, value: 2.0 },
+            Intent::SetPinned { node: bass, params: vec![0] },
+            Intent::SetSteps { node: bass, values: vec![0.0] },
+            Intent::AddGroup { members: vec![bass] },
+            Intent::SetLaneGroup { node: bass, group: None },
+            Intent::RenameGroup { node: bass, name: "x".to_string() },
+            Intent::RenameMacro { node: bass, name: "x".to_string() },
+            Intent::ExposeMacro { node: bass, expose: true },
+            Intent::CollapseIntoModule { nodes: vec![bass, plain], name: "x".to_string(), ui: None },
+            Intent::CollapseIntoModule { nodes: vec![lane0, bass], name: "x".to_string(), ui: None },
+            Intent::UngroupModule { node: bass },
+            Intent::MoveEffect { node: bass, index: 0 },
+            Intent::OpenEditor { node: bass },
+        ];
+        boxes.extend(asks);
+        // A session that has no source and no box: the first box is called "Pattern 1", and there is nothing for a cable of notes to start at or to end at but a lane.
+        let (_engine, bare_base, _) = controller(TWO_LANES);
+        let bare = vec![
+            Intent::AddPattern,
+            cable(out(lane_node(&bare_base, 0)), into(lane_node(&bare_base, 1))),
+            Intent::SetPatternBoxField { node: lane_node(&bare_base, 0), field: PatternBoxField::Looping { on: false } },
+            transport(lane_node(&bare_base, 0), PatternBoxAction::Play),
+        ];
+        let full = "[[pattern]]\n\n".repeat(crate::source::MAX_BOXES) + "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        vec![("boxes", PATTERNS.to_string(), boxes), ("bare", TWO_LANES.to_string(), bare), ("full", full, vec![Intent::AddPattern])]
+    }
+
+    /// The sessions of `pattern_box_fixture_cases` and what the controller makes of each intent tried on them, as the web client's tests read it (`web/src/client/fixtures/patternBoxes.json`): they pin the mock engine's to the
+    /// controller's, intent by intent. A refusal is the controller's words; the rest is the events the intent made (stamped), whether it changed the structure and what the session comes to after it (`testutil::shape_of`: the boxes are in it, with
+    /// their lengths, settings and notes, but not what they are doing, which is the audio thread's and which a controller with no engine does not hear of). `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_pattern_boxes_come_to_is_current() {
+        let mut cases = Vec::new();
+        for (name, session, intents) in pattern_box_fixture_cases() {
+            let (_engine, base, _) = controller(&session);
+            let mut snapshot = testutil::wire(&base.snapshot());
+            // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+            snapshot["telemetry"]["rev"] = serde_json::json!(1);
+            let mut rows = Vec::new();
+            for intent in intents {
+                let (_engine, mut fresh, _) = controller(&session);
+                let what = testutil::wire(&intent);
+                rows.push(match fresh.apply(intent.clone()) {
+                    Err(error) => serde_json::json!({ "intent": what, "error": error.to_string() }),
+                    Ok(applied) => serde_json::json!({
+                        "intent": what,
+                        "events": testutil::wire(&applied.stamped()),
+                        "restructured": applied.restructured,
+                        "after": testutil::shape_of(&fresh.snapshot()),
+                    }),
+                });
+            }
+            cases.push(serde_json::json!({ "name": name, "snapshot": snapshot, "rows": rows }));
+        }
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "cases": cases })).unwrap() + "\n";
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/patternBoxes.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what pattern boxes come to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
 }

@@ -50,6 +50,7 @@ export function cableEnds(graph: Graph, from: Endpoint, to: Endpoint): Ends | { 
   if (!start) return { error: { code: "notFound", message: `there is no node ${String(from.node)}` } };
   if (start.kind === "modulator") return invalid("a modulator has no output of audio");
   if (start.kind === "source") return invalid("a source of notes has no output of audio: it has an output of events");
+  if (start.kind === "pattern") return invalid("a pattern box has no output of audio: it has an output of events");
   const first: CableStart = { kind: start.kind === "instrument" ? "instrument" : start.kind === "group" ? "group" : "effect", node: start.id };
   const side = to.port.type === "audioInSide";
   if (to.node === MASTER_ID) return side ? invalid("the mix has no second input") : { from: first, to: { kind: "master", node: MASTER_ID } };
@@ -58,6 +59,7 @@ export function cableEnds(graph: Graph, from: Endpoint, to: Endpoint): Ends | { 
   if (end.kind === "instrument") return invalid("a lane has no input of audio: a cable ends at an effect, a group or the mix");
   if (end.kind === "modulator") return invalid("a modulator has no input of audio");
   if (end.kind === "source") return invalid("a source of notes has no input of audio");
+  if (end.kind === "pattern") return invalid("a pattern box has no input of audio: it has an input of events");
   if (end.kind === "group") return side ? invalid("a group has one input, its bus") : { from: first, to: { kind: "groupBus", node: end.id } };
   if (!side) return { from: first, to: { kind: "effect", node: end.id } };
   return end.kind === "effect" && end.side !== undefined ? { from: first, to: { kind: "effectSide", node: end.id } } : invalid("that effect has no second input");

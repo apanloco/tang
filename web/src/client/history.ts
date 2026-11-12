@@ -13,6 +13,7 @@ import { trimmed } from "./inputs";
 import { macroExposed, macroName } from "./macros";
 import { MODULATOR_LABELS, kindOf } from "./modulatorKinds";
 import { boxTitle, moduleNameOf, tidyName } from "./modules";
+import { boxFieldBefore, sameNotes, sanitize } from "./patternBoxes";
 
 /** What a change is of, for a change that goes on to be told from the rest: a string that says which parameter, gain, setting or cable. */
 export type Key = string;
@@ -308,16 +309,12 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
   const added = (label: string): Plan => ({ added: { label, intent, at: now } });
   const catalogName = (plugin: string): string | undefined => catalog.find((entry) => entry.id === plugin)?.name;
   switch (intent.type) {
-    // (What is done to a pattern is no step: it is not put back by undo, and does not forget what was done before it. Nor is a module that is saved: it is a file of the library, and no part of the session. Nor, until step 124 of
-    // `docs/patch-graph.md`, is anything that is asked of a pattern box: the mock refuses it, and the page that has them plans their steps as the controller does.)
+    // (What is done to a pattern is no step: it is not put back by undo, and does not forget what was done before it. Nor is a module that is saved: it is a file of the library, and no part of the session. Nor is what a pattern
+    // box is told to do: the engine does it, and what it records is a step when the pass is over.)
     case "setRecording":
     case "clearPattern":
     case "setPatternField":
-    case "addPattern":
-    case "setPatternBoxField":
     case "patternBoxTransport":
-    case "clearPatternBox":
-    case "setPatternBoxNotes":
     case "save":
     case "saveAs":
     case "saveModule":
@@ -327,6 +324,26 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
     case "undo":
     case "redo":
       return "nothing";
+    // A pattern box that is added is an add, and what is done to one is a step in the words of each setting (`boxFieldBefore`), merged with the next change of that setting of that box within the time that a step lasts, so that
+    // typing a name or dragging a length is one step; what the box has already is none. What is cleared is given back by undo as the notes it had, and notes that are set (what a roll asks) are a step of their own, merged
+    // as a setting is. (A node that is no box is refused, and the plan is not looked at.)
+    case "addPattern":
+      return added("add a pattern");
+    case "setPatternBoxField": {
+      const box = nodeOf(intent.node);
+      if (box?.kind !== "pattern") return "nothing";
+      const before = boxFieldBefore(box, intent.field);
+      return before.same ? "nothing" : step(before.label, { type: "setPatternBoxField", node: intent.node, field: before.undo }, `boxfield:${String(intent.node)}:${intent.field.type}`);
+    }
+    case "clearPatternBox": {
+      const box = nodeOf(intent.node);
+      return box?.kind === "pattern" && box.notes.length > 0 ? step(`clear ${box.name}`, { type: "setPatternBoxNotes", node: intent.node, notes: box.notes }, null) : "nothing";
+    }
+    case "setPatternBoxNotes": {
+      const box = nodeOf(intent.node);
+      if (box?.kind !== "pattern" || sameNotes(sanitize(intent.notes), box.notes)) return "nothing";
+      return step(`edit ${box.name}`, { type: "setPatternBoxNotes", node: intent.node, notes: box.notes }, `boxnotes:${String(intent.node)}`);
+    }
     // A source of notes that is added is an add (a refusal leaves no step: the step is made once it is carried out), in the words of the button that adds it: the keys, or the device by its name without
     // the spaces round it.
     case "addSource":
@@ -528,6 +545,9 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       // A source of notes goes with the cables of notes that start at it, and comes back with them, at its place among the sources (the controller's `Inverse::Source`), in the words of the button that
       // adds one: the keys, or the device by its name (what the node is called).
       if (node?.kind === "source") return { removed: { label: `remove ${node.name}`, intent, at: now } };
+      // A pattern box goes with the cables of notes that start or end at it, and comes back with them, at its place among the boxes, with its notes and its settings (the controller's `Inverse::Pattern`), in the words of
+      // the button that adds one: what it is called.
+      if (node?.kind === "pattern") return { removed: { label: `remove ${node.name}`, intent, at: now } };
       // A module goes with its modulators and its lanes, whole, and comes back with them as one (the controller's `Inverse::Module`: its record, as it was), in the words of the button that adds one: its name. Cables that drive each
       // other's depths are not put back, as for a modulator that goes alone.
       if (node?.kind === "module") {

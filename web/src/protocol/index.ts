@@ -22,8 +22,13 @@ export type { NodeUi } from "./generated/NodeUi";
 export type { NoteRange } from "./generated/NoteRange";
 export type { Param } from "./generated/Param";
 export type { ParamValue } from "./generated/ParamValue";
+export type { PatternBoxAction } from "./generated/PatternBoxAction";
+export type { PatternBoxField } from "./generated/PatternBoxField";
 export type { PatternField } from "./generated/PatternField";
 export type { PatternInfo } from "./generated/PatternInfo";
+export type { PatternNote } from "./generated/PatternNote";
+export type { PatternStatus } from "./generated/PatternStatus";
+export type { PatternSync } from "./generated/PatternSync";
 export type { PianoMeta } from "./generated/PianoMeta";
 export type { Plugin } from "./generated/Plugin";
 export type { Port } from "./generated/Port";
@@ -65,6 +70,10 @@ export {
   NEW_STEPS,
   NODE_UI_LIMIT,
   NODE_UI_PARTS,
+  PATTERN_BOX_DEFAULT_LENGTH,
+  PATTERN_BOX_LENGTH_RANGE,
+  PATTERN_BOX_LIMIT,
+  PATTERN_BOX_NOTE_LIMIT,
   PATTERN_COUNT_IN_BEATS,
   PATTERN_DEFAULT_LENGTH,
   PATTERN_FIELD_RANGES,
