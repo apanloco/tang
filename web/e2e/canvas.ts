@@ -63,6 +63,26 @@ export const sends =(page: Page): Locator => page.locator(".tang-cable--send");
 /** The output of events of a source of notes, where a cable of notes is started. */
 export const notesOut = (target: Locator): Locator => target.locator('.react-flow__handle[data-handleid="eventsOut"]');
 
+/** A place on the canvas that nothing covers: the first of a grid of places over it whose topmost element is the canvas itself (a right click there opens the menu of the canvas, which a node's would not). */
+export async function emptySpot(page: Page): Promise<{ x: number; y: number }> {
+  const spot = await page.evaluate(() => {
+    const pane = document.querySelector(".react-flow__pane");
+    const box = pane?.getBoundingClientRect();
+    if (!pane || !box) return null;
+    for (let y = box.top + 30; y < box.bottom - 30; y += 24) {
+      for (let x = box.left + 30; x < box.right - 30; x += 24) {
+        if (document.elementFromPoint(x, y) === pane) return { x, y };
+      }
+    }
+    return null;
+  });
+  if (!spot) throw new Error("nothing of the canvas is empty");
+  return spot;
+}
+
+/** The second output of a note splitter, where a cable of notes that carries the notes that are not its pick is started. */
+export const notesOutRest = (target: Locator): Locator => target.locator('.react-flow__handle[data-handleid="eventsOutRest"]');
+
 /** The input of events of a lane, where a cable of notes ends. */
 export const notesIn = (target: Locator): Locator => target.locator('.react-flow__handle[data-handleid="eventsIn"]');
 

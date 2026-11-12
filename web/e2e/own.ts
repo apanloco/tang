@@ -110,3 +110,28 @@ to = "instrument[0]"
 
 /** `test` for a program that is started on the tracer's file with a pattern box added to it (`withPatterns`). */
 export const testWithPatterns = (): typeof test => programOn(withPatterns());
+
+/**
+ * What a file has to say for the keys, a note splitter called Bass line (it picks the lowest note), a second lane (an oscillator, next to the tracer's) and the cables of notes from the keys to the splitter and from its pick to the tracer's lane:
+ * added to the end of the tracer's file (step 128; the file format is "Note splitters (`[[splitter]]`)" in `docs/reference/session-file.md`). Nothing is cabled from its second output: the second lane hears every source until a cable says so.
+ */
+export const withSplitters = (): string => `
+[keys]
+
+[[splitter]]
+name = "Bass line"
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[cable]]
+from = "keys"
+to = "splitter[0]"
+
+[[cable]]
+from = "splitter[0]"
+to = "instrument[0]"
+`;
+
+/** `test` for a program that is started on the tracer's file with a note splitter, the keys and a second lane added to it (`withSplitters`). */
+export const testWithSplitters = (): typeof test => programOn(withSplitters());
