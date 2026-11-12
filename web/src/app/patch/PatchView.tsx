@@ -30,6 +30,7 @@ import { GroupNode, MasterNode, ModulatorNode, PluginNode, SourceNode } from "./
 import { OpenModulesContext } from "./openModules";
 import type { OpenModules } from "./openModules";
 import { ParamPanel } from "./ParamPanel";
+import { PatternBoxNode } from "./PatternBox";
 import { CollapseSelectionButton, dialogPlace, ModuleNameDialog, SaveSelectionButton } from "./SaveModule";
 import type { NameOptions } from "./SaveModule";
 import type { DialogPlace } from "./SaveModule";
@@ -55,6 +56,8 @@ const NODE_TYPES: NodeTypes = {
   group: GroupNode,
   master: MasterNode,
   source: SourceNode,
+  // (A kind that has no entry here is drawn by React Flow as an empty default node, and the cables at it are not drawn: `PatchView.patternBoxes.test.tsx` looks for a box's.)
+  pattern: PatternBoxNode,
   module: ModuleNode,
 };
 

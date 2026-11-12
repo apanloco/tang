@@ -78,6 +78,13 @@ export const SOURCE_HEIGHT = HEADER_HEIGHT + 18 + 12;
 export const NODE_SCOPE_HEIGHT = 157;
 /** The pattern of a lane, under its controls (record, clear and its length, its three switches, the line that says what it is), as tall whatever it shows: a lane's node is this much taller (measured in a browser: 97, in both states of the record button). */
 export const PATTERN_HEIGHT = 97;
+/** The roll of a pattern box, between its switches and the line that says what it is doing: a picture of its notes, as tall whatever it shows (`.tang-roll`)... */
+export const PATTERN_ROLL_HEIGHT = 40;
+/**
+ * ...and a pattern box is its header and the pattern cell of a lane (`PATTERN_HEIGHT`: record, play, clear and the length, the switches, the line) with the roll and the gap before it (`--tang-space-2`: 8) in it (the style says
+ * so: `.tang-patternbox` is `.tang-pattern`'s grid with one row more).
+ */
+export const PATTERN_BOX_HEIGHT = HEADER_HEIGHT + PATTERN_HEIGHT + 8 + PATTERN_ROLL_HEIGHT;
 /** A box that stands for a module has a row for each of its inputs and outputs, this tall (the style says so: `.tang-box__ports`)... */
 export const BOX_ROW_HEIGHT = 28;
 /** ...and the line under them that says what is in it, this tall. */
@@ -270,6 +277,8 @@ export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false,
       return MASTER_HEIGHT;
     case "source":
       return SOURCE_HEIGHT;
+    case "pattern":
+      return PATTERN_BOX_HEIGHT;
     default: {
       const rows = Math.max(1, Math.ceil(controlCount(node, knobs, carriesLane, groupCell) / CONTROLS_PER_ROW));
       return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING + (laneTakesNotes(node) ? PATTERN_HEIGHT : 0) + (scope ? NODE_SCOPE_HEIGHT : 0);
@@ -465,13 +474,21 @@ function layout(graph: Graph, heightOfNode: (node: Node) => number, holders: Rea
     if (node.kind === "master") place(node, lanesWidth + groupsWidth, Math.max(0, middle - heightOfNode(node) / 2));
   }
 
-  // The sources of notes in a column of their own before the lanes, one under the other, level with the middle of the lanes as a whole and not above the top of the canvas.
-  const sources = graph.nodes.filter((node) => node.kind === "source");
-  const stack = sources.reduce((sum, source) => sum + heightOfNode(source) + ROW_GAP, -ROW_GAP);
-  let sourceTop = Math.max(0, (y - ROW_GAP) / 2 - stack / 2);
-  for (const source of sources) {
-    place(source, -1, sourceTop);
-    sourceTop += heightOfNode(source) + ROW_GAP;
+  // The sources of notes, and the pattern boxes that notes are recorded into and sent from, in columns of their own before the lanes: the sources first and the boxes after them, nearer the lanes that the cables
+  // from a box go to (a session that has no box has the sources next to the lanes, as it always had). Each column has its nodes one under the other, level with the middle of the lanes as a whole and not above the top
+  // of the canvas.
+  const patterns = graph.nodes.filter((node) => node.kind === "pattern");
+  const noteColumns = [
+    { nodes: graph.nodes.filter((node) => node.kind === "source"), column: patterns.length > 0 ? -2 : -1 },
+    { nodes: patterns, column: -1 },
+  ];
+  for (const { nodes, column } of noteColumns) {
+    const stack = nodes.reduce((sum, node) => sum + heightOfNode(node) + ROW_GAP, -ROW_GAP);
+    let top = Math.max(0, (y - ROW_GAP) / 2 - stack / 2);
+    for (const node of nodes) {
+      place(node, column, top);
+      top += heightOfNode(node) + ROW_GAP;
+    }
   }
 
   // Whatever the layout did not reach (a node whose parent is not there) goes in a row below (a lane that only holds effects has no card to place).
@@ -513,13 +530,17 @@ const over = (a: Box, b: Box): boolean => a.left < b.right && b.left < a.right &
  * rack, and not at a place in it (nothing that is drawn to or from it moves it, and nothing that is taken out of the rack does); both are in the slot of the node they are
  * of, so that what is in a group's strip goes along with the group when it changes column; a modulator of the session's own that hears a lane or a group is in the slot of the one it hears, by its id too, so that it is
  * laid out again above the other strip when it is made to hear another (and stays where it was while it hears the same); a lane and a source are in the session; and a group and the master are in the column that the
- * layout puts them in, which is to the right of the longest lane (a lane that grows, with an effect added to it, moves them along).
+ * layout puts them in, which is to the right of the longest lane (a lane that grows, with an effect added to it, moves them along); a pattern box is in the session, like a lane, and a source is in the session
+ * and in the column that it is in (before the boxes' while there are boxes).
  */
 function slotsOf(graph: Graph, fresh: ReadonlyMap<NodeId, Position>, ownerOf: OwnerOf): Map<NodeId, string> {
   const slots = new Map<NodeId, string>();
+  // (The sources are a column further from the lanes while the session has a pattern box: they are laid out again when the first is added and when the last goes, and stay where they were otherwise.)
+  const boxes = graph.nodes.some((node) => node.kind === "pattern");
   for (const node of graph.nodes) {
     if (node.kind === "group" || node.kind === "master") slots.set(node.id, `${node.kind}:${String(fresh.get(node.id)?.x ?? 0)}`);
-    else if (node.kind === "instrument" || node.kind === "source" || node.kind === "module") slots.set(node.id, node.kind);
+    else if (node.kind === "source") slots.set(node.id, boxes ? "source before boxes" : "source");
+    else if (node.kind === "instrument" || node.kind === "module" || node.kind === "pattern") slots.set(node.id, node.kind);
   }
   const effects = new Map<NodeId | null, number>();
   for (const node of graph.nodes) {

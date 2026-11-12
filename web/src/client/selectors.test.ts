@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import type { ClientState } from "./connection";
-import { MASTER, audioCablesFixture, groupsFixture, movesFixture, nodeNamed, reachFixture, tracerSnapshot } from "./fixtures";
-import { audibleAt, cableDepthOf, canOpenSession, cableGainOf, cableSourceOf, chainLengthOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, hasWindowOf, isKnob, limiterOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, sameRemoval, sameStages, soundLibraries, stepsOf } from "./selectors";
+import { MASTER, audioCablesFixture, groupsFixture, movesFixture, nodeNamed, patternBoxesFixture, reachFixture, tracerSnapshot } from "./fixtures";
+import { audibleAt, cableDepthOf, canOpenSession, cableGainOf, cableSourceOf, chainLengthOf, chainPlaceOf, envelopeStagesOf, flagsOf, gainOf, groupChoicesOf, hasPins, hasWindowOf, isKnob, limiterOf, modulatorFieldOf, nodeById, paramCountOf, paramListOf, paramOf, patternBoxOf, patternOf, presetsOf, rangeOf, removalOf, sameChainPlace, sameFlags, sameGroupChoices, sameParamList, samePatternBox, sameRemoval, sameStages, soundLibraries, stepsOf } from "./selectors";
 import type { Node, Snapshot, SoundLibrary } from "../protocol";
 import type { Removal } from "./selectors";
 
@@ -555,6 +555,57 @@ describe("the pattern of a lane", () => {
     expect(first).toEqual(pattern);
     const snapshot = withPattern();
     expect(patternOf(stateOf(snapshot), oscillator.id)).toBe(patternOf(stateOf(snapshot), oscillator.id));
+  });
+});
+
+describe("a pattern box (step 124 C)", () => {
+  const boxes = patternBoxesFixture.cases.find((entry) => entry.name === "boxes")?.snapshot;
+  if (!boxes) throw new Error("the fixture has a session with boxes");
+  const withBoxes = stateOf(boxes);
+  const BASS = 4;
+
+  test("is the node of the session, with what it is set to, its notes and what it is doing", () => {
+    const bass = patternBoxOf(withBoxes, BASS);
+    expect(bass).toMatchObject({ kind: "pattern", name: "Bass", lengthBeats: 8, looping: true, overdub: true, click: true, sync: "own", status: "stopped" });
+    expect(bass?.notes).toHaveLength(2);
+    expect(patternBoxOf(withBoxes, BASS)).toBe(boxes.graph.nodes.find((n) => n.id === BASS));
+  });
+
+  test("is not there for what is not a box: a lane, a source, the master, a node that is not there, or a client that has no session yet", () => {
+    for (const id of [0, 2, 3, MASTER, 424242]) expect(patternBoxOf(withBoxes, id), String(id)).toBeUndefined();
+    expect(patternBoxOf(stateOf(null), BASS)).toBeUndefined();
+  });
+
+  describe("is the same as another view of it when nothing that a box draws is different", () => {
+    const bass = patternBoxOf(withBoxes, BASS);
+    if (bass === undefined) throw new Error("the fixture has Bass");
+    const changed = (over: Partial<NonNullable<typeof bass>>): NonNullable<typeof bass> => ({ ...bass, ...over });
+
+    test("the object itself, and another that is the same box, a snapshot at a time", () => {
+      expect(samePatternBox(bass, bass)).toBe(true);
+      expect(samePatternBox(bass, structuredClone(bass))).toBe(true);
+      expect(samePatternBox(undefined, undefined)).toBe(true);
+    });
+
+    test("and not when the box is not there in one of them", () => {
+      expect(samePatternBox(bass, undefined)).toBe(false);
+      expect(samePatternBox(undefined, bass)).toBe(false);
+    });
+
+    test("and not when its length, one of its switches, whose clock it goes by, what it is doing or one of its notes is different", () => {
+      expect(samePatternBox(bass, changed({ lengthBeats: 4 })), "length").toBe(false);
+      expect(samePatternBox(bass, changed({ looping: false })), "looping").toBe(false);
+      expect(samePatternBox(bass, changed({ overdub: false })), "overdub").toBe(false);
+      expect(samePatternBox(bass, changed({ click: false })), "click").toBe(false);
+      expect(samePatternBox(bass, changed({ sync: "host" })), "sync").toBe(false);
+      expect(samePatternBox(bass, changed({ status: "recording" })), "status").toBe(false);
+      expect(samePatternBox(bass, changed({ notes: bass.notes.slice(1) })), "fewer notes").toBe(false);
+      expect(samePatternBox(bass, changed({ notes: bass.notes.map((n, i) => (i === 0 ? { ...n, velocity: n.velocity - 1 } : n)) })), "a note").toBe(false);
+    });
+
+    test("whatever its name, which is the node's data's and not what the body of a box draws", () => {
+      expect(samePatternBox(bass, changed({ name: "Lead" }))).toBe(true);
+    });
   });
 });
 

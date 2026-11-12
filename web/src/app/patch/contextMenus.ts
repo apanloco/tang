@@ -7,6 +7,8 @@ import type { ClientState } from "../../client/connection";
 import type { Editor } from "../../client/editor";
 import { EVERY_NOTE, earItems } from "../../client/hears";
 import { noteFromItems, noteToItems, sourceChosen, sourceItems } from "../../client/noteItems";
+import type { PatternBoxNode } from "../../client/patternBoxes";
+import { isRecording } from "../../client/patternWords";
 import { keptWords, removalWords } from "../../client/removal";
 import { chainLengthOf, chainPlaceOf, flagsOf, hasWindowOf, limiterOf, paramCountOf, presetsOf, removalOf } from "../../client/selectors";
 import { sendItems, sendTarget } from "../../client/sends";
@@ -30,6 +32,10 @@ export type MenuEditor = Pick<
   | "addModule"
   | "addFreeModulator"
   | "addSource"
+  | "addPattern"
+  | "setPatternBoxField"
+  | "patternBoxTransport"
+  | "clearPatternBox"
   | "addEffect"
   | "replaceInstrument"
   | "clearInstrument"
@@ -425,6 +431,106 @@ function sourceMenu(deps: MenuDeps, node: NodeId, data: PatchNodeData): ContextI
   ];
 }
 
+/**
+ * The menu of the pattern box `box` (the node `node`): what its buttons do (record or finish, play or stop, clear), its settings, the cables of notes to it and from it, and taking it out. The buttons are in the node; the menu is for a person who
+ * has it open already, and for whoever does not aim. Clearing is one choice here (the button of the node asks first): the menu was asked for, and Undo gives the notes back.
+ */
+function patternBoxMenu(deps: MenuDeps, node: NodeId, data: PatchNodeData, box: PatternBoxNode): ContextItem[] {
+  const { editor, state } = deps;
+  const graph = state.snapshot?.graph;
+  const recording = isRecording(box.status);
+  const playing = box.status !== "stopped";
+  const hostShown = state.snapshot?.meta.hostTempo === true || box.sync === "host";
+  return [
+    {
+      id: "record",
+      label: recording ? `Finish recording ${data.name}` : `Record into ${data.name}`,
+      run: () => {
+        void editor.patternBoxTransport(node, recording ? "finishRecording" : "record");
+      },
+    },
+    {
+      id: "play",
+      label: playing ? `Stop ${data.name}` : `Play ${data.name}`,
+      run: () => {
+        void editor.patternBoxTransport(node, playing ? "stop" : "play");
+      },
+    },
+    {
+      id: "clear",
+      label: `Clear the notes of ${data.name}`,
+      disabled: box.notes.length === 0,
+      title: box.notes.length === 0 ? "It has no notes" : undefined,
+      run: () => {
+        void editor.clearPatternBox(node);
+      },
+    },
+    toggle(
+      "looping",
+      "Loop",
+      box.looping,
+      () => {
+        void editor.setPatternBoxField(node, { type: "looping", on: !box.looping });
+      },
+      "The box goes round: its notes play over and over",
+    ),
+    toggle(
+      "overdub",
+      "Overdub",
+      box.overdub,
+      () => {
+        void editor.setPatternBoxField(node, { type: "overdub", on: !box.overdub });
+      },
+      "A recording is added to the notes the box has",
+    ),
+    toggle(
+      "click",
+      "Click",
+      box.click,
+      () => {
+        void editor.setPatternBoxField(node, { type: "click", on: !box.click });
+      },
+      "A metronome clicks while the box counts in and records",
+    ),
+    ...(hostShown
+      ? [
+          toggle(
+            "sync",
+            "Follow the host's beat",
+            box.sync === "host",
+            () => {
+              void editor.setPatternBoxField(node, { type: "sync", sync: box.sync === "host" ? "own" : "host" });
+            },
+            "The box goes by the host's beat and not by its own clock",
+          ),
+        ]
+      : []),
+    submenu(
+      "notes-from",
+      "Take notes from",
+      graph
+        ? choosing(noteFromItems(graph, node), (source) => {
+            void editor.addNotesCable(Number(source), node);
+          })
+        : [],
+      "Every source has a cable of notes to it",
+    ),
+    submenu(
+      "notes",
+      "Send notes to",
+      graph
+        ? choosing(noteToItems(graph, node), (lane) => {
+            void editor.addNotesCable(node, Number(lane));
+          })
+        : [],
+      "Every lane has a cable of notes from it",
+    ),
+    removing("remove", `Remove ${data.name}`, () => {
+      void editor.removeNode(node);
+    }),
+  ];
+}
+
 /** The menu of what is chosen: a module of it, and none of it chosen. */
 export function selectionMenu(deps: MenuDeps): ContextItem[] {
   const { canvas, editor } = deps;
@@ -501,6 +607,13 @@ export function paneMenu(deps: MenuDeps): ContextItem[] {
       })),
       "The keys and every input that is open are sources already",
     ),
+    {
+      id: "add-pattern",
+      label: "Add a pattern box",
+      run: () => {
+        void editor.addPattern(at);
+      },
+    },
     submenu(
       "add-module",
       "Add a module",
@@ -605,6 +718,8 @@ function ownMenu(deps: MenuDeps, node: NodeId, data: PatchNodeData): ContextItem
       return groupMenu(deps, node);
     case "source":
       return sourceMenu(deps, node, data);
+    case "pattern":
+      return patternBoxMenu(deps, node, data, found);
     case "module":
       return moduleMenu(deps, node, data);
     case "master": {

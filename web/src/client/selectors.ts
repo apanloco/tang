@@ -7,6 +7,8 @@ import type { Stages } from "./envelope";
 import { audibleOf, ownAudibleOf } from "./audible";
 import { macroExposed } from "./macros";
 import { displayNames } from "./names";
+import { sameNotes } from "./patternBoxes";
+import type { PatternBoxNode } from "./patternBoxes";
 import { shownParams } from "./pinning";
 import { unusedBecause } from "./uses";
 
@@ -145,6 +147,30 @@ export function rangeOf(state: ClientState, id: NodeId): NoteRange | null | unde
 export function patternOf(state: ClientState, id: NodeId): PatternInfo | null | undefined {
   const node = nodeById(state, id);
   return node?.kind === "instrument" ? node.pattern : undefined;
+}
+
+/** The pattern box `id` as the session has it (what it is set to, its notes and what it is doing), or undefined if the node is no box. */
+export function patternBoxOf(state: ClientState, id: NodeId): PatternBoxNode | undefined {
+  const node = nodeById(state, id);
+  return node?.kind === "pattern" ? node : undefined;
+}
+
+/**
+ * Whether two views of a box are the same: what the box draws of itself (its length, its settings, its notes and what it is doing), and not the objects that hold them (a snapshot makes new ones for all of its nodes). The canvas does
+ * not carry any of it in the node's data, which is the structure and is left as it was while a box records: the box reads it from the store with this. (Its name is not here: it is the node's data's, which is the structure.)
+ */
+export function samePatternBox(a: PatternBoxNode | undefined, b: PatternBoxNode | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return (
+    a.lengthBeats === b.lengthBeats &&
+    a.looping === b.looping &&
+    a.sync === b.sync &&
+    a.overdub === b.overdub &&
+    a.click === b.click &&
+    a.status === b.status &&
+    sameNotes(a.notes, b.notes)
+  );
 }
 
 /** What a lane's or a group's mute and solo are set to. */
