@@ -35,6 +35,7 @@ import { CollapseSelectionButton, dialogPlace, ModuleNameDialog, SaveSelectionBu
 import type { NameOptions } from "./SaveModule";
 import type { DialogPlace } from "./SaveModule";
 import { collapsePlace, collapsibleOf, modulePluginsOf } from "./selection";
+import { SplitterNode } from "./Splitter";
 import { ScopesContext } from "./scopes";
 import type { Scopes } from "./scopes";
 import { StructureContext } from "./structure";
@@ -56,8 +57,9 @@ const NODE_TYPES: NodeTypes = {
   group: GroupNode,
   master: MasterNode,
   source: SourceNode,
-  // (A kind that has no entry here is drawn by React Flow as an empty default node, and the cables at it are not drawn: `PatchView.patternBoxes.test.tsx` looks for a box's.)
+  // (A kind that has no entry here is drawn by React Flow as an empty default node, and the cables at it are not drawn: `PatchView.patternBoxes.test.tsx` looks for a box's, and `PatchView.splitters.test.tsx` for a splitter's.)
   pattern: PatternBoxNode,
+  splitter: SplitterNode,
   module: ModuleNode,
 };
 

@@ -85,6 +85,13 @@ export const PATTERN_ROLL_HEIGHT = 40;
  * so: `.tang-patternbox` is `.tang-pattern`'s grid with one row more).
  */
 export const PATTERN_BOX_HEIGHT = HEADER_HEIGHT + PATTERN_HEIGHT + 8 + PATTERN_ROLL_HEIGHT;
+/**
+ * A note splitter is its header and a cell of three rows (the switch of the note it picks, and a row for each of its two outputs: `.tang-splitter`, rows of 22 with the gap of `--tang-space-2`, 8, between them, the cell's padding of 8 above and 12
+ * below and the line of 1 above it), as tall whatever it picks: 44 + 103 (the same cell as a pattern box has, with three rows in it).
+ */
+export const SPLITTER_HEIGHT = HEADER_HEIGHT + 1 + 8 + 22 + 8 + 22 + 8 + 22 + 12;
+/** Where the second output of a note splitter is, from the top of the node: the middle of the last row of its cell (the arranger anchors a cable that starts there by it). */
+export const SPLITTER_REST_AT = HEADER_HEIGHT + 1 + 8 + 22 + 8 + 22 + 8 + 11;
 /** A box that stands for a module has a row for each of its inputs and outputs, this tall (the style says so: `.tang-box__ports`)... */
 export const BOX_ROW_HEIGHT = 28;
 /** ...and the line under them that says what is in it, this tall. */
@@ -279,6 +286,8 @@ export function nodeHeight(node: Node, knobs: number, cables = 0, scope = false,
       return SOURCE_HEIGHT;
     case "pattern":
       return PATTERN_BOX_HEIGHT;
+    case "splitter":
+      return SPLITTER_HEIGHT;
     default: {
       const rows = Math.max(1, Math.ceil(controlCount(node, knobs, carriesLane, groupCell) / CONTROLS_PER_ROW));
       return HEADER_HEIGHT + rows * CONTROL_ROW_HEIGHT + NODE_PADDING + (laneTakesNotes(node) ? PATTERN_HEIGHT : 0) + (scope ? NODE_SCOPE_HEIGHT : 0);
@@ -474,13 +483,15 @@ function layout(graph: Graph, heightOfNode: (node: Node) => number, holders: Rea
     if (node.kind === "master") place(node, lanesWidth + groupsWidth, Math.max(0, middle - heightOfNode(node) / 2));
   }
 
-  // The sources of notes, and the pattern boxes that notes are recorded into and sent from, in columns of their own before the lanes: the sources first and the boxes after them, nearer the lanes that the cables
-  // from a box go to (a session that has no box has the sources next to the lanes, as it always had). Each column has its nodes one under the other, level with the middle of the lanes as a whole and not above the top
-  // of the canvas.
+  // The sources of notes, the pattern boxes that notes are recorded into and sent from, and the note splitters that send the lowest or the highest of them one way and the others another, in columns of their own before the
+  // lanes, in the order that notes go: the sources first, the boxes after them and the splitters nearest the lanes that the cables from a splitter go to (a session that has none of a kind has no column for it: the sources
+  // are next to the lanes, as they always were). Each column has its nodes one under the other, level with the middle of the lanes as a whole and not above the top of the canvas.
   const patterns = graph.nodes.filter((node) => node.kind === "pattern");
+  const splitters = graph.nodes.filter((node) => node.kind === "splitter");
   const noteColumns = [
-    { nodes: graph.nodes.filter((node) => node.kind === "source"), column: patterns.length > 0 ? -2 : -1 },
-    { nodes: patterns, column: -1 },
+    { nodes: graph.nodes.filter((node) => node.kind === "source"), column: -1 - (patterns.length > 0 ? 1 : 0) - (splitters.length > 0 ? 1 : 0) },
+    { nodes: patterns, column: splitters.length > 0 ? -2 : -1 },
+    { nodes: splitters, column: -1 },
   ];
   for (const { nodes, column } of noteColumns) {
     const stack = nodes.reduce((sum, node) => sum + heightOfNode(node) + ROW_GAP, -ROW_GAP);
@@ -537,10 +548,13 @@ function slotsOf(graph: Graph, fresh: ReadonlyMap<NodeId, Position>, ownerOf: Ow
   const slots = new Map<NodeId, string>();
   // (The sources are a column further from the lanes while the session has a pattern box: they are laid out again when the first is added and when the last goes, and stay where they were otherwise.)
   const boxes = graph.nodes.some((node) => node.kind === "pattern");
+  const splitters = graph.nodes.some((node) => node.kind === "splitter");
   for (const node of graph.nodes) {
     if (node.kind === "group" || node.kind === "master") slots.set(node.id, `${node.kind}:${String(fresh.get(node.id)?.x ?? 0)}`);
-    else if (node.kind === "source") slots.set(node.id, boxes ? "source before boxes" : "source");
-    else if (node.kind === "instrument" || node.kind === "module" || node.kind === "pattern") slots.set(node.id, node.kind);
+    // (A source is a column further from the lanes for each of the other two kinds of node of notes that the session has, and a box is one further while the session has a splitter: the node is laid out again when the first of them is added and when the last goes.)
+    else if (node.kind === "source") slots.set(node.id, ["source", ...(boxes ? ["before boxes"] : []), ...(splitters ? ["before splitters"] : [])].join(" "));
+    else if (node.kind === "pattern") slots.set(node.id, splitters ? "pattern before splitters" : "pattern");
+    else if (node.kind === "instrument" || node.kind === "module" || node.kind === "splitter") slots.set(node.id, node.kind);
   }
   const effects = new Map<NodeId | null, number>();
   for (const node of graph.nodes) {
@@ -1037,6 +1051,8 @@ function sameNodeStructure(x: Node, y: Node): boolean {
   // (What is in a module is part of it: the box has a port for what a cable crosses its edge at, and what is inside is on the canvas while it is open.)
   if (x.kind === "module" && y.kind === "module") return x.members.length === y.members.length && x.members.every((member, i) => member === y.members[i]);
   if (x.kind === "source" && y.kind === "source") return sameSource(x.source, y.source);
+  // (What a note splitter picks is part of it: the menus that take notes from it name its first output by it, and the structure is what the menus are given.)
+  if (x.kind === "splitter" && y.kind === "splitter") return x.pick === y.pick;
   return true;
 }
 

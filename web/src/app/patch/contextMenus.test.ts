@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { MODULE_FORMAT } from "../../client/catalog";
 import type { ClientState } from "../../client/connection";
-import { builtinCatalog, moduleGraphsFixture, nodeNamed, patternBoxesFixture, tracerSnapshot } from "../../client/fixtures";
+import { builtinCatalog, moduleGraphsFixture, nodeNamed, patternBoxesFixture, splittersFixture, tracerSnapshot } from "../../client/fixtures";
 import type { PatternBoxNode } from "../../client/patternBoxes";
 import type { CatalogEntry, Graph, Node, NodeId, Snapshot } from "../../protocol";
 import type { ContextItem } from "../../ui/ContextMenu";
@@ -39,6 +39,8 @@ function recorder(): { editor: MenuEditor; asked: Ask[] } {
     addFreeModulator: added("addFreeModulator"),
     addSource: added("addSource"),
     addPattern: added("addPattern"),
+    addSplitter: added("addSplitter"),
+    setSplitterField: done("setSplitterField"),
     setPatternBoxField: done("setPatternBoxField"),
     patternBoxTransport: done("patternBoxTransport"),
     clearPatternBox: done("clearPatternBox"),
@@ -179,11 +181,11 @@ function dataOf(found: Node, overrides: Partial<PatchNodeData> = {}): PatchNodeD
 }
 
 describe("the menu of the canvas", () => {
-  test("adds an instrument, an effect, a modulator, a source of notes, a pattern box and a module, goes back and forward, chooses nodes, arranges them and shows them all, in that order", () => {
+  test("adds an instrument, an effect, a modulator, anything MIDI (under its own menu) and a module, goes back and forward, chooses nodes, arranges them and shows them all, in that order", () => {
     const { deps } = rig(tracerSnapshot);
     const items = paneMenu(deps);
-    expect(idsOf(items)).toEqual(["add-instrument", "add-effect", "add-modulator", "add-source", "add-pattern", "add-module", "undo", "redo", "choose-all", "choosing", "arrange", "fit"]);
-    expect(labelsOf(items)).toEqual(["Add an instrument", "Add an effect", "Add a modulator", "Add a source of notes", "Add a pattern box", "Add a module", "Undo", "Redo", "Choose every node", "Choose nodes with a box", "Arrange the nodes", "Show every node"]);
+    expect(idsOf(items)).toEqual(["add-instrument", "add-effect", "add-modulator", "midi", "add-module", "undo", "redo", "choose-all", "choosing", "arrange", "fit"]);
+    expect(labelsOf(items)).toEqual(["Add an instrument", "Add an effect", "Add a modulator", "MIDI", "Add a module", "Undo", "Redo", "Choose every node", "Choose nodes with a box", "Arrange the nodes", "Show every node"]);
     // (The rules that set the sections apart: adding, history, choosing, the view.)
     expect(items.filter((item) => item.rule === true).map((item) => item.id)).toEqual(["undo", "choose-all", "arrange"]);
   });
@@ -246,20 +248,49 @@ describe("the menu of the canvas", () => {
     expect(asked).toEqual([["addFreeModulator", "lfo", null, undefined]]);
   });
 
-  test("adds the keys, and the MIDI inputs that are open and that no device stands for, and says why it cannot when there is none", () => {
+  // The user, while step 128 was going: "lets have a 'Midi' submenu in right-click where we add and keep midi-related things".
+  test("has a MIDI menu that adds the keys, and the MIDI inputs that are open and that no device stands for, and then a pattern box and a note splitter, each where the pointer was", () => {
     const { deps, asked } = rig(tracerSnapshot, { at: { x: 5, y: 6 }, state: { inputs: ["Launchkey Mini"] } });
-    const sources = opened(paneMenu(deps), "add-source");
-    expect(labelsOf(sources)).toEqual(["Keys", "Launchkey Mini"]);
-    choose(sources, "device:Launchkey Mini");
-    choose(sources, "keys");
+    const midi = opened(paneMenu(deps), "midi");
+    expect(idsOf(midi)).toEqual(["keys", "device:Launchkey Mini", "add-pattern", "add-splitter"]);
+    expect(labelsOf(midi)).toEqual(["Keys", "Launchkey Mini", "Pattern box", "Note splitter"]);
+    // (The inputs are under their heading, and a rule sets the nodes that move notes apart from the sources of them.)
+    expect(midi.map((item) => item.group)).toEqual([undefined, "MIDI inputs", undefined, undefined]);
+    expect(midi.filter((item) => item.rule === true).map((item) => item.id)).toEqual(["add-pattern"]);
+    choose(midi, "device:Launchkey Mini");
+    choose(midi, "keys");
+    choose(midi, "add-pattern");
+    choose(midi, "add-splitter");
     expect(asked).toEqual([
       ["addSource", { type: "device", name: "Launchkey Mini" }, { x: 5, y: 6 }],
       ["addSource", { type: "keys" }, { x: 5, y: 6 }],
+      ["addPattern", { x: 5, y: 6 }],
+      ["addSplitter", { x: 5, y: 6 }],
     ]);
+  });
+
+  test("has a MIDI menu that is never shut: with the keys there and no input open it has the box and the splitter, with no rule above the first", () => {
     // The session of the fixture has the keys already, and no input is open.
-    const none = find(paneMenu(rig(session).deps), "add-source");
-    expect(none.disabled).toBe(true);
-    expect(none.title).toBe("The keys and every input that is open are sources already");
+    const midi = opened(paneMenu(rig(session).deps), "midi");
+    expect(find(paneMenu(rig(session).deps), "midi").disabled).toBeUndefined();
+    expect(idsOf(midi)).toEqual(["add-pattern", "add-splitter"]);
+    expect(midi.some((item) => item.rule === true)).toBe(false);
+    // (No session at all, and the page has no sources to offer: the same.)
+    expect(idsOf(opened(paneMenu(rig(null).deps), "midi"))).toEqual(["add-pattern", "add-splitter"]);
+  });
+
+  test("has no loose items for what the MIDI menu holds: the canvas has no `add-source`, `add-pattern` or `add-splitter` of its own", () => {
+    expect(idsOf(paneMenu(rig(tracerSnapshot, { state: { inputs: ["Launchkey Mini"] } }).deps))).not.toEqual(expect.arrayContaining(["add-source"]));
+    for (const id of ["add-source", "add-pattern", "add-splitter"]) expect(idsOf(paneMenu(rig(tracerSnapshot).deps)), id).not.toContain(id);
+  });
+
+  test("adds a splitter where the pointer was, and where the layout puts it when the pointer was not on the canvas", () => {
+    const placed = rig(tracerSnapshot, { at: { x: 5, y: 6 } });
+    choose(opened(paneMenu(placed.deps), "midi"), "add-splitter");
+    expect(placed.asked).toEqual([["addSplitter", { x: 5, y: 6 }]]);
+    const left = rig(tracerSnapshot);
+    choose(opened(paneMenu(left.deps), "midi"), "add-splitter");
+    expect(left.asked).toEqual([["addSplitter", undefined]]);
   });
 
   test("says that nothing is installed, where nothing is: the catalog is not there before the scan has told it", () => {
@@ -307,7 +338,7 @@ describe("the menu of the canvas", () => {
     const held = modulePluginsOf(session.graph, [oscillator.id, node("Delay").id]);
     const { deps, naming, asked, canvasAsked } = rig(session, { canvas: { chosen: [oscillator.id, node("Delay").id], held } });
     const items = paneMenu(deps);
-    expect(idsOf(items).slice(6, 12)).toEqual(["undo", "redo", "save-chosen", "collapse-chosen", "choose-none", "choose-all"]);
+    expect(idsOf(items).slice(5, 11)).toEqual(["undo", "redo", "save-chosen", "collapse-chosen", "choose-none", "choose-all"]);
     expect(find(items, "save-chosen")).toMatchObject({ label: "Save the 2 chosen as a module…", disabled: false, rule: true });
     choose(items, "save-chosen");
     expect(naming.map((name) => name.label)).toEqual([SAVE_CHOSEN]);
@@ -914,10 +945,10 @@ describe("the menus of a pattern box (step 124 C)", () => {
 
   test("the canvas adds one where the pointer was, and where the layout puts it when the pointer was not on the canvas", () => {
     const placed = rig(tracerSnapshot, { at: { x: 5, y: 6 } });
-    choose(paneMenu(placed.deps), "add-pattern");
+    choose(opened(paneMenu(placed.deps), "midi"), "add-pattern");
     expect(placed.asked).toEqual([["addPattern", { x: 5, y: 6 }]]);
     const left = rig(tracerSnapshot);
-    choose(paneMenu(left.deps), "add-pattern");
+    choose(opened(paneMenu(left.deps), "midi"), "add-pattern");
     expect(left.asked).toEqual([["addPattern", undefined]]);
   });
 
@@ -1023,5 +1054,106 @@ describe("the menus of a pattern box (step 124 C)", () => {
   test("is named for it, and a node that is no box has none of its items", () => {
     expect(nodeMenu(rig(boxes).deps, 987654, dataOf(at(boxes, BASS)))).toEqual([]);
     expect(idsOf(nodeMenu(rig(boxes).deps, 0, dataOf(at(boxes, 0))))).not.toContain("record");
+  });
+});
+
+// The session of the fixture of splitters (`testutil::SPLITTERS`): the lanes are 0, 1 and 2, the keys 3, the device 4, the box (Bass) 5, the first splitter (Bass line, which picks the lowest note) 6 and the second (which picks the highest) 7.
+// The cables of notes are the keys to 6, the box and the device to 7, the pick of 6 to the lane 0, its rest to the lane 1 and the pick of 7 to the lane 2.
+describe("the menu of a note splitter", () => {
+  const found = splittersFixture.cases.find((entry) => entry.name === "splitters");
+  if (!found) throw new Error("the fixture has the session of the splitters");
+  const splits = found.snapshot;
+  const [FIRST, SECOND] = [6, 7];
+  const menuOf = (id: NodeId) => {
+    const made = rig(splits);
+    const target = splits.graph.nodes.find((n) => n.id === id);
+    if (!target) throw new Error(`no node ${String(id)}`);
+    return { ...made, items: nodeMenu(made.deps, id, dataOf(target, { notes: false })) };
+  };
+
+  test("has the switch of what it picks, the notes it takes and sends from each output, and its removal, in that order, with a rule above what takes it away", () => {
+    const { items } = menuOf(FIRST);
+    expect(idsOf(items)).toEqual(["pick-lowest", "pick-highest", "notes-from", "notes", "notes-rest", "remove"]);
+    expect(labelsOf(items)).toEqual(["Pick the lowest note", "Pick the highest note", "Take notes from", "Send the lowest note to", "Send the other notes to", "Remove Bass line"]);
+    expect(items.filter((item) => item.rule === true).map((item) => item.id)).toEqual(["remove"]);
+  });
+
+  test("says which note it picks by a check, and the words of the first output follow it", () => {
+    const lowest = menuOf(FIRST).items;
+    expect(lowest.filter((item) => item.checked === true).map((item) => item.id)).toEqual(["pick-lowest"]);
+    expect(find(lowest, "notes").label).toBe("Send the lowest note to");
+    const highest = menuOf(SECOND).items;
+    expect(highest.filter((item) => item.checked === true).map((item) => item.id)).toEqual(["pick-highest"]);
+    expect(find(highest, "notes").label).toBe("Send the highest note to");
+    expect(find(highest, "remove").label).toBe("Remove Splitter");
+  });
+
+  test("sets what it picks by choosing it, the one that it picks too: the controller says that it has it already", () => {
+    const { items, asked } = menuOf(FIRST);
+    choose(items, "pick-highest");
+    choose(items, "pick-lowest");
+    expect(asked).toEqual([
+      ["setSplitterField", FIRST, { type: "pick", pick: "highest" }],
+      ["setSplitterField", FIRST, { type: "pick", pick: "lowest" }],
+    ]);
+  });
+
+  test("sends the notes of each output to the lanes that have no cable from it: the first output's takers and the second's are told apart, and the choice names the output", () => {
+    const { items, asked } = menuOf(FIRST);
+    // (The pick of the first splitter has a cable to the lane 0 and its rest one to the lane 1: the first output has the lanes 1 and 2 to send to, the second the lanes 0 and 2.)
+    expect(idsOf(opened(items, "notes"))).toEqual(["1", "2"]);
+    expect(idsOf(opened(items, "notes-rest"))).toEqual(["0", "2"]);
+    choose(opened(items, "notes"), "2");
+    choose(opened(items, "notes-rest"), "0");
+    expect(asked).toEqual([
+      ["addNotesCable", FIRST, 2],
+      ["addNotesCable", FIRST, 0, "rest"],
+    ]);
+  });
+
+  test("takes notes from the sources and the boxes that have no cable to it, and from an output of another splitter that it cannot take (no splitter is among them)", () => {
+    const { items, asked } = menuOf(SECOND);
+    // (The second splitter has the box and the device already: the keys are left, and the splitters are not offered.)
+    expect(idsOf(opened(items, "notes-from"))).toEqual(["3"]);
+    choose(opened(items, "notes-from"), "3");
+    expect(asked).toEqual([["addNotesCable", 3, SECOND, "pick"]]);
+    // (A lane's menu lists a splitter's two outputs, each by what it sends, and the one that is chosen says which.)
+    const lane = rig(splits);
+    const target = splits.graph.nodes.find((n) => n.id === 2);
+    if (!target) throw new Error("the fixture has a third lane");
+    const laneItems = nodeMenu(lane.deps, 2, dataOf(target));
+    const from = opened(laneItems, "notes");
+    expect(labelsOf(from)).toEqual(["Keys", "Launchkey Mini MK4 37", "Bass", "Bass line · lowest", "Bass line · rest", "Splitter · rest"]);
+    choose(from, "6:rest");
+    expect(lane.asked).toEqual([["addNotesCable", 6, 2, "rest"]]);
+  });
+
+  test("says why it cannot send or take notes when every lane or source has a cable already, and takes the splitter out with its cables", () => {
+    const every: Snapshot = {
+      ...splits,
+      graph: {
+        ...splits.graph,
+        edges: [
+          ...splits.graph.edges,
+          ...[1, 2].map((lane, i) => ({ kind: "events" as const, id: 70 + i, from: { node: FIRST, port: { type: "eventsOut" as const } }, to: { node: lane, port: { type: "eventsIn" as const } } })),
+          ...[0, 2].map((lane, i) => ({ kind: "events" as const, id: 80 + i, from: { node: FIRST, port: { type: "eventsOutRest" as const } }, to: { node: lane, port: { type: "eventsIn" as const } } })),
+          { kind: "events" as const, id: 90, from: { node: 3, port: { type: "eventsOut" as const } }, to: { node: SECOND, port: { type: "eventsIn" as const } } },
+          { kind: "events" as const, id: 91, from: { node: 4, port: { type: "eventsOut" as const } }, to: { node: FIRST, port: { type: "eventsIn" as const } } },
+          { kind: "events" as const, id: 92, from: { node: 5, port: { type: "eventsOut" as const } }, to: { node: FIRST, port: { type: "eventsIn" as const } } },
+        ],
+      },
+    };
+    const made = rig(every);
+    const target = every.graph.nodes.find((n) => n.id === FIRST);
+    if (!target) throw new Error("the fixture has a first splitter");
+    const items = nodeMenu(made.deps, FIRST, dataOf(target, { notes: false }));
+    for (const id of ["notes-from", "notes", "notes-rest"]) {
+      expect(find(items, id).disabled, id).toBe(true);
+    }
+    expect(find(items, "notes-from").title).toBe("Every source has a cable of notes to it");
+    expect(find(items, "notes").title).toBe("Every lane has a cable of notes from it");
+    expect(find(items, "notes-rest").title).toBe("Every lane has a cable of notes from it");
+    choose(items, "remove");
+    expect(made.asked).toEqual([["removeNode", FIRST]]);
   });
 });
