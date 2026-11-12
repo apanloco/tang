@@ -422,6 +422,42 @@ to = "instrument[0]"
   (`cable[0].to: pattern[0] is a pattern box, which has no input of audio: it takes notes`) and a cable of notes into a lane whose instrument takes none. A modulator that `hears` a box, or has a cable to one, is left out (it hears every note; a box has no parameter), as one that names what is not there is.
 - In the model they are `SessionModel.patterns` (`PatternBox`), the reader is `session::parse` (`PatternBoxRaw`, `PatternBoxConfig`) and `app::load::load_patterns`, and the writer `app::save::sources_to_save` (`SavePatternBox`) and `session::to_toml` (`PatternBoxOut`).
 
+### Note splitters (`[[splitter]]`, step 127)
+
+A **note splitter** (P4i of `docs/patch-graph.md` §11.6; the engine is "Note splitters (the engine)" and the rest "Note splitters in the session" in `inputs-and-midi.md`) is a node that takes notes in and sends them out on **two outputs**: the *pick* (the lowest note, or the highest) and the *rest* (every
+other note), so that a chord's bass note is played by one instrument and the others by another. A session has none until one is added, and **a session that has none is the file it was**.
+
+```toml
+[[splitter]]
+name = "Bass line"         # what it is called: the text without its control characters and the spaces round it, and "Splitter" for nothing
+pick = "highest"           # which note goes to the first output: "lowest" (when the file says none, and not written then) or "highest"; any other word refuses the session
+ui = { x = 300, y = 40 }   # where a front-end draws it, as every node's `ui`
+
+[[cable]]
+from = "keys"              # a cable of notes from a source or a pattern box into a splitter (a splitter that no cable ends at hears every input: the keys and every device) ...
+to = "splitter[0]"         # ... the splitters are counted from 0 in the order of the file, as the devices and the boxes are
+
+[[cable]]
+from = "splitter[0]"       # ... and from its first output, the pick, to a lane ...
+to = "instrument[0]"
+
+[[cable]]
+from = "splitter[0].rest"  # ... and from its second output, the rest (as an audio cable's `.side` names the second input of an effect): a lane may be cabled from both
+to = "instrument[1]"
+```
+
+- **What a lane hears.** A lane that a cable from a splitter ends at hears the output that the cable starts at (`Source::splitter(slot, output)`), with the sources of its other cables and no others: a lane cabled only from the rest hears no key, and no lane hears an output of a splitter
+  until a cable says so (a lane that has no cable hears every input, and an output is not an input, as a box is not). A splitter hears the sources and the boxes that cables into it start at, and every input when it has none; **never another splitter**.
+- **What a note does** (`inputs-and-midi.md`): it is judged when it is pressed (the pick if it is lower than every key held, or higher, for `"highest"`) and **stays on that output until it ends**, however the keys are let go of; the notes of one block of the engine are judged together; controllers go to both outputs.
+- **The file** has the splitters after the boxes (`[keys]`, `[[device]]`, `[[pattern]]`, `[[splitter]]`) and before the lanes; `pick` is written only when it is not the lowest. What is not saved is its **slot** (`Source::splitter(slot, …)`, the number the engine knows its outputs by: the loader gives the splitters the lowest slots in the order of the file).
+- **A cable's kind** is told by its places: from `splitter[n]` or `splitter[n].rest` it is a cable of notes (`CablePlace::Splitter(n)` and `CablePlace::SplitterRest(n)`, both `is_source`), which has no `gain`, and ends at a lane; into `splitter[n]` it ends at the splitter (`SplitterRest` is only a start). A text that names a second output of anything else
+  (`keys.rest`, `pattern[0].rest`) is no place at all.
+- **What refuses the session**, with the place in the file: a 17th splitter (`splitter[16]: a session has at most 16 note splitters`), a `pick` that is neither word (`splitter[0].pick is "middle": a note splitter picks the "lowest" note or the "highest"`), and, from the cables (`app::load`), a splitter that is not there
+  (`cable[0].from: splitter[2].rest is not in the session`), a cable from a splitter into a splitter (`cable[0].to: splitter[1] is a note splitter, and a note splitter does not take the notes of another splitter: it takes those of a source or a pattern box`), into a pattern box (`cable[0].to: pattern[0] is a pattern box, and a note
+  splitter does not send its notes to a box yet: it sends them to a lane (instrument[0])`), an audio cable that ends at a splitter (`cable[0].to: splitter[0] is a note splitter, which has no input of audio: it takes notes`) and a cable of notes into a lane whose instrument takes none. A modulator that `hears` a splitter, or has a cable to one, is left out, as for a box.
+- **A module file** that has a `[[splitter]]` (or a `[[pattern]]`) table is refused (`app::module::parse`: a module is effects and instruments with the cables between them and the modulators that go with them): the table would have been left out without a word.
+- In the model they are `SessionModel.splitters` (`NoteSplitter`), the reader is `session::parse` (`SplitterRaw`, `SplitterConfig`) and `app::load::load_splitters`, and the writer `app::save::sources_to_save` (`SaveSplitter`) and `session::to_toml` (`SplitterOut`); a cable at the second output is `EventCable { output: Output::Rest, … }`.
+
 ### Tempo
 
 ```toml
