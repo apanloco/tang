@@ -162,7 +162,9 @@ test("a box is renamed in place, its notes are cleared after asking, and its set
 test("a box has a menu of its own on the canvas, which records, plays, clears and takes it out, and the canvas has one that adds a box where the pointer is", async ({ page }) => {
   await open(page, "lanes");
   await page.locator(".react-flow__pane").click({ button: "right", position: { x: 700, y: 120 } });
-  await page.getByRole("menuitem", { name: "Add a pattern box" }).click();
+  // (A pattern box is added from the MIDI menu of the canvas, with the keys and the note splitter.)
+  await page.getByRole("menuitem", { name: "MIDI" }).click();
+  await page.getByRole("menuitem", { name: "Pattern box" }).click();
   await expect(box(page, "Pattern 1")).toBeVisible();
   await node(page, "Pattern 1").locator(".tang-node__header").click({ button: "right" });
   const labels = await page.getByRole("menuitem").allTextContents();
