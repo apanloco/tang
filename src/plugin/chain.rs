@@ -427,6 +427,17 @@ pub struct Facts {
     pub lane_sources: Vec<SourceSet>,
     /// The pattern boxes (P4h), in the order that they were made in the engine.
     pub boxes: Vec<BoxFacts>,
+    /// The note splitters (P4i), in the order that they were made in the engine.
+    pub splitters: Vec<SplitterFacts>,
+}
+
+/// What a note splitter is in the engine, for a test to compare with the model's: the node it is, the sources of its two outputs (the pick's and the rest's) and what it is set to.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub struct SplitterFacts {
+    pub node: NodeId,
+    pub sources: [Source; 2],
+    pub settings: notesplit::Settings,
 }
 
 /// What a pattern box is in the engine, for a test to compare with the model's: the node it is, the source its notes are heard as, the length of its loop, its notes and what it is set to.
@@ -2056,18 +2067,15 @@ pub enum GraphCommand {
     },
     /// Put a note splitter in the graph (P4i of `docs/patch-graph.md` §11.6): `splitter` is made where memory may be asked for, and the notes of its two outputs are heard, as those of the sources that it was made with
     /// (`Source::splitter`), by the lanes that hear those sources (`SetLaneSources`: no lane hears a splitter until it is told to). A splitter that is there under `node` is not added again; more than `MAX_SPLITTERS` are not taken.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
     AddSplitter {
         node: NodeId,
         splitter: Box<Splitter>,
     },
     /// Take a note splitter out: the lanes that heard its outputs let go of what they had sounding.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
     RemoveSplitter {
         node: NodeId,
     },
     /// What a splitter is set to: which note it picks and which sources it hears (a source that is no longer heard is let go of: what it holds in the splitter ends on both outputs).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
     SetSplitterSettings {
         node: NodeId,
         settings: notesplit::Settings,
@@ -3885,6 +3893,11 @@ impl AudioGraph {
                 .boxes
                 .iter()
                 .map(|slot| BoxFacts { node: slot.node, source: slot.player.source(), length: slot.player.length(), notes: slot.player.notes().to_vec(), settings: slot.player.settings() })
+                .collect(),
+            splitters: self
+                .splitters
+                .iter()
+                .map(|slot| SplitterFacts { node: slot.node, sources: [slot.splitter.source(Output::Pick), slot.splitter.source(Output::Rest)], settings: slot.splitter.settings() })
                 .collect(),
         }
     }

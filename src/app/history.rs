@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 
 use crate::app::controller::Controller;
 use crate::app::graph::{NoteRange, PatternNote, PatternSync, Port, SourceInfo};
-use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, ModulatorKind, PatternBoxField};
+use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, ModulatorKind, PatternBoxField, SplitterField};
 use crate::app::journal::{Journal, lane_words};
-use crate::app::model::{EdgeId, Made, ModSourceSlot, NodeId, NodePath, PatternBox, PluginSlot};
+use crate::app::model::{EdgeId, Made, ModSourceSlot, NodeId, NodePath, NoteSplitter, PatternBox, PluginSlot};
 use crate::app::module;
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::ModulatorLocation;
@@ -56,6 +56,8 @@ pub enum Key {
     PatternBoxField(NodeId, std::mem::Discriminant<PatternBoxField>),
     /// The notes of a pattern box, all of them: a note that is dragged is one change of one thing.
     PatternBoxNotes(NodeId),
+    /// A setting of a note splitter (which one is the discriminant of the field): typing a name is one change of one thing.
+    SplitterField(NodeId, std::mem::Discriminant<SplitterField>),
 }
 
 /// What a step that took something out holds, to put it back.
@@ -438,6 +440,15 @@ impl Controller {
                 }
                 None => Plan::Nothing,
             },
+            Intent::AddSplitter => added("add a splitter".to_string()),
+            // (A node that is no splitter is refused, and the plan is not looked at.)
+            Intent::SetSplitterField { node, field } => match self.model.splitter(*node) {
+                Some(splitter) => match splitter_field_before(splitter, field) {
+                    (_, _, true) => Plan::Nothing,
+                    (label, old, false) => step(label, Intent::SetSplitterField { node: *node, field: old }, Some(Key::SplitterField(*node, std::mem::discriminant(field)))),
+                },
+                None => Plan::Nothing,
+            },
             Intent::SetParam { node, param, .. } => match self.param_row(*node, *param) {
                 Some((name, old)) => step(format!("set {name}"), Intent::SetParam { node: *node, param: *param, value: old }, Some(Key::Param(*node, *param))),
                 None => Plan::Nothing,
@@ -569,7 +580,7 @@ impl Controller {
             Intent::AddFreeModulator { kind, .. } => added(format!("add {}", kind.label())),
             Intent::AddModEdge { .. } => added("draw a cable".to_string()),
             Intent::AddCable { from, to, .. } => {
-                let of_notes = from.port == Port::EventsOut || to.port == Port::EventsIn;
+                let of_notes = matches!(from.port, Port::EventsOut | Port::EventsOutRest) || to.port == Port::EventsIn;
                 added(if of_notes { "draw a cable of notes" } else { "draw an audio cable" }.to_string())
             }
             // (A device whose name is not one is refused, and the plan is not looked at: no step is kept for it. The name is called as the controller calls it, without the spaces round it.)
@@ -590,7 +601,7 @@ impl Controller {
                     Port::Volume => Some("volume".to_string()),
                     Port::Mix => Some("mix".to_string()),
                     Port::Pan => Some("pan".to_string()),
-                    Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => None,
+                    Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut | Port::EventsOutRest => None,
                 };
                 let verb = if matches!(kind, ModulatorKind::MidiLearn) { "learn" } else { "modulate" };
                 name.map_or(Plan::Nothing, |name| added(format!("{verb} {name}")))
@@ -650,6 +661,8 @@ impl Controller {
                 }
                 // A pattern box goes with the cables of notes that start or end at it, and comes back with them, at its place among the boxes, with its notes and its settings (a step of the words of the button that adds one: its name).
                 Some(NodePath::Pattern(index)) => Plan::Removed { label: format!("remove {}", self.model.patterns[index].name), intent: intent.clone(), at: now },
+                // A note splitter goes with the cables of notes that start or end at it, and comes back with them, at its place among the splitters, with its name and its pick (a step of the words of the button that adds one: its name).
+                Some(NodePath::Splitter(index)) => Plan::Removed { label: format!("remove {}", self.model.splitters[index].name), intent: intent.clone(), at: now },
                 // A module goes with its modulators and its lanes, whole, and comes back with them as one (step 108; a step of the words of the button that adds one: its name).
                 Some(NodePath::Module(index)) => Plan::Removed { label: format!("remove {}", self.model.modules[index].name), intent: intent.clone(), at: now },
                 // (A node that is not there is refused, and the plan is not looked at.)
@@ -791,7 +804,7 @@ impl Controller {
             NodePath::Instrument(inst) => self.model.instruments[inst].instrument.as_ref(),
             NodePath::Effect { inst, index } => self.model.instruments[inst].effects.get(index),
             NodePath::GroupEffect { group, index } => self.model.groups[group].effects.get(index),
-            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => None,
+            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Splitter(_) | NodePath::Module(_) => None,
         }
     }
 
@@ -847,6 +860,18 @@ fn pattern_field_before(pattern: &PatternBox, field: &PatternBoxField) -> (Strin
         }
         PatternBoxField::Overdub { on } => (format!("turn overdub {} for {name}", on_off(*on)), PatternBoxField::Overdub { on: pattern.overdub }, *on == pattern.overdub),
         PatternBoxField::Click { on } => (format!("turn the click {} for {name}", on_off(*on)), PatternBoxField::Click { on: pattern.click }, *on == pattern.click),
+    }
+}
+
+/// A setting of a note splitter that is about to be set: the words for the step, the setting as the splitter has it now (what undo sets), and whether the splitter has what is asked for already (no step is kept for it).
+fn splitter_field_before(splitter: &NoteSplitter, field: &SplitterField) -> (String, SplitterField, bool) {
+    let name = &splitter.name;
+    match field {
+        SplitterField::Name { name: asked } => (format!("rename {name}"), SplitterField::Name { name: splitter.name.clone() }, crate::app::apply::splitter_title(asked).is_ok_and(|title| title == splitter.name)),
+        SplitterField::Pick { pick } => {
+            let words = if crate::notesplit::Pick::from(*pick) == crate::notesplit::Pick::Highest { "the highest note" } else { "the lowest note" };
+            (format!("let {name} pick {words}"), SplitterField::Pick { pick: splitter.pick.into() }, crate::notesplit::Pick::from(*pick) == splitter.pick)
+        }
     }
 }
 
@@ -5055,7 +5080,7 @@ depth = 0.6
         engine.drain();
         // (Another front-end has drawn a cable under the id of one that went: ids are not handed out twice, so only a change made behind the controller's back can, and the model is changed by hand.)
         let (keys, other) = (ctl.model.sources[0].node, ctl.model.instruments[1].node);
-        ctl.model.insert_event_cable(crate::app::model::EventCable { id: EdgeId(1), from: keys, to: other });
+        ctl.model.insert_event_cable(crate::app::model::EventCable::new(EdgeId(1), keys, other));
         let error = ctl.undo().unwrap_err();
         assert!(matches!(&error, IntentError::Invalid(why) if why.contains("is there already")), "{error:?}");
         assert_eq!(ctl.model.instruments.len(), 2, "the lane is not put back");

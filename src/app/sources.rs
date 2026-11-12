@@ -10,7 +10,7 @@ use crate::app::journal::Inverse;
 use crate::app::model::{EdgeId, EventCable, NodeId, SourceKind, SourceNode};
 use crate::plugin::chain::GraphCommand;
 use crate::session;
-use crate::source::SourceSet;
+use crate::source::{Output, SourceSet};
 
 impl Controller {
     /// Put a source of notes at the end of the session's sources, under a node of its own (`Intent::AddSource`). It changes nothing that is heard: a lane that no cable of notes ends at hears every source.
@@ -31,14 +31,14 @@ impl Controller {
         Ok(node)
     }
 
-    /// Draw a cable of notes from the source `from` to the lane `to` (both by node), under an id of the series that the other cables have (`Intent::AddCable`): the lane then hears the sources that
-    /// its cables start at and no others. Refused, with nothing changed and no id used, for a cable between the two that is there already. (The ends are `SessionModel::event_cable_ends`'s to say.)
-    pub(super) fn add_event_cable(&mut self, from: NodeId, to: NodeId) -> Result<EdgeId, IntentError> {
-        if self.model.event_cables.iter().any(|cable| (cable.from, cable.to) == (from, to)) {
+    /// Draw a cable of notes from the output `output` of the source, box or splitter `from` to the lane, box or splitter `to` (both by node), under an id of the series that the other cables have (`Intent::AddCable`): the lane then hears the
+    /// sources that its cables start at and no others. Refused, with nothing changed and no id used, for a cable between the two outputs and inputs that is there already. (The ends are `SessionModel::event_cable_ends`'s to say.)
+    pub(super) fn add_event_cable(&mut self, from: NodeId, output: Output, to: NodeId) -> Result<EdgeId, IntentError> {
+        if self.model.event_cables.iter().any(|cable| (cable.from, cable.output, cable.to) == (from, output, to)) {
             return Err(IntentError::Invalid("there is a cable between those two already".to_string()));
         }
         let id = self.model.alloc_edge();
-        self.model.insert_event_cable(EventCable { id, from, to });
+        self.model.insert_event_cable(EventCable { id, from, output, to });
         Ok(id)
     }
 
@@ -58,7 +58,7 @@ impl Controller {
         self.model.lane_sources(inst, |kind| self.sources_of_kind(kind))
     }
 
-    /// Tell the audio thread what each lane hears where it is not what it was told last (`sent_sources`), and what each pattern box records (`sync_box_settings`). A lane that was not told anything before is told if the session
+    /// Tell the audio thread what each lane hears where it is not what it was told last (`sent_sources`), what each pattern box records (`sync_box_settings`) and what each note splitter picks and hears (`sync_splitter_settings`). A lane that was not told anything before is told if the session
     /// has a cable of notes: it may be one that came back by undo, with what it heard when it went, which is not what it hears now (a lane that is new hears every source, as it has it).
     pub(super) fn sync_lane_sources(&mut self) {
         let routed = !self.model.event_cables.is_empty();
@@ -73,6 +73,7 @@ impl Controller {
         }
         self.sent_sources = now;
         self.sync_box_settings();
+        self.sync_splitter_settings();
     }
 }
 
@@ -287,7 +288,7 @@ mod tests {
         assert_eq!(lane_sources_told(&engine), Vec::<String>::new());
         let applied = draw(&mut ctl, keys, first).unwrap();
         assert_eq!(applied, Applied::restructured(2));
-        assert_eq!(ctl.model.event_cables, [EventCable { id: EdgeId(0), from: keys, to: first }]);
+        assert_eq!(ctl.model.event_cables, [EventCable::new(EdgeId(0), keys, first)]);
         assert_eq!(lane_sources_told(&engine), ["SetLaneSources inst=0 sources=[0]"], "the first lane only: the second has no cable");
         ctl.model.check_ids().unwrap();
     }
@@ -312,7 +313,7 @@ mod tests {
         assert_eq!(lane_sources_told(&engine), Vec::<String>::new());
         // No id was used by it: the first cable that is drawn has the first id, and with it the oscillator's lane hears the keys and no other source, as a lane with a cable does.
         draw(&mut ctl, keys, oscillator).unwrap();
-        assert_eq!(ctl.model.event_cables, [EventCable { id: EdgeId(0), from: keys, to: oscillator }]);
+        assert_eq!(ctl.model.event_cables, [EventCable::new(EdgeId(0), keys, oscillator)]);
         assert_eq!(hears(&ctl), Vec::<(NodeId, NodeId)>::new(), "the oscillator has a cable now and the input has no link");
         ctl.model.check_ids().unwrap();
     }

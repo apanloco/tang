@@ -183,10 +183,19 @@ pub fn describe(cmd: &GraphCommand) -> String {
         C::SetBoxPlan { node, plan } => format!("SetBoxPlan node={} length={} notes={}", node.0, plan.length(), plan.notes().len()),
         C::SetBoxSettings { node, settings } => format!("SetBoxSettings node={} {}", node.0, box_settings_words(settings)),
         C::BoxTransport { node, action } => format!("BoxTransport node={} {action:?}", node.0),
+        C::AddSplitter { node, splitter } => format!("AddSplitter node={} sources={}/{} {}", node.0, splitter.source(crate::source::Output::Pick).number(), splitter.source(crate::source::Output::Rest).number(), splitter_settings_words(&splitter.settings())),
+        C::RemoveSplitter { node } => format!("RemoveSplitter node={}", node.0),
+        C::SetSplitterSettings { node, settings } => format!("SetSplitterSettings node={} {}", node.0, splitter_settings_words(settings)),
         C::SetProbe { target, ring } => format!("SetProbe ring={ring} {target:?}"),
         C::ClearProbes => "ClearProbes".to_string(),
         _ => "<other>".to_string(),
     }
+}
+
+/// What a note splitter is set to, in the words that `describe` says it in (`AddSplitter` and `SetSplitterSettings`): the note it picks and the sources it hears (`all` or their numbers).
+fn splitter_settings_words(settings: &crate::notesplit::Settings) -> String {
+    let inputs = if settings.inputs == crate::source::SourceSet::ALL { "all".to_string() } else { format!("{:?}", settings.inputs.iter().map(|source| source.number()).collect::<Vec<_>>()) };
+    format!("pick={} inputs={inputs}", settings.pick.word())
 }
 
 /// What a pattern box is set to, in the words that `describe` says it in (`AddBox` and `SetBoxSettings`): whether it loops, whose beat it goes by, whether it overdubs and clicks, and the sources it records (`all` or their numbers).
@@ -1117,6 +1126,59 @@ from = "pattern[1]"
 to = "instrument[1]"
 "#;
 
+/// A session with note splitters (step 127, P4i-B): the keys and a device, a pattern box (called Bass), two splitters (the first called Bass line, picking the lowest note, and taking the keys; the second picking the highest, placed, and
+/// taking the box and the device), three lanes, and cables of notes: from the keys to the first splitter, from the box and the device to the second, from the first splitter's pick to the first lane and its rest to the second, and from the second
+/// splitter's pick to the third lane.
+pub const SPLITTERS: &str = r#"
+[keys]
+
+[[device]]
+name = "Launchkey Mini MK4 37"
+
+[[pattern]]
+name = "Bass"
+
+[[splitter]]
+name = "Bass line"
+
+[[splitter]]
+pick = "highest"
+ui = { x = 300, y = 40 }
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[instrument]]
+plugin = "builtin:osc"
+
+[[cable]]
+from = "keys"
+to = "splitter[0]"
+
+[[cable]]
+from = "pattern[0]"
+to = "splitter[1]"
+
+[[cable]]
+from = "device[0]"
+to = "splitter[1]"
+
+[[cable]]
+from = "splitter[0]"
+to = "instrument[0]"
+
+[[cable]]
+from = "splitter[0].rest"
+to = "instrument[1]"
+
+[[cable]]
+from = "splitter[1]"
+to = "instrument[2]"
+"#;
+
 /// A session with sources of notes among everything that a cable of notes could be drawn to or from by mistake (P4c: the fixture of what sources and cables of notes come to,
 /// `web/src/client/fixtures/sources.json`): the keys (placed) and a device, a group ("Pad") with a reverb on its bus, lane 0 in it with a filter and an LFO that drives the filter, a plain lane (1)
 /// and an empty one (2), a cable of notes from the keys to lane 1 and an audio cable from lane 1 to the filter of lane 0 (the two kinds of cable have ids of one series, in the order of the file).
@@ -1790,6 +1852,20 @@ pub fn model_boxes(ctl: &crate::app::controller::Controller) -> Vec<crate::plugi
             length: pattern.length_beats,
             notes: pattern.notes.clone(),
             settings: ctl.box_settings(index),
+        })
+        .collect()
+}
+
+/// What each note splitter is as the model has it and the controller told the engine, in the terms `AudioGraph::facts` uses: the node, the sources of its two outputs and what it is set to.
+pub fn model_splitters(ctl: &crate::app::controller::Controller) -> Vec<crate::plugin::chain::SplitterFacts> {
+    ctl.model
+        .splitters
+        .iter()
+        .enumerate()
+        .map(|(index, splitter)| crate::plugin::chain::SplitterFacts {
+            node: splitter.node,
+            sources: [splitter.source(crate::source::Output::Pick), splitter.source(crate::source::Output::Rest)],
+            settings: ctl.splitter_settings(index),
         })
         .collect()
 }

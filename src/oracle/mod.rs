@@ -33,8 +33,8 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::alloc_guard::allocations_in;
 use crate::app::controller::Controller;
-use crate::app::graph::PatternSync;
-use crate::app::intent::{Gain, ModulatorKind, PatternBoxAction, PatternBoxField};
+use crate::app::graph::{PatternSync, SplitterPick};
+use crate::app::intent::{Gain, ModulatorKind, PatternBoxAction, PatternBoxField, SplitterField};
 use crate::app::load::load_session;
 use crate::app::testutil;
 use crate::audio::{Engine, MidiEvent, Renderer};
@@ -193,10 +193,15 @@ impl Scenario {
         self.session.contains("[[pattern]]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddPattern))
     }
 
-    /// Whether the loop that the plan replaced can run it: it has no audio cables, no way out that is cut, no link of a chain that is cut, no modulator, no master that is set and no pattern box,
-    /// which that loop is from before.
+    /// Whether it has note splitters, in its file or put in by its edits (step 127): the loop that the plan replaced does not run them (`AudioGraph::run_splitters` is a step of `process`).
+    pub fn has_splitters(&self) -> bool {
+        self.session.contains("[[splitter]]") || self.edits.iter().any(|(_, edit)| matches!(edit, Edit::AddSplitter))
+    }
+
+    /// Whether the loop that the plan replaced can run it: it has no audio cables, no way out that is cut, no link of a chain that is cut, no modulator, no master that is set, no pattern box and no
+    /// note splitter, which that loop is from before.
     pub fn is_in_the_old_loop(&self) -> bool {
-        !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds() && !self.has_free_modulators() && !self.has_master() && !self.has_boxes()
+        !self.has_cables() && !self.has_cut_routes() && !self.has_cut_feeds() && !self.has_free_modulators() && !self.has_master() && !self.has_boxes() && !self.has_splitters()
     }
 }
 
@@ -617,6 +622,36 @@ const PATTERN_EDITS: [(u64, Edit); 21] = [
     (43_000, Edit::Redo),
 ];
 
+/// What is done to a note splitter in `CABLED` while it plays, through the real engine (step 127; the tempo is 300 beats a minute, so that a beat is 9 600 frames): a splitter is made (it picks the lowest note and hears every
+/// input); lane 1 is cabled from its pick and lane 0, which is in the group, from its rest (each hears that output and nothing else: the chord of the keys, C3 and E3 and G3 together at 4 800, goes to them as one block's notes
+/// are judged, C3 to lane 1 and E3 and G3 to lane 0); a pattern box is made, given four notes that overlap and put in a loop of two beats, cabled to the splitter (it hears the box and no key now: the chord that the keys hold in
+/// it is let go of on both outputs) and played on its own clock; the splitter picks the highest note (what is held stays where it went); the keys are put in as a source and cabled to the splitter (it hears them again: the
+/// keys' note-offs for notes that it did not begin are dropped); lane 0 is cabled from the pick as well and Undo takes that cable back; the splitter picks the lowest note again; the cable from the pick to lane 1 is taken out
+/// (lane 1 hears every source again, and lets go of the C4 that the pick has sounding in it); the splitter is taken out with its cables, put back by Undo (with its cables, and the lanes hear it again), taken out again by Redo
+/// and put back by Undo. Each is made (`Counts` says so: none is skipped or refused), and after each block the engine's splitters and boxes, and what its lanes hear, are the model's.
+const SPLITTER_EDITS: [(u64, Edit); 20] = [
+    (2_000, Edit::Bpm { bpm: 300.0 }),
+    (2_500, Edit::AddSplitter),
+    (3_000, Edit::SplitterToLane { splitter: 0, rest: false, lane: 1 }),
+    (3_500, Edit::SplitterToLane { splitter: 0, rest: true, lane: 0 }),
+    (8_000, Edit::AddPattern),
+    (8_200, Edit::PatternNotes { pattern: 0, notes: &[(0.0, 1.0, 60, 100), (0.25, 1.0, 64, 100), (0.5, 1.0, 67, 100), (1.6, 0.2, 48, 100)] }),
+    (8_400, Edit::PatternField { pattern: 0, field: PatternBoxField::LengthBeats { beats: 2.0 } }),
+    (9_000, Edit::PatternToSplitter { pattern: 0, splitter: 0 }),
+    (9_500, Edit::PatternTransport { pattern: 0, action: PatternBoxAction::Play }),
+    (14_000, Edit::SplitterField { splitter: 0, field: SplitterField::Pick { pick: SplitterPick::Highest } }),
+    (16_000, Edit::AddSource { device: None }),
+    (16_500, Edit::SourceToSplitter { source: 0, splitter: 0 }),
+    (22_000, Edit::SplitterToLane { splitter: 0, rest: false, lane: 0 }),
+    (24_500, Edit::Undo),
+    (26_000, Edit::SplitterField { splitter: 0, field: SplitterField::Pick { pick: SplitterPick::Lowest } }),
+    (32_000, Edit::RemoveNotesCable { cable: 0 }),
+    (36_000, Edit::RemoveSplitter { splitter: 0 }),
+    (37_500, Edit::Undo),
+    (40_500, Edit::Redo),
+    (43_000, Edit::Undo),
+];
+
 /// What the keys play into `edited:sources`: `performance`, and a key (E4) that is hit and let go of after the pedal is up, which a lane that has been given the keys again plays.
 fn performance_with_a_late_key() -> Vec<(u64, [u8; 3])> {
     let mut events = performance();
@@ -638,7 +673,7 @@ pub fn edited() -> Vec<Scenario> {
         edits: edits.to_vec(),
     };
     let sources = Scenario { script: performance_with_a_late_key(), ..scenario("sources", &SOURCE_EDITS) };
-    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS), scenario("gains", &GAIN_EDITS), scenario("input", &INPUT_EDITS), scenario("master", &MASTER_EDITS), scenario("patterns", &PATTERN_EDITS)]
+    vec![scenario("cables", &CABLE_EDITS), scenario("routes", &ROUTE_EDITS), scenario("solos", &SOLO_EDITS), scenario("latency", &LATENCY_EDITS), sources, scenario("instruments", &INSTRUMENT_EDITS), scenario("feeds", &FEED_EDITS), scenario("free", &FREE_EDITS), scenario("math", &MATH_EDITS), scenario("freemods", &FREE_MODULATOR_EDITS), scenario("freeears", &FREE_EAR_EDITS), scenario("gains", &GAIN_EDITS), scenario("input", &INPUT_EDITS), scenario("master", &MASTER_EDITS), scenario("patterns", &PATTERN_EDITS), scenario("splitters", &SPLITTER_EDITS)]
 }
 
 /// The sessions that the seeds in `seeds` stand for, with their scripts.
@@ -827,6 +862,8 @@ impl Rig {
             // settings are what the controller told. (A pass of recording that ends in a block is the model's after the `poll` that follows it: no scenario records.)
             assert_eq!(facts.lane_sources, testutil::model_lane_sources(&self.ctl), "{what}: what the engine's lanes hear is not what the model says");
             assert_eq!(facts.boxes, testutil::model_boxes(&self.ctl), "{what}: the pattern boxes of the engine are not the model's");
+            // And what each note splitter is (step 127): its node, the sources of its two outputs, the note it picks and the sources it hears are what the controller told.
+            assert_eq!(facts.splitters, testutil::model_splitters(&self.ctl), "{what}: the note splitters of the engine are not the model's");
             // And their depths, but for those that another cable drives (the engine's is the one that cable has made of it this block, and the model's what the user set).
             for ((at, modulator, _, engine), (_, _, _, model)) in facts.racks.iter().zip(&model_racks) {
                 for (place, ((edge, _, engine), (_, _, model))) in engine.iter().zip(model).enumerate() {
@@ -1625,6 +1662,41 @@ mod tests {
         // Without the first Play (frame 7 000) the box makes no sound until the second (27 000): nothing is different before the block that has the first, and the box is heard from its first frames.
         let silent = first_difference(&without(7_000)).expect("the box is heard");
         assert!((7_000 - 7_000 % BLOCK..7_000 - 7_000 % BLOCK + 1_000).contains(&silent), "the first frame that differs is {silent}");
+    }
+
+    #[test]
+    fn the_splitters_scenario_is_heard_through_the_splitter_from_the_block_that_has_the_chord_and_a_note_goes_where_it_went_when_it_was_pressed() {
+        let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:splitters")).expect("a scenario of the corpus");
+        assert!(scenario.has_splitters() && !scenario.is_in_the_old_loop(), "the loop that the plan replaced does not run splitters");
+        // (A splitter is in the scenario's file or made by its edits, and a scenario that has none is what the loop can run.)
+        let plain = Scenario { session: "[[instrument]]\nplugin = \"builtin:osc\"\n".to_string(), edits: Vec::new(), ..sessions().remove(0) };
+        assert!(!plain.has_splitters() && plain.is_in_the_old_loop());
+        let with_a_splitter = Scenario { session: format!("{}[[splitter]]\n", plain.session), ..plain.clone() };
+        assert!(with_a_splitter.has_splitters() && !with_a_splitter.is_in_the_old_loop(), "a splitter in the file");
+        assert!(Scenario { edits: vec![(1_000, Edit::AddSplitter)], ..plain }.has_splitters(), "a splitter that an edit makes");
+        let with = render(&scenario, &engine);
+        let without = |frame: u64| render(&Scenario { edits: scenario.edits.iter().filter(|(at, _)| *at != frame).cloned().collect(), ..scenario.clone() }, &engine);
+        let first_difference = |other: &Render| with.samples.iter().zip(&other.samples).position(|(x, y)| x.to_bits() != y.to_bits()).map(|at| at / 2);
+        // Without the splitter (frame 2 500: it is not made, and the cables that were to start at it are skipped) lanes 0 and 1 hear every source and play the whole chord (C3, E3 and G3, at 4 800), and with it lane 1 plays only C3, the
+        // pick, and lane 0 only E3 and G3, the rest. Nothing is different before the chord, and the notes that go to the other lane are different from their first frames.
+        let first_frame = |other: &Render| first_difference(other).expect("the render differs");
+        assert!((4_800..4_800 + 256).contains(&first_frame(&without(2_500))), "no splitter");
+        // Without the cable from the pick to lane 1 (3 000) lane 1 hears every source and plays the whole chord, and not C3 alone: the same frame.
+        let chord = first_frame(&without(3_000));
+        assert!((4_800..4_800 + 256).contains(&chord), "the first frame that differs is {chord}");
+        // Without the cable from the rest to lane 0 (3 500) lane 0 hears every source and plays the whole chord, and with the cable only E3 and G3. Lane 0 is on the bus of a reverb that is all wet, so that it is heard through
+        // the reverb's tail, which has no sound for the first few thousand frames: the first frame that differs is when the tail of the extra note begins.
+        let rest = first_frame(&without(3_500));
+        assert!((4_800 + 2_000..4_800 + 4_000).contains(&rest), "the first frame that differs is {rest}");
+        // The cable from the box to the splitter (9 000) makes the splitter hear the box and no key, so that the chord that the keys hold in it is let go of on both outputs, in the block that has the edit.
+        assert_eq!(first_frame(&without(9_000)), 9_000 - 9_000 % BLOCK, "the first frame that differs");
+        // Without the first Play (9 500) the box is silent, and is heard from its first frames.
+        let played = first_frame(&without(9_500));
+        assert!((9_500 - 9_500 % BLOCK..9_500 - 9_500 % BLOCK + 64).contains(&played), "the first frame that differs is {played}");
+        // The pick that is the highest from 14 000 changes what goes to which lane from the next note that is pressed (the G4 of the box, at 14 272: higher than the E4 and the C4 that are held), and not what is held.
+        let highest = first_frame(&without(14_000));
+        assert!((14_000..14_000 + 512).contains(&highest), "the first frame that differs is {highest}");
+        assert!(highest >= 14_272, "nothing that is held moves to the other lane: the first frame that differs is {highest}");
     }
 
     #[test]

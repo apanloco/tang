@@ -153,6 +153,8 @@ impl Controller {
             Intent::SetPatternBoxField { node, field } => self.set_pattern_box_field_intent(node, field)?,
             Intent::ClearPatternBox { node } => self.clear_pattern_box_intent(node)?,
             Intent::SetPatternBoxNotes { node, notes } => self.set_pattern_box_notes_intent(node, notes)?,
+            Intent::AddSplitter => self.add_splitter_intent()?,
+            Intent::SetSplitterField { node, field } => self.set_splitter_field_intent(node, field)?,
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
             Intent::CollapseIntoModule { nodes, name, ui } => self.collapse_into_module_intent(&nodes, &name, ui)?,
             Intent::UngroupModule { node } => self.ungroup_module_intent(node)?,
@@ -891,12 +893,12 @@ impl Controller {
     /// everything that can be refused is looked at before anything is made.
     fn add_cable_intent(&mut self, from: Endpoint, to: Endpoint, gain: Option<f32>) -> Result<Done, IntentError> {
         // A cable that has a port of events at either end is a cable of notes, and is judged as one: from a source to a lane, and with no level.
-        if from.port == Port::EventsOut || to.port == Port::EventsIn {
-            let (source, lane) = self.model.event_cable_ends(from, to)?;
+        if matches!(from.port, Port::EventsOut | Port::EventsOutRest) || to.port == Port::EventsIn {
+            let (source, output, lane) = self.model.event_cable_ends(from, to)?;
             if gain.is_some() {
                 return Err(invalid("a cable of notes has no level: it carries notes, which are heard or not"));
             }
-            self.add_event_cable(source, lane)?;
+            self.add_event_cable(source, output, lane)?;
             return Ok(Done::Restructured);
         }
         let (start, end) = self.model.cable_ends(from, to)?;
@@ -945,7 +947,7 @@ impl Controller {
                 self.add_target(at, index, cable);
             }
             Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release | Port::Depth { .. } => self.add_field_cable(at, index, &to)?,
-            Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => {
+            Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut | Port::EventsOutRest => {
                 return Err(invalid("a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth"));
             }
         }
@@ -968,14 +970,14 @@ impl Controller {
             NodePath::Modulator { at: ModulatorLocation::Free, index } => (ModulatorLocation::Free, self.model.free_modulators.get(index).and_then(|slot| self.model.ear_of(slot))),
             // (A group has no plugin: what a cable can drive in it is its volume and its pan, and the modulator hears the group.)
             NodePath::Group(group) if to.port.gain().is_some() => (ModulatorLocation::Free, Some(self.model.groups[group].node)),
-            NodePath::Group(_) | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => return Err(invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them")),
+            NodePath::Group(_) | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Splitter(_) | NodePath::Module(_) => return Err(invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them")),
         };
         let index = self.model.modulators(at).map_or(0, |rack| rack.len());
         let cable = match to.port {
             Port::Param { index: param } => self.param_cable(at, index, to.node, param)?,
             Port::Volume | Port::Mix | Port::Pan => self.gain_cable(at, index, to.node, to.port)?,
             Port::Rate | Port::Attack | Port::Decay | Port::Sustain | Port::Release | Port::Depth { .. } => self.field_cable(at, index, &to)?,
-            Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => {
+            Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut | Port::EventsOutRest => {
                 return Err(invalid("a cable can only end at a plugin's parameter, at a volume, a mix or a pan, or at a modulator's rate, stage or depth"));
             }
         };
@@ -1068,7 +1070,7 @@ impl Controller {
                 Port::Decay => invalid("that modulator has no decay"),
                 Port::Sustain => invalid("that modulator has no sustain"),
                 Port::Release => invalid("that modulator has no release"),
-                Port::Param { .. } | Port::Volume | Port::Mix | Port::Pan | Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut => invalid("that is not a setting of a modulator"),
+                Port::Param { .. } | Port::Volume | Port::Mix | Port::Pan | Port::ModOut | Port::AudioIn | Port::AudioInSide | Port::AudioOut | Port::EventsIn | Port::EventsOut | Port::EventsOutRest => invalid("that is not a setting of a modulator"),
             });
         };
         let drives_it_already = self.model.modulators_mut(at).and_then(|rack| rack.get(index)).is_some_and(|m| m.targets.iter().any(|t| t.aim == target.aim()));
@@ -1423,6 +1425,10 @@ impl Controller {
             NodePath::Pattern(index) => {
                 self.remove_pattern(index);
             }
+            // (A note splitter goes with the cables of notes that start or end at it, which the controller does, as a box's: the lanes that heard an output of it hear what their other cables bring, or every source.)
+            NodePath::Splitter(index) => {
+                self.remove_splitter(index);
+            }
             // (A module goes with all that came with it: its modulators, and its lanes with their plugins, as one step. A session keeps one lane.)
             NodePath::Module(index) => {
                 if !self.remove_module(index) {
@@ -1455,6 +1461,7 @@ impl Controller {
                 NodePath::Group(_) | NodePath::GroupEffect { .. } => return Err(invalid("a group is not collapsed into a module: a module holds lanes and modulators")),
                 NodePath::Source(_) => return Err(invalid("a source of notes is not collapsed into a module: a module holds lanes and modulators")),
                 NodePath::Pattern(_) => return Err(invalid("a pattern box is not collapsed into a module: a module holds lanes and modulators")),
+                NodePath::Splitter(_) => return Err(invalid("a note splitter is not collapsed into a module: a module holds lanes and modulators")),
                 NodePath::Module(_) => return Err(invalid("a module cannot hold another module yet: ungroup it first")),
             }
         }
@@ -1512,7 +1519,7 @@ impl Controller {
                 refuse_a_loop(self.model.loop_if_effect_goes_to(node, to), "moving that effect there")?;
                 self.move_bus_effect(group, from, to);
             }
-            NodePath::Instrument(_) | NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => return Err(invalid("only an effect can be moved")),
+            NodePath::Instrument(_) | NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Splitter(_) | NodePath::Module(_) => return Err(invalid("only an effect can be moved")),
         }
         Ok(Done::Restructured)
     }
@@ -1579,7 +1586,7 @@ impl Controller {
             NodePath::Instrument(inst) => Ok(PluginAt::Lane { inst, slot: 0 }),
             NodePath::Effect { inst, index } => Ok(PluginAt::Lane { inst, slot: index + 1 }),
             NodePath::GroupEffect { group, index } => Ok(PluginAt::Bus { group, index }),
-            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => Err(invalid("that node has no plugin")),
+            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Splitter(_) | NodePath::Module(_) => Err(invalid("that node has no plugin")),
         }
     }
 
@@ -1650,6 +1657,12 @@ pub(super) fn module_title(name: &str) -> Result<String, IntentError> {
 pub(super) fn pattern_title(name: &str) -> Result<String, IntentError> {
     let name = tidy_name(name)?;
     Ok(if name.is_empty() { session::DEFAULT_PATTERN_NAME.to_string() } else { name.to_string() })
+}
+
+/// What a note splitter is called (`SplitterField::Name`): the name without the spaces round it, by a group's rule, and `Splitter` for a name of nothing.
+pub(super) fn splitter_title(name: &str) -> Result<String, IntentError> {
+    let name = tidy_name(name)?;
+    Ok(if name.is_empty() { session::DEFAULT_SPLITTER_NAME.to_string() } else { name.to_string() })
 }
 
 /// What a macro is called (`Intent::RenameMacro`, step 110): the name without the spaces round it, by a group's rule, and nothing for a name of nothing (a macro with no name is called `Macro`).
@@ -5843,7 +5856,7 @@ type = "midi"
                     NodePath::Instrument(i) => ctl.model.instruments[i].instrument.as_ref(),
                     NodePath::Effect { inst, index } => ctl.model.instruments[inst].effects.get(index),
                     NodePath::GroupEffect { group, index } => ctl.model.groups[group].effects.get(index),
-                    NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => return None,
+                    NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Splitter(_) | NodePath::Module(_) => return None,
                 };
                 Some((id, slot.map_or(0, |plugin| plugin.params[0].index)))
             })

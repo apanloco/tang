@@ -16,7 +16,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::graph::{Endpoint, NoteRange, PatternInfo, PatternNote, PatternSync, SourceInfo};
+use crate::app::graph::{Endpoint, NoteRange, PatternInfo, PatternNote, PatternSync, SourceInfo, SplitterPick};
 use crate::app::model::{EdgeId, MAX_FADE, ModSourceSlot, NodeId, SYNC_DIVISIONS};
 use crate::plugin::chain::{MAX_STEPS, MidiBindSource};
 use crate::session::{Feed, NodeUi, Route};
@@ -221,6 +221,15 @@ pub enum Intent {
     /// into 1 to 127, a start and a length that are below 0 to 0, at most 4,096, in the order of their starts), so that the box in the model is the box in the engine. A step of the history, merged with the next change soon after (a note that is dragged). Refused,
     /// with nothing changed, for a node that is not a pattern box.
     SetPatternBoxNotes { node: NodeId, notes: Vec<PatternNote> },
+    /// Add a note splitter (P4i of `docs/patch-graph.md` §11.6) at the end of the session's splitters: a node that takes in the notes of the sources and boxes that cables of notes come from (every input if none does) and sends the lowest of them
+    /// out at its first output of events and the others out at its second, to the lanes that cables from each go to. It picks the lowest note, is called "Splitter 1" (the lowest number that no splitter is called) and takes the lowest of the engine's
+    /// `MAX_SPLITTERS` splitters. A lane hears a splitter's notes only if a cable from the splitter ends at it. A step of the history ("add a splitter"): undo takes it out. Refused, with nothing changed (nothing is made, and no id is used), when the session
+    /// has `MAX_SPLITTERS` splitters.
+    AddSplitter,
+    /// Set one setting of the note splitter `node` (`SplitterField`): its name, or which note it picks. Saved with the session. A step of the history in the words of the setting, merged with the next change of it soon after (typing a name). What is as it
+    /// is asked to be changes nothing and keeps no step. Refused, with nothing changed, for a node that is not a note splitter and a name of more than `MAX_NAME` characters or with a control character in it (a name of nothing is "Splitter"). A note
+    /// that is held stays on the output it went to, whatever the splitter picks now.
+    SetSplitterField { node: NodeId, field: SplitterField },
     /// Say where a front-end draws a node, in the pixels of its canvas, or `None` to give the node back to the
     /// front-end's own layout. `node` is any node of the session, the master (`NodeId::MASTER`) included. A place is
     /// kept to a tenth of a pixel and to 100 000 either way, which the controller does for the client; the engine has
@@ -430,6 +439,17 @@ pub enum PatternBoxField {
     Overdub { on: bool },
     /// Whether the metronome clicks while a recording is counted in and made.
     Click { on: bool },
+}
+
+/// A setting of a note splitter, with the value it is to have (`Intent::SetSplitterField`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum SplitterField {
+    /// What the splitter is called.
+    Name { name: String },
+    /// Which note goes to the first output: the lowest of the notes that are held, or the highest.
+    Pick { pick: SplitterPick },
 }
 
 /// What a pattern box is told to do (`Intent::PatternBoxTransport`).
@@ -1000,6 +1020,15 @@ mod tests {
             (
                 Intent::SetPatternBoxNotes { node: NodeId(7), notes: vec![PatternNote { start: 0.5, length: 0.25, note: 60, velocity: 100 }] },
                 json!({"type": "setPatternBoxNotes", "node": 7, "notes": [{"start": 0.5, "length": 0.25, "note": 60, "velocity": 100}]}),
+            ),
+            (Intent::AddSplitter, json!({"type": "addSplitter"})),
+            (
+                Intent::SetSplitterField { node: NodeId(7), field: SplitterField::Name { name: "Bass".to_string() } },
+                json!({"type": "setSplitterField", "node": 7, "field": {"type": "name", "name": "Bass"}}),
+            ),
+            (
+                Intent::SetSplitterField { node: NodeId(7), field: SplitterField::Pick { pick: SplitterPick::Highest } },
+                json!({"type": "setSplitterField", "node": 7, "field": {"type": "pick", "pick": "highest"}}),
             ),
             (
                 Intent::SetPatternField { node: NodeId(2), field: PatternField::Transpose, value: 1.0 },

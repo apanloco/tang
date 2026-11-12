@@ -26,7 +26,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::app::model::{Driven, EdgeId, FieldTarget, ModGain, ModSetting, ModSourceSlot, ModulatorSlot, NodeId, ParamKind, ParamSlot, PatternState, PluginSlot, SessionModel, SourceKind};
+use crate::notesplit::Pick;
 use crate::patternbox::{BoxNote, Clock, Status as BoxStatus};
+use crate::source::Output;
 use crate::plugin::chain::{CrossModField, LfoWaveform, MidiBindSource, ModTargetKind, ModulatorLocation};
 use crate::session::{Feed, NodeUi, Route};
 
@@ -96,6 +98,9 @@ pub enum NodeKind {
     /// if none does) and plays it, as the notes of a source of its own, to the lanes that cables from its output of events go to. `looping` is whether it plays again at the end of its length, `sync` whose beat it goes by, `overdub` whether a recording keeps
     /// what is there, `click` whether the metronome counts a recording in, and `status` what the audio thread last said it is doing (nothing of it is saved). Its name is the node's.
     Pattern { looping: bool, sync: PatternSync, overdub: bool, click: bool, length_beats: f32, notes: Vec<PatternNote>, status: PatternStatus },
+    /// A note splitter (P4i of `docs/patch-graph.md` §11.6): it takes in the notes of the sources and boxes that cables of notes come from (every input if none does) and sends the lowest of them, or the highest (`pick`), out at its
+    /// first output of events (`eventsOut`) and the others out at its second (`eventsOutRest`), to the lanes that cables from them go to. A note goes where it went when it was pressed, until it ends. Its name is the node's.
+    Splitter { pick: SplitterPick },
     /// A module that was added to the session as one thing (step 108): `name` is what it is called in the library, and `members` the lanes and the modulators that came with it, which a front-end draws as one
     /// box (the effects of a lane are in the lane: they are in the module with it). The nodes in it are in the graph as any are, and the cables to them: a module is the record of what came together, and has no
     /// part in the sound.
@@ -183,6 +188,33 @@ impl From<BoxStatus> for PatternStatus {
             BoxStatus::CountingIn => PatternStatus::CountingIn,
             BoxStatus::Waiting => PatternStatus::Waiting,
             BoxStatus::Recording => PatternStatus::Recording,
+        }
+    }
+}
+
+/// Which note a note splitter sends to its first output: the lowest of the notes that are held (the bass of a chord) or the highest (its top).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum SplitterPick {
+    Lowest,
+    Highest,
+}
+
+impl From<Pick> for SplitterPick {
+    fn from(pick: Pick) -> Self {
+        match pick {
+            Pick::Lowest => SplitterPick::Lowest,
+            Pick::Highest => SplitterPick::Highest,
+        }
+    }
+}
+
+impl From<SplitterPick> for Pick {
+    fn from(pick: SplitterPick) -> Self {
+        match pick {
+            SplitterPick::Lowest => Pick::Lowest,
+            SplitterPick::Highest => Pick::Highest,
         }
     }
 }
@@ -427,8 +459,10 @@ pub enum Port {
     AudioInSide,
     /// What a node puts out (an instrument, an effect, a group).
     AudioOut,
-    /// What a source of notes puts out: where an event cable starts.
+    /// What a source of notes puts out, and a pattern box, and a note splitter's first output (the pick): where an event cable starts.
     EventsOut,
+    /// A note splitter's second output, which has the notes that are not the pick: where an event cable starts. No other node has one.
+    EventsOutRest,
     /// What a lane takes in: where an event cable ends.
     EventsIn,
     /// A modulator's output.
@@ -566,6 +600,9 @@ impl SessionModel {
             },
         }));
 
+        // The note splitters come after the boxes: the notes go from a source or a box to a splitter, and from a splitter to a lane.
+        nodes.extend(self.splitters.iter().map(|splitter| Node { id: splitter.node, parent: None, name: splitter.name.clone(), ui: None, kind: NodeKind::Splitter { pick: splitter.pick.into() } }));
+
         for (g, group) in self.groups.iter().enumerate() {
             nodes.push(Node {
                 id: group.node,
@@ -626,8 +663,8 @@ impl SessionModel {
         Graph { nodes, edges }
     }
 
-    /// One edge from each source to each lane that no event cable ends at, which hears every source: the sources in order, and for each the lanes in order, and then the pattern boxes that no event cable ends at, which
-    /// record every source in the same way. A lane whose instrument takes no notes (an audio input) has no input of events, and hears nothing that is drawn. (A lane hears no box until a cable from it says so: there is no edge from a
+    /// One edge from each source to each lane that no event cable ends at, which hears every source: the sources in order, and for each the lanes in order, and then the pattern boxes and the note splitters that no event cable ends at, which
+    /// take every source in the same way. A lane whose instrument takes no notes (an audio input) has no input of events, and hears nothing that is drawn. (A lane hears no box until a cable from it says so: there is no edge from a
     /// box to a lane that has no cable.)
     fn hears_edges(&self, edges: &mut Vec<Edge>) {
         for source in &self.sources {
@@ -641,13 +678,18 @@ impl SessionModel {
                     edges.push(Edge { from: Endpoint { node: source.node, port: Port::EventsOut }, to: Endpoint { node: pattern.node, port: Port::EventsIn }, kind: EdgeKind::Hears });
                 }
             }
+            for splitter in &self.splitters {
+                if !self.event_cables.iter().any(|cable| cable.to == splitter.node) {
+                    edges.push(Edge { from: Endpoint { node: source.node, port: Port::EventsOut }, to: Endpoint { node: splitter.node, port: Port::EventsIn }, kind: EdgeKind::Hears });
+                }
+            }
         }
     }
 
     /// One edge for each event cable, in the order of their ids.
     fn event_cable_edges(&self, edges: &mut Vec<Edge>) {
         edges.extend(self.event_cables.iter().map(|cable| Edge {
-            from: Endpoint { node: cable.from, port: Port::EventsOut },
+            from: Endpoint { node: cable.from, port: if cable.output == Output::Rest { Port::EventsOutRest } else { Port::EventsOut } },
             to: Endpoint { node: cable.to, port: Port::EventsIn },
             kind: EdgeKind::Events { id: cable.id },
         }));
@@ -1991,8 +2033,9 @@ depth = 0.2
                     (Port::AudioIn, NodeKind::Effect { .. } | NodeKind::Group { .. } | NodeKind::Master { .. }) => {}
                     (Port::AudioInSide, NodeKind::Effect { side: Some(_), .. }) => {}
                     (Port::ModOut, NodeKind::Modulator { .. }) => {}
-                    (Port::EventsOut, NodeKind::Source { .. }) => {}
-                    (Port::EventsIn, NodeKind::Instrument { .. }) => {}
+                    (Port::EventsOut, NodeKind::Source { .. } | NodeKind::Pattern { .. } | NodeKind::Splitter { .. }) => {}
+                    (Port::EventsOutRest, NodeKind::Splitter { .. }) => {}
+                    (Port::EventsIn, NodeKind::Instrument { .. } | NodeKind::Pattern { .. } | NodeKind::Splitter { .. }) => {}
                     (Port::Param { index }, NodeKind::Instrument { plugin: Some(p), .. } | NodeKind::Effect { plugin: p, .. }) => {
                         assert!(p.params.iter().any(|q| q.index == index), "{what}: {e:?} names a parameter {index} the plugin lacks");
                     }
@@ -2021,7 +2064,7 @@ depth = 0.2
                     assert!(!modulation_ids.contains(&id), "{what}: a cable has an id of its own");
                 }
                 EdgeKind::Events { id } => {
-                    assert_eq!((e.from.port, e.to.port), (Port::EventsOut, Port::EventsIn), "{what}");
+                    assert!(matches!(e.from.port, Port::EventsOut | Port::EventsOutRest) && e.to.port == Port::EventsIn, "{what}");
                     assert!(!modulation_ids.contains(&id), "{what}: a cable has an id of its own");
                 }
                 EdgeKind::Hears => assert_eq!((e.from.port, e.to.port), (Port::EventsOut, Port::EventsIn), "{what}"),
@@ -2040,6 +2083,9 @@ depth = 0.2
             ("MIDI", MIDI),
             ("SETTINGS", SETTINGS),
             ("DISABLED_PATTERN", DISABLED_PATTERN),
+            ("PATTERNS", crate::app::testutil::PATTERNS),
+            ("SPLITTERS", crate::app::testutil::SPLITTERS),
+            ("a splitter that no cable ends at", "[keys]\n[[splitter]]\n[[instrument]]\nplugin = \"builtin:osc\"\n"),
             ("split", include_str!("../../examples/split.toml")),
             ("tracer", include_str!("../../examples/tracer.toml")),
         ] {
@@ -2341,6 +2387,91 @@ depth = 0.2
             let graph = load(scene).model.graph();
             let json = serde_json::to_string(&graph).unwrap();
             assert_eq!(serde_json::from_str::<Graph>(&json).unwrap(), graph);
+        }
+    }
+
+    // -- note splitters (step 127, P4i-B) --
+
+    #[test]
+    fn a_session_with_no_splitter_has_no_node_of_one_and_no_edge_from_a_second_output() {
+        for text in [crate::app::testutil::SOURCES, crate::app::testutil::SENDS, crate::app::testutil::PATTERNS, GROUPS, OSC] {
+            let graph = load(text).model.graph();
+            assert!(graph.nodes.iter().all(|n| !matches!(n.kind, NodeKind::Splitter { .. })), "{text}");
+            assert!(graph.edges.iter().all(|e| e.from.port != Port::EventsOutRest), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_note_splitter_is_a_node_after_the_boxes_with_its_pick_and_the_wire_says_it_in_the_words_a_client_reads() {
+        let model = load(crate::app::testutil::SPLITTERS).model;
+        let graph = model.graph();
+        let (keys, device, bass, first, second) = (model.sources[0].node, model.sources[1].node, model.patterns[0].node, model.splitters[0].node, model.splitters[1].node);
+        assert_eq!(graph.nodes[..5].iter().map(|n| n.id).collect::<Vec<_>>(), [keys, device, bass, first, second], "the sources, the boxes and then the splitters, before everything else");
+        let node = &graph.nodes[3];
+        assert_eq!((node.name.as_str(), node.parent, node.ui, &node.kind), ("Bass line", None, None, &NodeKind::Splitter { pick: SplitterPick::Lowest }));
+        assert_eq!(serde_json::to_value(node).unwrap(), json!({"id": first.0, "parent": null, "name": "Bass line", "kind": "splitter", "pick": "lowest"}));
+        // The second splitter picks the highest note, as the file says, and is placed.
+        assert_eq!(
+            serde_json::to_value(&graph.nodes[4]).unwrap(),
+            json!({"id": second.0, "parent": null, "name": "Splitter", "ui": {"x": 300.0, "y": 40.0}, "kind": "splitter", "pick": "highest"})
+        );
+        assert_eq!(serde_json::from_value::<Graph>(serde_json::to_value(&graph).unwrap()).unwrap(), graph);
+    }
+
+    #[test]
+    fn the_cables_of_notes_of_a_splitter_are_edges_from_the_output_that_they_start_at_and_to_its_input_and_a_source_feeds_a_splitter_that_no_cable_ends_at() {
+        let model = load(crate::app::testutil::SPLITTERS).model;
+        let (keys, bass, first, second) = (model.sources[0].node, model.patterns[0].node, model.splitters[0].node, model.splitters[1].node);
+        let (lane0, lane1, lane2) = (model.instruments[0].node, model.instruments[1].node, model.instruments[2].node);
+        let edges = model.graph().edges;
+        let drawn: Vec<&Edge> = edges.iter().filter(|e| matches!(e.kind, EdgeKind::Events { .. })).collect();
+        let at = |node: NodeId, port: Port| Endpoint { node, port };
+        assert_eq!(
+            drawn.iter().map(|e| (e.from, e.to)).collect::<Vec<_>>(),
+            [
+                (notes_out(keys), notes_in(first)),
+                (notes_out(bass), notes_in(second)),
+                (at(model.sources[1].node, Port::EventsOut), notes_in(second)),
+                (notes_out(first), notes_in(lane0)),
+                (at(first, Port::EventsOutRest), notes_in(lane1)),
+                (notes_out(second), notes_in(lane2)),
+            ],
+            "in the order of their ids; the cable of the rest starts at the second port"
+        );
+        assert_eq!(
+            serde_json::to_value(drawn[4]).unwrap(),
+            json!({"from": {"node": first.0, "port": {"type": "eventsOutRest"}}, "to": {"node": lane1.0, "port": {"type": "eventsIn"}}, "kind": "events", "id": 4})
+        );
+        assert_eq!(serde_json::to_value(drawn[3]).unwrap()["from"]["port"], json!({"type": "eventsOut"}), "the pick is the port that every output of notes had before");
+        // A splitter that no cable ends at is heard by every source, as a lane is, and a splitter that has cables is not.
+        assert!(!edges.iter().any(|e| e.kind == EdgeKind::Hears && (e.to.node == first || e.to.node == second)), "both have cables into them");
+        let alone = load("[keys]\n[[device]]\nname = \"Launchkey\"\n[[splitter]]\n[[instrument]]\nplugin = \"builtin:osc\"\n").model;
+        let (splitter, keys, device, lane) = (alone.splitters[0].node, alone.sources[0].node, alone.sources[1].node, alone.instruments[0].node);
+        let heard: Vec<Edge> = alone.graph().edges.into_iter().filter(|e| e.kind == EdgeKind::Hears).collect();
+        assert_eq!(
+            heard,
+            [
+                hears(notes_out(keys), notes_in(lane)),
+                hears(notes_out(keys), notes_in(splitter)),
+                hears(notes_out(device), notes_in(lane)),
+                hears(notes_out(device), notes_in(splitter))
+            ],
+            "the sources in order, and for each the lanes and then the splitters that have no cable: from a source's output of events to the input of events"
+        );
+        // The edges have no node that is not there (a session that has splitters is a closed graph).
+        for e in &edges {
+            assert!(model.graph().nodes.iter().any(|n| n.id == e.from.node) && model.graph().nodes.iter().any(|n| n.id == e.to.node), "{e:?}");
+        }
+    }
+
+    #[test]
+    fn the_second_output_and_the_pick_of_a_splitter_say_their_names_on_the_wire() {
+        assert_eq!(serde_json::to_value(Port::EventsOutRest).unwrap(), json!({"type": "eventsOutRest"}));
+        assert_eq!(serde_json::to_value(Port::EventsOut).unwrap(), json!({"type": "eventsOut"}));
+        assert_eq!(serde_json::to_value(SplitterPick::Highest).unwrap(), json!("highest"));
+        assert_eq!(serde_json::to_value(NodeKind::Splitter { pick: SplitterPick::Lowest }).unwrap(), json!({"kind": "splitter", "pick": "lowest"}));
+        for pick in [SplitterPick::Lowest, SplitterPick::Highest] {
+            assert_eq!(SplitterPick::from(crate::notesplit::Pick::from(pick)), pick, "the wire's words and the engine's are the same two");
         }
     }
 }

@@ -41,6 +41,8 @@ export type { SlotKind } from "./generated/SlotKind";
 export type { SoundEntry } from "./generated/SoundEntry";
 export type { SoundLibrary } from "./generated/SoundLibrary";
 export type { SourceInfo } from "./generated/SourceInfo";
+export type { SplitterField } from "./generated/SplitterField";
+export type { SplitterPick } from "./generated/SplitterPick";
 export type { Snapshot } from "./generated/Snapshot";
 export type { StampedEvent } from "./generated/StampedEvent";
 export type { TelemetryChannel } from "./generated/TelemetryChannel";
@@ -82,6 +84,7 @@ export {
   SCALE_KINDS,
   SCALE_ROOTS,
   SCOPE_FRAME_LENGTH,
+  SPLITTER_LIMIT,
   STEP_RANGE,
   SYNC_DIVISIONS,
   SYNC_FREE,
