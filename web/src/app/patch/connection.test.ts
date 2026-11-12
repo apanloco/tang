@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { MASTER, audioCablesFixture, fieldsFixture, freeReachFixture, reachFixture, sideCablesFixture, sourcesFixture, tracerSnapshot } from "../../client/fixtures";
+import { MASTER, audioCablesFixture, fieldsFixture, freeReachFixture, reachFixture, sideCablesFixture, sourcesFixture, splittersFixture, tracerSnapshot } from "../../client/fixtures";
 import type { Port } from "../../protocol";
 import { audioCableOf, audioTakersOf, cableOf, canConnect, canDraw, canDrawAudio, canDrawNotes, drawableFrom, drawCable, keyOf, kindOfDrag, notesCableOf, notesTakersOf, takersOf } from "./connection";
 import { handleOf, toFlow } from "./toFlow";
@@ -331,8 +331,8 @@ describe("a cable of notes dragged on the canvas", () => {
   const graph = notesSession();
 
   test("is read when it goes from an output of events to an input of events, by the ids of the nodes: the source it starts at and the lane it ends at", () => {
-    expect(notesCableOf(connection("7", "eventsOut", "5", "eventsIn"))).toEqual({ source: 7, lane: 5 });
-    expect(notesCableOf(connection("12", "eventsOut", "30", "eventsIn"))).toEqual({ source: 12, lane: 30 });
+    expect(notesCableOf(connection("7", "eventsOut", "5", "eventsIn"))).toEqual({ source: 7, output: "pick", lane: 5 });
+    expect(notesCableOf(connection("12", "eventsOut", "30", "eventsIn"))).toEqual({ source: 12, output: "pick", lane: 30 });
   });
 
   test("is not read when it starts or ends anywhere else: an output of audio, a modulator's, a parameter, a setting, or no handle", () => {
@@ -368,17 +368,17 @@ describe("a cable of notes dragged on the canvas", () => {
   });
 
   test("can be drawn where the controller would draw it: from a source to a lane that has none from it yet, and not from a lane, to a source, to the mix or to nothing", () => {
-    expect(canDrawNotes(graph, { source: 7, lane: 2 })).toBe(true);
-    expect(canDrawNotes(graph, { source: 7, lane: 5 })).toBe(true); // an empty lane is a lane
-    expect(canDrawNotes(graph, { source: 8, lane: 4 })).toBe(true); // another source's, to a lane that has one from the keys
-    expect(canDrawNotes(graph, { source: 7, lane: 4 })).toBe(false); // there already
-    expect(canDrawNotes(graph, { source: 2, lane: 4 })).toBe(false); // a lane is no source
-    expect(canDrawNotes(graph, { source: 7, lane: 8 })).toBe(false); // a source is no lane
-    expect(canDrawNotes(graph, { source: 7, lane: 3 })).toBe(false); // an effect has no input of events
-    expect(canDrawNotes(graph, { source: 7, lane: MASTER })).toBe(false); // the mix has none
-    expect(canDrawNotes(graph, { source: MASTER, lane: 4 })).toBe(false); // nor an output
-    expect(canDrawNotes(graph, { source: 7, lane: 77 })).toBe(false);
-    expect(canDrawNotes(graph, { source: 77, lane: 4 })).toBe(false);
+    expect(canDrawNotes(graph, { source: 7, output: "pick", lane: 2 })).toBe(true);
+    expect(canDrawNotes(graph, { source: 7, output: "pick", lane: 5 })).toBe(true); // an empty lane is a lane
+    expect(canDrawNotes(graph, { source: 8, output: "pick", lane: 4 })).toBe(true); // another source's, to a lane that has one from the keys
+    expect(canDrawNotes(graph, { source: 7, output: "pick", lane: 4 })).toBe(false); // there already
+    expect(canDrawNotes(graph, { source: 2, output: "pick", lane: 4 })).toBe(false); // a lane is no source
+    expect(canDrawNotes(graph, { source: 7, output: "pick", lane: 8 })).toBe(false); // a source is no lane
+    expect(canDrawNotes(graph, { source: 7, output: "pick", lane: 3 })).toBe(false); // an effect has no input of events
+    expect(canDrawNotes(graph, { source: 7, output: "pick", lane: MASTER })).toBe(false); // the mix has none
+    expect(canDrawNotes(graph, { source: MASTER, output: "pick", lane: 4 })).toBe(false); // nor an output
+    expect(canDrawNotes(graph, { source: 7, output: "pick", lane: 77 })).toBe(false);
+    expect(canDrawNotes(graph, { source: 77, output: "pick", lane: 4 })).toBe(false);
   });
 
   test("has, for the ports of the canvas, the inputs that take a cable from a source, by the name of the node and of the handle", () => {
@@ -553,7 +553,13 @@ describe("a cable that is dropped on the canvas", () => {
   test("is a cable of notes from a source's output of events to a lane's input of events: the editor is asked to draw it from the source to the lane", () => {
     const { calls, editor } = asked();
     drawCable(editor, connection("7", "eventsOut", "5", "eventsIn"));
-    expect(calls).toEqual([["addNotesCable", 7, 5]]);
+    expect(calls).toEqual([["addNotesCable", 7, 5, "pick"]]);
+  });
+
+  test("is a cable of notes from the second output of a note splitter when it starts at that handle: the editor is asked to draw it from the rest of the splitter", () => {
+    const { calls, editor } = asked();
+    drawCable(editor, connection("7", "eventsOutRest", "5", "eventsIn"));
+    expect(calls).toEqual([["addNotesCable", 7, 5, "rest"]]);
   });
 
   test("is a cable of modulation from a modulator's output to a port: the editor is asked to draw it from the modulator to the port of the node", () => {
@@ -618,3 +624,85 @@ describe("a cable dragged to a volume, a mix or a pan that the host keeps", () =
   });
 });
 
+
+// The session of `testutil::SPLITTERS`, as the fixture of splitters has it: the lanes are 0, 1 and 2, the keys 3, the device 4, the box (Bass) 5, the first splitter (Bass line, which picks the lowest note) 6 and the second 7. The cables of notes are the
+// keys to 6, the box and the device to 7, the pick of 6 to the lane 0, its rest to the lane 1 and the pick of 7 to the lane 2.
+describe("a cable of notes from a note splitter, dragged on the canvas", () => {
+  const connection = (source: string, sourceHandle: string | null, target: string, targetHandle: string | null) => ({ source, sourceHandle, target, targetHandle });
+  const found = splittersFixture.cases.find((entry) => entry.name === "splitters");
+  if (!found) throw new Error("the fixture has the session of the splitters");
+  const graph = found.snapshot.graph;
+  const start = (nodeId: string | null, handleType: "source" | "target" | null, handleId: string | null) => ({ nodeId, handleType, handleId });
+
+  test("is read with the output it starts at: the first handle of a node is its first output, and the second handle is the rest of a splitter", () => {
+    expect(notesCableOf(connection("6", "eventsOut", "1", "eventsIn"))).toEqual({ source: 6, output: "pick", lane: 1 });
+    expect(notesCableOf(connection("6", "eventsOutRest", "1", "eventsIn"))).toEqual({ source: 6, output: "rest", lane: 1 });
+    expect(notesCableOf(connection("3", "eventsOut", "6", "eventsIn"))).toEqual({ source: 3, output: "pick", lane: 6 });
+    // (A handle that is no output of events, and one that is spelt as another, is none.)
+    for (const handle of ["EventsOutRest", "eventsOutRest ", "eventsOutrest", "eventsRest", "rest", "audioOut", "modOut", "", null]) {
+      expect(notesCableOf(connection("6", handle, "1", "eventsIn")), String(handle)).toBeNull();
+    }
+    expect(notesCableOf(connection("6", "eventsOutRest", "1", "audioIn"))).toBeNull();
+    expect(notesCableOf(connection("six", "eventsOutRest", "1", "eventsIn"))).toBeNull();
+  });
+
+  test("is a drag of notes from either output, and a drag of any other kind from no other handle", () => {
+    expect(kindOfDrag("eventsOut")).toBe("notes");
+    expect(kindOfDrag("eventsOutRest")).toBe("notes");
+    expect(kindOfDrag("eventsOutRest@4")).toBe("notes"); // (a handle of a box that is closed stands for the one inside it)
+    expect(kindOfDrag("eventsRest")).toBe("modulation");
+    expect(kindOfDrag("audioOut")).toBe("audio");
+    expect(kindOfDrag(null)).toBe("modulation");
+  });
+
+  test("can be drawn where the controller would draw it: from each output to a lane that has none from that output, whatever it has from the other, and not twice, to a box or a splitter, or from the second output of anything that is no splitter", () => {
+    const can = (source: number, output: "pick" | "rest", lane: number): boolean => canDrawNotes(graph, { source, output, lane });
+    expect(can(6, "pick", 1)).toBe(true); // the lane that has the rest of it
+    expect(can(6, "rest", 0)).toBe(true); // the lane that has its pick
+    expect(can(6, "pick", 2)).toBe(true);
+    expect(can(6, "rest", 2)).toBe(true);
+    expect(can(6, "pick", 0)).toBe(false); // there already
+    expect(can(6, "rest", 1)).toBe(false); // there already
+    expect(can(7, "rest", 0)).toBe(true);
+    expect(can(7, "pick", 2)).toBe(false);
+    expect(can(6, "pick", 7)).toBe(false); // a splitter takes no splitter's notes
+    expect(can(6, "rest", 7)).toBe(false);
+    expect(can(7, "pick", 6)).toBe(false);
+    expect(can(6, "pick", 5)).toBe(false); // nor a box's
+    expect(can(6, "rest", 5)).toBe(false);
+    expect(can(3, "rest", 0)).toBe(false); // the keys have one output
+    expect(can(5, "rest", 0)).toBe(false); // and so has a box
+    expect(can(0, "rest", 1)).toBe(false); // and a lane has none
+    expect(can(3, "pick", 7)).toBe(true); // a source into a splitter that has none from it
+    expect(can(3, "pick", 6)).toBe(false); // there already
+    expect(can(5, "pick", 6)).toBe(true); // a box into a splitter
+    expect(can(4, "pick", 6)).toBe(true);
+    expect(can(6, "rest", MASTER)).toBe(false);
+  });
+
+  test("has, for the ports of the canvas, the inputs that take a cable from each output, by the name of the node and of the handle: the splitters and the boxes take a source's, and a splitter's only a lane's", () => {
+    expect([...notesTakersOf(graph, 6, "pick")].sort()).toEqual(["1:eventsIn", "2:eventsIn"]);
+    expect([...notesTakersOf(graph, 6, "rest")].sort()).toEqual(["0:eventsIn", "2:eventsIn"]);
+    expect([...notesTakersOf(graph, 7, "rest")].sort()).toEqual(["0:eventsIn", "1:eventsIn", "2:eventsIn"]);
+    expect([...notesTakersOf(graph, 3)].sort()).toEqual(["0:eventsIn", "1:eventsIn", "2:eventsIn", "5:eventsIn", "7:eventsIn"]);
+    expect([...notesTakersOf(graph, 5)].sort()).toEqual(["0:eventsIn", "1:eventsIn", "2:eventsIn", "6:eventsIn"]);
+    expect(notesTakersOf(graph, 3, "rest").size).toBe(0);
+    expect(notesTakersOf(graph, 0, "rest").size).toBe(0);
+  });
+
+  test("is what a drag from a handle ends at: the second handle has the takers of the second output", () => {
+    expect([...(takersOf(graph, [], start("6", "source", "eventsOutRest")) ?? [])].sort()).toEqual(["0:eventsIn", "2:eventsIn"]);
+    expect([...(takersOf(graph, [], start("6", "source", "eventsOut")) ?? [])].sort()).toEqual(["1:eventsIn", "2:eventsIn"]);
+    expect(takersOf(graph, [], start("3", "source", "eventsOutRest"))?.size).toBe(0);
+    expect(takersOf(graph, [], start("6", "target", "eventsOutRest"))).toBeNull();
+    expect(takersOf(null, [], start("6", "source", "eventsOutRest"))).toBeNull();
+    expect(takersOf(graph, [], start("six", "source", "eventsOutRest"))).toBeNull();
+  });
+
+  test("is a cable when the controller would take it", () => {
+    expect(canConnect(graph, [], connection("6", "eventsOutRest", "0", "eventsIn"))).toBe(true);
+    expect(canConnect(graph, [], connection("6", "eventsOutRest", "1", "eventsIn"))).toBe(false);
+    expect(canConnect(graph, [], connection("6", "eventsOut", "7", "eventsIn"))).toBe(false);
+    expect(canConnect(null, [], connection("6", "eventsOutRest", "0", "eventsIn"))).toBe(false);
+  });
+});

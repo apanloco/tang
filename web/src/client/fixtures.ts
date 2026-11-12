@@ -30,6 +30,7 @@ import moves from "./fixtures/moves.json";
 import noise from "./fixtures/noise.json";
 import patternBoxTakes from "./fixtures/patternBoxTakes.json";
 import patternBoxes from "./fixtures/patternBoxes.json";
+import splitters from "./fixtures/splitters.json";
 import patterns from "./fixtures/patterns.json";
 import pins from "./fixtures/pins.json";
 import reach from "./fixtures/reach.json";
@@ -265,6 +266,15 @@ export const patternBoxesFixture = patternBoxes as unknown as {
 };
 
 /**
+ * What the controller makes of each intent of note splitters, on the sessions of `splitter_fixture_cases` (a session of the keys, a device, a box, two splitters and three lanes with cables of notes at both outputs of the first splitter; one of two lanes and
+ * nothing else; one whose splitters are called "Splitter 1" and "Splitter 3"; and one of sixteen splitters): its words when it refuses one, and else the events it made, whether it changed the structure and what the session comes to. Written by Rust
+ * (`the_web_clients_fixture_of_what_splitters_come_to_is_current`); the mock engine's outcomes are pinned to it.
+ */
+export const splittersFixture = splitters as unknown as {
+  cases: { name: string; snapshot: Snapshot; rows: ({ intent: Intent } & ({ error: string } | { events: StampedEvent[]; restructured: boolean; after: Shape }))[] }[];
+};
+
+/**
  * What the real player of a pattern box (`BoxPlayer`) makes of takes, scene by scene, at 120 beats a minute: the box as it is made (its length, whether it loops and overdubs, the notes it has), what is done to it and when (the transport and the keys, each on a
  * sixteenth of a beat, the transport of a beat before the keys of it), what it is doing after each block of a sixteenth (each change and the beat that showed it: `statuses`), the notes that each pass that ended made of it (and the beat of the block it ended in)
  * and the notes it has at the end. Written by the player (`the_web_clients_fixture_of_what_a_box_makes_of_a_take_is_current`).
@@ -353,7 +363,9 @@ export interface Shape {
   sources?: string[];
   /** The pattern boxes, a line each (`id len=4 loop=1 sync=own overdub=0 click=1 notes=start/length/note/velocity,…`): what the controller keeps of a box, not what it is doing; none at all for a session that has none. */
   patterns?: string[];
-  /** The cables of notes that have been drawn from a source or a box to a lane or a box, a line each (`#id from>to`); none at all for a session that has none. */
+  /** The note splitters, a line each (`id pick=lowest`): the note that the controller keeps a splitter picking (its name is among the nodes); none at all for a session that has none. */
+  splitters?: string[];
+  /** The cables of notes that have been drawn from a source, a box or a splitter to a lane, a box or a splitter, a line each (`#id from>to`, with `rest` after the nodes for a cable from a splitter's second output); none at all for a session that has none. */
   notes?: string[];
   /** The links from each source to each lane that hears every source, a line each (`from>to`); none at all for a session that has none. */
   hears?: string[];
@@ -389,7 +401,9 @@ export function shapeOf(snapshot: Snapshot): Shape {
         ]
       : [],
   );
-  const notes = edges.flatMap((e) => (e.kind === "events" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)}`] : []));
+  const splitters = nodes.flatMap((n) => (n.kind === "splitter" ? [`${String(n.id)} pick=${n.pick}`] : []));
+  // (The second output of a note splitter has its word after the nodes, so that the line of every other cable is what it was.)
+  const notes = edges.flatMap((e) => (e.kind === "events" ? [`#${String(e.id)} ${String(e.from.node)}>${String(e.to.node)}${e.from.port.type === "eventsOutRest" ? " rest" : ""}`] : []));
   const hears = edges.flatMap((e) => (e.kind === "hears" ? [`${String(e.from.node)}>${String(e.to.node)}`] : []));
   // The kinds of edge in the order they come in, a run of one kind as one entry.
   const runs: { kind: string; count: number }[] = [];
@@ -409,6 +423,7 @@ export function shapeOf(snapshot: Snapshot): Shape {
     ...(ears.length > 0 ? { ears } : {}),
     ...(sources.length > 0 ? { sources } : {}),
     ...(patterns.length > 0 ? { patterns } : {}),
+    ...(splitters.length > 0 ? { splitters } : {}),
     ...(notes.length > 0 ? { notes } : {}),
     ...(hears.length > 0 ? { hears } : {}),
     ...(sources.length > 0 || notes.length > 0 || hears.length > 0 ? { order } : {}),

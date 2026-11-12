@@ -14,6 +14,7 @@ import { cableRoute } from "./cableRoute";
 import { CableDepthControl, CableLevelControl, drivesId } from "./controls";
 import { cableWidth, sendWidth } from "./describe";
 import { notesToId } from "./NotesMenus";
+import { handleOf, plainHandle } from "./handles";
 import { sendId } from "./SendMenu";
 import type { PatchEdge } from "./toFlow";
 
@@ -143,8 +144,8 @@ export function SendEdge(props: EdgeProps<PatchEdge>) {
 }
 
 /**
- * A cable of notes that has been drawn from a source to a lane: a curve in the colour of notes, with the button that takes it out at the middle (it has no level: it carries notes, which are heard or not).
- * The lane hears the sources that have a cable to it and no other; the source stays, and the focus goes to its menu, which draws the next one.
+ * A cable of notes that has been drawn from a source, a box or an output of a note splitter to a lane: a curve in the colour of notes, with the button that takes it out at the middle (it has no level: it carries notes, which are heard or not).
+ * The lane hears the sources that have a cable to it and no other; the source stays, and the focus goes to its menu (the one of the output the cable started at), which draws the next one.
  */
 export function NotesEdge(props: EdgeProps<PatchEdge>) {
   const [path, labelX, labelY] = getBezierPath(props);
@@ -157,7 +158,7 @@ export function NotesEdge(props: EdgeProps<PatchEdge>) {
         // (In the layer over the canvas that the cables' controls are in, at the middle of the cable.)
         <EdgeLabelRenderer>
           <div className="tang-depth-anchor nodrag nopan nowheel" style={{ transform: `translate(-50%, -50%) translate(${String(labelX)}px, ${String(labelY)}px)` }}>
-            <RemoveCableButton edge={cable} focusTo={notesToId(Number(props.source))} label={label} />
+            <RemoveCableButton edge={cable} focusTo={notesToId(Number(props.source), plainHandle(props.sourceHandleId) === handleOf({ type: "eventsOutRest" }) ? "rest" : "pick")} label={label} />
           </div>
         </EdgeLabelRenderer>
       )}

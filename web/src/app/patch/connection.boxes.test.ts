@@ -31,7 +31,7 @@ describe("a cable drawn to or from a box", () => {
   });
 
   test("a cable of notes ends at the lane inside whose input of events the box's port is, and a cable of modulation at the port of the node inside", () => {
-    expect(notesCableOf(connection("99", "eventsOut", "1", "eventsIn@5"))).toEqual({ source: 99, lane: 5 });
+    expect(notesCableOf(connection("99", "eventsOut", "1", "eventsIn@5"))).toEqual({ source: 99, output: "pick", lane: 5 });
     expect(cableOf(connection("20", "modOut", "1", "param-1@3"))).toEqual({ modulator: 20, node: 3, port: { type: "param", index: 1 } });
     expect(cableOf(connection("20", "modOut", "1", "volume@5"))).toEqual({ modulator: 20, node: 5, port: { type: "volume" } });
     expect(cableOf(connection("20", "modOut", "1", "depth-7@20"))).toEqual({ modulator: 20, node: 20, port: { type: "depth", edge: 7 } });
@@ -102,7 +102,7 @@ describe("a cable drawn to or from a box", () => {
     draw(connection("1", "audioOut@4", String(MASTER), "audioIn"));
     expect(asked).toEqual([
       ["audio", 11, 4, null, true],
-      ["notes", 99, 5],
+      ["notes", 99, 5, "pick"],
       ["modulation", 20, 3, { type: "param", index: 3 }],
       ["audio", 4, MASTER, null, false],
     ]);

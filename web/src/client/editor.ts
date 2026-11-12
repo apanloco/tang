@@ -4,7 +4,7 @@
 // to a plain request is what a person needs: the node that was made (the intent does not name it:
 // a client finds it in the session it is then given), and, when the server refuses, a notice that
 // says what could not be done and why, in the names the canvas shows.
-import type { EdgeId, Endpoint, Feed, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternBoxAction, PatternBoxField, PatternField, PatternNote, Plugin, Port, Route, SoundEntry, SoundLibrary, SourceInfo } from "../protocol";
+import type { EdgeId, Endpoint, Feed, Graph, Intent, ModulatorKind, NodeId, NodeUi, NoteRange, PatternBoxAction, PatternBoxField, PatternField, PatternNote, Plugin, Port, Route, SoundEntry, SoundLibrary, SourceInfo, SplitterField } from "../protocol";
 import type { Client } from "./connection";
 import { isModulation } from "./cables";
 import { trimmed } from "./inputs";
@@ -12,6 +12,8 @@ import { MODULATOR_LABELS } from "./modulatorKinds";
 import { moduleNameOf } from "./modules";
 import { cableWords, displayNames, endLabel } from "./names";
 import type { Names } from "./names";
+import { portOfOutput } from "./noteWiring";
+import type { NotesOutput } from "./noteWiring";
 import { rangeLabel } from "./notes";
 import type { Notices } from "./notices";
 import { pinnedWith } from "./pinning";
@@ -459,6 +461,26 @@ export class Editor {
   }
 
   /**
+   * Add a note splitter to the session: a node that takes notes in and sends the lowest of the notes that are held to its first output and the others to its second, called "Splitter N". Resolves with the id of the node it made, which the
+   * canvas is asked to show, or with null if it was refused (the page says why: a session has at most `SPLITTER_LIMIT` splitters). The node is the last splitter there is (a splitter goes after the others): two clients adding at once may
+   * be given each other's, which is as good. With `place` (a menu on the canvas, where the pointer was: the canvas's pixels) the node is put there, which is a move of its own in the history, and the canvas is not moved to show it.
+   */
+  async addSplitter(place?: NodeUi): Promise<NodeId | null> {
+    if (!(await this.#attempt(DOING.addSplitter, { type: "addSplitter" }))) return null;
+    return this.#placed(this.#graph?.nodes.findLast((node) => node.kind === "splitter")?.id, place);
+  }
+
+  /**
+   * Set a setting of the note splitter `node`: its name (the spaces round it go; nothing is "Splitter") or the note that it picks for its first output (`lowest`, the bass of a chord, or `highest`, its top). What the splitter has already is
+   * no change. True if it was done (the page says why if it was not).
+   */
+  setSplitterField(node: NodeId, field: SplitterField): Promise<boolean> {
+    const splitter = this.#name(node);
+    const what: Record<SplitterField["type"], string> = { name: `rename ${splitter}`, pick: `set the note that ${splitter} picks` };
+    return this.#attempt(what[field.type], { type: "setSplitterField", node, field });
+  }
+
+  /**
    * Say where the node `node` is drawn, `ui` in the pixels of the canvas, or null to give it back to the layout (the master is
    * a node too). The server keeps it to a tenth of a pixel and within the limits of the canvas, and saves it with the session.
    * True if it was kept (the page says why if it was not).
@@ -537,13 +559,14 @@ export class Editor {
   }
 
   /**
-   * Draw a cable of notes from the output of events of the source `from` to the input of events of the lane `to` (its instrument's node): from then on the lane hears the sources that have a cable
-   * to it and no other (a lane that has none hears every source). True if it was drawn (the page says why if it was not: a node that is not a source or not a lane, a cable between the two
-   * is there already).
+   * Draw a cable of notes from the output of events of the source, the pattern box or the note splitter `from` (the second output of a splitter, the notes that are not its pick, when `output` is "rest") to the input of events of the
+   * lane `to` (its instrument's node), or of a box or a splitter: from then on the lane hears the sources that have a cable to it and no other (a lane that has none hears every source). True if it was drawn (the page says why if it
+   * was not: a node that sends no notes or one that takes none, a second output of anything but a splitter, a cable between the two from that output is there already).
    */
-  addNotesCable(from: NodeId, to: NodeId): Promise<boolean> {
-    const ends = { from: { node: from, port: { type: "eventsOut" } }, to: { node: to, port: { type: "eventsIn" } } } as const;
-    return this.#attempt(`draw a cable of notes from ${this.#words(ends).replaceAll(" → ", " to ")}`, { type: "addCable", from: ends.from, to: ends.to, gain: null });
+  addNotesCable(from: NodeId, to: NodeId, output: NotesOutput = "pick"): Promise<boolean> {
+    const ends = { from: { node: from, port: portOfOutput(output) }, to: { node: to, port: { type: "eventsIn" } } } as const;
+    const words = this.#words(ends).replaceAll(" → ", " to ");
+    return this.#attempt(`draw a cable of notes from ${words}`, { type: "addCable", from: ends.from, to: ends.to, gain: null });
   }
 
   /**

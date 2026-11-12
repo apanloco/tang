@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { DEVICE_NAME_LIMIT } from "../protocol";
 import type { Edge, Endpoint, Graph, Node, NodeId } from "../protocol";
-import { MASTER, sourcesFixture } from "./fixtures";
+import { MASTER, sourcesFixture, splittersFixture } from "./fixtures";
 import { deviceName, eventCableEnds, laneTakesNotes, noteTakers, withHears } from "./noteWiring";
 
 // The session of the fixture (`testutil::NOTES`): the keys (7) and a device (8) are the sources, then group 0 ("Pad", node 0, a reverb on its bus), lane 0 (node 2) in it with a filter and an LFO, a plain lane (5) and an empty one (6); a
@@ -28,8 +28,8 @@ const words = (result: ReturnType<typeof eventCableEnds>): string => ("error" in
 
 describe("the ends of a cable of notes", () => {
   test("are a source and a lane: the node of the source at the start, and the lane's own node at the end", () => {
-    expect(eventCableEnds(graph, out(keys), into(lane0))).toEqual({ source: keys, lane: lane0 });
-    expect(eventCableEnds(graph, out(launchkey), into(lane2))).toEqual({ source: launchkey, lane: lane2 });
+    expect(eventCableEnds(graph, out(keys), into(lane0))).toEqual({ source: keys, output: "pick", lane: lane0 });
+    expect(eventCableEnds(graph, out(launchkey), into(lane2))).toEqual({ source: launchkey, output: "pick", lane: lane2 });
   });
 
   test("are refused in the controller's words and its order: the ports, then the mix as a start, a start that is not there or is no source, the mix as an end, an end that is not there or is no lane", () => {
@@ -216,7 +216,7 @@ describe("a lane that takes notes", () => {
     expect(words(eventCableEnds(microphone, out(keys), into(lane1)))).toBe("invalid: that instrument takes no notes: an audio input has no input of events");
     expect(words(eventCableEnds(microphone, out(launchkey), into(lane1)))).toBe("invalid: that instrument takes no notes: an audio input has no input of events");
     // (The lanes beside it take one as they did, and an end that is no lane is refused as it was, before the instrument is looked at.)
-    expect(eventCableEnds(microphone, out(keys), into(lane2))).toEqual({ source: keys, lane: lane2 });
+    expect(eventCableEnds(microphone, out(keys), into(lane2))).toEqual({ source: keys, output: "pick", lane: lane2 });
     expect(words(eventCableEnds(microphone, out(keys), into(filter)))).toBe("invalid: a cable of notes ends at a lane: it is the lanes that have an input of events");
   });
 
@@ -243,5 +243,71 @@ describe("a lane that takes notes", () => {
       [launchkey, lane1],
       [launchkey, lane2],
     ]);
+  });
+});
+
+// The session of the fixture of splitters (`testutil::SPLITTERS`): the lanes are 0, 1 and 2, the keys 3, the device 4, the box (Bass) 5, the first splitter (Bass line, which picks the lowest note) 6 and the second (which picks the highest) 7. The cables
+// of notes are the keys to 6, the box and the device to 7, the pick of 6 to the lane 0, its rest to the lane 1 and the pick of 7 to the lane 2.
+describe("the cables of notes of note splitters", () => {
+  const found = splittersFixture.cases.find((entry) => entry.name === "splitters");
+  if (!found) throw new Error("the fixture has the session of the splitters");
+  const splits = found.snapshot.graph;
+  const rest = (node: NodeId): Endpoint => ({ node, port: { type: "eventsOutRest" } });
+  const [first, second, bass, lane] = [6, 7, 5, 0];
+
+  test("start at either output of a splitter, and end at a splitter from a source or a box: the ends say which output", () => {
+    expect(eventCableEnds(splits, out(first), into(lane))).toEqual({ source: first, output: "pick", lane });
+    expect(eventCableEnds(splits, rest(first), into(lane))).toEqual({ source: first, output: "rest", lane });
+    expect(eventCableEnds(splits, out(3), into(second))).toEqual({ source: 3, output: "pick", lane: second });
+    expect(eventCableEnds(splits, out(bass), into(first))).toEqual({ source: bass, output: "pick", lane: first });
+    expect(eventCableEnds(splits, out(3), into(bass))).toEqual({ source: 3, output: "pick", lane: bass });
+  });
+
+  test("are refused in the controller's words and its order: the ports first, then what starts and what ends, and the second output of anything but a splitter before what it ends at", () => {
+    expect(words(eventCableEnds(splits, out(first), into(second)))).toBe("invalid: a note splitter cannot take the notes of another splitter: it takes those of a source or a pattern box");
+    expect(words(eventCableEnds(splits, rest(first), into(first)))).toBe("invalid: a note splitter cannot take the notes of another splitter: it takes those of a source or a pattern box");
+    expect(words(eventCableEnds(splits, out(first), into(bass)))).toBe("invalid: a note splitter cannot send its notes to a pattern box yet: it sends them to a lane");
+    expect(words(eventCableEnds(splits, rest(second), into(bass)))).toBe("invalid: a note splitter cannot send its notes to a pattern box yet: it sends them to a lane");
+    expect(words(eventCableEnds(splits, out(bass), into(bass)))).toBe("invalid: a pattern box cannot send its notes to another box yet: it sends them to a lane");
+    expect(words(eventCableEnds(splits, rest(3), into(lane)))).toBe("invalid: only a note splitter has a second output of events");
+    expect(words(eventCableEnds(splits, rest(bass), into(first)))).toBe("invalid: only a note splitter has a second output of events");
+    expect(words(eventCableEnds(splits, rest(lane), into(first)))).toBe("invalid: only a source of notes has an output of events");
+    expect(words(eventCableEnds(splits, rest(9_999), into(first)))).toBe("notFound: there is no node 9999");
+    expect(words(eventCableEnds(splits, rest(MASTER), into(first)))).toBe("invalid: the mix has no output of events");
+    expect(words(eventCableEnds(splits, rest(first), into(MASTER)))).toBe("invalid: the mix has no input of events");
+    expect(words(eventCableEnds(splits, rest(first), into(3)))).toBe("invalid: a cable of notes ends at a lane: it is the lanes that have an input of events");
+    expect(words(eventCableEnds(splits, rest(first), { node: lane, port: { type: "audioIn" } }))).toBe("invalid: a cable of notes ends at an input of events");
+    expect(words(eventCableEnds(splits, { node: first, port: { type: "audioOut" } }, into(lane)))).toBe("invalid: a cable of notes starts at an output of events");
+  });
+
+  test("can still be drawn from each output to the lanes that have none from it (the other output's cable is no matter), to a splitter from a source or a box, and from the second output of a splitter only", () => {
+    expect(noteTakers(splits, first)).toEqual([1, 2]);
+    expect(noteTakers(splits, first, "pick")).toEqual([1, 2]);
+    expect(noteTakers(splits, first, "rest")).toEqual([0, 2]);
+    expect(noteTakers(splits, second, "rest")).toEqual([0, 1, 2]);
+    expect(noteTakers(splits, second)).toEqual([0, 1]);
+    // (A source and a box have one output, a source is the only node that sends to a box, and a box and a source are the nodes that a splitter takes the notes of.)
+    expect(noteTakers(splits, 3, "rest")).toEqual([]);
+    expect(noteTakers(splits, bass, "rest")).toEqual([]);
+    expect(noteTakers(splits, 3)).toEqual([bass, second, 0, 1, 2]);
+    expect(noteTakers(splits, 4)).toEqual([bass, first, 0, 1, 2]);
+    expect(noteTakers(splits, bass)).toEqual([first, 0, 1, 2]);
+    expect(noteTakers(splits, lane, "rest")).toEqual([]);
+  });
+
+  test("are heard by a splitter that no cable ends at as by a lane that has none: a link from each source to it, after those of the lanes and the boxes", () => {
+    const bare: Graph = { nodes: splits.nodes, edges: splits.edges.filter((e) => e.kind !== "events" && e.kind !== "hears") };
+    const hears = (g: Graph): string[] => withHears(g).edges.flatMap((e) => (e.kind === "hears" ? [`${String(e.from.node)}>${String(e.to.node)}`] : []));
+    expect(hears(bare)).toEqual(["3>0", "3>1", "3>2", "3>5", "3>6", "3>7", "4>0", "4>1", "4>2", "4>5", "4>6", "4>7"]);
+    // (As the session has them, each splitter has a cable that ends at it, and so has each lane: only the box, which has none, hears every source.)
+    expect(hears(splits)).toEqual(["3>5", "4>5"]);
+    // (A splitter's link is a link of its own, from the sources: it has none from a splitter or a box.)
+    expect(hears({ nodes: splits.nodes, edges: bare.edges.filter((e) => e.kind !== "events") }).some((link) => link.startsWith("6>") || link.startsWith("7>") || link.startsWith("5>"))).toBe(false);
+  });
+
+  test("are drawn at the port that they start at, and the graph that has them is the same as the graph made again", () => {
+    const rests = splits.edges.filter((e) => e.kind === "events" && e.from.port.type === "eventsOutRest");
+    expect(rests.map((e) => [e.from.node, e.to.node])).toEqual([[first, 1]]);
+    expect(withHears(splits)).toEqual(splits);
   });
 });

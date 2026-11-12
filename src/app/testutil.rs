@@ -1670,7 +1670,8 @@ impl plugin::Plugin for DropProbe {
 /// (`routes`, likewise), whom each modulator of the session's own hears (`ears`, likewise), the sources of notes (`sources`: what each is, the keys or a device by its name), the cables of notes (`notes`) and the links from each source to each lane that hears
 /// every source (`hears`), each a list only when there is something in it, and the order of the kinds of edge (`order`, for a session that has a source), and the two lists of the layout of
 /// the telemetry (without its fingerprint), each entry as a line of text the web client's tests make of its own copy by the same rules (`shapeOf` in
-/// `web/src/client/fixtures.ts`); and, for a session that has pattern boxes, a line for each (`patterns`: its length, settings and notes: step 124).
+/// `web/src/client/fixtures.ts`); and, for a session that has pattern boxes, a line for each (`patterns`: its length, settings and notes: step 124), and for one that has note splitters a line for each (`splitters`: the note it
+/// picks: step 128; a cable that starts at a splitter's second output has the word `rest` after its nodes in `notes`).
 pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value {
     use serde_json::Value;
     let wire: Value = self::wire(snapshot);
@@ -1760,7 +1761,12 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
             _ => format!("{} device {}", n["id"], text(&n["source"]["name"])),
         })
         .collect();
-    let notes: Vec<String> = edges.iter().filter(|e| text(&e["kind"]) == "events").map(|e| format!("#{} {}>{}", e["id"], e["from"]["node"], e["to"]["node"])).collect();
+    // (The second output of a note splitter has its word after the nodes, as the second input of an effect does, so that the line of every other cable is what it was.)
+    let notes: Vec<String> = edges
+        .iter()
+        .filter(|e| text(&e["kind"]) == "events")
+        .map(|e| format!("#{} {}>{}{}", e["id"], e["from"]["node"], e["to"]["node"], if text(&e["from"]["port"]["type"]) == "eventsOutRest" { " rest" } else { "" }))
+        .collect();
     let hears: Vec<String> = edges.iter().filter(|e| text(&e["kind"]) == "hears").map(|e| format!("{}>{}", e["from"]["node"], e["to"]["node"])).collect();
     // The order that the kinds of edge come in (a run of edges of one kind is one entry, `hears×4`), for a session that has a source: the graph lists the links of the audio path, those of the lanes that
     // hear every source, the audio cables, the cables of notes and then those of modulation.
@@ -1797,7 +1803,9 @@ pub fn shape_of(snapshot: &crate::app::snapshot::Snapshot) -> serde_json::Value 
             )
         })
         .collect();
-    for (name, lines) in [("sources", sources), ("patterns", patterns), ("notes", notes), ("hears", hears), ("order", order)] {
+    // The note splitters (step 128): a line each, the note that it picks (its name is among the nodes); and no list at all for a session that has none, so that the fixtures of the sessions that have none are as they were.
+    let splitters: Vec<String> = list(&wire["graph"]["nodes"]).iter().filter(|n| text(&n["kind"]) == "splitter").map(|n| format!("{} pick={}", n["id"], text(&n["pick"]))).collect();
+    for (name, lines) in [("sources", sources), ("patterns", patterns), ("splitters", splitters), ("notes", notes), ("hears", hears), ("order", order)] {
         if !lines.is_empty() {
             shape[name] = serde_json::json!(lines);
         }

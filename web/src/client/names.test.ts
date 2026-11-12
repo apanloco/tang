@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { Edge, Endpoint, Graph, Node } from "../protocol";
-import { builtinEffects, freeReachFixture, reachFixture, tracerSnapshot } from "./fixtures";
+import { builtinEffects, freeReachFixture, reachFixture, splittersFixture, tracerSnapshot } from "./fixtures";
 import { cableWords, displayNames, endLabel, gainName, portName } from "./names";
 
 const lfo = (id: number, parent: number): Node => ({ id, parent, name: "LFO", kind: "modulator", source: { type: "lfo", waveform: "sine", rate: 1, retrigger: false, fade: 0, sync: 0 } });
@@ -225,5 +225,27 @@ describe("what a cable joins, in words", () => {
     expect(endLabel(graph, names, { node: 2, port: { type: "modOut" } })).toBe("LFO");
     expect(endLabel(graph, names, { node: 1, port: { type: "param", index: 999 } })).toBe("Filter");
     expect(words(graph, cable(9, 999, { node: 2, port: { type: "rate" } }))).toBe("? → LFO: rate");
+  });
+});
+
+describe("the words of a cable of notes from a note splitter", () => {
+  const found = splittersFixture.cases.find((entry) => entry.name === "splitters");
+  if (!found) throw new Error("the fixture has the session of the splitters");
+  const g = found.snapshot.graph;
+  const names = displayNames(g);
+  const out = (node: number, port: "eventsOut" | "eventsOutRest"): Endpoint => ({ node, port: { type: port } });
+  const into = (node: number): Endpoint => ({ node, port: { type: "eventsIn" } });
+
+  test("tell the second output by `(rest)` after the name of the splitter, and the first as every node's output is told", () => {
+    expect(cableWords(g, names, { from: out(6, "eventsOut"), to: into(0) })).toBe("Bass line → Oscillator 1");
+    expect(cableWords(g, names, { from: out(6, "eventsOutRest"), to: into(1) })).toBe("Bass line (rest) → Oscillator 2");
+    expect(cableWords(g, names, { from: out(3, "eventsOut"), to: into(6) })).toBe("Keys → Bass line");
+  });
+
+  test("tell the two cables that a lane has from the two outputs of one splitter apart, which the cables that are drawn say too", () => {
+    const events = g.edges.filter((e) => e.kind === "events");
+    const words = events.map((e) => cableWords(g, names, e));
+    expect(words).toEqual(["Keys → Bass line", "Bass → Splitter", "Launchkey Mini MK4 37 → Splitter", "Bass line → Oscillator 1", "Bass line (rest) → Oscillator 2", "Splitter → Oscillator 3"]);
+    expect(new Set(words).size).toBe(words.length);
   });
 });

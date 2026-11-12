@@ -907,4 +907,204 @@ mod tests {
         let rest_edges = graph.edges.iter().filter(|edge| edge.from.port == Port::EventsOutRest).count();
         assert_eq!(rest_edges, 1, "the one cable from a second output");
     }
+
+    /// The sessions that the web client's fixture of splitters is made of, and the intents that each is tried with (each on a controller of its own): the page's mock engine is held to the controller's answer to every one, in its words.
+    fn splitter_fixture_cases() -> Vec<(&'static str, String, Vec<Intent>)> {
+        use crate::app::graph::NoteRange;
+        use crate::app::intent::{Gain, ModulatorField, ModulatorKind, PatternBoxAction, PatternBoxField, PatternField};
+        let (_engine, base, _) = controller(SPLITTERS);
+        let (first, second) = (splitter_node(&base, 0), splitter_node(&base, 1));
+        let (keys, device) = (base.model.sources[0].node, base.model.sources[1].node);
+        let bass = base.model.patterns[0].node;
+        let (lane0, lane1, lane2) = (lane_node(&base, 0), lane_node(&base, 1), lane_node(&base, 2));
+        let cables: Vec<EdgeId> = base.model.event_cables.iter().map(|cable| cable.id).collect();
+        let (master, ghost) = (NodeId::MASTER, NodeId(900));
+        let cable = |from: Endpoint, to: Endpoint| Intent::AddCable { from, to, gain: None };
+        let field = |node: NodeId, field: SplitterField| Intent::SetSplitterField { node, field };
+        let name = |text: &str| SplitterField::Name { name: text.to_string() };
+        let audio_in = Endpoint { node: first, port: Port::AudioIn };
+        let audio_out = Endpoint { node: first, port: Port::AudioOut };
+        let lane_audio_in = Endpoint { node: lane0, port: Port::AudioIn };
+        let lane_audio_out = Endpoint { node: lane0, port: Port::AudioOut };
+        let rate = Endpoint { node: first, port: Port::Rate };
+        let mut splitters = vec![Intent::AddSplitter];
+        // The settings: a name is set to what it is not and to what it is, to what is too long or too short and to what is no name, on a splitter that has it and on one that has not; the pick to each, on both.
+        let (longest, too_long) = ("x".repeat(crate::app::model::MAX_NAME), "x".repeat(crate::app::model::MAX_NAME + 1));
+        for (node, text) in [(first, "Lead"), (first, "  Lead  "), (first, ""), (first, "Bass line"), (second, "Pad"), (second, "Splitter"), (second, "   "), (first, longest.as_str()), (first, too_long.as_str()), (first, "a\u{1}b")] {
+            splitters.push(field(node, name(text)));
+        }
+        for pick in [SplitterPick::Highest, SplitterPick::Lowest] {
+            splitters.extend([field(first, SplitterField::Pick { pick }), field(second, SplitterField::Pick { pick })]);
+        }
+        // What is no splitter: every kind of node that there is, and one that is not there, asked to be one.
+        for node in [lane0, keys, device, bass, master, ghost] {
+            splitters.extend([field(node, SplitterField::Pick { pick: SplitterPick::Highest }), field(node, name("x"))]);
+        }
+        // The cables of notes that a splitter takes and gives: a source or a box into one, from either output to a lane (both to one lane), and every way that is not.
+        splitters.extend([
+            cable(out(keys), into(second)),
+            cable(out(device), into(first)),
+            cable(out(bass), into(first)),
+            cable(out(keys), into(first)),
+            cable(out(bass), into(second)),
+            cable(out(device), into(second)),
+            cable(out(first), into(lane2)),
+            cable(out_rest(first), into(lane2)),
+            cable(out(first), into(lane0)),
+            cable(out_rest(first), into(lane1)),
+            cable(out_rest(first), into(lane0)),
+            cable(out(first), into(lane1)),
+            cable(out(second), into(lane0)),
+            cable(out_rest(second), into(lane0)),
+            cable(out_rest(second), into(lane1)),
+            cable(out_rest(second), into(lane2)),
+            cable(out(second), into(lane2)),
+            cable(out(first), into(second)),
+            cable(out_rest(first), into(second)),
+            cable(out(second), into(first)),
+            cable(out_rest(second), into(first)),
+            cable(out(first), into(first)),
+            cable(out_rest(first), into(first)),
+            cable(out(first), into(bass)),
+            cable(out_rest(first), into(bass)),
+            cable(out_rest(keys), into(first)),
+            cable(out_rest(bass), into(first)),
+            cable(out_rest(device), into(lane0)),
+            cable(out_rest(lane0), into(first)),
+            cable(out(lane0), into(first)),
+            cable(out(lane0), into(lane1)),
+            cable(out_rest(lane0), into(lane1)),
+            cable(out(first), into(master)),
+            cable(out_rest(first), into(master)),
+            cable(out(first), into(keys)),
+            cable(out_rest(first), into(device)),
+            cable(out(master), into(first)),
+            cable(out_rest(master), into(first)),
+            cable(out(ghost), into(first)),
+            cable(out_rest(ghost), into(first)),
+            cable(out(first), into(ghost)),
+            cable(out_rest(first), into(ghost)),
+            cable(audio_out, into(lane0)),
+            cable(out(first), lane_audio_in),
+            cable(out_rest(first), lane_audio_in),
+            cable(out(first), audio_in),
+            Intent::AddCable { from: out(keys), to: into(second), gain: Some(0.5) },
+            Intent::AddCable { from: out(first), to: into(lane2), gain: Some(0.5) },
+            Intent::AddCable { from: out_rest(first), to: into(lane2), gain: Some(0.5) },
+        ]);
+        // Cables taken out (a cable from a second output is a cable like another), and nodes taken out with the cables that start or end at them: a lane that no cable ends at hears every source again, and a splitter with none hears every input.
+        for edge in &cables {
+            splitters.push(Intent::RemoveEdge { edge: *edge });
+        }
+        splitters.push(Intent::RemoveEdge { edge: EdgeId(900) });
+        for node in [first, second, bass, keys, device, lane0, lane1, lane2, ghost, master] {
+            splitters.push(Intent::RemoveNode { node });
+        }
+        // What is added next to splitters goes where the graph lists it: a box after the boxes and before the splitters, a source after the sources.
+        splitters.extend([Intent::AddPattern, Intent::AddSource { source: SourceInfo::Device { name: "Seaboard".to_string() } }, Intent::AddSource { source: SourceInfo::Keys }]);
+        // Moving a splitter, which is a node like another.
+        splitters.extend([
+            Intent::SetNodeUi { node: first, ui: Some(crate::session::NodeUi { x: 12.3, y: 45.6 }) },
+            Intent::SetNodeUi { node: second, ui: Some(crate::session::NodeUi { x: 1.0, y: 2.0 }) },
+            Intent::SetNodeUi { node: first, ui: None },
+            Intent::SetNodeUi { node: second, ui: None },
+        ]);
+        // What a splitter is not: every kind of ask that names a node and is not for a splitter is refused when it names one (and a module is not made of one), and so is each of a box's.
+        let asks = vec![
+            Intent::SetParam { node: first, param: 0, value: 0.5 },
+            Intent::SetGain { node: first, gain: Gain::Volume, value: 0.5 },
+            Intent::SetGain { node: first, gain: Gain::Mix, value: 0.5 },
+            Intent::SetGain { node: first, gain: Gain::GroupVolume, value: 0.5 },
+            Intent::LoadPreset { node: first, preset: "x".to_string() },
+            Intent::SetModulatorField { node: first, field: ModulatorField::Rate, value: 1.0 },
+            Intent::AddFreeModulator { kind: ModulatorKind::Lfo, hears: Some(first) },
+            Intent::AddModEdge { modulator: first, to: audio_in },
+            Intent::Modulate { to: rate, kind: ModulatorKind::Lfo, depth: None },
+            Intent::AddCable { from: audio_out, to: Endpoint { node: master, port: Port::AudioIn }, gain: None },
+            Intent::AddCable { from: lane_audio_out, to: audio_in, gain: None },
+            Intent::AddEffect { parent: first, plugin: "builtin:reverb".to_string() },
+            Intent::ReplaceInstrument { node: first, plugin: "builtin:osc".to_string() },
+            Intent::ClearInstrument { node: first },
+            Intent::SetRange { node: first, range: Some(NoteRange { low: 0, high: 60 }) },
+            Intent::SetMute { node: first, muted: true },
+            Intent::SetSolo { node: first, solo: true },
+            Intent::SetRoute { node: first, route: crate::session::Route::None },
+            Intent::SetModulatorEar { node: first, ear: None },
+            Intent::SetFeed { node: first, feed: crate::session::Feed::None },
+            Intent::SetRecording { node: first, recording: true },
+            Intent::ClearPattern { node: first },
+            Intent::SetPatternField { node: first, field: PatternField::Length, value: 2.0 },
+            Intent::SetPatternBoxField { node: first, field: PatternBoxField::Looping { on: true } },
+            Intent::ClearPatternBox { node: first },
+            Intent::SetPatternBoxNotes { node: first, notes: Vec::new() },
+            Intent::PatternBoxTransport { node: first, action: PatternBoxAction::Record },
+            Intent::SetPinned { node: first, params: vec![0] },
+            Intent::SetSteps { node: first, values: vec![0.0] },
+            Intent::AddGroup { members: vec![first] },
+            Intent::SetLaneGroup { node: first, group: None },
+            Intent::RenameGroup { node: first, name: "x".to_string() },
+            Intent::RenameMacro { node: first, name: "x".to_string() },
+            Intent::ExposeMacro { node: first, expose: true },
+            Intent::CollapseIntoModule { nodes: vec![first, second], name: "x".to_string(), ui: None },
+            Intent::CollapseIntoModule { nodes: vec![lane0, first], name: "x".to_string(), ui: None },
+            Intent::UngroupModule { node: first },
+            Intent::MoveEffect { node: first, index: 0 },
+            Intent::OpenEditor { node: first },
+        ];
+        splitters.extend(asks);
+        // A session that has no source, no box and no splitter: the first splitter is called "Splitter 1", and goes first in the graph; a cable of notes can only join two lanes, which is refused.
+        let (_engine, bare_base, _) = controller(TWO_LANES);
+        let bare = vec![
+            Intent::AddSplitter,
+            cable(out(lane_node(&bare_base, 0)), into(lane_node(&bare_base, 1))),
+            cable(out_rest(lane_node(&bare_base, 0)), into(lane_node(&bare_base, 1))),
+            field(lane_node(&bare_base, 0), SplitterField::Pick { pick: SplitterPick::Highest }),
+            field(lane_node(&bare_base, 0), name("x")),
+        ];
+        // Names that leave a number: "Splitter 1" and "Splitter 3" are taken, so the next is "Splitter 2"; and one that is called nothing is called what a splitter with no name is.
+        let numbered = "[keys]\n[[splitter]]\nname = \"Splitter 1\"\n[[splitter]]\nname = \"Splitter 3\"\n[[splitter]]\n[[instrument]]\nplugin = \"builtin:osc\"\n".to_string();
+        let full = "[[splitter]]\n\n".repeat(MAX_SPLITTERS) + "[[instrument]]\nplugin = \"builtin:osc\"\n";
+        vec![("splitters", SPLITTERS.to_string(), splitters), ("bare", TWO_LANES.to_string(), bare), ("numbered", numbered, vec![Intent::AddSplitter]), ("full", full, vec![Intent::AddSplitter])]
+    }
+
+    /// The sessions of `splitter_fixture_cases` and what the controller makes of each intent tried on them, as the web client's tests read it (`web/src/client/fixtures/splitters.json`): they pin the mock engine's to the controller's,
+    /// intent by intent. A refusal is the controller's words; the rest is the events the intent made (stamped), whether it changed the structure and what the session comes to after it (`testutil::shape_of`: the splitters are in it, with
+    /// the note each picks, and a cable from a second output says so). `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_splitters_come_to_is_current() {
+        let mut cases = Vec::new();
+        for (name, session, intents) in splitter_fixture_cases() {
+            let (_engine, base, _) = controller(&session);
+            let mut snapshot = testutil::wire(&base.snapshot());
+            // The layout's fingerprint comes from the hasher, which the standard library does not promise to keep the same.
+            snapshot["telemetry"]["rev"] = serde_json::json!(1);
+            let mut rows = Vec::new();
+            for intent in intents {
+                let (_engine, mut fresh, _) = controller(&session);
+                let what = testutil::wire(&intent);
+                rows.push(match fresh.apply(intent.clone()) {
+                    Err(error) => serde_json::json!({ "intent": what, "error": error.to_string() }),
+                    Ok(applied) => serde_json::json!({
+                        "intent": what,
+                        "events": testutil::wire(&applied.stamped()),
+                        "restructured": applied.restructured,
+                        "after": testutil::shape_of(&fresh.snapshot()),
+                    }),
+                });
+            }
+            cases.push(serde_json::json!({ "name": name, "snapshot": snapshot, "rows": rows }));
+        }
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "cases": cases })).unwrap() + "\n";
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/splitters.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what splitters come to now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
 }

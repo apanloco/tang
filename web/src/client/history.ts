@@ -14,6 +14,7 @@ import { macroExposed, macroName } from "./macros";
 import { MODULATOR_LABELS, kindOf } from "./modulatorKinds";
 import { boxTitle, moduleNameOf, tidyName } from "./modules";
 import { boxFieldBefore, sameNotes, sanitize } from "./patternBoxes";
+import { splitterFieldBefore } from "./splitters";
 
 /** What a change is of, for a change that goes on to be told from the rest: a string that says which parameter, gain, setting or cable. */
 export type Key = string;
@@ -330,10 +331,16 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
     // as a setting is. (A node that is no box is refused, and the plan is not looked at.)
     case "addPattern":
       return added("add a pattern");
-    // (A note splitter is not in the page's mock until step 128, which answers these intents as refused, and a refusal leaves no step.)
+    // A note splitter that is added is an add, and what is done to one is a step in the words of each setting (`splitterFieldBefore`), merged with the next change of that setting of that splitter within the time that a step lasts,
+    // so that typing a name is one step; what the splitter has already is none. (A node that is no splitter is refused, and the plan is not looked at.)
     case "addSplitter":
-    case "setSplitterField":
-      return "nothing";
+      return added("add a splitter");
+    case "setSplitterField": {
+      const splitter = nodeOf(intent.node);
+      if (splitter?.kind !== "splitter") return "nothing";
+      const before = splitterFieldBefore(splitter, intent.field);
+      return before.same ? "nothing" : step(before.label, { type: "setSplitterField", node: intent.node, field: before.undo }, `splitterfield:${String(intent.node)}:${intent.field.type}`);
+    }
     case "setPatternBoxField": {
       const box = nodeOf(intent.node);
       if (box?.kind !== "pattern") return "nothing";
@@ -553,6 +560,9 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
       // A pattern box goes with the cables of notes that start or end at it, and comes back with them, at its place among the boxes, with its notes and its settings (the controller's `Inverse::Pattern`), in the words of
       // the button that adds one: what it is called.
       if (node?.kind === "pattern") return { removed: { label: `remove ${node.name}`, intent, at: now } };
+      // A note splitter goes with the cables of notes that start or end at it, and comes back with them, at its place among the splitters, with its name and its pick (the controller's `Inverse::Splitter`), in the words of the button
+      // that adds one: what it is called.
+      if (node?.kind === "splitter") return { removed: { label: `remove ${node.name}`, intent, at: now } };
       // A module goes with its modulators and its lanes, whole, and comes back with them as one (the controller's `Inverse::Module`: its record, as it was), in the words of the button that adds one: its name. Cables that drive each
       // other's depths are not put back, as for a modulator that goes alone.
       if (node?.kind === "module") {

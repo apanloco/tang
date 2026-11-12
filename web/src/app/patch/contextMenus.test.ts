@@ -444,7 +444,7 @@ describe("the menu of a lane", () => {
     choose(opened(items, "notes"), String(keys.id));
     expect(asked).toEqual([
       ["addAudioCable", oscillator.id, Number(place?.id.replace(":side", "")), null, place?.id.endsWith(":side") === true],
-      ["addNotesCable", keys.id, oscillator.id],
+      ["addNotesCable", keys.id, oscillator.id, "pick"],
     ]);
   });
 
@@ -1000,7 +1000,7 @@ describe("the menus of a pattern box (step 124 C)", () => {
     choose(opened(items, "notes"), "0");
     choose(items, "remove");
     expect(asked).toEqual([
-      ["addNotesCable", 3, EMPTY],
+      ["addNotesCable", 3, EMPTY, "pick"],
       ["addNotesCable", EMPTY, 0],
       ["removeNode", EMPTY],
     ]);

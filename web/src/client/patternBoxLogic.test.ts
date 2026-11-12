@@ -175,9 +175,9 @@ describe("the places that a cable of notes can be drawn to", () => {
 
   test("are the ends that eventCableEnds gives a cable from a source or a box to a lane, and from a source to a box", () => {
     const ends = (from: number, to: number): unknown => eventCableEnds(boxed, { node: from, port: { type: "eventsOut" } }, { node: to, port: { type: "eventsIn" } });
-    expect(ends(KEYS, PLAIN)).toEqual({ source: KEYS, lane: PLAIN });
-    expect(ends(BASS, LANE1)).toEqual({ source: BASS, lane: LANE1 });
-    expect(ends(DEVICE, LANE0)).toEqual({ source: DEVICE, lane: LANE0 });
+    expect(ends(KEYS, PLAIN)).toEqual({ source: KEYS, output: "pick", lane: PLAIN });
+    expect(ends(BASS, LANE1)).toEqual({ source: BASS, output: "pick", lane: LANE1 });
+    expect(ends(DEVICE, LANE0)).toEqual({ source: DEVICE, output: "pick", lane: LANE0 });
     expect(ends(BASS, PLAIN)).toMatchObject({ error: { code: "invalid" } });
     expect(ends(LANE0, BASS)).toMatchObject({ error: { code: "invalid", message: "only a source of notes has an output of events" } });
   });
