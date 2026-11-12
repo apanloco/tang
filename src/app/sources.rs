@@ -10,7 +10,7 @@ use crate::app::journal::Inverse;
 use crate::app::model::{EdgeId, EventCable, NodeId, SourceKind, SourceNode};
 use crate::plugin::chain::GraphCommand;
 use crate::session;
-use crate::source::{Source, SourceSet};
+use crate::source::SourceSet;
 
 impl Controller {
     /// Put a source of notes at the end of the session's sources, under a node of its own (`Intent::AddSource`). It changes nothing that is heard: a lane that no cable of notes ends at hears every source.
@@ -55,14 +55,11 @@ impl Controller {
 
     /// What lane `inst` hears, as the model's cables and the devices that are open say (every source if no cable of notes ends at the lane).
     pub(super) fn lane_sources(&self, inst: usize) -> SourceSet {
-        self.model.lane_sources(inst, |kind| match kind {
-            SourceKind::Keys => SourceSet::NONE.with(Source::KEYS),
-            SourceKind::Device(name) => self.devices.as_ref().map_or(SourceSet::NONE, |devices| devices.sources_of(name)),
-        })
+        self.model.lane_sources(inst, |kind| self.sources_of_kind(kind))
     }
 
-    /// Tell the audio thread what each lane hears where it is not what it was told last (`sent_sources`). A lane that was not told anything before is told if the session has a cable of
-    /// notes: it may be one that came back by undo, with what it heard when it went, which is not what it hears now (a lane that is new hears every source, as it has it).
+    /// Tell the audio thread what each lane hears where it is not what it was told last (`sent_sources`), and what each pattern box records (`sync_box_settings`). A lane that was not told anything before is told if the session
+    /// has a cable of notes: it may be one that came back by undo, with what it heard when it went, which is not what it hears now (a lane that is new hears every source, as it has it).
     pub(super) fn sync_lane_sources(&mut self) {
         let routed = !self.model.event_cables.is_empty();
         let mut now: Vec<(NodeId, SourceSet)> = Vec::with_capacity(self.model.instruments.len());
@@ -75,58 +72,21 @@ impl Controller {
             now.push((node, sources));
         }
         self.sent_sources = now;
+        self.sync_box_settings();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
-    use std::rc::Rc;
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::app::controller::DeviceWatcher;
     use crate::app::graph::{Edge, EdgeKind, Endpoint, Port, SourceInfo};
     use crate::app::intent::{Applied, Event, Intent};
     use crate::app::model::NodePath;
     use crate::session::NodeUi;
-    use crate::app::testutil::{self, GROUPS, SENDS, SOURCES, StubEngine, load};
-    use crate::midi::DeviceChanges;
-
-    /// MIDI ports that a test plugs in and out, by name, each with the source it has; what a look at them finds (`looks`) is told by the test.
-    #[derive(Clone, Default)]
-    struct Ports {
-        open: Rc<RefCell<Vec<(String, Source)>>>,
-        looks: Rc<RefCell<VecDeque<DeviceChanges>>>,
-    }
-
-    impl Ports {
-        fn plug_in(&self, name: &str, source: Source) {
-            self.open.borrow_mut().push((name.to_string(), source));
-            self.looks.borrow_mut().push_back(DeviceChanges { came: vec![source], gone: vec![] });
-        }
-
-        fn unplug(&self, name: &str) {
-            let at = self.open.borrow().iter().position(|(open, _)| open == name).expect("a port that is open");
-            let (_, source) = self.open.borrow_mut().remove(at);
-            self.looks.borrow_mut().push_back(DeviceChanges { came: vec![], gone: vec![source] });
-        }
-    }
-
-    impl DeviceWatcher for Ports {
-        fn poll_new_devices(&mut self) -> DeviceChanges {
-            self.looks.borrow_mut().pop_front().unwrap_or_default()
-        }
-
-        fn sources_of(&self, name: &str) -> SourceSet {
-            self.open.borrow().iter().filter(|(open, _)| open.contains(name)).fold(SourceSet::NONE, |set, (_, source)| set.with(*source))
-        }
-
-        fn open_names(&self) -> Vec<String> {
-            self.open.borrow().iter().map(|(name, _)| name.clone()).collect()
-        }
-    }
+    use crate::app::testutil::{self, GROUPS, Ports, SENDS, SOURCES, StubEngine, load};
+    use crate::source::Source;
 
     fn controller(session: &str) -> (StubEngine, Controller) {
         let (handles, engine) = testutil::stub_engine();

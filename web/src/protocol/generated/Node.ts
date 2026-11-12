@@ -5,6 +5,9 @@ import type { NodeId } from "./NodeId";
 import type { NodeUi } from "./NodeUi";
 import type { NoteRange } from "./NoteRange";
 import type { PatternInfo } from "./PatternInfo";
+import type { PatternNote } from "./PatternNote";
+import type { PatternStatus } from "./PatternStatus";
+import type { PatternSync } from "./PatternSync";
 import type { Plugin } from "./Plugin";
 import type { Route } from "./Route";
 import type { SideInfo } from "./SideInfo";
@@ -28,4 +31,4 @@ name: string,
  * Where a front-end draws the node, in the pixels of its canvas, if the session says (it is in the file as the
  * node's `ui`); a node that has no place is laid out by the front-end, and has no `ui` on the wire.
  */
-ui?: NodeUi, } & ({ "kind": "instrument", plugin: Plugin | null, range: NoteRange | null, transpose: number, volume: number, muted: boolean, solo: boolean, route: Route, pattern: PatternInfo | null, } | { "kind": "effect", plugin: Plugin, mix: number, feed: Feed, side?: SideInfo, } | { "kind": "modulator", source: ModulatorSource, hears?: NodeId, } | { "kind": "group", volume: number, pan: number, muted: boolean, solo: boolean, route: Route, } | { "kind": "master", volume: number, limiter: boolean, ceiling: number, } | { "kind": "source", source: SourceInfo, } | { "kind": "module", members: Array<NodeId>, });
+ui?: NodeUi, } & ({ "kind": "instrument", plugin: Plugin | null, range: NoteRange | null, transpose: number, volume: number, muted: boolean, solo: boolean, route: Route, pattern: PatternInfo | null, } | { "kind": "effect", plugin: Plugin, mix: number, feed: Feed, side?: SideInfo, } | { "kind": "modulator", source: ModulatorSource, hears?: NodeId, } | { "kind": "group", volume: number, pan: number, muted: boolean, solo: boolean, route: Route, } | { "kind": "master", volume: number, limiter: boolean, ceiling: number, } | { "kind": "source", source: SourceInfo, } | { "kind": "pattern", looping: boolean, sync: PatternSync, overdub: boolean, click: boolean, lengthBeats: number, notes: Array<PatternNote>, status: PatternStatus, } | { "kind": "module", members: Array<NodeId>, });

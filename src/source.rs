@@ -37,13 +37,12 @@ impl Source {
     }
 
     /// The source of the pattern box that has the number `nth`, 0 to 15 (`MAX_BOXES`; a session refuses more, and a number past it is the last box's).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
     pub const fn pattern(nth: usize) -> Source {
         if nth >= MAX_BOXES { Source(MAX_SOURCES as u8 - 1) } else { Source((INPUT_SOURCES + nth) as u8) }
     }
 
     /// Whether this is a pattern box's.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the pattern boxes in step 123 (P4h-B): until then the engine has them and nothing asks for one"))]
+    #[cfg(test)]
     pub const fn is_pattern(self) -> bool {
         self.0 as usize >= INPUT_SOURCES && (self.0 as usize) < MAX_SOURCES
     }

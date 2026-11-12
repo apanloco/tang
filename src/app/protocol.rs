@@ -681,6 +681,11 @@ mod typescript {
                  export const NAME_LIMIT = {};\n\n\
                  /** How many characters the name of a MIDI device, as a source of notes is called by it, can have: what the controller refuses more than (`MAX_DEVICE_NAME`). */\n\
                  export const DEVICE_NAME_LIMIT = {};\n\n\
+                 /** How many pattern boxes a session has at the most (`MAX_BOXES`: the engine has a source of notes for each), the shortest and the longest loop a box has, in beats, how long a new one is, and how many notes it holds (`MIN_LENGTH_BEATS`, `MAX_LENGTH_BEATS`, `DEFAULT_LENGTH_BEATS`, `MAX_NOTES`): what the controller holds a box to. */\n\
+                 export const PATTERN_BOX_LIMIT = {};\n\
+                 export const PATTERN_BOX_LENGTH_RANGE: readonly [number, number] = [{}, {}];\n\
+                 export const PATTERN_BOX_DEFAULT_LENGTH = {};\n\
+                 export const PATTERN_BOX_NOTE_LIMIT = {};\n\n\
                  /** How many frames of each side a frame of the scope channel has (`SCOPE_FRAME_LENGTH`): the left side and then the right, the latest frame of each last. */\n\
                  export const SCOPE_FRAME_LENGTH = {};\n\n\
                  /** How long after one change of a thing, in seconds, the next change of it is still one step of the history (`history::SAME_STEP`). */\n\
@@ -707,6 +712,11 @@ mod typescript {
                 crate::app::model::MAX_PINNED,
                 crate::app::model::MAX_NAME,
                 crate::session::MAX_DEVICE_NAME,
+                crate::source::MAX_BOXES,
+                crate::patternbox::MIN_LENGTH_BEATS,
+                crate::patternbox::MAX_LENGTH_BEATS,
+                crate::patternbox::DEFAULT_LENGTH_BEATS,
+                crate::patternbox::MAX_NOTES,
                 super::SCOPE_FRAME_LENGTH,
                 crate::app::history::SAME_STEP.as_secs_f64(),
                 crate::app::history::MAX_STEPS,
@@ -850,6 +860,17 @@ mod typescript {
         let constants = fs::read_to_string(dir.path().join("constants.ts")).unwrap();
         assert!(constants.contains("export const NODE_UI_LIMIT = 100000;\n"), "{constants}");
         assert!(constants.contains("export const NODE_UI_PARTS = 10;\n"), "{constants}");
+    }
+
+    #[test]
+    fn the_limits_of_a_pattern_box_are_in_the_constants_as_the_controller_keeps_a_box() {
+        let dir = tempfile::tempdir().unwrap();
+        export_typescript(dir.path()).unwrap();
+        let constants = fs::read_to_string(dir.path().join("constants.ts")).unwrap();
+        assert!(constants.contains("export const PATTERN_BOX_LIMIT = 16;\n"), "{constants}");
+        assert!(constants.contains("export const PATTERN_BOX_LENGTH_RANGE: readonly [number, number] = [0.25, 256];\n"), "{constants}");
+        assert!(constants.contains("export const PATTERN_BOX_DEFAULT_LENGTH = 4;\n"), "{constants}");
+        assert!(constants.contains("export const PATTERN_BOX_NOTE_LIMIT = 4096;\n"), "{constants}");
     }
 
     #[test]

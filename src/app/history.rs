@@ -16,10 +16,10 @@
 use std::time::{Duration, Instant};
 
 use crate::app::controller::Controller;
-use crate::app::graph::{NoteRange, Port, SourceInfo};
-use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, ModulatorKind};
+use crate::app::graph::{NoteRange, PatternNote, PatternSync, Port, SourceInfo};
+use crate::app::intent::{Applied, Gain, Intent, IntentError, ModulatorField, ModulatorKind, PatternBoxField};
 use crate::app::journal::{Journal, lane_words};
-use crate::app::model::{EdgeId, Made, ModSourceSlot, NodeId, NodePath, PluginSlot};
+use crate::app::model::{EdgeId, Made, ModSourceSlot, NodeId, NodePath, PatternBox, PluginSlot};
 use crate::app::module;
 use crate::piano_filter::PianoMode;
 use crate::plugin::chain::ModulatorLocation;
@@ -52,6 +52,10 @@ pub enum Key {
     Level(EdgeId),
     /// The tempo of the session.
     Tempo,
+    /// A setting of a pattern box (which one is the discriminant of the field): typing a name, dragging a length, is one change of one thing.
+    PatternBoxField(NodeId, std::mem::Discriminant<PatternBoxField>),
+    /// The notes of a pattern box, all of them: a note that is dragged is one change of one thing.
+    PatternBoxNotes(NodeId),
 }
 
 /// What a step that took something out holds, to put it back.
@@ -407,6 +411,33 @@ impl Controller {
             Intent::Save | Intent::SaveAs { .. } | Intent::SaveModule { .. } | Intent::SaveSelectionAsModule { .. } | Intent::OpenEditor { .. } | Intent::OpenSession { .. } | Intent::Undo | Intent::Redo => Plan::Nothing,
             // A pattern is not put back by undo (what a recording took and what a clear took are not kept): these are no steps, and take nothing from the ones there are.
             Intent::SetRecording { .. } | Intent::ClearPattern { .. } | Intent::SetPatternField { .. } => Plan::Nothing,
+            // A pattern box's transport is no step (`apply` does it before a plan is asked for: the audio thread says what the box does, and a pass of recording that is over is a step of its own, `Controller::box_recorded`).
+            Intent::PatternBoxTransport { .. } => Plan::Nothing,
+            Intent::AddPattern => added("add a pattern".to_string()),
+            // (A node that is no box is refused, and the plan is not looked at.)
+            Intent::SetPatternBoxField { node, field } => match self.model.pattern(*node) {
+                Some(pattern) => match pattern_field_before(pattern, field) {
+                    (_, _, true) => Plan::Nothing,
+                    (label, old, false) => step(label, Intent::SetPatternBoxField { node: *node, field: old }, Some(Key::PatternBoxField(*node, std::mem::discriminant(field)))),
+                },
+                None => Plan::Nothing,
+            },
+            // What is cleared is given back by undo, as the notes it had.
+            Intent::ClearPatternBox { node } => match self.model.pattern(*node) {
+                Some(pattern) if !pattern.notes.is_empty() => step(format!("clear {}", pattern.name), Intent::SetPatternBoxNotes { node: *node, notes: wire_notes(pattern) }, None),
+                _ => Plan::Nothing,
+            },
+            Intent::SetPatternBoxNotes { node, notes } => match self.model.pattern(*node) {
+                Some(pattern) => {
+                    let asked: Vec<crate::patternbox::BoxNote> = notes.iter().copied().map(Into::into).collect();
+                    if crate::patternbox::sanitize(&asked) == pattern.notes {
+                        Plan::Nothing
+                    } else {
+                        step(format!("edit {}", pattern.name), Intent::SetPatternBoxNotes { node: *node, notes: wire_notes(pattern) }, Some(Key::PatternBoxNotes(*node)))
+                    }
+                }
+                None => Plan::Nothing,
+            },
             Intent::SetParam { node, param, .. } => match self.param_row(*node, *param) {
                 Some((name, old)) => step(format!("set {name}"), Intent::SetParam { node: *node, param: *param, value: old }, Some(Key::Param(*node, *param))),
                 None => Plan::Nothing,
@@ -617,6 +648,8 @@ impl Controller {
                 Some(NodePath::Source(index)) => {
                     Plan::Removed { label: format!("remove {}", self.model.sources[index].kind.display_name()), intent: intent.clone(), at: now }
                 }
+                // A pattern box goes with the cables of notes that start or end at it, and comes back with them, at its place among the boxes, with its notes and its settings (a step of the words of the button that adds one: its name).
+                Some(NodePath::Pattern(index)) => Plan::Removed { label: format!("remove {}", self.model.patterns[index].name), intent: intent.clone(), at: now },
                 // A module goes with its modulators and its lanes, whole, and comes back with them as one (step 108; a step of the words of the button that adds one: its name).
                 Some(NodePath::Module(index)) => Plan::Removed { label: format!("remove {}", self.model.modules[index].name), intent: intent.clone(), at: now },
                 // (A node that is not there is refused, and the plan is not looked at.)
@@ -758,7 +791,7 @@ impl Controller {
             NodePath::Instrument(inst) => self.model.instruments[inst].instrument.as_ref(),
             NodePath::Effect { inst, index } => self.model.instruments[inst].effects.get(index),
             NodePath::GroupEffect { group, index } => self.model.groups[group].effects.get(index),
-            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Module(_) => None,
+            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => None,
         }
     }
 
@@ -792,6 +825,28 @@ impl Controller {
     fn edge_depth(&self, edge: EdgeId) -> Option<f32> {
         let (at, index, target) = self.model.locate_edge(edge)?;
         Some(self.model.modulators(at)?.get(index)?.targets.get(target)?.depth)
+    }
+}
+
+/// The notes of a pattern box as a front-end has them: what an intent that gives them back says.
+fn wire_notes(pattern: &PatternBox) -> Vec<PatternNote> {
+    pattern.notes.iter().copied().map(PatternNote::from).collect()
+}
+
+/// A setting of a pattern box that is about to be set: the words for the step, the setting as the box has it now (what undo sets), and whether the box has what is asked for already (no step is kept for it).
+fn pattern_field_before(pattern: &PatternBox, field: &PatternBoxField) -> (String, PatternBoxField, bool) {
+    let name = &pattern.name;
+    let on_off = |on: bool| if on { "on" } else { "off" };
+    match field {
+        PatternBoxField::Name { name: asked } => (format!("rename {name}"), PatternBoxField::Name { name: pattern.name.clone() }, crate::app::apply::pattern_title(asked).is_ok_and(|title| title == pattern.name)),
+        PatternBoxField::LengthBeats { beats } => (format!("set the length of {name}"), PatternBoxField::LengthBeats { beats: pattern.length_beats }, crate::patternbox::BoxPlan::clamp_length(*beats) == pattern.length_beats),
+        PatternBoxField::Looping { on } => (format!("turn looping {} for {name}", on_off(*on)), PatternBoxField::Looping { on: pattern.looping }, *on == pattern.looping),
+        PatternBoxField::Sync { sync } => {
+            let words = if *sync == PatternSync::Host { "the host's beat" } else { "its own clock" };
+            (format!("let {name} go by {words}"), PatternBoxField::Sync { sync: pattern.sync.into() }, crate::patternbox::Clock::from(*sync) == pattern.sync)
+        }
+        PatternBoxField::Overdub { on } => (format!("turn overdub {} for {name}", on_off(*on)), PatternBoxField::Overdub { on: pattern.overdub }, *on == pattern.overdub),
+        PatternBoxField::Click { on } => (format!("turn the click {} for {name}", on_off(*on)), PatternBoxField::Click { on: pattern.click }, *on == pattern.click),
     }
 }
 

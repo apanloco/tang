@@ -64,6 +64,8 @@ impl Controller {
             Intent::OpenEditor { node } => return self.open_editor_intent(node),
             // (Another session is no change of this one: the owner makes the engine again, and what is here goes with it.)
             Intent::OpenSession { text } => return self.open_session_intent(&text),
+            // (A pattern box that is told to record or play changes nothing of the session: the audio thread says what it does, and what it recorded is a step of its own.)
+            Intent::PatternBoxTransport { node, action } => return self.pattern_box_transport_intent(node, action),
             // (What they do is carried out as any intent is, and is no step of the history.)
             Intent::Undo => return self.undo(),
             Intent::Redo => return self.redo(),
@@ -147,6 +149,10 @@ impl Controller {
             Intent::Modulate { to, kind, depth } => self.modulate_intent(to, kind, depth)?,
             Intent::AddCable { from, to, gain } => self.add_cable_intent(from, to, gain)?,
             Intent::AddSource { source } => self.add_source_intent(source)?,
+            Intent::AddPattern => self.add_pattern_intent()?,
+            Intent::SetPatternBoxField { node, field } => self.set_pattern_box_field_intent(node, field)?,
+            Intent::ClearPatternBox { node } => self.clear_pattern_box_intent(node)?,
+            Intent::SetPatternBoxNotes { node, notes } => self.set_pattern_box_notes_intent(node, notes)?,
             Intent::RemoveNode { node } => self.remove_node_intent(node)?,
             Intent::CollapseIntoModule { nodes, name, ui } => self.collapse_into_module_intent(&nodes, &name, ui)?,
             Intent::UngroupModule { node } => self.ungroup_module_intent(node)?,
@@ -156,7 +162,7 @@ impl Controller {
             Intent::AddInstrument { plugin } => self.add_instrument_intent(&plugin)?,
             Intent::ReplaceInstrument { node, plugin } => self.replace_instrument_intent(node, &plugin)?,
             Intent::ClearInstrument { node } => self.clear_instrument_intent(node)?,
-            Intent::Save | Intent::SaveAs { .. } | Intent::SaveModule { .. } | Intent::SaveSelectionAsModule { .. } | Intent::OpenEditor { .. } | Intent::OpenSession { .. } | Intent::Undo | Intent::Redo => unreachable!("done above"),
+            Intent::Save | Intent::SaveAs { .. } | Intent::SaveModule { .. } | Intent::SaveSelectionAsModule { .. } | Intent::OpenEditor { .. } | Intent::OpenSession { .. } | Intent::PatternBoxTransport { .. } | Intent::Undo | Intent::Redo => unreachable!("done above"),
         };
         Ok(self.conclude(done))
     }
@@ -962,7 +968,7 @@ impl Controller {
             NodePath::Modulator { at: ModulatorLocation::Free, index } => (ModulatorLocation::Free, self.model.free_modulators.get(index).and_then(|slot| self.model.ear_of(slot))),
             // (A group has no plugin: what a cable can drive in it is its volume and its pan, and the modulator hears the group.)
             NodePath::Group(group) if to.port.gain().is_some() => (ModulatorLocation::Free, Some(self.model.groups[group].node)),
-            NodePath::Group(_) | NodePath::Source(_) | NodePath::Module(_) => return Err(invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them")),
+            NodePath::Group(_) | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => return Err(invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them")),
         };
         let index = self.model.modulators(at).map_or(0, |rack| rack.len());
         let cable = match to.port {
@@ -1413,6 +1419,10 @@ impl Controller {
             NodePath::Source(index) => {
                 self.remove_source(index);
             }
+            // (A pattern box goes with the cables of notes that start or end at it, which the controller does: the lanes that heard it hear what their other cables bring, or every source.)
+            NodePath::Pattern(index) => {
+                self.remove_pattern(index);
+            }
             // (A module goes with all that came with it: its modulators, and its lanes with their plugins, as one step. A session keeps one lane.)
             NodePath::Module(index) => {
                 if !self.remove_module(index) {
@@ -1444,6 +1454,7 @@ impl Controller {
                 }
                 NodePath::Group(_) | NodePath::GroupEffect { .. } => return Err(invalid("a group is not collapsed into a module: a module holds lanes and modulators")),
                 NodePath::Source(_) => return Err(invalid("a source of notes is not collapsed into a module: a module holds lanes and modulators")),
+                NodePath::Pattern(_) => return Err(invalid("a pattern box is not collapsed into a module: a module holds lanes and modulators")),
                 NodePath::Module(_) => return Err(invalid("a module cannot hold another module yet: ungroup it first")),
             }
         }
@@ -1501,7 +1512,7 @@ impl Controller {
                 refuse_a_loop(self.model.loop_if_effect_goes_to(node, to), "moving that effect there")?;
                 self.move_bus_effect(group, from, to);
             }
-            NodePath::Instrument(_) | NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Module(_) => return Err(invalid("only an effect can be moved")),
+            NodePath::Instrument(_) | NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => return Err(invalid("only an effect can be moved")),
         }
         Ok(Done::Restructured)
     }
@@ -1568,7 +1579,7 @@ impl Controller {
             NodePath::Instrument(inst) => Ok(PluginAt::Lane { inst, slot: 0 }),
             NodePath::Effect { inst, index } => Ok(PluginAt::Lane { inst, slot: index + 1 }),
             NodePath::GroupEffect { group, index } => Ok(PluginAt::Bus { group, index }),
-            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Module(_) => Err(invalid("that node has no plugin")),
+            NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => Err(invalid("that node has no plugin")),
         }
     }
 
@@ -1633,6 +1644,12 @@ pub(super) fn invalid(why: impl Into<String>) -> IntentError {
 pub(super) fn module_title(name: &str) -> Result<String, IntentError> {
     let name = tidy_name(name)?;
     Ok(if name.is_empty() { session::DEFAULT_MODULE_NAME.to_string() } else { name.to_string() })
+}
+
+/// What a pattern box is called (`PatternBoxField::Name`): the name without the spaces round it, by a group's rule, and `Pattern` for a name of nothing.
+pub(super) fn pattern_title(name: &str) -> Result<String, IntentError> {
+    let name = tidy_name(name)?;
+    Ok(if name.is_empty() { session::DEFAULT_PATTERN_NAME.to_string() } else { name.to_string() })
 }
 
 /// What a macro is called (`Intent::RenameMacro`, step 110): the name without the spaces round it, by a group's rule, and nothing for a name of nothing (a macro with no name is called `Macro`).
@@ -5826,7 +5843,7 @@ type = "midi"
                     NodePath::Instrument(i) => ctl.model.instruments[i].instrument.as_ref(),
                     NodePath::Effect { inst, index } => ctl.model.instruments[inst].effects.get(index),
                     NodePath::GroupEffect { group, index } => ctl.model.groups[group].effects.get(index),
-                    NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Module(_) => return None,
+                    NodePath::Group(_) | NodePath::Modulator { .. } | NodePath::Source(_) | NodePath::Pattern(_) | NodePath::Module(_) => return None,
                 };
                 Some((id, slot.map_or(0, |plugin| plugin.params[0].index)))
             })

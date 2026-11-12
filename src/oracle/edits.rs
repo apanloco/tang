@@ -8,8 +8,8 @@
 //! in the history and `Undo` and `Redo` are among them.
 
 use crate::app::controller::Controller;
-use crate::app::graph::{Endpoint, NoteRange, Port, SourceInfo};
-use crate::app::intent::{Gain, Intent, ModulatorKind};
+use crate::app::graph::{Endpoint, NoteRange, PatternNote, Port, SourceInfo};
+use crate::app::intent::{Gain, Intent, ModulatorKind, PatternBoxAction, PatternBoxField};
 use crate::app::model::{NodeId, ParamKind, PluginSlot};
 use crate::session::{Feed, Route};
 
@@ -96,6 +96,22 @@ pub enum Edit {
     RemoveNotesCable { cable: usize },
     /// A source, by its place among the sources that there are, taken out with the cables of notes that start at it.
     RemoveSource { source: usize },
+    /// A pattern box added at the end of the session's boxes (step 123).
+    AddPattern,
+    /// A setting of a pattern box (a place among the boxes, wrapped round them).
+    PatternField { pattern: usize, field: PatternBoxField },
+    /// The notes of a pattern box (a place among the boxes) set as a whole, each as its start and length in beats, its pitch and its velocity.
+    PatternNotes { pattern: usize, notes: &'static [(f32, f32, u8, u8)] },
+    /// The notes of a pattern box (a place among the boxes) taken out.
+    ClearPatternBox { pattern: usize },
+    /// The transport of a pattern box (a place among the boxes).
+    PatternTransport { pattern: usize, action: PatternBoxAction },
+    /// A cable of notes from a place among the sources to a place among the pattern boxes, both wrapped round the ones there are.
+    SourceToPattern { source: usize, pattern: usize },
+    /// A cable of notes from a place among the pattern boxes to a place among the lanes, both wrapped round the ones there are.
+    PatternToLane { pattern: usize, lane: usize },
+    /// A pattern box, by its place among the boxes that there are, taken out with the cables of notes that start or end at it.
+    RemovePattern { pattern: usize },
     Undo,
     Redo,
 }
@@ -184,6 +200,7 @@ impl Edit {
         let model = &ctl.model;
         let lane = |n: usize| (!model.instruments.is_empty()).then(|| &model.instruments[n % model.instruments.len()]);
         let group = |n: usize| (!model.groups.is_empty()).then(|| &model.groups[n % model.groups.len()]);
+        let pattern_box = |n: usize| (!model.patterns.is_empty()).then(|| &model.patterns[n % model.patterns.len()]);
         Some(match self {
             Edit::Param { lane: l, slot, param, fraction } => {
                 let plugin = plugin_at(lane(*l)?, *slot)?;
@@ -357,6 +374,31 @@ impl Edit {
                 }
                 Intent::RemoveNode { node: sources[source % sources.len()].node }
             }
+            Edit::AddPattern => Intent::AddPattern,
+            Edit::PatternField { pattern, field } => Intent::SetPatternBoxField { node: pattern_box(*pattern)?.node, field: field.clone() },
+            Edit::PatternNotes { pattern, notes } => Intent::SetPatternBoxNotes {
+                node: pattern_box(*pattern)?.node,
+                notes: notes.iter().map(|&(start, length, note, velocity)| PatternNote { start, length, note, velocity }).collect(),
+            },
+            Edit::ClearPatternBox { pattern } => Intent::ClearPatternBox { node: pattern_box(*pattern)?.node },
+            Edit::PatternTransport { pattern, action } => Intent::PatternBoxTransport { node: pattern_box(*pattern)?.node, action: *action },
+            Edit::SourceToPattern { source, pattern } => {
+                let sources = &model.sources;
+                if sources.is_empty() {
+                    return None;
+                }
+                Intent::AddCable {
+                    from: Endpoint { node: sources[source % sources.len()].node, port: Port::EventsOut },
+                    to: Endpoint { node: pattern_box(*pattern)?.node, port: Port::EventsIn },
+                    gain: None,
+                }
+            }
+            Edit::PatternToLane { pattern, lane: l } => Intent::AddCable {
+                from: Endpoint { node: pattern_box(*pattern)?.node, port: Port::EventsOut },
+                to: Endpoint { node: lane(*l)?.node, port: Port::EventsIn },
+                gain: None,
+            },
+            Edit::RemovePattern { pattern } => Intent::RemoveNode { node: pattern_box(*pattern)?.node },
             Edit::Undo => Intent::Undo,
             Edit::Redo => Intent::Redo,
         })
@@ -669,6 +711,72 @@ plugin = "builtin:osc"
         assert_eq!(ctl.model.event_cables.iter().map(|cable| cable.id).collect::<Vec<_>>(), [first]);
         assert_eq!(Edit::RemoveNotesCable { cable: 0 }.make(&mut ctl), Outcome::Applied);
         assert!(ctl.model.event_cables.is_empty());
+    }
+
+    #[test]
+    fn a_pattern_box_is_a_place_among_the_boxes_and_what_is_asked_of_one_names_it_by_its_place_wrapped_round_and_skips_when_there_is_none() {
+        let mut ctl = controller(TWO_LANES);
+        let (lane0, lane1) = (ctl.model.instruments[0].node, ctl.model.instruments[1].node);
+        const NOTES: &[(f32, f32, u8, u8)] = &[(0.0, 0.5, 60, 100), (1.0, 0.25, 64, 90)];
+        let asks = [
+            Edit::PatternField { pattern: 0, field: PatternBoxField::Looping { on: false } },
+            Edit::PatternNotes { pattern: 0, notes: NOTES },
+            Edit::ClearPatternBox { pattern: 0 },
+            Edit::PatternTransport { pattern: 0, action: PatternBoxAction::Play },
+            Edit::PatternToLane { pattern: 0, lane: 0 },
+            Edit::SourceToPattern { source: 0, pattern: 0 },
+            Edit::RemovePattern { pattern: 0 },
+        ];
+        // There is nothing to aim at while there is no box.
+        for edit in &asks {
+            assert_eq!(edit.resolve(&ctl), None, "{edit:?}");
+            assert_eq!(edit.make(&mut ctl), Outcome::Skipped, "{edit:?}");
+        }
+        assert_eq!(Edit::AddPattern.resolve(&ctl), Some(Intent::AddPattern));
+        assert_eq!(Edit::AddPattern.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddPattern.make(&mut ctl), Outcome::Applied);
+        let (first, second) = (ctl.model.patterns[0].node, ctl.model.patterns[1].node);
+        let expect = |edit: Edit, intent: Intent| assert_eq!(edit.resolve(&ctl), Some(intent), "{edit:?}");
+        expect(Edit::PatternField { pattern: 1, field: PatternBoxField::LengthBeats { beats: 2.0 } }, Intent::SetPatternBoxField { node: second, field: PatternBoxField::LengthBeats { beats: 2.0 } });
+        expect(Edit::PatternField { pattern: 2, field: PatternBoxField::Click { on: false } }, Intent::SetPatternBoxField { node: first, field: PatternBoxField::Click { on: false } });
+        expect(
+            Edit::PatternNotes { pattern: 3, notes: NOTES },
+            Intent::SetPatternBoxNotes {
+                node: second,
+                notes: vec![PatternNote { start: 0.0, length: 0.5, note: 60, velocity: 100 }, PatternNote { start: 1.0, length: 0.25, note: 64, velocity: 90 }],
+            },
+        );
+        expect(Edit::ClearPatternBox { pattern: 5 }, Intent::ClearPatternBox { node: second });
+        expect(Edit::PatternTransport { pattern: 1, action: PatternBoxAction::Record }, Intent::PatternBoxTransport { node: second, action: PatternBoxAction::Record });
+        expect(Edit::RemovePattern { pattern: 3 }, Intent::RemoveNode { node: second });
+        expect(Edit::RemovePattern { pattern: 4 }, Intent::RemoveNode { node: first });
+        // A cable from a box to a lane needs no source, and one into a box needs a source to start at.
+        let out = |node| Endpoint { node, port: Port::EventsOut };
+        let into = |node| Endpoint { node, port: Port::EventsIn };
+        expect(Edit::PatternToLane { pattern: 1, lane: 0 }, Intent::AddCable { from: out(second), to: into(lane0), gain: None });
+        expect(Edit::PatternToLane { pattern: 2, lane: 3 }, Intent::AddCable { from: out(first), to: into(lane1), gain: None });
+        assert_eq!(Edit::SourceToPattern { source: 0, pattern: 0 }.make(&mut ctl), Outcome::Skipped, "no source to start at");
+        assert_eq!(Edit::AddSource { device: None }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::AddSource { device: Some("Seaboard") }.make(&mut ctl), Outcome::Applied);
+        let (keys, seaboard) = (ctl.model.sources[0].node, ctl.model.sources[1].node);
+        assert_eq!(Edit::SourceToPattern { source: 2, pattern: 3 }.resolve(&ctl), Some(Intent::AddCable { from: out(keys), to: into(second), gain: None }), "2 is 0 of 2 sources, and 3 is 1 of 2 boxes");
+        assert_eq!(Edit::SourceToPattern { source: 3, pattern: 0 }.resolve(&ctl), Some(Intent::AddCable { from: out(seaboard), to: into(first), gain: None }), "3 is 1 of 2 sources");
+        // A cable twice is refused, as a front-end's request would be.
+        assert_eq!(Edit::SourceToPattern { source: 0, pattern: 0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::SourceToPattern { source: 0, pattern: 0 }.make(&mut ctl), Outcome::Refused);
+        assert_eq!(Edit::PatternToLane { pattern: 0, lane: 0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::PatternToLane { pattern: 0, lane: 0 }.make(&mut ctl), Outcome::Refused);
+        // The rest are made through the controller.
+        assert_eq!(Edit::PatternNotes { pattern: 0, notes: NOTES }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.patterns[0].notes.len(), 2);
+        assert_eq!(Edit::PatternField { pattern: 0, field: PatternBoxField::Looping { on: false } }.make(&mut ctl), Outcome::Applied);
+        assert!(!ctl.model.patterns[0].looping);
+        assert_eq!(Edit::PatternTransport { pattern: 0, action: PatternBoxAction::Play }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(Edit::ClearPatternBox { pattern: 0 }.make(&mut ctl), Outcome::Applied);
+        assert!(ctl.model.patterns[0].notes.is_empty());
+        assert_eq!(Edit::RemovePattern { pattern: 0 }.make(&mut ctl), Outcome::Applied);
+        assert_eq!(ctl.model.patterns.len(), 1);
+        assert_eq!(ctl.model.event_cables.len(), 0, "the cables of the box that went are gone with it");
     }
 
     #[test]

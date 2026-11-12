@@ -15,9 +15,10 @@ use crate::source::{Source, SourceSet};
 
 /// How many beats of the metronome a recording is counted in with (the lane recorder's: `plugin::chain::COUNT_IN_BEATS`).
 pub const COUNT_IN_BEATS: f64 = 4.0;
-/// The shortest and the longest loop a box has, in beats.
+/// The shortest and the longest loop a box has, in beats, and how long a new one is.
 pub const MIN_LENGTH_BEATS: f32 = 0.25;
 pub const MAX_LENGTH_BEATS: f32 = 256.0;
+pub const DEFAULT_LENGTH_BEATS: f32 = 4.0;
 /// How many notes a box holds: a recording that has more drops the rest.
 pub const MAX_NOTES: usize = 4096;
 /// The shortest a recorded note is, in beats: a key that came up in the instant it went down in.
@@ -55,6 +56,25 @@ pub enum Clock {
     Own,
     /// The host's: its beat modulo the box's length while the host plays.
     Host,
+}
+
+impl Clock {
+    /// The word that a session file has for it (`sync = "host"`).
+    pub fn word(self) -> &'static str {
+        match self {
+            Clock::Own => "own",
+            Clock::Host => "host",
+        }
+    }
+
+    /// The clock that a word of a session file names, if it names one.
+    pub fn parse(word: &str) -> Option<Clock> {
+        match word {
+            "own" => Some(Clock::Own),
+            "host" => Some(Clock::Host),
+            _ => None,
+        }
+    }
 }
 
 /// What a box is set to, apart from its notes.
@@ -146,8 +166,10 @@ pub struct Tick {
 /// What a box tells the controller.
 #[derive(Debug, PartialEq)]
 pub enum BoxNotification {
-    /// A pass of recording is over: these are the notes that the box has now, which the model keeps and the file saves.
-    Recorded { node: NodeId, notes: Vec<BoxNote> },
+    /// A pass of recording is over: these are the notes that the box has now, which the model keeps and the file saves. `plans` is how many plans the box had been given when the pass ended (`BoxPlayer::plans`: one for
+    /// each `set_plan`, the first being the one it was made with), so that the controller can tell a recording that was made on the plan that it sent last from one that a change of the notes that it made since has not
+    /// reached yet (that one is not the model's notes: the box takes the change at the start of the next block, and the notes of the pass are lost to it).
+    Recorded { node: NodeId, notes: Vec<BoxNote>, plans: u32 },
     /// What the box is doing has changed: a count-in is over, a recording has ended, a box that plays once has played it.
     Status { node: NodeId, status: Status },
 }
@@ -181,7 +203,8 @@ impl BoxPlan {
         plan
     }
 
-    fn clamp_length(length_beats: f32) -> f32 {
+    /// The length of a loop as a box holds it: `MIN_LENGTH_BEATS` to `MAX_LENGTH_BEATS`, and the shortest for a number that is none.
+    pub fn clamp_length(length_beats: f32) -> f32 {
         if length_beats.is_finite() { length_beats.clamp(MIN_LENGTH_BEATS, MAX_LENGTH_BEATS) } else { MIN_LENGTH_BEATS }
     }
 
@@ -197,8 +220,7 @@ impl BoxPlan {
 
     /// Sort the notes and make the steps of the loop from them. No memory is asked for (the room was made with the plan).
     fn compile(&mut self) {
-        // Every field is in the order, so that notes that differ in nothing but the order they came in are one plan whatever the sort does with them.
-        self.notes.sort_unstable_by(|a, b| a.start.total_cmp(&b.start).then(a.note.cmp(&b.note)).then(a.length.total_cmp(&b.length)).then(a.velocity.cmp(&b.velocity)));
+        self.notes.sort_unstable_by(note_order);
         self.steps.clear();
         let length = f64::from(self.length);
         // The start of the next note of each pitch, going backwards through the notes: the next one ends this one.
@@ -223,6 +245,7 @@ impl BoxPlan {
     }
 
     /// The loop's length in beats.
+    #[cfg(test)]
     pub fn length(&self) -> f32 {
         self.length
     }
@@ -231,6 +254,19 @@ impl BoxPlan {
     pub fn notes(&self) -> &[BoxNote] {
         &self.notes
     }
+}
+
+/// How the notes of a box are put in order: by start, then pitch, then length and velocity. Every field is in it, so that notes that differ in nothing but the order they came in are one list whatever the sort does with them.
+fn note_order(a: &BoxNote, b: &BoxNote) -> std::cmp::Ordering {
+    a.start.total_cmp(&b.start).then(a.note.cmp(&b.note)).then(a.length.total_cmp(&b.length)).then(a.velocity.cmp(&b.velocity))
+}
+
+/// The notes as a box holds them, which is what `BoxPlan::new` keeps of them: what is not a note left out, the first `MAX_NOTES` of what is, each brought into range, in the order of their starts. The session's model keeps its
+/// notes so, and the model's and the engine's never differ.
+pub fn sanitize(notes: &[BoxNote]) -> Vec<BoxNote> {
+    let mut kept: Vec<BoxNote> = notes.iter().filter_map(BoxPlan::tidy).take(MAX_NOTES).collect();
+    kept.sort_unstable_by(note_order);
+    kept
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -291,6 +327,8 @@ pub struct BoxPlayer {
     ticks: Vec<Tick>,
     /// A pass ended and the engine has not been asked for the notes yet.
     finished: bool,
+    /// How many plans it has been given (`set_plan`): what a recording that ends says it was made on (`BoxNotification::Recorded`). The notes that a pass takes are not a plan that it is given.
+    plans: u32,
 }
 
 impl BoxPlayer {
@@ -298,7 +336,7 @@ impl BoxPlayer {
     pub fn new(source: Source) -> BoxPlayer {
         BoxPlayer {
             source,
-            plan: BoxPlan::new(4.0, &[]),
+            plan: BoxPlan::new(DEFAULT_LENGTH_BEATS, &[]),
             settings: Settings::default(),
             state: State::Stopped,
             clock: 0.0,
@@ -310,6 +348,7 @@ impl BoxPlayer {
             out: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
             ticks: Vec::with_capacity(64),
             finished: false,
+            plans: 0,
         }
     }
 
@@ -334,9 +373,27 @@ impl BoxPlayer {
         self.plan.notes()
     }
 
+    /// How many plans it has been given: the one it was made with, if its maker gave it one, and each that came after.
+    pub fn plans(&self) -> u32 {
+        self.plans
+    }
+
+    /// The length of its loop, in beats, for a test to compare with the model's.
+    #[cfg(test)]
+    pub fn length(&self) -> f32 {
+        self.plan.length()
+    }
+
+    /// What it is set to, for a test to compare with what the controller told it.
+    #[cfg(test)]
+    pub fn settings(&self) -> Settings {
+        self.settings
+    }
+
     /// Put these notes and this length in (a plan that was made elsewhere). What is on is let go of at the start of the next block, and a pass that is going on goes on.
     pub fn set_plan(&mut self, plan: BoxPlan) {
         self.plan = plan;
+        self.plans = self.plans.wrapping_add(1);
         self.release_next = true;
     }
 
@@ -888,6 +945,32 @@ mod tests {
     }
 
     #[test]
+    fn the_notes_as_a_box_holds_them_are_what_a_plan_keeps_of_them() {
+        let notes = [
+            BoxNote { start: 2.0, length: 1.0, note: 64, velocity: 100 },
+            BoxNote { start: -1.0, length: 2.0, note: 60, velocity: 0 },
+            BoxNote { start: 1.0, length: 1.0, note: 128, velocity: 100 },
+            BoxNote { start: f32::NAN, length: 1.0, note: 61, velocity: 100 },
+            BoxNote { start: 1.0, length: -3.0, note: 63, velocity: 200 },
+            BoxNote { start: 0.0, length: 0.5, note: 60, velocity: 1 },
+        ];
+        assert_eq!(
+            sanitize(&notes),
+            [
+                BoxNote { start: 0.0, length: 0.5, note: 60, velocity: 1 },
+                BoxNote { start: 0.0, length: 2.0, note: 60, velocity: 1 },
+                BoxNote { start: 1.0, length: 0.0, note: 63, velocity: 127 },
+                BoxNote { start: 2.0, length: 1.0, note: 64, velocity: 100 },
+            ]
+        );
+        assert_eq!(sanitize(&notes), BoxPlan::new(4.0, &notes).notes(), "the model's notes are the engine's");
+        let many: Vec<BoxNote> = (0..MAX_NOTES + 10).map(|i| note((MAX_NOTES + 10 - i) as f32 * 0.01, 0.005, (i % 100) as u8)).collect();
+        assert_eq!(sanitize(&many).len(), MAX_NOTES);
+        assert_eq!(sanitize(&many), BoxPlan::new(256.0, &many).notes(), "the first of them, whatever order they are in");
+        assert!(sanitize(&[]).is_empty());
+    }
+
+    #[test]
     fn a_plan_has_room_for_all_the_notes_that_a_box_holds_and_holds_no_more() {
         let plan = BoxPlan::new(4.0, &[]);
         assert!(plan.notes.capacity() >= MAX_NOTES && plan.steps.capacity() >= 2 * MAX_NOTES);
@@ -1304,6 +1387,42 @@ mod tests {
         assert_eq!(r.b.status(), Status::Stopped);
         r.beats(0.1);
         assert_eq!(r.events.last().map(|(_, bytes)| *bytes), Some(off(60)), "it let go of what it had on");
+    }
+
+    #[test]
+    fn the_clocks_are_named_by_the_words_of_a_session_file_and_read_back_and_no_other_word_is_a_clock() {
+        for (clock, word) in [(Clock::Own, "own"), (Clock::Host, "host")] {
+            assert_eq!(clock.word(), word);
+            assert_eq!(Clock::parse(word), Some(clock), "{word}");
+        }
+        for word in ["", "Own", "HOST", "its own", "host ", " own", "fast", "none"] {
+            assert_eq!(Clock::parse(word), None, "{word:?}");
+        }
+    }
+
+    #[test]
+    fn a_box_counts_the_plans_it_is_given_and_the_notes_that_a_pass_takes_are_none_of_them() {
+        let mut b = BoxPlayer::new(Source::pattern(0));
+        assert_eq!(b.plans(), 0, "a box that is made has been given none");
+        b.set_plan(BoxPlan::new(1.0, &[]));
+        assert_eq!(b.plans(), 1);
+        b.set_plan(BoxPlan::new(2.0, &[BoxNote { start: 0.0, length: 1.0, note: 60, velocity: 100 }]));
+        assert_eq!(b.plans(), 2);
+        b.set_settings(Settings { click: false, ..Settings::default() });
+        assert_eq!(b.plans(), 2, "a setting is not a plan");
+        b.set_plan(BoxPlan::new(1.0, &[]));
+        b.record();
+        let block = Block { frames: 1000, sample_rate: SR, bpm: BPM, host_beat: None };
+        for _ in 0..96 {
+            b.process(&block, std::iter::empty());
+        }
+        b.process(&block, [(KEYS, 100, on(60, 90)), (KEYS, 500, off(60))].iter().copied());
+        for _ in 0..23 {
+            b.process(&block, std::iter::empty());
+        }
+        assert!(b.take_finished());
+        assert_eq!(b.notes().len(), 1, "it took the note");
+        assert_eq!(b.plans(), 3, "and that is no plan: the count is what it was");
     }
 
     #[test]

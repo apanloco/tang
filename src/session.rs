@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::patternbox::{BoxNote, Clock, MAX_NOTES};
 use crate::plugin::Plugin;
 use crate::plugin::chain::MAX_STEPS;
+use crate::source::MAX_BOXES;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RemapTarget {
@@ -225,6 +227,8 @@ pub struct SessionConfig {
     pub keys: Option<KeysConfig>,
     /// The MIDI devices that the session has a node for (`[[device]]`), in the order of the file, which is how a cable names them (`device[0]`).
     pub devices: Vec<DeviceConfig>,
+    /// The pattern boxes that the session has (`[[pattern]]`, step 123), in the order of the file, which is how a cable names them (`pattern[0]`).
+    pub patterns: Vec<PatternBoxConfig>,
     /// The modulators that belong to no lane and no group (the top-level `[[modulator]]`), in the order of the file, which is how the cables of one of them name another (`mod_rate = 1`).
     /// Each hears every note unless it says whose (`hears`), and its cables name the plugin they drive by its place in the session (`to = "instrument[0].effect[1]"`).
     /// `move_modulators_to_the_session` puts the modulators of the lanes and of the groups here too.
@@ -263,6 +267,20 @@ pub struct KeysConfig {
 /// A MIDI device as a source of notes (`[[device]]`): the name of its port as the system gives it, or as much of it as tells it ("Launchkey" is every port of a Launchkey).
 pub struct DeviceConfig {
     pub name: String,
+    /// Where the node is drawn.
+    pub ui: Option<NodeUi>,
+}
+
+/// A pattern box (`[[pattern]]`, step 123): what it is called, how long its loop is, how it plays and records, the notes that it stores (in beats) and where it is drawn. The numbers are as the file says them: the
+/// loader holds the length to the lengths a box can have and the notes to what a box holds (`patternbox::sanitize`).
+pub struct PatternBoxConfig {
+    pub name: String,
+    pub length_beats: f32,
+    pub looping: bool,
+    pub sync: Clock,
+    pub overdub: bool,
+    pub click: bool,
+    pub notes: Vec<BoxNote>,
     /// Where the node is drawn.
     pub ui: Option<NodeUi>,
 }
@@ -310,7 +328,7 @@ pub struct GroupConfig {
 
 /// A place in a session that a cable starts or ends at, as the file names it (P3c and P4b of `docs/patch-graph.md` §11.6): a lane by its place among the `[[instrument]]`
 /// tables, an effect of a lane or of a group's bus by its place in the chain, a group by its place among the `[[group]]` tables, the mix, or, for a cable of notes, the keys or a device
-/// by its place among the `[[device]]` tables.
+/// by its place among the `[[device]]` tables, or a pattern box by its place among the `[[pattern]]` tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CablePlace {
     /// `instrument[0]`: a lane. A cable starts at what its instrument puts out (after the lane's volume, before its chain).
@@ -331,15 +349,17 @@ pub enum CablePlace {
     Keys,
     /// `device[0]`: a MIDI device, the first of the `[[device]]` tables: where a cable of notes starts.
     Device(usize),
+    /// `pattern[0]`: a pattern box, the first of the `[[pattern]]` tables (step 123): where a cable of notes starts (it plays them to a lane) and where one ends (a source's notes are what it records).
+    Pattern(usize),
 }
 
 impl CablePlace {
-    /// Whether it is a source of notes, which only a cable of notes starts at.
+    /// Whether it is a source of notes, which only a cable of notes starts at: the keys, a device and a pattern box.
     pub fn is_source(self) -> bool {
-        matches!(self, CablePlace::Keys | CablePlace::Device(_))
+        matches!(self, CablePlace::Keys | CablePlace::Device(_) | CablePlace::Pattern(_))
     }
 
-    /// The place that `text` names, if it names one: `master`, `keys`, `device[0]`, `instrument[0]`, `instrument[0].effect[1]`, `instrument[0].effect[1].side`, `group[0]`, `group[0].effect[1]` or
+    /// The place that `text` names, if it names one: `master`, `keys`, `device[0]`, `pattern[0]`, `instrument[0]`, `instrument[0].effect[1]`, `instrument[0].effect[1].side`, `group[0]`, `group[0].effect[1]` or
     /// `group[0].effect[1].side`, the numbers whole and from 0.
     pub fn parse(text: &str) -> Option<CablePlace> {
         fn indexed(text: &str) -> Option<(&str, usize)> {
@@ -382,6 +402,7 @@ impl CablePlace {
             (("group", group), Some(effect), false) => Some(CablePlace::BusEffect { group, effect }),
             (("group", group), Some(effect), true) => Some(CablePlace::BusEffectSide { group, effect }),
             (("device", device), None, _) => Some(CablePlace::Device(device)),
+            (("pattern", pattern), None, _) => Some(CablePlace::Pattern(pattern)),
             _ => None,
         }
     }
@@ -399,6 +420,7 @@ impl std::fmt::Display for CablePlace {
             CablePlace::Master => f.write_str("master"),
             CablePlace::Keys => f.write_str("keys"),
             CablePlace::Device(device) => write!(f, "device[{device}]"),
+            CablePlace::Pattern(pattern) => write!(f, "pattern[{pattern}]"),
         }
     }
 }
@@ -435,6 +457,16 @@ impl std::fmt::Display for MemberPlace {
             MemberPlace::Modulator(modulator) => write!(f, "modulator[{modulator}]"),
         }
     }
+}
+
+/// What a pattern box is called when the file has no name for it, or a blank one, and what a name of nothing becomes when a person sets one.
+pub const DEFAULT_PATTERN_NAME: &str = "Pattern";
+
+/// The name that a pattern box is called by, from the text a file has: the text without its control characters and the spaces round it, and `DEFAULT_PATTERN_NAME` for one that is nothing then.
+pub fn pattern_name(text: &str) -> String {
+    let name: String = text.chars().filter(|c| !c.is_control()).collect();
+    let name = name.trim();
+    if name.is_empty() { DEFAULT_PATTERN_NAME.to_string() } else { name.to_string() }
 }
 
 /// What a module that was added as one thing is called when the file has no name for it, or a blank one.
@@ -709,6 +741,8 @@ struct SessionRaw {
     keys: Option<KeysRaw>,
     #[serde(default, rename = "device")]
     devices: Vec<DeviceRaw>,
+    #[serde(default, rename = "pattern")]
+    patterns: Vec<PatternBoxRaw>,
     #[serde(default)]
     piano: Option<PianoConfig>,
     #[serde(default, deserialize_with = "lenient_table")]
@@ -763,6 +797,45 @@ struct DeviceRaw {
     name: String,
     #[serde(default, deserialize_with = "lenient_ui")]
     ui: Option<NodeUi>,
+}
+
+/// A `[[pattern]]` table as the file has it.
+#[derive(Deserialize)]
+struct PatternBoxRaw {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default = "default_box_length")]
+    length_beats: f64,
+    #[serde(default = "default_true")]
+    looping: bool,
+    #[serde(default)]
+    sync: Option<String>,
+    #[serde(default)]
+    overdub: bool,
+    #[serde(default = "default_true")]
+    click: bool,
+    #[serde(default)]
+    notes: Vec<BoxNoteRaw>,
+    #[serde(default, deserialize_with = "lenient_ui")]
+    ui: Option<NodeUi>,
+}
+
+/// A note of a `[[pattern]]` as the file has it: where it begins and how long it is, in beats, its pitch by name and its velocity.
+#[derive(Deserialize)]
+struct BoxNoteRaw {
+    at: f64,
+    len: f64,
+    note: String,
+    #[serde(default = "default_box_velocity")]
+    vel: u8,
+}
+
+fn default_box_length() -> f64 {
+    4.0
+}
+
+fn default_box_velocity() -> u8 {
+    100
 }
 
 #[derive(Deserialize)]
@@ -1088,6 +1161,38 @@ pub fn parse_raw(content: &str) -> anyhow::Result<SessionConfig> {
         }
         devices.push(DeviceConfig { name, ui: device.ui });
     }
+    if raw.patterns.len() > MAX_BOXES {
+        anyhow::bail!("pattern[{MAX_BOXES}]: a session has at most {MAX_BOXES} pattern boxes");
+    }
+    let mut patterns: Vec<PatternBoxConfig> = Vec::with_capacity(raw.patterns.len());
+    for (at, pattern) in raw.patterns.into_iter().enumerate() {
+        if pattern.notes.len() > MAX_NOTES {
+            anyhow::bail!("pattern[{at}].notes has {} notes: a pattern box holds {MAX_NOTES} at most", pattern.notes.len());
+        }
+        let sync = match pattern.sync.as_deref() {
+            None => Clock::Own,
+            Some(word) => Clock::parse(word).ok_or_else(|| anyhow::anyhow!("pattern[{at}].sync is \"{word}\": a pattern box goes by its \"own\" clock or the \"host\"'s"))?,
+        };
+        let notes = pattern
+            .notes
+            .iter()
+            .enumerate()
+            .map(|(i, note)| {
+                let pitch = parse_note_name(&note.note).map_err(|why| anyhow::anyhow!("pattern[{at}].notes[{i}].note: {why}"))?;
+                Ok(BoxNote { start: note.at as f32, length: note.len as f32, note: pitch, velocity: note.vel })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        patterns.push(PatternBoxConfig {
+            name: pattern_name(pattern.name.as_deref().unwrap_or("")),
+            length_beats: pattern.length_beats as f32,
+            looping: pattern.looping,
+            sync,
+            overdub: pattern.overdub,
+            click: pattern.click,
+            notes,
+            ui: pattern.ui,
+        });
+    }
     let cables = raw
         .cables
         .into_iter()
@@ -1095,7 +1200,7 @@ pub fn parse_raw(content: &str) -> anyhow::Result<SessionConfig> {
         .map(|(i, cable)| {
             let place = |end: &str, text: &str| {
                 CablePlace::parse(text).ok_or_else(|| {
-                    anyhow::anyhow!("cable[{i}].{end}: \"{text}\" is not a place of the session (instrument[0], instrument[0].effect[1], group[0], group[0].effect[1], master, keys or device[0])")
+                    anyhow::anyhow!("cable[{i}].{end}: \"{text}\" is not a place of the session (instrument[0], instrument[0].effect[1], group[0], group[0].effect[1], master, keys, device[0] or pattern[0])")
                 })
             };
             let (from, to) = (place("from", &cable.from)?, place("to", &cable.to)?);
@@ -1127,7 +1232,7 @@ pub fn parse_raw(content: &str) -> anyhow::Result<SessionConfig> {
         .collect();
     let keys = raw.keys.map(|keys| KeysConfig { ui: keys.ui });
     let master = raw.master.map(|master| MasterConfig { volume: master.volume.map(|volume| volume as f32), limiter: master.limiter, ceiling: master.ceiling.map(|ceiling| ceiling as f32) });
-    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), master, cables, keys, devices, free_modulators: raw.modulators, modules })
+    Ok(SessionConfig { instruments, groups, piano: raw.piano, master_ui, bpm: raw.bpm.map(|bpm| bpm as f32), master, cables, keys, devices, patterns, free_modulators: raw.modulators, modules })
 }
 
 /// A place in a rack that no modulator is at: a cable that names it is left out by the loader, as one that names a modulator that is not there is.
@@ -1489,6 +1594,8 @@ pub struct SaveCable {
 pub struct SaveSources {
     pub keys: Option<SaveKeys>,
     pub devices: Vec<SaveDevice>,
+    /// The pattern boxes (`[[pattern]]`, step 123), in the order that a cable names them in (`pattern[0]`).
+    pub patterns: Vec<SavePatternBox>,
     /// The modulators, in order: each cable names the plugin it drives by its place (`SaveModTarget::to`).
     pub modulators: Vec<SaveModulator>,
     /// The modules that were added as one thing (`[[module]]`, step 108), in order, each naming the lanes and the modulators that came with it by their places.
@@ -1515,6 +1622,19 @@ pub struct SaveKeys {
 /// A device as a source (`[[device]]`).
 pub struct SaveDevice {
     pub name: String,
+    /// Where the node is drawn.
+    pub ui: Option<NodeUi>,
+}
+
+/// A pattern box (`[[pattern]]`).
+pub struct SavePatternBox {
+    pub name: String,
+    pub length_beats: f32,
+    pub looping: bool,
+    pub sync: Clock,
+    pub overdub: bool,
+    pub click: bool,
+    pub notes: Vec<BoxNote>,
     /// Where the node is drawn.
     pub ui: Option<NodeUi>,
 }
@@ -1607,6 +1727,9 @@ struct SessionOut {
     keys: Option<KeysOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "device")]
     devices: Vec<DeviceOut>,
+    /// The pattern boxes are sources too: they come after the devices that they record and before the lanes that they play to.
+    #[serde(skip_serializing_if = "Vec::is_empty", rename = "pattern")]
+    patterns: Vec<PatternBoxOut>,
     #[serde(rename = "instrument")]
     instruments: Vec<InstrumentSlotOut>,
     #[serde(skip_serializing_if = "Vec::is_empty", rename = "group")]
@@ -1649,6 +1772,35 @@ struct DeviceOut {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     ui: Option<NodeUiOut>,
+}
+
+/// One `[[pattern]]` table in the output: the settings that are not what a new box has are written only when they differ (`overdub` when it is on, `click` when it is off), the others always.
+#[derive(Serialize)]
+struct PatternBoxOut {
+    name: String,
+    #[serde(serialize_with = "f32_clean")]
+    length_beats: f32,
+    looping: bool,
+    sync: &'static str,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    overdub: bool,
+    #[serde(skip_serializing_if = "is_true")]
+    click: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ui: Option<NodeUiOut>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<BoxNoteOut>,
+}
+
+/// A note of a `[[pattern]]` in the output: `{ at = 0, len = 0.5, note = "C4", vel = 100 }`.
+#[derive(Serialize)]
+struct BoxNoteOut {
+    #[serde(serialize_with = "f32_clean")]
+    at: f32,
+    #[serde(serialize_with = "f32_clean")]
+    len: f32,
+    note: String,
+    vel: u8,
 }
 
 /// One `[[module]]` table in the output.
@@ -2082,6 +2234,19 @@ fn mods_to_out(mods: &[SaveModulator]) -> Vec<ModulatorOut> {
         .collect()
 }
 
+fn pattern_box_to_out(pattern: &SavePatternBox) -> PatternBoxOut {
+    PatternBoxOut {
+        name: pattern.name.clone(),
+        length_beats: pattern.length_beats,
+        looping: pattern.looping,
+        sync: pattern.sync.word(),
+        overdub: pattern.overdub,
+        click: pattern.click,
+        ui: pattern.ui.map(NodeUiOut::from),
+        notes: pattern.notes.iter().map(|note| BoxNoteOut { at: note.start, len: note.length, note: note_name(note.note), vel: note.velocity }).collect(),
+    }
+}
+
 fn effect_to_out(fx: &SaveEffect) -> EffectOut {
     EffectOut {
         plugin: fx.plugin.clone(),
@@ -2110,6 +2275,7 @@ pub fn to_toml(
         master: sources.master.map(|master| MasterOut { volume: master.volume.map(clean_f64), limiter: master.limiter, ceiling: master.ceiling.map(clean_f64) }),
         keys: sources.keys.as_ref().map(|keys| KeysOut { ui: keys.ui.map(NodeUiOut::from) }),
         devices: sources.devices.iter().map(|device| DeviceOut { name: device.name.clone(), ui: device.ui.map(NodeUiOut::from) }).collect(),
+        patterns: sources.patterns.iter().map(pattern_box_to_out).collect(),
         cables: cables.iter().map(|cable| CableOut { from: cable.from.to_string(), to: cable.to.to_string(), gain: cable.gain }).collect(),
         piano: piano.map(|p| PianoOut { scale: p.scale.clone(), locked: p.locked }),
         ui: master_ui.map(|ui| UiOut { master: ui.into() }),
@@ -2205,6 +2371,30 @@ pub fn to_toml(
     // Not `to_string_pretty`: it writes arrays one element per line.
     let content = toml::to_string(&session)?;
     inline_remap_entries(&content)
+}
+
+/// Write the notes of a `[[pattern]]` as one array in the box's own table, a note to a line as an inline table (`{ at = 0, len = 0.5, note = "C4", vel = 100 }`), and not as a table of its own for each, which
+/// is a page of headers for the hundred notes of a recording.
+fn inline_notes(pattern: &mut toml_edit::Table) {
+    use toml_edit::{Array, InlineTable, Item, Value};
+
+    let Some(Item::ArrayOfTables(notes)) = pattern.get("notes") else { return };
+    let mut array = Array::new();
+    for note in notes.iter() {
+        let mut inline = InlineTable::new();
+        for (key, value) in note.iter() {
+            if let Some(value) = value.as_value() {
+                inline.insert(key, value.clone());
+            }
+        }
+        inline.fmt();
+        let mut value = Value::InlineTable(inline);
+        value.decor_mut().set_prefix("\n  ");
+        array.push_formatted(value);
+    }
+    array.set_trailing_comma(true);
+    array.set_trailing("\n");
+    pattern.insert("notes", Item::Value(Value::Array(array)));
 }
 
 /// The key of the master mix in the top-level `[ui]` table.
@@ -2380,6 +2570,11 @@ fn inline_remap_entries(input: &str) -> anyhow::Result<String> {
 
     let mut doc: DocumentMut = input.parse()?;
     inline_ui_tables(doc.as_table_mut(), true);
+    if let Some(Item::ArrayOfTables(boxes)) = doc.get_mut("pattern") {
+        for pattern in boxes.iter_mut() {
+            inline_notes(pattern);
+        }
+    }
     if let Some(Item::ArrayOfTables(arr)) = doc.get_mut("instrument") {
         for inst in arr.iter_mut() {
             if let Some(Item::Table(remap)) = inst.get_mut("remap") {
@@ -3943,6 +4138,9 @@ plugin = "builtin:osc"
             (" keys ", CablePlace::Keys),
             ("device[0]", CablePlace::Device(0)),
             ("device[12]", CablePlace::Device(12)),
+            ("pattern[0]", CablePlace::Pattern(0)),
+            ("pattern[15]", CablePlace::Pattern(15)),
+            (" pattern[2] ", CablePlace::Pattern(2)),
         ] {
             assert_eq!(CablePlace::parse(text), Some(place), "{text:?}");
             assert_eq!(CablePlace::parse(&place.to_string()), Some(place), "{text:?} is written and read back the same");
@@ -3956,13 +4154,15 @@ plugin = "builtin:osc"
         assert_eq!(CablePlace::Master.to_string(), "master");
         assert_eq!(CablePlace::Keys.to_string(), "keys");
         assert_eq!(CablePlace::Device(3).to_string(), "device[3]");
+        assert_eq!(CablePlace::Pattern(4).to_string(), "pattern[4]");
     }
 
     #[test]
-    fn only_the_keys_and_the_devices_are_sources_of_notes() {
+    fn only_the_keys_the_devices_and_the_boxes_are_sources_of_notes() {
         for (place, source) in [
             (CablePlace::Keys, true),
             (CablePlace::Device(0), true),
+            (CablePlace::Pattern(0), true),
             (CablePlace::Instrument(0), false),
             (CablePlace::Effect { instrument: 0, effect: 0 }, false),
             (CablePlace::Group(0), false),
@@ -3983,6 +4183,7 @@ plugin = "builtin:osc"
             "instrument[0].", ".effect[0]", "instrument[+1]", "group[0].effect[+0]", "keys[0]", "Keys", "key", "device", "device[]", "device[x]", "device[-1]", "Device[0]", "device[0].effect[0]",
             "keys.effect[0]", "devices[0]", "instrument[0].side", "group[0].side", "instrument[0].effect[0].sides", "instrument[0].effect[0].Side", "instrument[0].effect[0].side.x", "instrument[0].effect[0].",
             "instrument[0].effect[0].side[0]", "device[0].effect[0].side", "master.side", "keys.side", "instrument[0].side.effect[0]",
+            "pattern", "pattern[]", "pattern[x]", "pattern[-1]", "pattern[+1]", "pattern[ 1 ]", "Pattern[0]", "patterns[0]", "pattern[0].effect[0]", "pattern[0].side", "pattern[0].effect[0].side", "pattern[99999999999999999999]",
         ] {
             assert_eq!(CablePlace::parse(text), None, "{text:?}");
         }
@@ -4139,18 +4340,18 @@ to = "instrument[1]"
 
     #[test]
     fn a_cable_of_notes_that_has_a_level_refuses_the_session_with_its_place() {
-        for from in ["keys", "device[0]"] {
-            let error = parse(&format!("[[device]]\nname = \"A\"\n{OSC}[[cable]]\nfrom = \"{from}\"\nto = \"instrument[0]\"\ngain = 0.5\n")).err().unwrap_or_else(|| panic!("accepted a level on {from}")).to_string();
+        for from in ["keys", "device[0]", "pattern[0]"] {
+            let error = parse(&format!("[[device]]\nname = \"A\"\n[[pattern]]\n{OSC}[[cable]]\nfrom = \"{from}\"\nto = \"instrument[0]\"\ngain = 0.5\n")).err().unwrap_or_else(|| panic!("accepted a level on {from}")).to_string();
             assert!(error.contains("cable[0].gain: a cable of notes has no level"), "{error}");
         }
         // (The audio cable that is drawn after it has one, as it always had, and the place that a cable names is told in the words of the file.)
         parse(&format!("{OSC}[[cable]]\nfrom = \"instrument[0]\"\nto = \"master\"\ngain = 0.5\n")).unwrap();
         let error = parse(&format!("{OSC}[[cable]]\nfrom = \"mic\"\nto = \"instrument[0]\"\n")).err().unwrap().to_string();
-        assert!(error.contains("cable[0].from: \"mic\" is not a place of the session") && error.contains("keys or device[0]"), "{error}");
+        assert!(error.contains("cable[0].from: \"mic\" is not a place of the session") && error.contains("keys, device[0] or pattern[0]"), "{error}");
     }
 
     fn sources(keys: Option<Option<NodeUi>>, devices: &[(&str, Option<NodeUi>)]) -> SaveSources {
-        SaveSources { keys: keys.map(|ui| SaveKeys { ui }), devices: devices.iter().map(|(name, ui)| SaveDevice { name: name.to_string(), ui: *ui }).collect(), modulators: Vec::new(), modules: Vec::new(), master: None }
+        SaveSources { keys: keys.map(|ui| SaveKeys { ui }), devices: devices.iter().map(|(name, ui)| SaveDevice { name: name.to_string(), ui: *ui }).collect(), patterns: Vec::new(), modulators: Vec::new(), modules: Vec::new(), master: None }
     }
 
     #[test]
@@ -4531,5 +4732,180 @@ mod_rate = 2
         assert!(config.modules[1].members.is_empty(), "a members that is no list is no members");
         // (A name that is not text is a mistake of the file's types, which refuses it as any key of the wrong type does.)
         assert!(parse("[[instrument]]\nplugin = \"builtin:osc\"\n[[module]]\nname = 5\n").is_err());
+    }
+
+    // -- pattern boxes (step 123, P4h-B): `[[pattern]]` --
+
+    fn pattern_box(name: &str, notes: Vec<BoxNote>) -> SavePatternBox {
+        SavePatternBox { name: name.to_string(), length_beats: 4.0, looping: true, sync: Clock::Own, overdub: false, click: true, notes, ui: None }
+    }
+
+    fn box_note(start: f32, length: f32, note: u8, velocity: u8) -> BoxNote {
+        BoxNote { start, length, note, velocity }
+    }
+
+    #[test]
+    fn a_pattern_box_a_file_says_nothing_of_is_a_new_one_and_what_it_says_is_read_as_it_is() {
+        let config = parse(&format!("[[pattern]]\n{OSC}")).unwrap();
+        let plain = &config.patterns[0];
+        assert_eq!((plain.name.as_str(), plain.length_beats, plain.looping, plain.sync, plain.overdub, plain.click, plain.notes.len(), plain.ui), (DEFAULT_PATTERN_NAME, 4.0, true, Clock::Own, false, true, 0, None));
+        let text = r#"
+[[pattern]]
+name = "  Bass line "
+length_beats = 8.5
+looping = false
+sync = "host"
+overdub = true
+click = false
+ui = { x = 300, y = 40.5 }
+notes = [
+  { at = 0, len = 1, note = "C2", vel = 100 },
+  { at = 2.25, len = 0.5, note = "F#3", vel = 7 },
+  { at = 3, len = 1, note = "Bb2" },
+]
+"#;
+        let config = parse(&format!("{text}{OSC}")).unwrap();
+        let bass = &config.patterns[0];
+        assert_eq!((bass.name.as_str(), bass.length_beats, bass.looping, bass.sync, bass.overdub, bass.click, bass.ui), ("Bass line", 8.5, false, Clock::Host, true, false, Some(NodeUi { x: 300.0, y: 40.5 })));
+        assert_eq!(bass.notes, [box_note(0.0, 1.0, 36, 100), box_note(2.25, 0.5, 54, 7), box_note(3.0, 1.0, 46, 100)], "a note with no velocity has 100, and a note is a name");
+        // The tables are read in the order of the file, which is how a cable names them.
+        let two = parse(&format!("[[pattern]]\nname = \"A\"\n[[pattern]]\nname = \"B\"\n{OSC}")).unwrap();
+        assert_eq!(two.patterns.iter().map(|pattern| pattern.name.as_str()).collect::<Vec<_>>(), ["A", "B"]);
+        assert!(parse(OSC).unwrap().patterns.is_empty());
+    }
+
+    #[test]
+    fn the_name_of_a_pattern_box_is_the_text_without_its_control_characters_and_the_spaces_round_it_and_the_default_for_nothing() {
+        for (text, name) in [("A", "A"), ("  A b  ", "A b"), ("A\u{7}B", "AB"), ("", DEFAULT_PATTERN_NAME), ("   ", DEFAULT_PATTERN_NAME), ("\u{7}\t", DEFAULT_PATTERN_NAME), ("Å ö 😀", "Å ö 😀")] {
+            assert_eq!(pattern_name(text), name, "{text:?}");
+        }
+        // (What the intent takes, the file takes: the name is not cut.)
+        let long = "x".repeat(500);
+        assert_eq!(pattern_name(&long), long);
+    }
+
+    #[test]
+    fn a_pattern_box_that_says_a_clock_that_is_none_refuses_the_session_with_its_place() {
+        for (text, why) in [
+            ("[[pattern]]\nsync = \"fast\"\n", "pattern[0].sync is \"fast\": a pattern box goes by its \"own\" clock or the \"host\"'s"),
+            ("[[pattern]]\n[[pattern]]\nsync = \"Host\"\n", "pattern[1].sync is \"Host\""),
+            ("[[pattern]]\nsync = \"\"\n", "pattern[0].sync is \"\""),
+        ] {
+            let error = parse(&format!("{text}{OSC}")).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
+            assert!(error.contains(why), "{error}\nfor:\n{text}");
+        }
+        for (word, clock) in [("own", Clock::Own), ("host", Clock::Host)] {
+            assert_eq!(parse(&format!("[[pattern]]\nsync = \"{word}\"\n{OSC}")).unwrap().patterns[0].sync, clock, "{word}");
+        }
+    }
+
+    #[test]
+    fn a_note_of_a_pattern_box_that_is_no_note_refuses_the_session_with_its_place() {
+        for (note, why) in [
+            ("{ at = 0, len = 1, note = \"H4\" }", "pattern[0].notes[0].note: invalid note letter 'H'"),
+            ("{ at = 0, len = 1, note = \"C#\" }", "pattern[0].notes[0].note: invalid octave in note name 'C#'"),
+            ("{ at = 0, len = 1, note = \"C10\" }", "pattern[0].notes[0].note: note 'C10' is out of MIDI range"),
+            ("{ at = 0, len = 1, note = \"\" }", "pattern[0].notes[0].note: empty note name"),
+            ("{ at = 0, len = 1, note = nan }", "is not a finite number"),
+        ] {
+            let text = format!("[[pattern]]\nnotes = [{{ at = 0, len = 1, note = \"C4\" }}, {note}]\n");
+            let error = parse(&format!("{text}{OSC}")).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
+            let why = why.replace("notes[0]", "notes[1]");
+            assert!(error.contains(&why), "{error}\nfor:\n{text}");
+        }
+        // A note that has no place, no length or no pitch is not a table that fits, and a velocity is a byte.
+        for note in ["{ len = 1, note = \"C4\" }", "{ at = 0, note = \"C4\" }", "{ at = 0, len = 1 }", "{ at = 0, len = 1, note = \"C4\", vel = 300 }", "{ at = 0, len = 1, note = \"C4\", vel = -1 }", "{ at = 0, len = 1, note = 60 }"] {
+            assert!(parse(&format!("[[pattern]]\nnotes = [{note}]\n{OSC}")).is_err(), "{note}");
+        }
+    }
+
+    #[test]
+    fn the_numbers_of_a_pattern_box_are_a_file_s_numbers_a_number_that_is_none_or_too_big_for_the_engine_refuses_the_session_with_its_place() {
+        for (text, place, why) in [
+            ("[[pattern]]\nlength_beats = nan\n", "pattern[0].length_beats", "is not a finite number (NaN)"),
+            ("[[pattern]]\nnotes = [{ at = inf, len = 1, note = \"C4\" }]\n", "pattern[0].notes[0].at", "is not a finite number (inf)"),
+            ("[[pattern]]\n[[pattern]]\nnotes = [{ at = 0, len = 1, note = \"C4\" }, { at = 0, len = -inf, note = \"C4\" }]\n", "pattern[1].notes[1].len", "is not a finite number (-inf)"),
+            ("[[pattern]]\nlength_beats = 1e39\n", "pattern[0].length_beats", "is too big for the 32-bit numbers"),
+        ] {
+            let error = parse(&format!("{text}{OSC}")).err().unwrap_or_else(|| panic!("accepted:\n{text}")).to_string();
+            assert!(error.contains(place) && error.contains(why), "{error}\nfor:\n{text}");
+        }
+        // Whole numbers are numbers of beats too, and what is out of range is the loader's to hold (a file can say what an intent refuses).
+        let config = parse(&format!("[[pattern]]\nlength_beats = 3\nnotes = [{{ at = 1, len = 2, note = \"C4\" }}, {{ at = -1, len = 0, note = \"C4\", vel = 0 }}]\n{OSC}")).unwrap();
+        assert_eq!((config.patterns[0].length_beats, config.patterns[0].notes[0].start, config.patterns[0].notes[0].length), (3.0, 1.0, 2.0));
+        assert_eq!((config.patterns[0].notes[1].start, config.patterns[0].notes[1].velocity), (-1.0, 0), "as the file says it");
+    }
+
+    #[test]
+    fn a_session_has_sixteen_pattern_boxes_at_the_most_and_a_box_holds_four_thousand_and_ninety_six_notes_at_the_most_and_more_refuses_the_session() {
+        let sixteen = "[[pattern]]\n".repeat(MAX_BOXES);
+        assert_eq!(parse(&format!("{sixteen}{OSC}")).unwrap().patterns.len(), MAX_BOXES);
+        let error = parse(&format!("{sixteen}[[pattern]]\n{OSC}")).err().unwrap().to_string();
+        assert!(error.contains("pattern[16]: a session has at most 16 pattern boxes"), "{error}");
+        let notes = |n: usize| format!("[[pattern]]\nnotes = [{}]\n{OSC}", vec!["{ at = 0, len = 1, note = \"C4\" }"; n].join(", "));
+        assert_eq!(parse(&notes(MAX_NOTES)).unwrap().patterns[0].notes.len(), MAX_NOTES);
+        let error = parse(&notes(MAX_NOTES + 1)).err().unwrap().to_string();
+        assert!(error.contains("pattern[0].notes has 4097 notes: a pattern box holds 4096 at most"), "{error}");
+    }
+
+    #[test]
+    fn a_pattern_box_is_written_after_the_devices_and_before_the_lanes_with_its_notes_a_note_to_a_line_and_what_is_as_a_new_box_has_it_is_not_written() {
+        let bass = SavePatternBox {
+            name: "Bass".to_string(),
+            length_beats: 8.0,
+            looping: true,
+            sync: Clock::Own,
+            overdub: true,
+            click: true,
+            notes: vec![box_note(0.0, 1.0, 36, 100), box_note(2.0, 0.5, 43, 90)],
+            ui: Some(NodeUi { x: 300.0, y: 40.0 }),
+        };
+        let plain = pattern_box("Plain", vec![]);
+        let saved = SaveSources { keys: Some(SaveKeys { ui: None }), devices: vec![SaveDevice { name: "Launchkey".to_string(), ui: None }], patterns: vec![bass, plain], ..SaveSources::default() };
+        let text = to_toml(&one_lane(), &[], &[cable(CablePlace::Keys, CablePlace::Pattern(0), 1.0), cable(CablePlace::Pattern(0), CablePlace::Instrument(0), 1.0)], &saved, None, None, None).unwrap();
+        assert!(
+            text.starts_with(
+                "[keys]\n\n[[device]]\nname = \"Launchkey\"\n\n[[pattern]]\nname = \"Bass\"\nlength_beats = 8.0\nlooping = true\nsync = \"own\"\noverdub = true\nui = { x = 300, y = 40 }\nnotes = [\n  { at = 0.0, len = 1.0, note = \"C2\", vel = 100 },\n  { at = 2.0, len = 0.5, note = \"G2\", vel = 90 },\n]\n\n[[pattern]]\nname = \"Plain\"\nlength_beats = 4.0\nlooping = true\nsync = \"own\"\n\n[[instrument]]"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("[[cable]]\nfrom = \"keys\"\nto = \"pattern[0]\"\n\n[[cable]]\nfrom = \"pattern[0]\"\nto = \"instrument[0]\"\n"), "{text}");
+        // A session that has none writes none, and is the file it was.
+        let none = to_toml(&one_lane(), &[], &[], &SaveSources::default(), None, None, None).unwrap();
+        assert!(!none.contains("pattern"), "{none}");
+    }
+
+    #[test]
+    fn the_settings_that_a_box_has_otherwise_than_a_new_one_are_written_and_read_back_the_same() {
+        let mut box_ = pattern_box("Odd", vec![]);
+        box_.looping = false;
+        box_.sync = Clock::Host;
+        box_.click = false;
+        box_.overdub = true;
+        box_.length_beats = 0.25;
+        let saved = SaveSources { patterns: vec![box_], ..SaveSources::default() };
+        let text = to_toml(&one_lane(), &[], &[], &saved, None, None, None).unwrap();
+        assert!(text.contains("[[pattern]]\nname = \"Odd\"\nlength_beats = 0.25\nlooping = false\nsync = \"host\"\noverdub = true\nclick = false\n"), "{text}");
+        let read = &parse(&text).unwrap().patterns[0];
+        assert_eq!((read.name.as_str(), read.length_beats, read.looping, read.sync, read.overdub, read.click, read.notes.len()), ("Odd", 0.25, false, Clock::Host, true, false, 0));
+        assert!(!text.contains("notes"), "a box with none writes no list: {text}");
+    }
+
+    #[test]
+    fn the_notes_of_a_box_are_written_in_numbers_that_read_back_as_the_same_32_bit_numbers_and_in_names_that_read_back_as_the_same_pitches() {
+        let notes: Vec<BoxNote> = (0..128u8).map(|pitch| box_note(pitch as f32 * 0.1 + 1.2345678, 1.0 / 3.0, pitch, 1 + pitch)).collect();
+        let saved = SaveSources { patterns: vec![pattern_box("Many", notes.clone())], ..SaveSources::default() };
+        let text = to_toml(&one_lane(), &[], &[], &saved, None, None, None).unwrap();
+        assert_eq!(text.matches("{ at = ").count(), 128, "a note to a line");
+        let read = &parse(&text).unwrap().patterns[0];
+        assert_eq!(read.notes, notes, "every pitch from C-1 to G9, and the numbers as they were");
+    }
+
+    #[test]
+    fn a_pattern_box_with_a_name_that_needs_quoting_is_written_and_read_back_the_same() {
+        let name = "A \"quoted\" \\ name, ünïcode 😀";
+        let saved = SaveSources { patterns: vec![pattern_box(name, vec![])], ..SaveSources::default() };
+        let text = to_toml(&one_lane(), &[], &[], &saved, None, None, None).unwrap();
+        assert_eq!(parse(&text).unwrap().patterns[0].name, name);
     }
 }

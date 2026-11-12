@@ -11,6 +11,7 @@ use crate::app::controller::EngineHandles;
 use crate::audio::{MIDI_CHANNEL_CAPACITY, MidiEvent};
 use crate::held_notes::HeldNotes;
 use crate::midi_monitor::MidiMonitor;
+use crate::patternbox::BoxNotification;
 use crate::piano_filter::{PianoFilter, PianoMode};
 use crate::plugin::Runtime;
 use crate::plugin::chain::{AudioGraph, CHAIN_CHANNELS, GraphCommand, MidiLearnedNotification, PatternNotification};
@@ -24,7 +25,7 @@ const COMMANDS: usize = 64;
 /// How many plugins the audio thread can hand back at once.
 const RETURNED: usize = 16;
 
-/// How many pattern recordings, and how many captured controls, wait for the controller.
+/// How many pattern recordings, how many things the pattern boxes have said, and how many captured controls, wait for the controller.
 const NOTIFICATIONS: usize = 64;
 
 /// How long an undo waits for the audio thread to hand back a plugin that it was asked to keep (`EngineHandles::recovery_wait`): the audio thread takes a command within a block or two, 5 to 20 ms, so this is for one that is stalled, which an undo then does
@@ -61,6 +62,8 @@ impl Wiring {
         let mut graph = AudioGraph::new(CHAIN_CHANNELS, cmd_rx, return_tx);
         let (pattern_tx, pattern_rx) = crossbeam_channel::bounded::<PatternNotification>(NOTIFICATIONS);
         graph.set_pattern_tx(pattern_tx);
+        let (box_tx, box_rx) = crossbeam_channel::bounded::<BoxNotification>(NOTIFICATIONS);
+        graph.set_box_tx(box_tx);
         let (learn_tx, learn_rx) = crossbeam_channel::bounded::<MidiLearnedNotification>(NOTIFICATIONS);
         graph.set_learn_tx(learn_tx);
         // The live piano scale, for in-key pattern transposition, and the cells it publishes its measurements in (meters, for now).
@@ -73,6 +76,7 @@ impl Wiring {
             midi_tx,
             return_rx,
             pattern_rx,
+            box_rx,
             learn_rx,
             runtime,
             sample_rate,

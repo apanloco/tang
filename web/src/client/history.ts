@@ -308,10 +308,16 @@ export function planOf(snapshot: Snapshot, intent: Intent, now: number, catalog:
   const added = (label: string): Plan => ({ added: { label, intent, at: now } });
   const catalogName = (plugin: string): string | undefined => catalog.find((entry) => entry.id === plugin)?.name;
   switch (intent.type) {
-    // (What is done to a pattern is no step: it is not put back by undo, and does not forget what was done before it. Nor is a module that is saved: it is a file of the library, and no part of the session.)
+    // (What is done to a pattern is no step: it is not put back by undo, and does not forget what was done before it. Nor is a module that is saved: it is a file of the library, and no part of the session. Nor, until step 124 of
+    // `docs/patch-graph.md`, is anything that is asked of a pattern box: the mock refuses it, and the page that has them plans their steps as the controller does.)
     case "setRecording":
     case "clearPattern":
     case "setPatternField":
+    case "addPattern":
+    case "setPatternBoxField":
+    case "patternBoxTransport":
+    case "clearPatternBox":
+    case "setPatternBoxNotes":
     case "save":
     case "saveAs":
     case "saveModule":

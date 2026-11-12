@@ -31,7 +31,7 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::app::apply::{Done, PluginAt};
 use crate::app::controller::{has_audio_output, outputs_fit_the_chain, ChainAt, Controller};
 use crate::app::intent::{Applied, IntentError};
-use crate::app::model::{mod_source_slot_to_graph, modulator_slot_commands, AudioCable, EventCable, GroupNode, InstrumentNode, ModTargetSlot, ModuleInstance, ModulatorSlot, NodeId, NodePath, ParamKind, PluginSlot, RemovedCable, SourceKind, SourceNode};
+use crate::app::model::{mod_source_slot_to_graph, modulator_slot_commands, AudioCable, EventCable, GroupNode, InstrumentNode, ModTargetSlot, ModuleInstance, ModulatorSlot, NodeId, NodePath, ParamKind, PatternBox, PluginSlot, RemovedCable, SourceKind, SourceNode};
 use crate::plugin::chain::{GraphCommand, KeptGroup, KeptLane, ModTarget, ModulatorLocation, NoteRemapper};
 use crate::plugin::{self, Plugin};
 use crate::session::RemapTarget;
@@ -63,11 +63,14 @@ pub(super) enum Inverse {
     /// An audio cable, which goes back among the audio cables under the id it had, with the ends and the level it had. (It is taken out before the nodes that it starts and
     /// ends at, and so is put back after them.)
     AudioCable(AudioCable),
-    /// A cable of notes, which goes back among them under the id it had, from the source and to the lane that it was between. (It is taken out before the lane that it ends at, or the source that it
-    /// starts at, and so is put back after it.)
+    /// A cable of notes, which goes back among them under the id it had, from the source or the pattern box and to the lane or the box that it was between. (It is taken out before the lane or the box that it ends at, or the
+    /// source or the box that it starts at, and so is put back after it.)
     EventCable(EventCable),
     /// A source of notes, which goes back among the sources at `index`, under the node it had. (The cables of notes that started at it were taken out before it, each written down, and come back after it.)
     Source { index: usize, source: SourceNode },
+    /// A pattern box (P4h), which goes back among the boxes at `index`, under the node it had, with its notes and its settings, and the audio thread is told of it as of a box that is new (the audio thread keeps nothing of a box: it is made again from the
+    /// model). (The cables of notes that started or ended at it were taken out before it, each written down, and come back after it.)
+    Pattern { index: usize, pattern: PatternBox },
     /// A module (step 108) as it was before a member left it or it went with all its members: undo gives it back, as it was, at its place among the modules (one that is still there, with a member less, is
     /// replaced by what it was). It is written down before the member that left, so that it is put back after it.
     Module { index: usize, module: ModuleInstance },
@@ -370,6 +373,11 @@ impl Controller {
                         }));
                     }
                 }
+                Inverse::Pattern { pattern, .. } => {
+                    if self.model.locate(pattern.node).is_some() {
+                        return Err(IntentError::Invalid(format!("node {} is there already", pattern.node.0)));
+                    }
+                }
                 Inverse::Effect { slot, .. } => {
                     if self.model.locate(slot.node).is_some() {
                         return Err(IntentError::Invalid(format!("node {} is there already", slot.node.0)));
@@ -503,9 +511,10 @@ impl Controller {
                 let _ = self.cmd_tx.send(GraphCommand::AddCable { id: cable.id, from: cable.from, to: cable.to, gain: cable.gain });
             }
             Inverse::EventCable(cable) => {
-                // (The lane it ended at is back, as it was put back before it, and so is the source it started at. One of them that is not there now, because the session was changed
+                // (The lane or the box it ended at is back, as it was put back before it, and so is the source or the box it started at. One of them that is not there now, because the session was changed
                 // without the history, leaves the cable out.)
-                if self.model.source(cable.from).is_none() || !matches!(self.model.locate(cable.to), Some(NodePath::Instrument(_))) {
+                let starts_at_something = self.model.source(cable.from).is_some() || self.model.pattern(cable.from).is_some();
+                if !starts_at_something || !matches!(self.model.locate(cable.to), Some(NodePath::Instrument(_) | NodePath::Pattern(_))) {
                     log::warn!("cable {} was not put back: what it was between is not there", cable.id.0);
                     return;
                 }
@@ -514,6 +523,7 @@ impl Controller {
             Inverse::Source { index, source } => {
                 self.model.insert_source_at(index, source);
             }
+            Inverse::Pattern { index, pattern } => self.put_back_pattern(index, pattern),
             Inverse::Module { index, module } => {
                 self.model.insert_module_at(index, module);
             }
