@@ -382,6 +382,46 @@ A key of the plugin's table (the `[[instrument]]`, an `[[instrument.effect]]` or
 - **Read leniently**, as a place is: a `state` that is not text, is not base64 or is more than the limit is left out and logged (the rest of the session loads, and the next save has no state for that plugin); an empty one is none. The spaces round the text are not part of it.
 - In the model it is `PluginSlot::state`; the writer is `to_save` (`state` of `SaveInstrument` and `SaveEffect`), the reader `lenient_state` and `decode_state` in `session.rs`. See "A plugin's own window" in `plugins.md`.
 
+### Pattern boxes (`[[pattern]]`, step 123)
+
+A **pattern box** (P4h of `docs/patch-graph.md` §11.6; the engine is "Pattern boxes (the engine)" and the rest "Pattern boxes in the session" in `inputs-and-midi.md`) is a node that stores notes in beats, records what the sources that its cables come from play and plays them to the
+lanes that its cables go to. A session has none until one is added, and **a session that has none is the file it was**.
+
+```toml
+[[pattern]]
+name = "Bass"              # what it is called: the text without its control characters and the spaces round it, and "Pattern" for nothing
+length_beats = 8.0         # the loop, in beats: 0.25 to 256 (held to that), 4 when the file says none
+looping = true             # whether it plays again at the end of its length (the own clock): true when the file says none
+sync = "own"               # whose beat it goes by: "own" (from Play) or "host" (the host's beat: see "Tempo"); any other word refuses the session
+overdub = true             # whether a recording keeps what is there and goes on pass after pass until it is finished: written only when it is true
+click = false              # whether the metronome counts a recording in: written only when it is false (it is true when the file says none)
+ui = { x = 300, y = 40 }   # where a front-end draws it, as every node's `ui`
+notes = [                  # at most 4,096: where a note begins and how long it is, in beats, its pitch by name and its velocity (100 when there is none)
+  { at = 0.0, len = 1.0, note = "C2", vel = 100 },
+  { at = 2.0, len = 0.5, note = "G2", vel = 90 },
+]
+
+[[cable]]
+from = "keys"              # a cable of notes from a source into a box ...
+to = "pattern[0]"          # ... the boxes are counted from 0 in the order of the file, as the devices are
+
+[[cable]]
+from = "pattern[0]"        # ... and from a box to a lane (never to another box: a box sends its notes to a lane)
+to = "instrument[0]"
+```
+
+- **The file** has the boxes after the sources (`[keys]`, `[[device]]`, `[[pattern]]`) and before the lanes, a note to a line (an inline table: `notes` is written by a pass over the text that `toml` makes, `session::inline_notes`, so that the hundred notes of a recording are
+  not a hundred tables with headers), and `overdub` only when it is on and `click` only when it is off, so that the boxes of a file are as short as they can be. A box that the file says nothing of (`[[pattern]]` alone) is a new box: 4 beats, looping, its own clock, overwriting, clicking, no
+  note. What is not saved is what the box is doing (`status`), its **slot** (`Source::pattern(slot)`, the number the engine knows it by: the loader gives the boxes the lowest slots in the order of the file) and its history.
+- **A cable's kind** is told by its places, as before: from `keys`, `device[n]` or `pattern[n]` it is a cable of notes (`CablePlace::Pattern(n)`, `is_source`), which has no `gain`, and ends at a lane or, from a source, at a box.
+- **Held to what a box holds** when the file is loaded, as the intents hold it (a file can say what an intent refuses): the length is held to 0.25 to 256 (`BoxPlan::clamp_length`) and the notes are as `patternbox::sanitize` makes them (a velocity of 1 to 127, a start and a length not below 0, in the order of the starts), so that the box in the model is the
+  box in the engine.
+- **What refuses the session**, with the place in the file: a 17th box (`pattern[16]: a session has at most 16 pattern boxes`), more than 4,096 notes in one (`pattern[0].notes has 4097 notes: a pattern box holds 4096 at most`), a `sync` that is neither word (`pattern[0].sync is "fast": a pattern box goes by its "own" clock or the "host"'s`), a note whose
+  name is none (`pattern[0].notes[1].note: invalid note letter 'H'`), a number that is not finite or is too big for the engine's 32 bits (as anywhere: `pattern[0].notes[0].at is not a finite number (NaN)`), a note with no `at`, `len` or `note` and a `vel` that is not a byte; and, from the cables
+  (`app::load`), a box that is not there (`cable[0].from: pattern[2] is not in the session`), a cable from a box to a box (`cable[0].to: pattern[1] is a pattern box, and a pattern box does not send its notes to another box yet: it sends them to a lane (instrument[0])`), an audio cable that ends at a box
+  (`cable[0].to: pattern[0] is a pattern box, which has no input of audio: it takes notes`) and a cable of notes into a lane whose instrument takes none. A modulator that `hears` a box, or has a cable to one, is left out (it hears every note; a box has no parameter), as one that names what is not there is.
+- In the model they are `SessionModel.patterns` (`PatternBox`), the reader is `session::parse` (`PatternBoxRaw`, `PatternBoxConfig`) and `app::load::load_patterns`, and the writer `app::save::sources_to_save` (`SavePatternBox`) and `session::to_toml` (`PatternBoxOut`).
+
 ### Tempo
 
 ```toml
