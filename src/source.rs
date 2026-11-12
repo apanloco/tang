@@ -5,21 +5,36 @@
 //! own for as long as the program runs (`midi::SourceTable`). A lane has the set of sources it hears (`SourceSet`, every source until it is told otherwise). A message that is sent as
 //! `Source::BROADCAST` is no source's and is heard by every lane whatever its set is: the panic.
 //!
-//! The first 48 numbers are the **inputs** (the keys and the devices) and the last 16 are the **pattern boxes'** (P4h): a box's notes are made inside the engine and carry the box's number, so that a lane hears them by the
-//! same set that says which inputs it hears, and `SourceSet::ALL`, what a lane hears until it is told otherwise, is the inputs: a box is heard by the lanes whose set has it and by no other.
+//! The first 48 numbers are the **inputs** (the keys and the devices), the next 16 are the **pattern boxes'** (P4h) and the 32 after them are the **note splitters'** (P4i, two for each: the pick and the rest): a box's notes and a
+//! splitter's are made inside the engine and carry the box's or the splitter's number, so that a lane hears them by the same set that says which inputs it hears, and `SourceSet::ALL`, what a lane hears until it is told
+//! otherwise, is the inputs: a box or a splitter is heard by the lanes whose set has it and by no other.
 
 use std::fmt;
 
-/// How many sources there can be: a set of them is a `u64`.
-pub const MAX_SOURCES: usize = 64;
+/// How many sources there can be: a set of them is a `u128`.
+pub const MAX_SOURCES: usize = INPUT_SOURCES + MAX_BOXES + SPLITTER_SOURCES;
 
-/// How many of the sources are inputs, the computer's keys and the devices (the numbers 0 to 47): the others are the pattern boxes' (P4h).
+/// How many of the sources are inputs, the computer's keys and the devices (the numbers 0 to 47): the others are the pattern boxes' (P4h) and the note splitters' (P4i).
 pub const INPUT_SOURCES: usize = 48;
 
 /// How many pattern boxes a session can have: each has a source of its own, the numbers 48 to 63.
-pub const MAX_BOXES: usize = MAX_SOURCES - INPUT_SOURCES;
+pub const MAX_BOXES: usize = 16;
 
-/// A source of MIDI messages: the computer's keys, a device or a pattern box. A number below `MAX_SOURCES`, or `BROADCAST`.
+/// How many note splitters a session can have, and how many sources they have (two each: the pick and the rest, the numbers 64 to 95).
+pub const MAX_SPLITTERS: usize = 16;
+pub const SPLITTER_SOURCES: usize = 2 * MAX_SPLITTERS;
+
+/// How many of the sources a note splitter can hear: the inputs and the pattern boxes, the numbers 0 to 63 (**never another splitter**: a splitter that heard another could make a loop).
+pub const HEARD_BY_SPLITTERS: usize = INPUT_SOURCES + MAX_BOXES;
+
+/// Which of the two outputs of a note splitter a source is: the one that has the note that the splitter picked (the lowest, or the highest), or the one that has the rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Output {
+    Pick,
+    Rest,
+}
+
+/// A source of MIDI messages: the computer's keys, a device, a pattern box or an output of a note splitter. A number below `MAX_SOURCES`, or `BROADCAST`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Source(u8);
 
@@ -38,13 +53,31 @@ impl Source {
 
     /// The source of the pattern box that has the number `nth`, 0 to 15 (`MAX_BOXES`; a session refuses more, and a number past it is the last box's).
     pub const fn pattern(nth: usize) -> Source {
-        if nth >= MAX_BOXES { Source(MAX_SOURCES as u8 - 1) } else { Source((INPUT_SOURCES + nth) as u8) }
+        if nth >= MAX_BOXES { Source((INPUT_SOURCES + MAX_BOXES) as u8 - 1) } else { Source((INPUT_SOURCES + nth) as u8) }
+    }
+
+    /// The source of an output of the note splitter that has the number `nth`, 0 to 15 (`MAX_SPLITTERS`; a session refuses more, and a number past it is the last splitter's): the numbers 64 to 95, the pick and then the rest of each.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
+    pub const fn splitter(nth: usize, output: Output) -> Source {
+        let nth = if nth >= MAX_SPLITTERS { MAX_SPLITTERS - 1 } else { nth };
+        Source((INPUT_SOURCES + MAX_BOXES + 2 * nth + output as usize) as u8)
     }
 
     /// Whether this is a pattern box's.
     #[cfg(test)]
     pub const fn is_pattern(self) -> bool {
-        self.0 as usize >= INPUT_SOURCES && (self.0 as usize) < MAX_SOURCES
+        self.0 as usize >= INPUT_SOURCES && (self.0 as usize) < INPUT_SOURCES + MAX_BOXES
+    }
+
+    /// Whether this is an output of a note splitter, and which: the splitter's number and the output.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
+    pub const fn splitter_output(self) -> Option<(usize, Output)> {
+        let first = INPUT_SOURCES + MAX_BOXES;
+        if (self.0 as usize) < first || self.0 as usize >= MAX_SOURCES {
+            return None;
+        }
+        let at = self.0 as usize - first;
+        Some((at / 2, if at.is_multiple_of(2) { Output::Pick } else { Output::Rest }))
     }
 
     /// Its number, 0 for the keys: below `MAX_SOURCES`, or 255 for `BROADCAST`.
@@ -63,6 +96,10 @@ impl fmt::Display for Source {
         match self.0 {
             0 => write!(f, "the keys"),
             u8::MAX => write!(f, "every source"),
+            n if n as usize >= INPUT_SOURCES + MAX_BOXES => {
+                let at = n as usize - INPUT_SOURCES - MAX_BOXES;
+                write!(f, "the {} of splitter {}", if at.is_multiple_of(2) { "pick" } else { "rest" }, at / 2 + 1)
+            }
             n if n as usize >= INPUT_SOURCES => write!(f, "pattern box {}", n as usize - INPUT_SOURCES + 1),
             n => write!(f, "device {n}"),
         }
@@ -71,39 +108,44 @@ impl fmt::Display for Source {
 
 /// A set of sources, one bit for each: what a lane hears.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SourceSet(u64);
+pub struct SourceSet(u128);
 
 impl SourceSet {
-    /// Every input, the keys and the devices, those that are not there yet too: what a lane hears until it is told otherwise. **A pattern box is not one of them**: its notes are heard by the lanes whose set has its source, which a cable says.
-    pub const ALL: SourceSet = SourceSet((1u64 << INPUT_SOURCES) - 1);
+    /// Every input, the keys and the devices, those that are not there yet too: what a lane hears until it is told otherwise. **A pattern box and a splitter are not one of them**: their notes are heard by the lanes whose set has their sources, which a cable says.
+    pub const ALL: SourceSet = SourceSet::first(INPUT_SOURCES);
     /// No source.
     pub const NONE: SourceSet = SourceSet(0);
 
+    /// The sources numbered 0 up to `count`: the inputs, say, or the sources that a note splitter can hear.
+    pub const fn first(count: usize) -> SourceSet {
+        SourceSet(if count >= 128 { u128::MAX } else { (1u128 << count) - 1 })
+    }
+
     /// The set that has the sources whose bits `bits` has (bit `n` is the source numbered `n`).
     #[cfg(test)]
-    pub const fn from_bits(bits: u64) -> SourceSet {
+    pub const fn from_bits(bits: u128) -> SourceSet {
         SourceSet(bits)
     }
 
     /// The bits of the set.
     #[cfg(test)]
-    pub const fn bits(self) -> u64 {
+    pub const fn bits(self) -> u128 {
         self.0
     }
 
     /// Whether `source` is in the set. `BROADCAST` is in none: it is heard whatever the set is, and no set is made of it.
     pub const fn contains(self, source: Source) -> bool {
-        source.0 < MAX_SOURCES as u8 && self.0 & (1u64 << source.0) != 0
+        source.0 < MAX_SOURCES as u8 && self.0 & (1u128 << source.0) != 0
     }
 
     /// The set and `source`. `BROADCAST` is no source, and the set is as it was.
     pub const fn with(self, source: Source) -> SourceSet {
-        if source.0 < MAX_SOURCES as u8 { SourceSet(self.0 | 1u64 << source.0) } else { self }
+        if source.0 < MAX_SOURCES as u8 { SourceSet(self.0 | 1u128 << source.0) } else { self }
     }
 
     /// The set without `source`.
     pub const fn without(self, source: Source) -> SourceSet {
-        if source.0 < MAX_SOURCES as u8 { SourceSet(self.0 & !(1u64 << source.0)) } else { self }
+        if source.0 < MAX_SOURCES as u8 { SourceSet(self.0 & !(1u128 << source.0)) } else { self }
     }
 
     /// The sources of `self` that `other` has not.
@@ -112,7 +154,6 @@ impl SourceSet {
     }
 
     /// The sources that both have.
-    #[cfg(test)]
     pub const fn and(self, other: SourceSet) -> SourceSet {
         SourceSet(self.0 & other.0)
     }
@@ -129,7 +170,7 @@ impl SourceSet {
 
     /// The sources in the set, the lowest number first.
     pub fn iter(self) -> impl Iterator<Item = Source> {
-        (0..MAX_SOURCES as u8).filter(move |&n| self.0 & (1u64 << n) != 0).map(Source)
+        (0..MAX_SOURCES as u8).filter(move |&n| self.0 & (1u128 << n) != 0).map(Source)
     }
 }
 
@@ -230,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn the_boxes_have_the_last_sixteen_numbers_and_are_in_no_default_set() {
+    fn the_boxes_have_the_sixteen_numbers_after_the_inputs_and_are_in_no_default_set() {
         assert_eq!(MAX_BOXES, 16);
         assert_eq!((Source::pattern(0).number(), Source::pattern(1).number(), Source::pattern(15).number()), (48, 49, 63));
         assert_eq!(Source::pattern(16).number(), 63, "a number past the sixteenth is the last box's (a session refuses it)");
@@ -244,13 +285,54 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_is_no_source_of_the_64() {
+    fn broadcast_is_no_source_of_the_96() {
         assert!(Source::BROADCAST.is_broadcast());
         assert!(!Source::KEYS.is_broadcast());
-        assert!(!Source::LAST_INPUT.is_broadcast() && !Source::pattern(15).is_broadcast());
+        assert!(!Source::LAST_INPUT.is_broadcast() && !Source::pattern(15).is_broadcast() && !Source::splitter(15, Output::Rest).is_broadcast());
         assert!(!SourceSet::ALL.contains(Source::BROADCAST), "no set has it: a lane hears it whatever its set is");
         assert_eq!(SourceSet::NONE.with(Source::BROADCAST), SourceSet::NONE);
         assert_eq!(SourceSet::ALL.without(Source::BROADCAST), SourceSet::ALL);
+    }
+
+    #[test]
+    fn the_splitters_have_two_numbers_each_after_the_boxes_and_are_in_no_default_set() {
+        assert_eq!((MAX_SPLITTERS, SPLITTER_SOURCES, MAX_SOURCES, HEARD_BY_SPLITTERS), (16, 32, 96, 64));
+        assert_eq!((Source::splitter(0, Output::Pick).number(), Source::splitter(0, Output::Rest).number()), (64, 65));
+        assert_eq!((Source::splitter(1, Output::Pick).number(), Source::splitter(15, Output::Rest).number()), (66, 95));
+        assert_eq!(Source::splitter(16, Output::Pick), Source::splitter(15, Output::Pick), "a number past the sixteenth is the last splitter's (a session refuses it)");
+        assert_eq!(Source::splitter(99, Output::Rest), Source::splitter(15, Output::Rest));
+        for nth in 0..MAX_SPLITTERS {
+            for output in [Output::Pick, Output::Rest] {
+                let source = Source::splitter(nth, output);
+                assert_eq!(source.splitter_output(), Some((nth, output)));
+                assert!(!source.is_pattern() && !source.is_broadcast());
+                assert!(!SourceSet::ALL.contains(source), "a lane that is not told which sources it hears hears no splitter: splitter {nth}");
+                assert!(!SourceSet::first(HEARD_BY_SPLITTERS).contains(source), "and a splitter does not hear a splitter");
+                assert!(SourceSet::NONE.with(source).contains(source), "and a set that is told one has it");
+                assert_eq!(SourceSet::NONE.with(source).without(source), SourceSet::NONE);
+            }
+        }
+        assert_eq!(Source::KEYS.splitter_output(), None);
+        assert_eq!(Source::LAST_INPUT.splitter_output(), None);
+        assert_eq!(Source::pattern(0).splitter_output(), None);
+        assert_eq!(Source::pattern(15).splitter_output(), None, "the last box is not the first splitter's");
+        assert_eq!(Source::BROADCAST.splitter_output(), None);
+        assert_eq!(Source(MAX_SOURCES as u8 - 1).splitter_output(), Some((15, Output::Rest)), "the last number there is");
+        assert_eq!(Source(MAX_SOURCES as u8).splitter_output(), None, "and the one after it is no source at all");
+        assert_eq!(SourceSet::NONE.with(Source::splitter(2, Output::Rest)).with(Source::pattern(1)).with(Source::KEYS).iter().map(Source::number).collect::<Vec<_>>(), [0, 49, 69]);
+        assert_eq!(SourceSet::NONE.with(Source::splitter(15, Output::Rest)).bits(), 1u128 << 95, "the bits go past the sixty-fourth");
+    }
+
+    #[test]
+    fn the_first_sources_are_the_numbers_below_a_count() {
+        assert_eq!(SourceSet::first(0), SourceSet::NONE);
+        assert_eq!(SourceSet::first(INPUT_SOURCES), SourceSet::ALL);
+        assert_eq!(SourceSet::first(3).bits(), 0b111);
+        assert_eq!(SourceSet::first(HEARD_BY_SPLITTERS).iter().count(), 64);
+        assert!(SourceSet::first(HEARD_BY_SPLITTERS).contains(Source::pattern(15)) && !SourceSet::first(HEARD_BY_SPLITTERS).contains(Source::splitter(0, Output::Pick)));
+        assert_eq!(SourceSet::first(MAX_SOURCES).iter().count(), MAX_SOURCES);
+        assert_eq!(SourceSet::first(128).bits(), u128::MAX);
+        assert_eq!(SourceSet::first(1000).bits(), u128::MAX);
     }
 
     #[test]
@@ -323,6 +405,9 @@ mod tests {
         assert_eq!(Source::device(2).to_string(), "device 3");
         assert_eq!(Source::pattern(0).to_string(), "pattern box 1");
         assert_eq!(Source::pattern(15).to_string(), "pattern box 16");
+        assert_eq!(Source::splitter(0, Output::Pick).to_string(), "the pick of splitter 1");
+        assert_eq!(Source::splitter(0, Output::Rest).to_string(), "the rest of splitter 1");
+        assert_eq!(Source::splitter(15, Output::Rest).to_string(), "the rest of splitter 16");
         assert_eq!(Source::BROADCAST.to_string(), "every source");
     }
 }

@@ -12,9 +12,10 @@ pub(crate) use nodes::ceiling_level;
 use crate::ids::{Driven, EdgeId, ModGain, ModSetting, NodeId};
 use crate::piano_filter::PianoFilter;
 use crate::scale::ScaleSetting;
+use crate::notesplit::{self, Splitter};
 use crate::patternbox::{self, BoxNotification, BoxPlan, BoxPlayer, Click, Tick};
 use crate::session::{self, RemapTarget, Route};
-use crate::source::{Events, MAX_BOXES, MAX_SOURCES, Source, SourceSet};
+use crate::source::{Events, MAX_BOXES, MAX_SOURCES, MAX_SPLITTERS, Output, Source, SourceSet};
 use crate::telemetry::{self, Meter, MeterSlots, Slot, Telemetry};
 
 mod limiter;
@@ -2053,6 +2054,24 @@ pub enum GraphCommand {
         node: NodeId,
         action: BoxAction,
     },
+    /// Put a note splitter in the graph (P4i of `docs/patch-graph.md` §11.6): `splitter` is made where memory may be asked for, and the notes of its two outputs are heard, as those of the sources that it was made with
+    /// (`Source::splitter`), by the lanes that hear those sources (`SetLaneSources`: no lane hears a splitter until it is told to). A splitter that is there under `node` is not added again; more than `MAX_SPLITTERS` are not taken.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
+    AddSplitter {
+        node: NodeId,
+        splitter: Box<Splitter>,
+    },
+    /// Take a note splitter out: the lanes that heard its outputs let go of what they had sounding.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
+    RemoveSplitter {
+        node: NodeId,
+    },
+    /// What a splitter is set to: which note it picks and which sources it hears (a source that is no longer heard is let go of: what it holds in the splitter ends on both outputs).
+    #[cfg_attr(not(test), expect(dead_code, reason = "the controller makes the note splitters in step 127 (P4i-B): until then the engine has them and nothing asks for one"))]
+    SetSplitterSettings {
+        node: NodeId,
+        settings: notesplit::Settings,
+    },
 }
 
 /// What a pattern box is told to do (`GraphCommand::BoxTransport`).
@@ -2075,14 +2094,62 @@ struct BoxSlot {
     status: patternbox::Status,
 }
 
+/// A note splitter in the graph (P4i).
+struct SplitterSlot {
+    node: NodeId,
+    splitter: Box<Splitter>,
+}
+
 /// How many events the room for a block's events with the boxes' notes merged in starts with, so that merging asks the allocator for nothing once it runs.
 const BOX_MERGE_CAPACITY: usize = 8192;
 
-/// Room for the block's events with the pattern boxes' notes merged in (`AudioGraph::run_boxes`). It is taken out of the graph for a block, and put back.
+/// Room for the block's events with the notes of some nodes merged in: the pattern boxes' (`AudioGraph::run_boxes`) and then, in a room of their own, the note splitters' (`run_splitters`). It is taken out of the graph for a block,
+/// and put back.
 #[derive(Default)]
 struct BoxMerge {
     events: Vec<(u64, [u8; 3])>,
     sources: Vec<Source>,
+}
+
+/// The most nodes of one kind that events are merged from at once: the boxes or the splitters.
+const MERGED_NODES: usize = if MAX_BOXES > MAX_SPLITTERS { MAX_BOXES } else { MAX_SPLITTERS };
+
+/// Merge what some nodes made for a block into the block's events `input`, by frame: `made(nth, at)` is the `at`th event of node `nth` (the events of each are in the order of their frames), with the source that it is heard as, if there is
+/// one. At one frame the events that came in go first and then the nodes' in the order they are in, each node's own in its order. The room is `merge`'s (it has what the audio thread needs, so that nothing is asked for); the events
+/// are given back with the sources beside them.
+fn merge_by_frame<'a>(input: Events<'a>, merge: &'a mut BoxMerge, nodes: usize, made: impl Fn(usize, usize) -> Option<(u64, [u8; 3], Source)>) -> Events<'a> {
+    merge.events.clear();
+    merge.sources.clear();
+    let mut at = [0usize; MERGED_NODES];
+    let mut inputs = input.iter().peekable();
+    loop {
+        let mut next: Option<(u64, usize)> = None;
+        for (nth, taken) in at.iter().enumerate().take(nodes) {
+            if let Some((frame, _, _)) = made(nth, *taken) {
+                if next.is_none_or(|(first, _)| frame < first) {
+                    next = Some((frame, nth));
+                }
+            }
+        }
+        let node_goes_first = match (inputs.peek(), next) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(&(_, frame, _)), Some((made_frame, _))) => made_frame < frame,
+        };
+        if let (true, Some((_, nth))) = (node_goes_first, next) {
+            if let Some((frame, bytes, source)) = made(nth, at[nth]) {
+                at[nth] += 1;
+                merge.events.push((frame, bytes));
+                merge.sources.push(source);
+            }
+        } else if let Some((source, frame, bytes)) = inputs.next() {
+            merge.events.push((frame, bytes));
+            merge.sources.push(source);
+        } else {
+            break;
+        }
+    }
+    Events::new(&merge.events, &merge.sources)
 }
 
 // ---------------------------------------------------------------------------
@@ -3554,6 +3621,10 @@ pub struct AudioGraph {
     /// The metronome of a recording that is counted in, and the ticks of the block that is run (the boxes' own, in order of their frames).
     click: Click,
     click_ticks: Vec<Tick>,
+    /// The note splitters (P4i): each hears what the inputs and the boxes play and makes the notes of its two outputs, as sources of notes of their own (`run_splitters`).
+    splitters: Vec<SplitterSlot>,
+    /// Room for the block's events with the splitters' notes merged in.
+    split_merge: BoxMerge,
 }
 
 impl AudioGraph {
@@ -3593,6 +3664,8 @@ impl AudioGraph {
             box_tx: None,
             click: Click::default(),
             click_ticks: Vec::with_capacity(256),
+            splitters: Vec::new(),
+            split_merge: BoxMerge::default(),
         }
     }
 
@@ -3727,37 +3800,23 @@ impl AudioGraph {
             return input;
         }
         // A merge of the inputs' events and of each box's (each is in the order of its frames): the lowest frame goes next, and the inputs' go before a box's at one frame, and a box's before a later box's.
-        merge.events.clear();
-        merge.sources.clear();
-        let mut at = [0usize; MAX_BOXES];
-        let mut inputs = input.iter().peekable();
-        loop {
-            let mut next_box: Option<(u64, usize)> = None;
-            for (nth, slot) in self.boxes.iter().enumerate() {
-                if let Some(event) = slot.player.events().get(at[nth]) {
-                    if next_box.is_none_or(|(frame, _)| event.frame < frame) {
-                        next_box = Some((event.frame, nth));
-                    }
-                }
-            }
-            let box_goes_first = match (inputs.peek(), next_box) {
-                (_, None) => false,
-                (None, Some(_)) => true,
-                (Some(&(_, frame, _)), Some((box_frame, _))) => box_frame < frame,
-            };
-            if let (true, Some((_, nth))) = (box_goes_first, next_box) {
-                let event = self.boxes[nth].player.events()[at[nth]];
-                at[nth] += 1;
-                merge.events.push((event.frame, event.bytes));
-                merge.sources.push(self.boxes[nth].player.source());
-            } else if let Some((source, frame, bytes)) = inputs.next() {
-                merge.events.push((frame, bytes));
-                merge.sources.push(source);
-            } else {
-                break;
-            }
+        let boxes = &self.boxes;
+        merge_by_frame(input, merge, boxes.len(), |nth, at| boxes[nth].player.events().get(at).map(|event| (event.frame, event.bytes, boxes[nth].player.source())))
+    }
+
+    /// The note splitters (P4i), for one block: each hears the events of the sources that it hears (the inputs' and the boxes': `input` is what `run_boxes` gave) and makes the notes of its two outputs, with the frames
+    /// of the events that they come from, and they are merged into the block's events by frame (at one frame, those that came in first, and then the splitters', in the order they were added), each with the source of its
+    /// output, so that the lanes that hear an output play it as they play a key. **What came in stays in the block**: the lanes that hear a key hear it as they did. A block in which no splitter makes anything is given back
+    /// as it came.
+    fn run_splitters<'a>(&mut self, input: Events<'a>, merge: &'a mut BoxMerge) -> Events<'a> {
+        for slot in &mut self.splitters {
+            slot.splitter.process(input);
         }
-        Events::new(&merge.events, &merge.sources)
+        if self.splitters.iter().all(|slot| slot.splitter.events().is_empty()) {
+            return input;
+        }
+        let splitters = &self.splitters;
+        merge_by_frame(input, merge, splitters.len(), |nth, at| splitters[nth].splitter.events().get(at).map(|made| (made.frame, made.bytes, splitters[nth].splitter.source(made.output))))
     }
 
     /// Set the notification channel for pattern recording completion.
@@ -4313,7 +4372,37 @@ impl AudioGraph {
                         lane.hear(sources);
                     }
                 }
-                GraphCommand::ReleaseSource { source } => self.release_source_in_lanes(source),
+                GraphCommand::ReleaseSource { source } => {
+                    self.release_source_in_lanes(source);
+                    // A splitter lets go of what the source has sounding in it too: its outputs would hold the keys of a device that went for ever.
+                    for slot in &mut self.splitters {
+                        slot.splitter.release_input(source);
+                    }
+                }
+                GraphCommand::AddSplitter { node, splitter } => {
+                    if self.splitters.iter().any(|slot| slot.node == node) {
+                        log::warn!("note splitter {node:?} is already in the graph: not added again");
+                    } else if self.splitters.len() >= MAX_SPLITTERS {
+                        log::warn!("note splitter not added: the graph has {MAX_SPLITTERS} already");
+                    } else {
+                        self.splitters.push(SplitterSlot { node, splitter });
+                        // The room for the merged events is made here, with the command, and not in a block.
+                        self.split_merge.events.reserve(BOX_MERGE_CAPACITY);
+                        self.split_merge.sources.reserve(BOX_MERGE_CAPACITY);
+                    }
+                }
+                GraphCommand::RemoveSplitter { node } => {
+                    if let Some(at) = self.splitters.iter().position(|slot| slot.node == node) {
+                        let slot = self.splitters.remove(at);
+                        self.release_source_in_lanes(slot.splitter.source(Output::Pick));
+                        self.release_source_in_lanes(slot.splitter.source(Output::Rest));
+                    }
+                }
+                GraphCommand::SetSplitterSettings { node, settings } => {
+                    if let Some(slot) = self.splitters.iter_mut().find(|slot| slot.node == node) {
+                        slot.splitter.set_settings(settings);
+                    }
+                }
                 GraphCommand::AddBox { node, player } => {
                     if self.boxes.iter().any(|slot| slot.node == node) {
                         log::warn!("pattern box {node:?} is already in the graph: not added again");
@@ -4834,6 +4923,9 @@ impl AudioGraph {
         self.click_ticks.clear();
         let mut merge = std::mem::take(&mut self.box_merge);
         let midi_events = if self.boxes.is_empty() || frames == 0 { input_events } else { self.run_boxes(input_events, frames, &mut merge) };
+        // The note splitters (P4i) hear what the inputs and the boxes play, and what they make of it is among the events from here on, as the notes of their outputs' sources. With none, the events are as they came.
+        let mut split_merge = std::mem::take(&mut self.split_merge);
+        let midi_events = if self.splitters.is_empty() || frames == 0 { midi_events } else { self.run_splitters(midi_events, &mut split_merge) };
 
         // How far a meter's peak falls over this buffer, if anything is measured.
         let fall = self
@@ -4910,8 +5002,9 @@ impl AudioGraph {
             };
             self.schedule.run(&mut self.instruments, &mut self.groups, &mut self.master, frames, &mut cx)
         };
-        // The room for the boxes' notes goes back (the events that it held are done with).
+        // The room for the boxes' notes and for the splitters' goes back (the events that it held are done with).
         self.box_merge = merge;
+        self.split_merge = split_merge;
         // A lane that a modulator hears had its notes worked out ahead of its head, which takes them and forgets it: a block that ended early (a plugin that failed) did not reach the heads
         // after it, and they are not prepared for the next block, whose notes are others.
         if !self.free_modulators.is_empty() {
@@ -10602,6 +10695,264 @@ mod tests {
         // Triggering the base note plays the pattern back unchanged.
         let events = p.process(&[note_on(60)], 256, scale).to_vec();
         assert_eq!(note_ons(&events), vec![60, 64, 67]);
+    }
+
+    // ---- note splitters (P4i): what the engine does with them ---------------------------------------------------------------------------
+
+    fn splitter_node(nth: usize) -> NodeId {
+        NodeId(800 + nth as u32)
+    }
+
+    /// Put splitter `nth` in (its outputs are the sources `Source::splitter(nth, …)`).
+    fn add_splitter(cmd_tx: &crossbeam_channel::Sender<GraphCommand>, nth: usize) {
+        cmd_tx.send(GraphCommand::AddSplitter { node: splitter_node(nth), splitter: Box::new(Splitter::new(nth)) }).unwrap();
+    }
+
+    fn pick_of(nth: usize) -> Source {
+        Source::splitter(nth, Output::Pick)
+    }
+
+    fn rest_of(nth: usize) -> Source {
+        Source::splitter(nth, Output::Rest)
+    }
+
+    /// Lane `at` (made if the graph has not got it) with an instrument that keeps the events that it is given.
+    fn keeper_lane(graph: &mut AudioGraph, cmd_tx: &crossbeam_channel::Sender<GraphCommand>, at: usize) -> Seen {
+        while graph.instruments.len() <= at {
+            let next = graph.instruments.len();
+            graph.instruments.push(InstrumentLane::new(lane_node(next)));
+        }
+        let (keeper, seen) = EventKeeper::new();
+        swap_instrument_at(cmd_tx, at, keeper);
+        seen
+    }
+
+    /// What a lane has been given so far: the frame and the bytes of each event, in order (the number of the block left out).
+    fn given(seen: &Seen) -> Vec<(u64, [u8; 3])> {
+        seen.lock().unwrap().iter().map(|&(_, frame, bytes)| (frame, bytes)).collect()
+    }
+
+    /// One block of `graph` with these events: the source, the frame and the bytes of each.
+    fn run_block(graph: &mut AudioGraph, events: &[(Source, u64, [u8; 3])]) {
+        let list: Vec<(u64, [u8; 3])> = events.iter().map(|&(_, frame, bytes)| (frame, bytes)).collect();
+        let sources: Vec<Source> = events.iter().map(|&(source, _, _)| source).collect();
+        graph.process_events(Events::new(&list, &sources), &mut make_output()).unwrap();
+    }
+
+    fn on_at(note: u8, frame: u64) -> (Source, u64, [u8; 3]) {
+        (Source::KEYS, frame, [0x90, note, 100])
+    }
+
+    #[test]
+    fn a_lane_hears_the_pick_of_a_splitter_and_another_lane_its_rest_and_a_lane_with_no_cable_hears_the_keys_and_neither() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
+        let keys_lane = keeper_lane(&mut graph, &cmd_tx, 2);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
+        // A chord, the G first, the C last, and a controller after them.
+        run_block(&mut graph, &[on_at(55, 10), on_at(52, 12), on_at(48, 14), (Source::KEYS, 16, [0xB0, 1, 64])]);
+        assert_eq!(given(&pick_lane), [(14, [0x90, 48, 100]), (16, [0xB0, 1, 64])], "the bass note, at its own frame, and the controller");
+        assert_eq!(given(&rest_lane), [(10, [0x90, 55, 100]), (12, [0x90, 52, 100]), (16, [0xB0, 1, 64])], "the other notes, and the controller");
+        assert_eq!(given(&keys_lane), [(10, [0x90, 55, 100]), (12, [0x90, 52, 100]), (14, [0x90, 48, 100]), (16, [0xB0, 1, 64])], "the keys as they came: a splitter's outputs are heard by the lanes that are cabled from them and by no other");
+        // The ends go where the notes went.
+        run_block(&mut graph, &[(Source::KEYS, 3, [0x80, 48, 0]), (Source::KEYS, 4, [0x80, 55, 0]), (Source::KEYS, 5, [0x80, 52, 0])]);
+        assert_eq!(given(&pick_lane)[2..], [(3, [0x80, 48, 0])]);
+        assert_eq!(given(&rest_lane)[3..], [(4, [0x80, 55, 0]), (5, [0x80, 52, 0])]);
+    }
+
+    #[test]
+    fn what_is_picked_is_set_by_a_command_and_a_note_that_is_held_stays_where_it_is() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
+        run_block(&mut graph, &[on_at(48, 0)]);
+        cmd_tx.send(GraphCommand::SetSplitterSettings { node: splitter_node(0), settings: notesplit::Settings { pick: notesplit::Pick::Highest, ..notesplit::Settings::default() } }).unwrap();
+        run_block(&mut graph, &[on_at(40, 1), on_at(60, 2)]);
+        assert_eq!(given(&pick_lane), [(0, [0x90, 48, 100]), (2, [0x90, 60, 100])], "the C that was held stays the pick; the highest of the new notes is the pick now");
+        assert_eq!(given(&rest_lane), [(1, [0x90, 40, 100])]);
+    }
+
+    #[test]
+    fn a_splitter_hears_the_inputs_and_the_boxes_that_it_is_set_to_hear_and_no_other() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
+        // It hears a box, and no key: the box plays a C and a G together, and the keys play something that it does not hear.
+        cmd_tx.send(GraphCommand::SetSplitterSettings { node: splitter_node(0), settings: notesplit::Settings { inputs: only(&[Source::pattern(0)]), ..notesplit::Settings::default() } }).unwrap();
+        add_box(&cmd_tx, 0, 2.0, &[box_note(0.0, 1.0, 60), box_note(0.0, 1.0, 67)]);
+        transport(&cmd_tx, 0, BoxAction::Play);
+        run_block(&mut graph, &[on_at(30, 0)]);
+        assert_eq!(given(&pick_lane), [(0, [0x90, 60, 100])], "the box's C is the pick, and the key is not heard");
+        assert_eq!(given(&rest_lane), [(0, [0x90, 67, 100])], "and its G is the rest");
+    }
+
+    #[test]
+    fn what_the_splitters_make_is_merged_by_frame_after_what_came_in_and_in_the_order_they_were_added() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let all = keeper_lane(&mut graph, &cmd_tx, 0);
+        add_splitter(&cmd_tx, 0);
+        add_splitter(&cmd_tx, 1);
+        // The first splitter hears the device, the second the keys; the lane hears the inputs and the picks of both.
+        cmd_tx.send(GraphCommand::SetSplitterSettings { node: splitter_node(0), settings: notesplit::Settings { inputs: only(&[DEVICE_A]), ..notesplit::Settings::default() } }).unwrap();
+        cmd_tx.send(GraphCommand::SetSplitterSettings { node: splitter_node(1), settings: notesplit::Settings { inputs: only(&[Source::KEYS]), ..notesplit::Settings::default() } }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: SourceSet::ALL.with(pick_of(0)).with(pick_of(1)) }).unwrap();
+        run_block(&mut graph, &[on_at(60, 5), (DEVICE_A, 5, [0x90, 62, 100]), on_at(64, 9)]);
+        assert_eq!(
+            given(&all),
+            [
+                (5, [0x90, 60, 100]),
+                (5, [0x90, 62, 100]),
+                (5, [0x90, 62, 100]),
+                (5, [0x90, 60, 100]),
+                (9, [0x90, 64, 100]),
+            ],
+            "at frame 5: the keys' C and the device's D as they came, then what the first splitter made (the D) and the second (the C); at frame 9 the key only (the second splitter's E is its rest, which the lane does not hear)"
+        );
+    }
+
+    #[test]
+    fn a_splitter_that_is_taken_out_is_let_go_of_by_the_lanes_that_heard_its_outputs() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
+        run_block(&mut graph, &[on_at(48, 0), on_at(52, 0)]);
+        cmd_tx.send(GraphCommand::RemoveSplitter { node: splitter_node(0) }).unwrap();
+        run_block(&mut graph, &[]);
+        assert_eq!(given(&pick_lane)[1..], [(0, [0x80, 48, 0])], "the lane lets go of the bass note");
+        assert_eq!(given(&rest_lane)[1..], [(0, [0x80, 52, 0])], "and the other of its note");
+        run_block(&mut graph, &[on_at(60, 0)]);
+        assert_eq!((given(&pick_lane).len(), given(&rest_lane).len()), (2, 2), "and nothing is made now: the splitter is gone");
+    }
+
+    #[test]
+    fn a_device_that_has_gone_is_let_go_of_by_the_splitter_and_so_by_the_lanes_that_hear_its_outputs() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
+        run_block(&mut graph, &[(DEVICE_A, 0, [0x90, 48, 100]), (DEVICE_A, 0, [0x90, 52, 100]), (Source::KEYS, 0, [0x90, 40, 100])]);
+        cmd_tx.send(GraphCommand::ReleaseSource { source: DEVICE_A }).unwrap();
+        run_block(&mut graph, &[]);
+        assert_eq!(given(&rest_lane)[2..], [(0, [0x80, 48, 0]), (0, [0x80, 52, 0])], "the keys of the device that went are let go of: both were the rest, since the keys' E flat below them is the pick");
+        assert_eq!(given(&pick_lane).len(), 1, "and the pick, the keys' note, is still held and is told nothing");
+    }
+
+    #[test]
+    fn a_panic_is_heard_by_the_lanes_as_it_is_and_the_splitter_forgets_what_it_held() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
+        run_block(&mut graph, &[on_at(48, 0), on_at(52, 0)]);
+        run_block(&mut graph, &[(Source::BROADCAST, 0, [0xB0, 123, 0])]);
+        assert_eq!(given(&pick_lane)[1..], [(0, [0xB0, 123, 0])], "the panic reaches the lane once, as it is, and is not made again by the splitter");
+        assert_eq!(given(&rest_lane)[1..], [(0, [0xB0, 123, 0])]);
+        // The splitter holds nothing now, so a key that is higher than the ones that were held is the pick.
+        run_block(&mut graph, &[on_at(70, 0)]);
+        assert_eq!(given(&pick_lane)[2..], [(0, [0x90, 70, 100])]);
+    }
+
+    #[test]
+    fn a_lane_that_hears_both_outputs_hears_every_note_once_and_a_controller_twice() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let both = keeper_lane(&mut graph, &cmd_tx, 0);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0), rest_of(0)]) }).unwrap();
+        run_block(&mut graph, &[on_at(52, 1), on_at(48, 2), (Source::KEYS, 3, [0xB0, 1, 64])]);
+        assert_eq!(given(&both), [(1, [0x90, 52, 100]), (2, [0x90, 48, 100]), (3, [0xB0, 1, 64]), (3, [0xB0, 1, 64])], "a note is on one output only; a controller is on both (a lane that is cabled from both is told it twice)");
+    }
+
+    #[test]
+    fn a_splitter_is_not_added_twice_no_more_than_sixteen_are_taken_and_a_command_for_one_that_is_not_there_changes_nothing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        add_splitter(&cmd_tx, 0);
+        add_splitter(&cmd_tx, 0);
+        run_block(&mut graph, &[]);
+        assert_eq!(graph.splitters.len(), 1, "one that is there under its node is not added again");
+        for nth in 1..MAX_SPLITTERS {
+            add_splitter(&cmd_tx, nth);
+        }
+        // A seventeenth, under a node of its own: not taken.
+        cmd_tx.send(GraphCommand::AddSplitter { node: splitter_node(MAX_SPLITTERS), splitter: Box::new(Splitter::new(MAX_SPLITTERS - 1)) }).unwrap();
+        run_block(&mut graph, &[]);
+        assert_eq!(graph.splitters.len(), MAX_SPLITTERS, "not more than the sources are for");
+        assert!(graph.splitters.iter().all(|slot| slot.node != splitter_node(MAX_SPLITTERS)));
+        let gone = splitter_node(99);
+        cmd_tx.send(GraphCommand::RemoveSplitter { node: gone }).unwrap();
+        cmd_tx.send(GraphCommand::SetSplitterSettings { node: gone, settings: notesplit::Settings::default() }).unwrap();
+        run_block(&mut graph, &[]);
+        assert_eq!(graph.splitters.len(), MAX_SPLITTERS);
+        cmd_tx.send(GraphCommand::RemoveSplitter { node: splitter_node(3) }).unwrap();
+        run_block(&mut graph, &[]);
+        assert_eq!(graph.splitters.len(), MAX_SPLITTERS - 1);
+        assert!(graph.splitters.iter().all(|slot| slot.node != splitter_node(3)));
+    }
+
+    #[test]
+    fn a_graph_with_splitters_that_make_nothing_gives_the_lanes_the_events_as_they_came() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        add_splitter(&cmd_tx, 0);
+        // The splitter hears a device that plays nothing: the lane (which hears the keys) is given what the keys play, in the order it came.
+        cmd_tx.send(GraphCommand::SetSplitterSettings { node: splitter_node(0), settings: notesplit::Settings { inputs: only(&[DEVICE_B]), ..notesplit::Settings::default() } }).unwrap();
+        run_block(&mut graph, &[on_at(60, 3), on_at(64, 4), (Source::KEYS, 9, [0xB0, 1, 7])]);
+        assert_eq!(given(&lane), [(3, [0x90, 60, 100]), (4, [0x90, 64, 100]), (9, [0xB0, 1, 7])]);
+    }
+
+    #[test]
+    fn a_splitter_that_makes_nothing_does_not_stop_one_that_does_and_the_order_of_their_notes_is_the_order_of_their_frames() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        add_splitter(&cmd_tx, 0);
+        add_splitter(&cmd_tx, 1);
+        // The first hears a device that plays nothing, the second hears the keys.
+        cmd_tx.send(GraphCommand::SetSplitterSettings { node: splitter_node(0), settings: notesplit::Settings { inputs: only(&[DEVICE_B]), ..notesplit::Settings::default() } }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0), pick_of(1), rest_of(1)]) }).unwrap();
+        run_block(&mut graph, &[on_at(64, 2), on_at(60, 7)]);
+        assert_eq!(given(&lane), [(2, [0x90, 64, 100]), (7, [0x90, 60, 100])], "the second splitter's notes are the lane's, in the order of their frames: the E is its rest and the C its pick");
+    }
+
+    #[test]
+    fn a_block_in_which_a_splitter_judges_lets_go_and_hears_a_panic_asks_the_allocator_for_nothing() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        swap_instrument(&cmd_tx, ConstInstrument::new(0.25));
+        another_lane(&mut graph, &cmd_tx, 0.5);
+        add_splitter(&cmd_tx, 0);
+        add_splitter(&cmd_tx, 1);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0), pick_of(1)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0), rest_of(1)]) }).unwrap();
+        let chord = [on_at(55, 10), on_at(52, 12), on_at(48, 14), (Source::KEYS, 16, [0xB0, 64, 127]), (DEVICE_A, 20, [0x90, 40, 90])];
+        // (One block with nothing in it first: it takes the commands, which make the room for the merged events, and makes the plan. What is counted is every block after it, from the first that has a note in it.)
+        run_block(&mut graph, &[]);
+        let list: Vec<(u64, [u8; 3])> = chord.iter().map(|&(_, frame, bytes)| (frame, bytes)).collect();
+        let sources: Vec<Source> = chord.iter().map(|&(source, _, _)| source).collect();
+        let mut out = make_output();
+        cmd_tx.send(GraphCommand::ReleaseSource { source: DEVICE_A }).unwrap();
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| {
+            for _ in 0..20 {
+                graph.process_events(Events::new(&list, &sources), &mut out).unwrap();
+                graph.process_events(Events::new(&[(0, [0xB0, 123, 0])], &[Source::BROADCAST]), &mut out).unwrap();
+            }
+            graph.process_events(Events::new(&list, &sources), &mut out).unwrap();
+            graph.process_events(Events::new(&[], &[]), &mut out).unwrap();
+        });
+        assert_eq!(allocations, 0, "the audio thread asked the allocator for memory");
     }
 
     // -- The audio path does not allocate once it is running --
