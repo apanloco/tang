@@ -504,6 +504,61 @@ MIDI-learn control), the Session tab label shows an asterisk:
 All logging goes to stderr via `RawModeLogger`, same as in `play` mode. Use
 `tang 2> debug.log` to capture logs to a file. No in-app log viewer.
 
+**How much is logged: `-v <level>`.** A global flag (before or after a subcommand) that takes
+one of `off`, `error`, `warn`, `info`, `debug`, `trace`, in any case; the value is required
+(`tang -v x.toml` is refused: `x.toml` is no level). A session (the TUI, `play`, `serve`) tells
+of **warnings and errors and no more** unless it is told to: what the program does as it does it
+is at `info` (`Opened MIDI input`, `MIDI inputs connected`, `Loaded instrument …`, `Session saved
+to …`, and each MIDI message that comes in: `MIDI in  [Launchkey Mini MK4 37 MIDI Out] Other
+ch=8 data=[f8]`, which a controller that sends the clock turns into a flood). So `tang -v info`
+is how the program was before, and `tang serve -v debug` is more. The level is chosen in
+`log_level` (the raw-mode logger of the TUI and `play`) and `init_env_logger` (`serve`, and the
+subcommands, which log in plain text):
+
+1. `-v`, if it is given, and nothing else then (`RUST_LOG` is not read, not even for a module).
+2. Else `RUST_LOG`: for the TUI and `play` a level alone (`RUST_LOG=info`; anything else, such as
+   `tang=debug`, is not one and is passed over), for `serve` and the subcommands all of
+   env_logger's syntax (`RUST_LOG=warn,tang::midi=info`).
+3. Else the default: `warn` for a session, and for the subcommands that are no session
+   (`enumerate`, `describe`, `listen`, `window`) `error`, as they were.
+
+`play` says how to stop (`Playing. Ctrl+Q or Ctrl+C to quit.`) whatever the level is, and not
+through the logger: with a log that tells of nothing but trouble it is the only word of it. The
+program's own words are not logs and are not touched by the level: the first line of `serve`
+(`Web interface: …`) and the address that the TUI's `--web` prints are on stdout, and the error
+that ends a run is printed by `main`. The plugin that Tang is in a DAW has no terminal and
+logs to a file of its own (`RUST_LOG`, `info` by default: `docs/reference/plugin-host.md`), which
+`-v` has nothing to do with.
+
+Held by `src/cli.rs`'s tests (the flag is global, takes one of the six names in any case and no
+other word) and `src/lib.rs`'s (`log_level`'s order), and by the real program: `tests/cli.rs`
+runs `tang play` with no terminal (it ends as soon as the session is loaded, with the error
+of having none, which is what its log has told by then) and `tests/serve.rs` runs `tang serve`
+until it says where it serves, each on a session whose oscillator has a knob that it has not
+got (a warning), under the flags and the `RUST_LOG` of a table of cases. The tests that read
+what a server did from its log (`Session saved to`, `Opened MIDI input`, `NoteOn`) and the
+browser tests' program (`web/e2e/own.ts`: its log is kept with a failed test) are started with
+`-v info`. The subcommands that are no session have no line of their own that a test could hold
+the flag by (`describe` and `enumerate builtins` log nothing; what `enumerate plugins` and
+`listen` log is what the machine's plugins and microphone make them say): `-v trace enumerate
+plugins` was run by hand, and says 667 lines on a Mac with plugins where the default says the 8
+that ROLI's own preset scanner writes to stderr itself.
+The lines that native plugin code writes to the stderr descriptor, bypassing `log` (a ROLI
+plugin's `Starting preset scan`, `Scanning … for presets`), are not logs and the level does not
+reach them: they are what is left of a `serve` on a machine that has such a plugin installed
+(the scan of the installed plugins that runs as the program starts makes the plugin look for
+its presets), with a session of built-in plugins as well.
+18 mutants of the code were all caught (the flag's name, short and long, and that it is global; the
+six names; the order of the level and its default; the default of a session and of a server; `-v`
+passed on to each of the two loggers; `RUST_LOG` read by `play`; `-v` stronger than a module of
+`RUST_LOG`; the guard that gives `play` and `serve` their own logger and no other). The terminal
+interface and the line of `play` are seen by hand in tmux (a terminal is what a test does not have):
+`play` shows its warning and its line and no more, `-v info` all it did, and the terminal interface
+starts and quits cleanly at both levels, printing `Stopping...` after it leaves the screen under
+`-v info` as before.
+TODO: a controller's MIDI clock (0xF8, 24 a beat) and active sensing (0xFE) are logged like a note, at
+`info`, so that `-v info` is a flood again for a controller that sends them: they could be logged at `trace`.
+
 While the TUI owns the screen it must not be corrupted by stray writes to the
 terminal. Two layers guard this, active only when **stderr is a terminal**
 (so `tang 2> debug.log` still captures everything):
