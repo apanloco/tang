@@ -5,7 +5,7 @@
 // clamp, round an enum, one revision per change), tells every subscribed connection what
 // changed, and, for the connections that ask, makes telemetry up: the LFOs run, the
 // parameters they drive follow them, and the master's meter rises while a note is held.
-import { BPM_RANGE, CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, KEY_CENTRE, KEY_SPAN, MAX_STEPS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, MODULATOR_WHOLE_FIELDS, NEW_CABLE_GAIN, NEW_STEPS, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_BOX_LIMIT, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH, STEP_RANGE } from "../protocol";
+import { BPM_RANGE, CABLE_GAIN_RANGE, DEPTH_RANGE, GAIN_RANGES, KEY_CENTRE, KEY_SPAN, MAX_STEPS, MODULATOR_FIELD_RANGES, MODULATOR_FIELD_SCALES, MODULATOR_WHOLE_FIELDS, NEW_CABLE_GAIN, NEW_STEPS, NODE_UI_LIMIT, NODE_UI_PARTS, PATTERN_BOX_LIMIT, PATTERN_COUNT_IN_BEATS, PATTERN_DEFAULT_LENGTH, PATTERN_FIELD_RANGES, PINNED_LIMIT, PROTOCOL, SCOPE_FRAME_LENGTH, STEP_RANGE, SPLITTER_LIMIT } from "../protocol";
 import type {
   ClientMessage,
   CatalogEntry,
@@ -37,6 +37,7 @@ import type {
   SoundEntry,
   SoundLibrary,
   SourceInfo,
+  SplitterField,
   StampedEvent,
   TelemetryChannel,
   TelemetryLayout,
@@ -54,13 +55,15 @@ import type { HistoryState, Made, Plan } from "./history";
 import { macroExposed, macroName } from "./macros";
 import type { MacroSource } from "./macros";
 import { noise } from "./noise";
-import { deviceName, eventCableEnds, withHears } from "./noteWiring";
+import { deviceName, eventCableEnds, portOfOutput, withHears } from "./noteWiring";
 import { MODULATOR_LABELS, kindOf } from "./modulatorKinds";
 import { DEFAULT_MODULE_NAME, cleanModuleName, moduleNameOf, moduleOf, moduleOfNodes, pluginCount, tidyName, withModules } from "./modules";
 import type { Module, ModuleEffect, ModuleInstrument, ModuleOutput, ModuleTarget } from "./modules";
 import { noteName } from "./notes";
 import { clampLength, newBox, nextBoxName, patternTitle, recordsKeys, sameNotes, sanitize } from "./patternBoxes";
 import { BoxRun, boxViewOf } from "./patternBoxPlayer";
+import { newSplitter, nextSplitterName, splitterTitle } from "./splitters";
+import type { SplitterNode } from "./splitters";
 import { fieldsOf, gainPorts, isGainPort, samePort } from "./reach";
 import { applyEvent, withValues } from "./reducers";
 import { parseScale } from "./scales";
@@ -258,17 +261,18 @@ function withNotesCable(edges: readonly Edge[], added: Edge & { kind: "events" }
 }
 
 /**
- * A cable of notes drawn from the output of events of a source to the input of events of a lane, as the controller does it (`add_cable_intent`, `Controller::add_event_cable`): what the ends are is
- * read from the ports (`eventCableEnds`), and then a level (a cable of notes has none: it carries notes, which are heard or not) and a cable between the two already are refused, in that order, before
- * an id is used. The lane then hears the sources that its cables start at and no others, which the links of the graph say (`withHears`).
+ * A cable of notes drawn from an output of events of a source, a pattern box or a note splitter (the second output of a splitter is its own) to the input of events of a lane, a box or a splitter, as the controller does it (`add_cable_intent`,
+ * `Controller::add_event_cable`): what the ends are is read from the ports (`eventCableEnds`), and then a level (a cable of notes has none: it carries notes, which are heard or not) and a cable between the two outputs and inputs already are
+ * refused, in that order, before an id is used. The lane then hears the sources that its cables start at and no others, which the links of the graph say (`withHears`).
  */
 function addNotesCableOutcome(snapshot: Snapshot, from: Endpoint, to: Endpoint, gain: number | null, counters: Counters): Outcome {
   const ends = eventCableEnds(snapshot.graph, from, to);
   if ("error" in ends) return ends;
   if (gain !== null) return invalid("a cable of notes has no level: it carries notes, which are heard or not");
-  if (snapshot.graph.edges.some((e) => isNotesCable(e) && e.from.node === ends.source && e.to.node === ends.lane)) return invalid("there is a cable between those two already");
+  const port = portOfOutput(ends.output);
+  if (snapshot.graph.edges.some((e) => isNotesCable(e) && e.from.node === ends.source && e.from.port.type === port.type && e.to.node === ends.lane)) return invalid("there is a cable between those two already");
   const added: Edge & { kind: "events" } = {
-    from: { node: ends.source, port: { type: "eventsOut" } },
+    from: { node: ends.source, port },
     to: { node: ends.lane, port: { type: "eventsIn" } },
     kind: "events",
     id: counters.edge(),
@@ -358,6 +362,43 @@ function patternBoxNotesOutcome(snapshot: Snapshot, node: NodeId, notes: readonl
 function patternBoxTransportOutcome(snapshot: Snapshot, node: NodeId): Outcome {
   const box = patternBoxOf(snapshot, node);
   return "error" in box ? box : { unchanged: true };
+}
+
+/**
+ * A note splitter added, as the controller does it (`add_splitter`): it picks the lowest note, is called `Splitter N` for the lowest N that no splitter is called, goes after the splitters there are (the graph lists the sources first, then the
+ * boxes and then the splitters), and is refused, before an id is used, when the session has `SPLITTER_LIMIT` already. A splitter that no cable of notes ends at takes every source, and no lane hears it until a cable from one of its outputs says so (`withHears`).
+ */
+function addSplitterOutcome(snapshot: Snapshot, counters: Counters): Outcome {
+  const { nodes } = snapshot.graph;
+  if (nodes.filter((n) => n.kind === "splitter").length >= SPLITTER_LIMIT) return invalid(`a session has at most ${String(SPLITTER_LIMIT)} note splitters`);
+  const added = newSplitter(counters.node(), nextSplitterName(nodes));
+  const at = nodes.findLastIndex((n) => n.kind === "source" || n.kind === "pattern" || n.kind === "splitter") + 1;
+  return { restructured: { ...snapshot, graph: { ...snapshot.graph, nodes: [...nodes.slice(0, at), added, ...nodes.slice(at)] } } };
+}
+
+/** The note splitter that `node` is, or why it is none, in the controller's words (`splitter_index`): the master and a node that is not there are not found, and any other node is not a splitter. */
+function splitterOf(snapshot: Snapshot, node: NodeId): SplitterNode | { error: WireError } {
+  const found = snapshot.graph.nodes.find((n) => n.id === node && n.kind !== "master");
+  if (!found) return { error: { code: "notFound", message: `there is no node ${String(node)}` } };
+  return found.kind === "splitter" ? found : { error: { code: "invalid", message: "that node is not a note splitter" } };
+}
+
+/**
+ * A setting of a note splitter set, as the controller does it (`set_splitter_field_intent`): the node is looked for first, and then the setting: a name is tidied by a group's rule (`Splitter` for a name of nothing), and the pick is what it is
+ * told. What the splitter has already is no change (the answer is the same, as a snapshot).
+ */
+function splitterFieldOutcome(snapshot: Snapshot, node: NodeId, field: SplitterField): Outcome {
+  const splitter = splitterOf(snapshot, node);
+  if ("error" in splitter) return splitter;
+  let changed: Partial<SplitterNode>;
+  if (field.type === "name") {
+    const title = splitterTitle(field.name);
+    if ("error" in title) return invalid(title.error);
+    changed = { name: title.name };
+  } else {
+    changed = { pick: field.pick };
+  }
+  return { restructured: { ...snapshot, graph: { ...snapshot.graph, nodes: snapshot.graph.nodes.map((n) => (n === splitter ? { ...splitter, ...changed } : n)) } } };
 }
 
 /** A place on a node, as one key: a parameter, a setting of a modulator, the depth of one of its cables (the layout names a value once for each). */
@@ -683,8 +724,8 @@ function removeOtherNodeOutcome(snapshot: Snapshot, found: Node): Outcome {
   if (found.kind === "effect") return removeEffectOutcome(snapshot, found);
   if (found.kind === "instrument") return removeLaneOutcome(snapshot, found);
   if (found.kind === "group") return removeGroupOutcome(snapshot, found);
-  // A source of notes goes with the cables of notes that start at it, and the lanes that heard it hear what their other cables bring, or every source if they have none (`withHears`). A pattern box goes with the cables of notes that start or end at it, in the same way.
-  if (found.kind === "source" || found.kind === "pattern") return { restructured: without(snapshot, new Set(), new Set([found.id])) };
+  // A source of notes goes with the cables of notes that start at it, and the lanes that heard it hear what their other cables bring, or every source if they have none (`withHears`). A pattern box and a note splitter go with the cables of notes that start or end at them, in the same way.
+  if (found.kind === "source" || found.kind === "pattern" || found.kind === "splitter") return { restructured: without(snapshot, new Set(), new Set([found.id])) };
   // (What is left is a modulator: the master is no node of the model, as far as the controller goes.)
   if (found.kind !== "modulator") return noNode(node);
   const touching = snapshot.graph.edges.filter((e) => isModulation(e) && (e.from.node === node || e.to.node === node)).map((e) => (e as { id: EdgeId }).id);
@@ -749,6 +790,7 @@ function collapseIntoModuleOutcome(snapshot: Snapshot, nodes: readonly NodeId[],
     else if (node.kind === "group" || node.kind === "effect") return invalid("a group is not collapsed into a module: a module holds lanes and modulators");
     else if (node.kind === "source") return invalid("a source of notes is not collapsed into a module: a module holds lanes and modulators");
     else if (node.kind === "pattern") return invalid("a pattern box is not collapsed into a module: a module holds lanes and modulators");
+    else if (node.kind === "splitter") return invalid("a note splitter is not collapsed into a module: a module holds lanes and modulators");
     else return invalid("a module cannot hold another module yet: ungroup it first");
   }
   if (nodes.length === 0) return invalid("nothing is chosen: choose the lanes, plugins and modulators to collapse into a module");
@@ -842,7 +884,7 @@ function modulateOutcome(snapshot: Snapshot, to: Edge["to"], kind: ModulatorKind
   const target = snapshot.graph.nodes.find((n) => n.id === to.node && n.kind !== "master");
   if (!target) return noNode(to.node);
   // (A group has no plugin: what a cable can drive in it is its volume and its pan, and the modulator hears the group.)
-  if ((target.kind === "group" && !isGainPort(to.port)) || target.kind === "source" || target.kind === "pattern") return invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them");
+  if ((target.kind === "group" && !isGainPort(to.port)) || target.kind === "source" || target.kind === "pattern" || target.kind === "splitter") return invalid("a modulator drives a parameter of a plugin, a volume, a mix or a pan, or a setting of a modulator, and that is none of them");
   // The new one hears the lane of a lane's instrument or of an effect of its chain, the group of a bus effect or a group, and what a modulator hears.
   if (target.kind === "effect" && target.parent === null) return invalid("that node is in no lane or group");
   const hears = target.kind === "instrument" || target.kind === "group" ? target.id : target.kind === "effect" ? target.parent : target.kind === "modulator" ? (target.hears ?? null) : null;
@@ -1709,8 +1751,8 @@ function intentOutcome(snapshot: Snapshot, intent: Intent, counters: Counters, c
   if (intent.type === "setBpm") return bpmOutcome(intent.bpm);
   if (intent.type === "setRecording" || intent.type === "clearPattern" || intent.type === "setPatternField") return patternOutcome(snapshot, intent);
   if (intent.type === "addPattern") return addPatternOutcome(snapshot, counters);
-  // (A note splitter is not in the mock yet: step 128 puts it there, pinned to the engine's by a fixture that a test of the Rust side writes.)
-  if (intent.type === "addSplitter" || intent.type === "setSplitterField") return invalid("a note splitter is not in the mock yet");
+  if (intent.type === "addSplitter") return addSplitterOutcome(snapshot, counters);
+  if (intent.type === "setSplitterField") return splitterFieldOutcome(snapshot, intent.node, intent.field);
   if (intent.type === "setPatternBoxField") return patternBoxFieldOutcome(snapshot, intent.node, intent.field);
   if (intent.type === "clearPatternBox") return patternBoxNotesOutcome(snapshot, intent.node, []);
   if (intent.type === "setPatternBoxNotes") return patternBoxNotesOutcome(snapshot, intent.node, intent.notes);

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import type { Graph, Node } from "../protocol";
-import { MASTER, sourcesFixture, tracerSnapshot } from "./fixtures";
-import { noteFromItems, noteToItems, sourceChosen, sourceItems } from "./noteItems";
+import { MASTER, sourcesFixture, splittersFixture, tracerSnapshot } from "./fixtures";
+import { noteFromChosen, noteFromItems, noteToItems, sourceChosen, sourceItems } from "./noteItems";
 
 // The session of the sources fixture (`testutil::NOTES`): the keys (7) and a device (8, Launchkey Mini MK4 37) are the sources; group 0 (Pad) with Reverb 1 on its bus, lane 2 in it (with Filter 3), lane 4
 // (an Oscillator, as lane 2 is: the canvas numbers them) and an empty lane 5, and an LFO (6) that hears lane 2; a cable of notes (1) from the keys to lane 4.
@@ -127,5 +127,50 @@ describe("the lanes that a source can send notes to", () => {
       { id: "2", label: "Oscillator 1" },
       { id: "4", label: "Oscillator 2" },
     ]);
+  });
+});
+
+// The session of the fixture of splitters (`testutil::SPLITTERS`): the lanes are 0, 1 and 2, the keys 3, the device 4, the box (Bass) 5, the first splitter (Bass line, which picks the lowest note) 6 and the second (which picks the highest) 7. The cables
+// of notes are the keys to 6, the box and the device to 7, the pick of 6 to the lane 0, its rest to the lane 1 and the pick of 7 to the lane 2.
+describe("the menus of notes with note splitters", () => {
+  const found = splittersFixture.cases.find((entry) => entry.name === "splitters");
+  if (!found) throw new Error("the fixture has the session of the splitters");
+  const splits = found.snapshot.graph;
+
+  test("list a splitter once for each of its outputs, by what the first picks and the rest, in the order of the graph: the sources, the boxes, the splitters", () => {
+    // (The lane 2 has a cable from the pick of the second splitter, and none from anything else.)
+    expect(noteFromItems(splits, 2)).toEqual([
+      { id: "3", label: "Keys" },
+      { id: "4", label: "Launchkey Mini MK4 37" },
+      { id: "5", label: "Bass" },
+      { id: "6", label: "Bass line · lowest" },
+      { id: "6:rest", label: "Bass line · rest" },
+      { id: "7:rest", label: "Splitter · rest" },
+    ]);
+  });
+
+  test("have the first output of a splitter that picks the highest note called so, and leave out an output that has a cable to the lane already", () => {
+    const highest: Graph = { nodes: splits.nodes.map((n) => (n.kind === "splitter" && n.id === 6 ? { ...n, pick: "highest" } : n)), edges: splits.edges };
+    // (The lane 1 has the rest of the first splitter: it is not listed; the pick of it is.)
+    expect(noteFromItems(highest, 1).map((item) => item.label)).toEqual(["Keys", "Launchkey Mini MK4 37", "Bass", "Bass line · highest", "Splitter · highest", "Splitter · rest"]);
+    expect(noteFromItems(highest, 1).map((item) => item.id)).toEqual(["3", "4", "5", "6", "7", "7:rest"]);
+  });
+
+  test("list the splitters among what takes the notes of a source or a box, and not among what takes a splitter's", () => {
+    // (The keys have a cable to the first splitter already: the second takes theirs, and so does the box that has none from them.)
+    expect(noteToItems(splits, 3).map((item) => item.id)).toEqual(["5", "7", "0", "1", "2"]);
+    expect(noteToItems(splits, 5).map((item) => item.id)).toEqual(["6", "0", "1", "2"]);
+    // (A splitter's takers are lanes, and which lanes follows the output: the pick has a cable to the lane 0 and the rest has one to the lane 1.)
+    expect(noteToItems(splits, 6).map((item) => item.id)).toEqual(["1", "2"]);
+    expect(noteToItems(splits, 6, "rest").map((item) => item.id)).toEqual(["0", "2"]);
+    expect(noteToItems(splits, 7, "rest").map((item) => item.id)).toEqual(["0", "1", "2"]);
+    expect(noteToItems(splits, 3, "rest")).toEqual([]);
+  });
+
+  test("have items that say the node and the output that they stand for: a node's id is its first output and a splitter's id with `:rest` after it is its second", () => {
+    expect(noteFromChosen("12")).toEqual({ node: 12, output: "pick" });
+    expect(noteFromChosen("6:rest")).toEqual({ node: 6, output: "rest" });
+    expect(noteFromChosen("0")).toEqual({ node: 0, output: "pick" });
+    for (const item of noteFromItems(splits, 2)) expect(noteFromChosen(item.id).node, item.id).toBe(Number.parseInt(item.id, 10));
   });
 });

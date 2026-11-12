@@ -6,7 +6,7 @@ import { effectItems, instrumentItems, moduleItems } from "../../client/catalog"
 import type { ClientState } from "../../client/connection";
 import type { Editor } from "../../client/editor";
 import { EVERY_NOTE, earItems } from "../../client/hears";
-import { noteFromItems, noteToItems, sourceChosen, sourceItems } from "../../client/noteItems";
+import { noteFromChosen, noteFromItems, noteToItems, sourceChosen, sourceItems } from "../../client/noteItems";
 import type { PatternBoxNode } from "../../client/patternBoxes";
 import { isRecording } from "../../client/patternWords";
 import { keptWords, removalWords } from "../../client/removal";
@@ -301,8 +301,9 @@ function laneMenu(deps: MenuDeps, node: NodeId, data: PatchNodeData): ContextIte
           submenu(
             "notes",
             "Take notes from",
-            choosing(from, (source) => {
-              void editor.addNotesCable(Number(source), node);
+            choosing(from, (chosen) => {
+              const start = noteFromChosen(chosen);
+              void editor.addNotesCable(start.node, node, start.output);
             }),
             "No source of notes is left to take notes from",
           ),
@@ -509,8 +510,9 @@ function patternBoxMenu(deps: MenuDeps, node: NodeId, data: PatchNodeData, box: 
       "notes-from",
       "Take notes from",
       graph
-        ? choosing(noteFromItems(graph, node), (source) => {
-            void editor.addNotesCable(Number(source), node);
+        ? choosing(noteFromItems(graph, node), (chosen) => {
+            const start = noteFromChosen(chosen);
+            void editor.addNotesCable(start.node, node, start.output);
           })
         : [],
       "Every source has a cable of notes to it",

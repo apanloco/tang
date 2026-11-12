@@ -7368,6 +7368,18 @@ size = 0.5
         let box_told = |node: NodeId, action: crate::app::intent::PatternBoxAction| Op::Do(Intent::PatternBoxTransport { node, action });
         let notes_cable = |from: NodeId, to: NodeId| Op::Do(Intent::AddCable { from: Endpoint { node: from, port: Port::EventsOut }, to: Endpoint { node: to, port: Port::EventsIn }, gain: None });
         let bass_notes = || vec![box_note(0.0, 1.0, 36, 100), box_note(2.0, 0.5, 43, 90)];
+        // And one for note splitters (step 128): `SPLITTERS`, which has the keys and a device, a box (Bass), two splitters (the first, Bass line, picks the lowest note and takes the keys; the second picks the highest and takes the box and the device),
+        // three lanes and six cables of notes (the keys to the first splitter, the box and the device to the second, the first splitter's pick to the first lane and its rest to the second, and the second splitter's pick to the third).
+        let (_engine, splitted, _clock) = controller_over(load(testutil::SPLITTERS).model);
+        let (s_first, s_second) = (splitted.model.splitters[0].node, splitted.model.splitters[1].node);
+        let (s_keys, s_device, s_bass) = (splitted.model.sources[0].node, splitted.model.sources[1].node, splitted.model.patterns[0].node);
+        let s_lane = [node(&splitted, NodePath::Instrument(0)), node(&splitted, NodePath::Instrument(1)), node(&splitted, NodePath::Instrument(2))];
+        let s_cable: Vec<EdgeId> = splitted.model.event_cables.iter().map(|cable| cable.id).collect();
+        assert_eq!(s_cable.len(), 6);
+        let split_field = |node: NodeId, field: SplitterField| Op::Do(Intent::SetSplitterField { node, field });
+        let split_name = |node: NodeId, name: &str| split_field(node, SplitterField::Name { name: name.to_string() });
+        let split_pick = |node: NodeId, pick: crate::app::graph::SplitterPick| split_field(node, SplitterField::Pick { pick });
+        let rest_cable = |from: NodeId, to: NodeId| Op::Do(Intent::AddCable { from: Endpoint { node: from, port: Port::EventsOutRest }, to: Endpoint { node: to, port: Port::EventsIn }, gain: None });
         let own_sessions: Vec<(&str, &str, Vec<Op>)> = vec![
             (
                 "an audio cable that is drawn is taken out by undo and drawn again by redo under its id and at its level, and what was done before it is still to be undone",
@@ -7858,6 +7870,113 @@ size = 0.5
                     box_told(b_plain, crate::app::intent::PatternBoxAction::Stop),
                     box_told(b_lane[0], crate::app::intent::PatternBoxAction::Play),
                     undo(),
+                    redo(),
+                ],
+            ),
+            (
+                "a note splitter that is added is taken out by undo and added again by redo under its node, called by the lowest number that no splitter is called by, and one that was taken out leaves its name free",
+                testutil::SPLITTERS,
+                vec![Op::Do(Intent::AddSplitter), undo(), redo(), Op::Do(Intent::AddSplitter), Op::Do(Intent::AddSplitter), undo(), undo(), undo(), redo(), redo(), redo()],
+            ),
+            (
+                "the settings of a note splitter are steps in the words of each, a name that is typed is one step, two splitters are two, and each is put back and set again",
+                testutil::SPLITTERS,
+                vec![
+                    split_name(s_first, "Lead"),
+                    Op::Wait(16),
+                    split_name(s_first, "Lead 2"),
+                    pause(),
+                    split_pick(s_first, crate::app::graph::SplitterPick::Highest),
+                    split_pick(s_second, crate::app::graph::SplitterPick::Lowest),
+                    split_pick(s_first, crate::app::graph::SplitterPick::Lowest),
+                    split_name(s_second, " Pad "),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                ],
+            ),
+            (
+                "a setting that a note splitter has already, a name that is too long or has a control character in it and a node that is no splitter leave no step, and the history is as it was",
+                testutil::SPLITTERS,
+                vec![
+                    split_pick(s_second, crate::app::graph::SplitterPick::Highest),
+                    split_pick(s_first, crate::app::graph::SplitterPick::Lowest),
+                    split_name(s_first, "Bass line"),
+                    split_name(s_first, "  Bass line "),
+                    split_name(s_second, "Splitter"),
+                    split_name(s_first, &"x".repeat(crate::app::model::MAX_NAME + 1)),
+                    split_name(s_first, "a\u{1}b"),
+                    split_pick(s_lane[0], crate::app::graph::SplitterPick::Highest),
+                    split_pick(s_keys, crate::app::graph::SplitterPick::Highest),
+                    split_pick(s_bass, crate::app::graph::SplitterPick::Highest),
+                    split_name(NodeId(9_999), "x"),
+                    undo(),
+                    undo(),
+                ],
+            ),
+            (
+                "a note splitter that is taken out comes back by undo as it was, with its name, its pick, its place and the cables of notes that started or ended at it, and goes again by redo; so do a source, a box and a lane that it had cables with",
+                testutil::SPLITTERS,
+                vec![
+                    split_pick(s_first, crate::app::graph::SplitterPick::Highest),
+                    pause(),
+                    Op::Do(Intent::RemoveNode { node: s_first }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: s_second }),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: s_keys }),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: s_bass }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    Op::Do(Intent::RemoveNode { node: s_lane[1] }),
+                    undo(),
+                    redo(),
+                    undo(),
+                    undo(),
+                ],
+            ),
+            (
+                "the cables of notes of a note splitter are drawn from either output and taken out as other cables are, put back by undo under their ids, and a cable that a splitter cannot have is refused and leaves no step",
+                testutil::SPLITTERS,
+                vec![
+                    notes_cable(s_device, s_first),
+                    notes_cable(s_bass, s_first),
+                    notes_cable(s_first, s_lane[2]),
+                    rest_cable(s_first, s_lane[2]),
+                    rest_cable(s_second, s_lane[0]),
+                    notes_cable(s_first, s_second),
+                    notes_cable(s_second, s_first),
+                    notes_cable(s_first, s_bass),
+                    rest_cable(s_keys, s_first),
+                    notes_cable(s_keys, s_first),
+                    Op::Do(Intent::RemoveEdge { edge: s_cable[3] }),
+                    Op::Do(Intent::RemoveEdge { edge: s_cable[4] }),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    undo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
+                    redo(),
                     redo(),
                 ],
             ),

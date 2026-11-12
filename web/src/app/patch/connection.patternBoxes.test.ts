@@ -36,7 +36,7 @@ describe("a cable of notes dragged from a pattern box", () => {
       addCable: (...args: unknown[]) => Promise.resolve(void asked.push(["addCable", args])),
     };
     drawCable(editor as never, notes(BASS, SECOND));
-    expect(asked).toEqual([["addNotesCable", [BASS, SECOND]]]);
+    expect(asked).toEqual([["addNotesCable", [BASS, SECOND, "pick"]]]);
   });
 
   test("is one that the controller would take when it ends at a lane that has none from the box, and refuses a lane that has, a box, and a box to itself", () => {
@@ -70,6 +70,6 @@ describe("a cable of notes dragged from a source to a pattern box", () => {
       addCable: () => Promise.resolve(),
     };
     drawCable(editor as never, notes(DEVICE, PLAIN));
-    expect(asked).toEqual([[DEVICE, PLAIN]]);
+    expect(asked).toEqual([[DEVICE, PLAIN, "pick"]]);
   });
 });

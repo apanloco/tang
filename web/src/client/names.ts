@@ -64,12 +64,14 @@ export function endLabel(graph: Graph, names: Names, to: Endpoint, reading: Read
 }
 
 /**
- * A cable, in words: `LFO → Filter: cutoff`, `ADSR → depth of LFO → Filter: cutoff` (`endLabel` says how its end is told). A cable
+ * A cable, in words: `LFO → Filter: cutoff`, `ADSR → depth of LFO → Filter: cutoff` (`endLabel` says how its end is told), and `Bass line (rest) → Pad` for a cable of notes from the second output of a note splitter. A cable
  * that is not made yet has no id, and is the same.
  */
 export function cableWords(graph: Graph, names: Names, cable: { from: Endpoint; to: Endpoint; id?: EdgeId }, reading: ReadonlySet<EdgeId> = new Set()): string {
   const now = cable.id === undefined ? reading : new Set([...reading, cable.id]);
-  return `${names.get(cable.from.node) ?? "?"} → ${endLabel(graph, names, cable.to, now)}`;
+  // (A note splitter has two outputs of notes, and a lane can have a cable from each: the second is told by `(rest)` after the splitter's name, and the first as every node's output is.)
+  const second = cable.from.port.type === "eventsOutRest" ? " (rest)" : "";
+  return `${names.get(cable.from.node) ?? "?"}${second} → ${endLabel(graph, names, cable.to, now)}`;
 }
 
 /**

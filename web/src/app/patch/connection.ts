@@ -2,7 +2,7 @@
 // handles of two nodes (ids as text, handles by the names `handleOf` gave them), and the cable it stands for is
 // a modulator, a node and a port of it: a parameter of the plugin in it, or a setting of it if it is a modulator,
 // or the depth of one of the modulator's cables (docs/web-ui.md §9.3); or an audio cable, from the output of one node to the input of another
-// (docs/patch-graph.md §11.6); or a cable of notes, from a source to a lane. Whether it can be drawn is not decided here: the controller decides (`AddModEdge`,
+// (docs/patch-graph.md §11.6); or a cable of notes, from a source, a pattern box or a note splitter's output to a lane (or a box, or a splitter). Whether it can be drawn is not decided here: the controller decides (`AddModEdge`,
 // `AddCable`); the list it is looked up in (`drivablesOf`, in the data of each modulator's node, `audioTakers` for the audio and `noteTakers` for the notes) is the
 // client's reading of the same rule, so that the canvas can show the ends that take the cable before it is dropped, and not drop it on one that does not.
 // A cable that is dragged to or from a box (a module that is closed, step 108) is a cable to or from the node inside that the handle of the box stands for (`memberOfHandle`): the connection is resolved to it first.
@@ -10,7 +10,7 @@ import { createContext } from "react";
 
 import type { Editor } from "../../client/editor";
 import { noteTakers } from "../../client/noteWiring";
-import type { NotesEnds } from "../../client/noteWiring";
+import type { NotesEnds, NotesOutput } from "../../client/noteWiring";
 import { audioTakers } from "../../client/wiring";
 import type { Graph, NodeId, Port } from "../../protocol";
 import { handleOf, memberOfHandle, paramHandle, plainHandle, SETTING_HANDLES } from "./handles";
@@ -90,11 +90,15 @@ export function audioCableOf(connection: Connection): AudioEnds | null {
   return { from: Number(source), to: Number(target), side: targetHandle === "audioInSide" };
 }
 
-/** The cable of notes a connection asks for: from the source whose output of events it starts at to the lane whose input of events it ends at; null if it does not go from one to the other, or the nodes are not named by whole numbers. */
+/** The output of events that a handle is, if it is one: the first of any node that sends notes (`eventsOut`), or the second of a note splitter (`eventsOutRest`). */
+const outputOfHandle = (handle: string | null | undefined): NotesOutput | null => (handle === "eventsOut" ? "pick" : handle === "eventsOutRest" ? "rest" : null);
+
+/** The cable of notes a connection asks for: from the node whose output of events it starts at (and which of its two, for a splitter) to the node whose input of events it ends at; null if it does not go from one to the other, or the nodes are not named by whole numbers. */
 export function notesCableOf(connection: Connection): NotesEnds | null {
   const { source, target, sourceHandle, targetHandle } = resolved(connection);
-  if (sourceHandle !== "eventsOut" || targetHandle !== "eventsIn" || ![source, target].every((text) => WHOLE.test(text))) return null;
-  return { source: Number(source), lane: Number(target) };
+  const output = outputOfHandle(sourceHandle);
+  if (output === null || targetHandle !== "eventsIn" || ![source, target].every((text) => WHOLE.test(text))) return null;
+  return { source: Number(source), output, lane: Number(target) };
 }
 
 /** The key of a port of a node, by the name of its handle, which is how the ends that take a cable are listed. */
@@ -132,23 +136,23 @@ export function canDrawAudio(graph: Graph, ends: AudioEnds): boolean {
   return (ends.side ? takers.side : takers.main).includes(ends.to);
 }
 
-/** The inputs of events that take a cable of notes from the source `from` now, as `keyOf` says them: the lanes that it has none to yet. */
-export function notesTakersOf(graph: Graph, from: NodeId): Set<string> {
-  return new Set(noteTakers(graph, from).map((lane) => keyOf(lane, handleOf({ type: "eventsIn" }))));
+/** The inputs of events that take a cable of notes from the output `output` of the node `from` now, as `keyOf` says them: the lanes, boxes and splitters that it has none to yet from that output. */
+export function notesTakersOf(graph: Graph, from: NodeId, output: NotesOutput = "pick"): Set<string> {
+  return new Set(noteTakers(graph, from, output).map((lane) => keyOf(lane, handleOf({ type: "eventsIn" }))));
 }
 
 /** Whether the cable of notes can be drawn: the controller would take it, which `noteTakers` reads from the graph. */
 export function canDrawNotes(graph: Graph, ends: NotesEnds): boolean {
-  return noteTakers(graph, ends.source).includes(ends.lane);
+  return noteTakers(graph, ends.source, ends.output).includes(ends.lane);
 }
 
 /** What kind of cable a drag draws: audio, notes or modulation. */
 export type CableKind = "audio" | "notes" | "modulation";
 
-/** The kind of cable that a drag draws, by the handle it starts at (`takersOf` has the ports that take it): audio from an output of audio, notes from an output of events, modulation from anything else that starts a cable. */
+/** The kind of cable that a drag draws, by the handle it starts at (`takersOf` has the ports that take it): audio from an output of audio, notes from an output of events (either of a splitter's), modulation from anything else that starts a cable. */
 export const kindOfDrag = (handleId: string | null): CableKind => {
   const handle = plainHandle(handleId);
-  return handle === "audioOut" ? "audio" : handle === "eventsOut" ? "notes" : "modulation";
+  return handle === "audioOut" ? "audio" : outputOfHandle(handle) !== null ? "notes" : "modulation";
 };
 
 /**
@@ -163,7 +167,7 @@ export function drawCable(editor: Pick<Editor, "addAudioCable" | "addNotesCable"
   }
   const notes = notesCableOf(connection);
   if (notes) {
-    void editor.addNotesCable(notes.source, notes.lane);
+    void editor.addNotesCable(notes.source, notes.lane, notes.output);
     return;
   }
   const ends = cableOf(connection);
@@ -179,7 +183,7 @@ interface Start {
 
 /**
  * The ports that take the cable that is dragged from `start` (`keyOf`): the ports that a modulator can still drive for a drag from its output, the inputs of audio that take audio
- * from the output of a node for a drag from that, the inputs of events of the lanes that take notes from a source for a drag from its output; null where no cable starts (an input,
+ * from the output of a node for a drag from that, the inputs of events of the lanes, boxes and splitters that take notes from a node for a drag from its output of events (or the second output of a splitter); null where no cable starts (an input,
  * a port of a control, no node, no session to say what is where).
  */
 export function takersOf(graph: Graph | null, nodes: readonly PatchNode[], start: Start): Set<string> | null {
@@ -190,7 +194,8 @@ export function takersOf(graph: Graph | null, nodes: readonly PatchNode[], start
   if (start.handleType !== "source" || nodeId === null || !WHOLE.test(nodeId)) return null;
   if (handleId === "modOut") return drawableFrom(nodes, Number(nodeId));
   if (handleId === "audioOut") return graph ? audioTakersOf(graph, Number(nodeId)) : null;
-  if (handleId === "eventsOut") return graph ? notesTakersOf(graph, Number(nodeId)) : null;
+  const output = outputOfHandle(handleId);
+  if (output !== null) return graph ? notesTakersOf(graph, Number(nodeId), output) : null;
   return null;
 }
 

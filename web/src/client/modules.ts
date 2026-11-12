@@ -204,6 +204,8 @@ export function moduleOfNodes(snapshot: Snapshot, chosen: readonly Node[]): Modu
       return "a source of notes is not part of a module: a module is made of effects and instruments, and the modulators that go with them";
     } else if (node.kind === "pattern") {
       return "a pattern box is not part of a module: a module is made of effects and instruments, and the modulators that go with them";
+    } else if (node.kind === "splitter") {
+      return "a note splitter is not part of a module: a module is made of effects and instruments, and the modulators that go with them";
     } else {
       return `there is no node ${String(node.id)}`;
     }
