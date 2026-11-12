@@ -134,19 +134,20 @@ describe("the mock engine's pattern boxes", () => {
     expect(fixtureCase("full").rows.length).toBeGreaterThanOrEqual(1);
   });
 
-  // What the fixture's rows do not say: a box that is told to do something uses a revision, and tells the clients nothing else (`pattern_box_transport_intent`: `Applied::of(rev, [])`).
+  // What the fixture's rows do not say: a box that is told to do something uses a revision, and tells the clients nothing else (`pattern_box_transport_intent`: `Applied::of(rev, [])`); what the box does then is the engine's, and comes as a
+  // snapshot of its own when it is something else than it was (`BoxNotification::Status`). A box that is stopped, told to stop or to finish recording, does nothing: only the revision is used.
   test("use a revision for what a box is told to do, and tell no event and no change of the structure", () => {
     const server = new MockServer({ snapshot: fixtureCase("boxes").snapshot });
     const rev = server.snapshot.rev;
-    for (const action of ["record", "play", "stop", "finishRecording"] as const) {
+    for (const action of ["stop", "finishRecording"] as const) {
       const told = server.apply({ type: "patternBoxTransport", node: 4, action });
       expect(told, action).toEqual({ events: [], restructured: false });
     }
-    expect(server.snapshot.rev).toBe(rev + 4);
+    expect(server.snapshot.rev).toBe(rev + 2);
     expect(server.history).toEqual({ undo: null, redo: null });
     // (A box that is not there is refused, and uses none.)
     expect(() => server.apply({ type: "patternBoxTransport", node: 900, action: "play" })).toThrow("there is no node 900");
-    expect(server.snapshot.rev).toBe(rev + 4);
+    expect(server.snapshot.rev).toBe(rev + 2);
   });
 
   // What the fixture cannot hold, since the wire has no number that is not finite: the controller's 32-bit numbers are infinite at 1e39, and the words for it are the controller's (`set_pattern_box_field_intent`).

@@ -1,0 +1,1169 @@
+{
+  "bpm": 120.0,
+  "cases": [
+    {
+      "beats": 14.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 60,
+          "start": 1.0,
+          "velocity": 90
+        },
+        {
+          "length": 1.5,
+          "note": 64,
+          "start": 1.5,
+          "velocity": 40
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "a pass on the own clock takes the keys that are played in it, at the beat of each and for as long as each is down, and the box plays what it took",
+      "notes": [],
+      "overdub": false,
+      "passes": [
+        {
+          "beat": 8.0,
+          "notes": [
+            {
+              "length": 1.0,
+              "note": 60,
+              "start": 1.0,
+              "velocity": 90
+            },
+            {
+              "length": 1.5,
+              "note": 64,
+              "start": 1.5,
+              "velocity": 40
+            }
+          ]
+        }
+      ],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 5.0,
+          "do": "on",
+          "note": 60,
+          "velocity": 90
+        },
+        {
+          "beat": 5.5,
+          "do": "on",
+          "note": 64,
+          "velocity": 40
+        },
+        {
+          "beat": 6.0,
+          "do": "off",
+          "note": 60,
+          "velocity": 0
+        },
+        {
+          "beat": 7.0,
+          "do": "off",
+          "note": 64,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "countingIn"
+        ],
+        [
+          4.0,
+          "recording"
+        ],
+        [
+          8.0,
+          "playing"
+        ]
+      ]
+    },
+    {
+      "beats": 10.0,
+      "final": [
+        {
+          "length": 0.5,
+          "note": 62,
+          "start": 0.5,
+          "velocity": 80
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "what is played in the count-in is not taken",
+      "notes": [],
+      "overdub": false,
+      "passes": [
+        {
+          "beat": 8.0,
+          "notes": [
+            {
+              "length": 0.5,
+              "note": 62,
+              "start": 0.5,
+              "velocity": 80
+            }
+          ]
+        }
+      ],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 1.0,
+          "do": "on",
+          "note": 60,
+          "velocity": 100
+        },
+        {
+          "beat": 2.5,
+          "do": "off",
+          "note": 60,
+          "velocity": 0
+        },
+        {
+          "beat": 4.5,
+          "do": "on",
+          "note": 62,
+          "velocity": 80
+        },
+        {
+          "beat": 5.0,
+          "do": "off",
+          "note": 62,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "countingIn"
+        ],
+        [
+          4.0,
+          "recording"
+        ],
+        [
+          8.0,
+          "playing"
+        ]
+      ]
+    },
+    {
+      "beats": 10.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 60,
+          "start": 3.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 62,
+          "start": 3.5,
+          "velocity": 70
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "a key that is still down at the end of the pass ends there",
+      "notes": [],
+      "overdub": false,
+      "passes": [
+        {
+          "beat": 8.0,
+          "notes": [
+            {
+              "length": 1.0,
+              "note": 60,
+              "start": 3.0,
+              "velocity": 100
+            },
+            {
+              "length": 0.5,
+              "note": 62,
+              "start": 3.5,
+              "velocity": 70
+            }
+          ]
+        }
+      ],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 7.0,
+          "do": "on",
+          "note": 60,
+          "velocity": 100
+        },
+        {
+          "beat": 7.5,
+          "do": "on",
+          "note": 62,
+          "velocity": 70
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "countingIn"
+        ],
+        [
+          4.0,
+          "recording"
+        ],
+        [
+          8.0,
+          "playing"
+        ]
+      ]
+    },
+    {
+      "beats": 10.0,
+      "final": [
+        {
+          "length": 0.015625,
+          "note": 62,
+          "start": 1.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 64,
+          "start": 1.5,
+          "velocity": 80
+        },
+        {
+          "length": 1.0,
+          "note": 64,
+          "start": 2.0,
+          "velocity": 70
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "a key that comes up as it went down is the shortest note, and a key that goes down again ends the note that it held",
+      "notes": [],
+      "overdub": false,
+      "passes": [
+        {
+          "beat": 8.0,
+          "notes": [
+            {
+              "length": 0.015625,
+              "note": 62,
+              "start": 1.0,
+              "velocity": 100
+            },
+            {
+              "length": 0.5,
+              "note": 64,
+              "start": 1.5,
+              "velocity": 80
+            },
+            {
+              "length": 1.0,
+              "note": 64,
+              "start": 2.0,
+              "velocity": 70
+            }
+          ]
+        }
+      ],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 5.0,
+          "do": "on",
+          "note": 62,
+          "velocity": 100
+        },
+        {
+          "beat": 5.0,
+          "do": "off",
+          "note": 62,
+          "velocity": 0
+        },
+        {
+          "beat": 5.5,
+          "do": "on",
+          "note": 64,
+          "velocity": 80
+        },
+        {
+          "beat": 6.0,
+          "do": "on",
+          "note": 64,
+          "velocity": 70
+        },
+        {
+          "beat": 7.0,
+          "do": "off",
+          "note": 64,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "countingIn"
+        ],
+        [
+          4.0,
+          "recording"
+        ],
+        [
+          8.0,
+          "playing"
+        ]
+      ]
+    },
+    {
+      "beats": 10.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 60,
+          "start": 1.0,
+          "velocity": 100
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "a recording that overwrites replaces the notes that the box had",
+      "notes": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "overdub": false,
+      "passes": [
+        {
+          "beat": 8.0,
+          "notes": [
+            {
+              "length": 1.0,
+              "note": 60,
+              "start": 1.0,
+              "velocity": 100
+            }
+          ]
+        }
+      ],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 5.0,
+          "do": "on",
+          "note": 60,
+          "velocity": 100
+        },
+        {
+          "beat": 6.0,
+          "do": "off",
+          "note": 60,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "countingIn"
+        ],
+        [
+          4.0,
+          "recording"
+        ],
+        [
+          8.0,
+          "playing"
+        ]
+      ]
+    },
+    {
+      "beats": 20.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 1.0,
+          "note": 60,
+          "start": 1.0,
+          "velocity": 100
+        },
+        {
+          "length": 1.0,
+          "note": 62,
+          "start": 1.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "a recording that overdubs keeps them, adds the pass and goes on with another until it is told to finish, and the pass that is going on then is the last",
+      "notes": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "overdub": true,
+      "passes": [
+        {
+          "beat": 8.0,
+          "notes": [
+            {
+              "length": 1.0,
+              "note": 36,
+              "start": 0.0,
+              "velocity": 100
+            },
+            {
+              "length": 1.0,
+              "note": 60,
+              "start": 1.0,
+              "velocity": 100
+            },
+            {
+              "length": 0.5,
+              "note": 43,
+              "start": 2.0,
+              "velocity": 90
+            }
+          ]
+        },
+        {
+          "beat": 12.0,
+          "notes": [
+            {
+              "length": 1.0,
+              "note": 36,
+              "start": 0.0,
+              "velocity": 100
+            },
+            {
+              "length": 1.0,
+              "note": 60,
+              "start": 1.0,
+              "velocity": 100
+            },
+            {
+              "length": 1.0,
+              "note": 62,
+              "start": 1.0,
+              "velocity": 100
+            },
+            {
+              "length": 0.5,
+              "note": 43,
+              "start": 2.0,
+              "velocity": 90
+            }
+          ]
+        }
+      ],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 5.0,
+          "do": "on",
+          "note": 60,
+          "velocity": 100
+        },
+        {
+          "beat": 6.0,
+          "do": "off",
+          "note": 60,
+          "velocity": 0
+        },
+        {
+          "beat": 9.0,
+          "do": "on",
+          "note": 62,
+          "velocity": 100
+        },
+        {
+          "beat": 10.0,
+          "do": "off",
+          "note": 62,
+          "velocity": 0
+        },
+        {
+          "beat": 11.0,
+          "do": "finish",
+          "note": 0,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "countingIn"
+        ],
+        [
+          4.0,
+          "recording"
+        ],
+        [
+          12.0,
+          "playing"
+        ]
+      ]
+    },
+    {
+      "beats": 8.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "a count-in that is told to finish stops the box",
+      "notes": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "overdub": false,
+      "passes": [],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 2.0,
+          "do": "finish",
+          "note": 0,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "countingIn"
+        ],
+        [
+          2.0625,
+          "stopped"
+        ]
+      ]
+    },
+    {
+      "beats": 12.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "a box that is stopped in the pass loses it and has the notes it had",
+      "notes": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "overdub": false,
+      "passes": [],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 5.0,
+          "do": "on",
+          "note": 60,
+          "velocity": 100
+        },
+        {
+          "beat": 6.0,
+          "do": "off",
+          "note": 60,
+          "velocity": 0
+        },
+        {
+          "beat": 7.0,
+          "do": "stop",
+          "note": 0,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "countingIn"
+        ],
+        [
+          4.0,
+          "recording"
+        ],
+        [
+          7.0625,
+          "stopped"
+        ]
+      ]
+    },
+    {
+      "beats": 12.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 60,
+          "start": 0.5,
+          "velocity": 100
+        }
+      ],
+      "length": 4.0,
+      "looping": false,
+      "name": "a box that does not loop plays what it took as its play, and stops when the pass is over",
+      "notes": [],
+      "overdub": false,
+      "passes": [
+        {
+          "beat": 8.0,
+          "notes": [
+            {
+              "length": 1.0,
+              "note": 60,
+              "start": 0.5,
+              "velocity": 100
+            }
+          ]
+        }
+      ],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 4.5,
+          "do": "on",
+          "note": 60,
+          "velocity": 100
+        },
+        {
+          "beat": 5.5,
+          "do": "off",
+          "note": 60,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "countingIn"
+        ],
+        [
+          4.0,
+          "recording"
+        ],
+        [
+          8.0,
+          "stopped"
+        ]
+      ]
+    },
+    {
+      "beats": 6.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "length": 2.0,
+      "looping": false,
+      "name": "a box that does not loop plays once from the start, and stops at the end of its loop",
+      "notes": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "overdub": false,
+      "passes": [],
+      "script": [
+        {
+          "beat": 1.0,
+          "do": "play",
+          "note": 0,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          1.0625,
+          "playing"
+        ],
+        [
+          3.0,
+          "stopped"
+        ]
+      ]
+    },
+    {
+      "beats": 8.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "a box that loops plays for ever until it is stopped",
+      "notes": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "overdub": false,
+      "passes": [],
+      "script": [
+        {
+          "beat": 0.5,
+          "do": "play",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 5.0,
+          "do": "stop",
+          "note": 0,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.5625,
+          "playing"
+        ],
+        [
+          5.0625,
+          "stopped"
+        ]
+      ]
+    },
+    {
+      "beats": 18.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 64,
+          "start": 1.0,
+          "velocity": 80
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "a box that is told to record while it records begins again, and what was played in the pass that was lost is not in the new one",
+      "notes": [],
+      "overdub": false,
+      "passes": [
+        {
+          "beat": 14.0,
+          "notes": [
+            {
+              "length": 1.0,
+              "note": 64,
+              "start": 1.0,
+              "velocity": 80
+            }
+          ]
+        }
+      ],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 5.0,
+          "do": "on",
+          "note": 60,
+          "velocity": 100
+        },
+        {
+          "beat": 6.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 11.0,
+          "do": "on",
+          "note": 64,
+          "velocity": 80
+        },
+        {
+          "beat": 12.0,
+          "do": "off",
+          "note": 64,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "countingIn"
+        ],
+        [
+          4.0,
+          "recording"
+        ],
+        [
+          6.0625,
+          "countingIn"
+        ],
+        [
+          10.0,
+          "recording"
+        ],
+        [
+          14.0,
+          "playing"
+        ]
+      ]
+    },
+    {
+      "beats": 14.0,
+      "final": [
+        {
+          "length": 1.0,
+          "note": 67,
+          "start": 1.0,
+          "velocity": 100
+        }
+      ],
+      "length": 4.0,
+      "looping": true,
+      "name": "a box that plays can be told to record, and counts in from then",
+      "notes": [
+        {
+          "length": 1.0,
+          "note": 36,
+          "start": 0.0,
+          "velocity": 100
+        },
+        {
+          "length": 0.5,
+          "note": 43,
+          "start": 2.0,
+          "velocity": 90
+        }
+      ],
+      "overdub": false,
+      "passes": [
+        {
+          "beat": 11.0,
+          "notes": [
+            {
+              "length": 1.0,
+              "note": 67,
+              "start": 1.0,
+              "velocity": 100
+            }
+          ]
+        }
+      ],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "play",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 3.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 8.0,
+          "do": "on",
+          "note": 67,
+          "velocity": 100
+        },
+        {
+          "beat": 9.0,
+          "do": "off",
+          "note": 67,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          0.0625,
+          "playing"
+        ],
+        [
+          3.0625,
+          "countingIn"
+        ],
+        [
+          7.0,
+          "recording"
+        ],
+        [
+          11.0,
+          "playing"
+        ]
+      ]
+    },
+    {
+      "beats": 12.0,
+      "final": [],
+      "length": 4.0,
+      "looping": true,
+      "name": "a box that records is not told to play by play, and a box that is stopped has nothing to stop or finish",
+      "notes": [],
+      "overdub": false,
+      "passes": [
+        {
+          "beat": 10.0,
+          "notes": []
+        }
+      ],
+      "script": [
+        {
+          "beat": 0.0,
+          "do": "stop",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 1.0,
+          "do": "finish",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 2.0,
+          "do": "record",
+          "note": 0,
+          "velocity": 0
+        },
+        {
+          "beat": 4.0,
+          "do": "play",
+          "note": 0,
+          "velocity": 0
+        }
+      ],
+      "statuses": [
+        [
+          0.0,
+          "stopped"
+        ],
+        [
+          2.0625,
+          "countingIn"
+        ],
+        [
+          6.0,
+          "recording"
+        ],
+        [
+          10.0,
+          "playing"
+        ]
+      ]
+    }
+  ]
+}

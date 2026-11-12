@@ -1764,4 +1764,187 @@ mod tests {
         assert_eq!(b.status(), Status::Stopped);
         assert!(!b.notes().is_empty());
     }
+
+    // -- the web client's fixture of takes --
+
+    /// One scene of the fixture of what a box makes of a take: the box as it is made (the length of its loop, its settings, the notes it has), what is done to it and when, in beats on the sixteenths (the transport: `record`, `play`, `stop`,
+    /// `finish`; and the keys: `on` and `off` with the pitch and the velocity: the transport of a beat is done before the keys of it), and how many beats it is run for.
+    struct Take {
+        name: &'static str,
+        length: f32,
+        looping: bool,
+        overdub: bool,
+        notes: Vec<BoxNote>,
+        script: Vec<(f64, &'static str, u8, u8)>,
+        beats: f64,
+    }
+
+    /// The scenes of `the_web_clients_fixture_of_what_a_box_makes_of_a_take_is_current`.
+    fn takes() -> Vec<Take> {
+        let go = |beat: f64, what: &'static str| (beat, what, 0, 0);
+        let down = |beat: f64, note: u8, velocity: u8| (beat, "on", note, velocity);
+        let up = |beat: f64, note: u8| (beat, "off", note, 0);
+        let had = || vec![BoxNote { start: 0.0, length: 1.0, note: 36, velocity: 100 }, BoxNote { start: 2.0, length: 0.5, note: 43, velocity: 90 }];
+        fn take(name: &'static str, length: f32, looping: bool, overdub: bool, notes: Vec<BoxNote>, script: Vec<(f64, &'static str, u8, u8)>, beats: f64) -> Take {
+            Take { name, length, looping, overdub, notes, script, beats }
+        }
+        vec![
+            take(
+                "a pass on the own clock takes the keys that are played in it, at the beat of each and for as long as each is down, and the box plays what it took",
+                4.0,
+                true,
+                false,
+                Vec::new(),
+                vec![go(0.0, "record"), down(5.0, 60, 90), down(5.5, 64, 40), up(6.0, 60), up(7.0, 64)],
+                14.0,
+            ),
+            take(
+                "what is played in the count-in is not taken",
+                4.0,
+                true,
+                false,
+                Vec::new(),
+                vec![go(0.0, "record"), down(1.0, 60, 100), up(2.5, 60), down(4.5, 62, 80), up(5.0, 62)],
+                10.0,
+            ),
+            take("a key that is still down at the end of the pass ends there", 4.0, true, false, Vec::new(), vec![go(0.0, "record"), down(7.0, 60, 100), down(7.5, 62, 70)], 10.0),
+            take(
+                "a key that comes up as it went down is the shortest note, and a key that goes down again ends the note that it held",
+                4.0,
+                true,
+                false,
+                Vec::new(),
+                vec![go(0.0, "record"), down(5.0, 62, 100), up(5.0, 62), down(5.5, 64, 80), down(6.0, 64, 70), up(7.0, 64)],
+                10.0,
+            ),
+            take(
+                "a recording that overwrites replaces the notes that the box had",
+                4.0,
+                true,
+                false,
+                had(),
+                vec![go(0.0, "record"), down(5.0, 60, 100), up(6.0, 60)],
+                10.0,
+            ),
+            take(
+                "a recording that overdubs keeps them, adds the pass and goes on with another until it is told to finish, and the pass that is going on then is the last",
+                4.0,
+                true,
+                true,
+                had(),
+                vec![go(0.0, "record"), down(5.0, 60, 100), up(6.0, 60), down(9.0, 62, 100), up(10.0, 62), go(11.0, "finish")],
+                20.0,
+            ),
+            take("a count-in that is told to finish stops the box", 4.0, true, false, had(), vec![go(0.0, "record"), go(2.0, "finish")], 8.0),
+            take("a box that is stopped in the pass loses it and has the notes it had", 4.0, true, false, had(), vec![go(0.0, "record"), down(5.0, 60, 100), up(6.0, 60), go(7.0, "stop")], 12.0),
+            take(
+                "a box that does not loop plays what it took as its play, and stops when the pass is over",
+                4.0,
+                false,
+                false,
+                Vec::new(),
+                vec![go(0.0, "record"), down(4.5, 60, 100), up(5.5, 60)],
+                12.0,
+            ),
+            take("a box that does not loop plays once from the start, and stops at the end of its loop", 2.0, false, false, had(), vec![go(1.0, "play")], 6.0),
+            take("a box that loops plays for ever until it is stopped", 4.0, true, false, had(), vec![go(0.5, "play"), go(5.0, "stop")], 8.0),
+            take(
+                "a box that is told to record while it records begins again, and what was played in the pass that was lost is not in the new one",
+                4.0,
+                true,
+                false,
+                Vec::new(),
+                vec![go(0.0, "record"), down(5.0, 60, 100), go(6.0, "record"), down(11.0, 64, 80), up(12.0, 64)],
+                18.0,
+            ),
+            take("a box that plays can be told to record, and counts in from then", 4.0, true, false, had(), vec![go(0.0, "play"), go(3.0, "record"), down(8.0, 67, 100), up(9.0, 67)], 14.0),
+            take("a box that records is not told to play by play, and a box that is stopped has nothing to stop or finish", 4.0, true, false, Vec::new(), vec![go(0.0, "stop"), go(1.0, "finish"), go(2.0, "record"), go(4.0, "play")], 12.0),
+        ]
+    }
+
+    /// What a status is called on the wire.
+    fn status_word(status: Status) -> &'static str {
+        match status {
+            Status::Stopped => "stopped",
+            Status::Playing => "playing",
+            Status::CountingIn => "countingIn",
+            Status::Waiting => "waiting",
+            Status::Recording => "recording",
+        }
+    }
+
+    /// A box that is run through a scene, block by block, a sixteenth of a beat each: what it is doing after each block (each change, and the beat of the block that showed it), the notes that each pass that ended made of it
+    /// (and the beat of the block it ended in), and the notes that it has at the end.
+    fn run_take(take: &Take) -> serde_json::Value {
+        const BLOCK: u64 = BEAT / 16;
+        let json = |notes: &[BoxNote]| -> Vec<serde_json::Value> { notes.iter().map(|n| serde_json::json!({ "start": n.start, "length": n.length, "note": n.note, "velocity": n.velocity })).collect() };
+        let mut rig = Rig::new(BLOCK as usize, take.length, &take.notes).with(Settings { looping: take.looping, overdub: take.overdub, ..Settings::default() });
+        for &(beat, what, number, velocity) in &take.script {
+            match what {
+                "on" => rig.input.push((KEYS, (beat * BEAT as f64).round() as u64, on(number, velocity))),
+                "off" => rig.input.push((KEYS, (beat * BEAT as f64).round() as u64, off(number))),
+                _ => {}
+            }
+        }
+        let mut statuses = vec![serde_json::json!([0.0, status_word(rig.b.status())])];
+        let mut passes = Vec::new();
+        let mut last = rig.b.status();
+        let blocks = (take.beats * 16.0).round() as u64;
+        for block in 0..blocks {
+            let beat = block as f64 / 16.0;
+            for &(at, what, _, _) in &take.script {
+                if at == beat {
+                    match what {
+                        "record" => rig.b.record(),
+                        "play" => rig.b.play(),
+                        "stop" => rig.b.stop(),
+                        "finish" => rig.b.finish_recording(),
+                        _ => {}
+                    }
+                }
+            }
+            let ended = rig.finished.len();
+            rig.run(BLOCK);
+            let after = (block + 1) as f64 / 16.0;
+            if rig.b.status() != last {
+                last = rig.b.status();
+                statuses.push(serde_json::json!([after, status_word(last)]));
+            }
+            for notes in &rig.finished[ended..] {
+                passes.push(serde_json::json!({ "beat": after, "notes": json(notes) }));
+            }
+        }
+        serde_json::json!({
+            "name": take.name,
+            "length": take.length,
+            "looping": take.looping,
+            "overdub": take.overdub,
+            "notes": json(&take.notes),
+            "script": take.script.iter().map(|&(beat, what, note, velocity)| serde_json::json!({ "beat": beat, "do": what, "note": note, "velocity": velocity })).collect::<Vec<_>>(),
+            "beats": take.beats,
+            "statuses": statuses,
+            "passes": passes,
+            "final": json(rig.b.notes()),
+        })
+    }
+
+    /// The scenes of `takes` and what a box makes of each, run through the real player, as the web client's tests read it (`web/src/client/fixtures/patternBoxTakes.json`): they pin the mock engine's player to this one, status by status
+    /// and note by note. The tempo is 120 beats a minute, a block a sixteenth of a beat, and everything that is done is done on a sixteenth, so that each beat that the fixture names is a frame that the player sees exactly.
+    /// `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` rewrites it.
+    #[test]
+    fn the_web_clients_fixture_of_what_a_box_makes_of_a_take_is_current() {
+        let cases: Vec<serde_json::Value> = takes().iter().map(run_take).collect();
+        let fresh = serde_json::to_string_pretty(&serde_json::json!({ "bpm": BPM, "cases": cases })).unwrap() + "\n";
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/src/client/fixtures/patternBoxTakes.json");
+        if std::env::var_os("TANG_UPDATE_TYPES").is_some() {
+            std::fs::write(&path, &fresh).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == fresh,
+            "{} is not what a box makes of a take now: run `TANG_UPDATE_TYPES=1 cargo test the_web_clients_fixture` and commit the result",
+            path.display()
+        );
+    }
 }
