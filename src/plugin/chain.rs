@@ -10777,7 +10777,7 @@ mod tests {
     }
 
     #[test]
-    fn what_is_picked_is_set_by_a_command_and_a_note_that_is_held_stays_where_it_is() {
+    fn what_is_picked_is_set_by_a_command_which_moves_nothing_and_the_key_that_had_the_pick_lets_go_of_it_when_a_key_takes_it() {
         let (mut graph, cmd_tx, _rr) = make_graph(2);
         let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
         let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
@@ -10786,9 +10786,36 @@ mod tests {
         cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
         run_block(&mut graph, &[on_at(48, 0)]);
         cmd_tx.send(GraphCommand::SetSplitterSettings { node: splitter_node(0), settings: notesplit::Settings { pick: notesplit::Pick::Highest, ..notesplit::Settings::default() } }).unwrap();
+        run_block(&mut graph, &[]);
+        assert_eq!(given(&pick_lane), [(0, [0x90, 48, 100])], "setting what is picked moves nothing that is held");
+        assert!(given(&rest_lane).is_empty());
         run_block(&mut graph, &[on_at(40, 1), on_at(60, 2)]);
-        assert_eq!(given(&pick_lane), [(0, [0x90, 48, 100]), (2, [0x90, 60, 100])], "the C that was held stays the pick; the highest of the new notes is the pick now");
-        assert_eq!(given(&rest_lane), [(1, [0x90, 40, 100])]);
+        assert_eq!(
+            given(&pick_lane),
+            [(0, [0x90, 48, 100]), (2, [0x90, 60, 100]), (2, [0x80, 48, 0])],
+            "the highest of the new notes is the pick now: it begins, and the C that had the pick lets go of it at the same frame"
+        );
+        assert_eq!(given(&rest_lane), [(1, [0x90, 40, 100]), (2, [0x90, 48, 100])], "the lower note is the rest, and so is the C, which begins there as it was struck");
+    }
+
+    #[test]
+    fn a_lane_that_hears_the_pick_has_one_note_when_a_lower_key_is_pressed_after_a_chord_and_the_lane_that_hears_the_rest_has_the_chord() {
+        // (The user's, step 129: "if I hold down a chord, and play a lower note, the lower note takes it, but the higher one does not let go.")
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
+        // A chord in one block (C5, E5, G5), and the bass note in the next.
+        run_block(&mut graph, &[on_at(79, 3), on_at(72, 5), on_at(76, 7)]);
+        run_block(&mut graph, &[on_at(48, 9)]);
+        assert_eq!(given(&pick_lane), [(5, [0x90, 72, 100]), (9, [0x90, 48, 100]), (9, [0x80, 72, 0])], "the bass synth has the C3, and the C5 has let go of it");
+        assert_eq!(given(&rest_lane), [(3, [0x90, 79, 100]), (7, [0x90, 76, 100]), (9, [0x90, 72, 100])], "the chord synth has the whole chord");
+        // Every key ends where it is: the C5 on the rest now, the C3 on the pick.
+        run_block(&mut graph, &[(Source::KEYS, 1, [0x80, 72, 0]), (Source::KEYS, 2, [0x80, 48, 0]), (Source::KEYS, 3, [0x80, 76, 0]), (Source::KEYS, 4, [0x80, 79, 0])]);
+        assert_eq!(given(&pick_lane)[3..], [(2, [0x80, 48, 0])]);
+        assert_eq!(given(&rest_lane)[3..], [(1, [0x80, 72, 0]), (3, [0x80, 76, 0]), (4, [0x80, 79, 0])]);
     }
 
     #[test]

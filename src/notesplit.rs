@@ -4,13 +4,17 @@
 //! This is the logic of one splitter as plain code: which notes of a block go to which output, with their frames, and what a splitter holds so that nothing hangs. The engine (`plugin::chain`) owns the splitters, gives each
 //! the block's events and merges what it makes into them with the source of each output; the controller keeps the model of the same splitter.
 //!
-//! **A note is judged when it is pressed, and stays where it went.** A note-on is the pick if it is lower than every key that is held (the highest: higher than every key held) and the rest if it is not; its note-off, and
-//! whatever else is said of that note, goes where the note-on went, so that every key is on exactly one output from its note-on to its note-off and no note can hang. Nothing moves from one output to the other afterwards:
-//! a lower key that is pressed later is the pick as well (the pick's output can have two notes), and the pick that is let go of leaves the rest where it is. (The other rule, always "the lowest key that is held" as a mono
-//! synth has it, would make the next note of a chord jump into the bass when the bass key is let go of a few ms before the others.)
+//! **A note is judged when it is pressed.** A note-on is the pick if it is lower than every key that is held (the highest: higher than every key held) and the rest if it is not; its note-off, and whatever else is said of
+//! that note, goes to the output that has it, so that every key is on exactly one output at a time and no note can hang.
+//!
+//! **A key that takes the pick takes it from the key that had it** (step 129: the first rule, that a note stays where it went, left the higher key on the pick when a lower key was pressed after it: a chord that is held and a
+//! bass note that is played after it gave the bass synth both). The pick has one key at the most: when a key is the pick, the key that had it **lets go of it**, at the same frame and after the new key has begun (so that a synth that slides
+//! from one note to the next slides): it ends on the pick and begins on the rest, on its channel and as hard as it was last struck, and is a key of the rest from then on. **Nothing else moves**: the pick that is let go of
+//! leaves the rest where it is, for the other rule, always "the lowest key that is held" as a mono synth has it, would make the next note of a chord jump into the bass when the bass key is let go of a few ms before the others.
 //!
 //! **The notes of one block are judged together**, with no latency: a note-on is compared with the keys that are held *and* with the note-ons that come later in the same block (a tie keeps the earlier), so that the G, the E and
-//! the C of a chord that arrive in one block, in any order, put the C on the pick and the G and the E on the rest, each at its own frame. A chord that straddles two blocks can give the pick a short blip of its first note.
+//! the C of a chord that arrive in one block, in any order, put the C on the pick and the G and the E on the rest, each at its own frame. A chord that straddles two blocks gives the pick its first note for as long as it takes
+//! the next block to come: a key that is lower takes the pick from it, and it goes to the rest.
 //!
 //! **What is not a note goes to both outputs** (controllers, the pedal, the wheel, channel pressure, program change, system messages); a poly aftertouch goes to the output that has its note. The keys of a source are counted
 //! apart from another source's, and a source that stops being heard has what it holds let go of on both outputs.
@@ -99,6 +103,8 @@ pub struct Splitter {
     /// How many keys hold each pitch (a key is a source, a channel and a pitch), and the pitches that have at least one: so that the lowest and the highest key held are found at once.
     counts: [u16; 128],
     pitches: u128,
+    /// How hard the keys that the pick has were last struck, by channel and pitch: what the rest is given when a key lets go of the pick. (The pick has one key at the most, so that the velocity of a pitch on a channel is its key's.)
+    pick_velocity: [[u8; 128]; 16],
     /// The sources that are to be let go of at the start of the next block: no longer heard, or gone.
     letting_go: SourceSet,
     /// What it made for the block that was run last.
@@ -117,6 +123,7 @@ impl Splitter {
             held: vec![Held::default(); HEARD_BY_SPLITTERS].into_boxed_slice(),
             counts: [0; 128],
             pitches: 0,
+            pick_velocity: [[0; 128]; 16],
             letting_go: SourceSet::NONE,
             made: Vec::with_capacity(MAX_EVENTS_PER_BLOCK),
             lowest_after: Vec::with_capacity(MAX_LOOKED_OVER),
@@ -230,22 +237,52 @@ impl Splitter {
         }
     }
 
-    /// A key goes down: it goes to the output that it is judged for, and where it goes is written down. A key that is struck again while it is down goes where it went.
+    /// A key goes down: it goes to the output that it is judged for, and where it goes is written down. A key that is struck again while it is down goes where it went. A key that is the pick takes it from the key that had it
+    /// (`pick_lets_go`).
     fn note_on(&mut self, index: usize, from: usize, frame: u64, bytes: [u8; 3]) {
         let (channel, note) = (usize::from(bytes[0] & 0x0F), bytes[1] & 0x7F);
         let bit = 1u128 << note;
         if self.held[from].pick[channel] & bit != 0 {
+            self.pick_velocity[channel][usize::from(note)] = bytes[2];
             self.make(frame, bytes, Output::Pick);
         } else if self.held[from].rest[channel] & bit != 0 {
             self.make(frame, bytes, Output::Rest);
         } else if self.made.len() < MAX_EVENTS_PER_BLOCK - RESERVED_FOR_ENDS {
             let output = self.judge(index, note);
-            match output {
-                Output::Pick => self.held[from].pick[channel] |= bit,
-                Output::Rest => self.held[from].rest[channel] |= bit,
-            }
             self.count_in(note);
             self.made.push(Made { frame, bytes, output });
+            match output {
+                Output::Pick => {
+                    // The key that had the pick lets go of it after this key has begun, and before this key is written down as the pick, so that it is not let go of itself.
+                    self.pick_lets_go(frame);
+                    self.held[from].pick[channel] |= bit;
+                    self.pick_velocity[channel][usize::from(note)] = bytes[2];
+                }
+                Output::Rest => self.held[from].rest[channel] |= bit,
+            }
+        }
+    }
+
+    /// The keys that have the pick let go of it, at `frame`, because a key takes it: each ends on the pick, and begins on the rest as it began (its channel, and how hard it was last struck) and is a key of the rest from now on: its
+    /// note-off, and its poly aftertouch, go there. (The pick has one key at the most, so that this is one key or none; it is a loop, so that no key can be left on the pick.) A key that has no room to begin on the rest (a block
+    /// that is full) is held nowhere, and its note-off is dropped, as the note-off of a note that was not begun is.
+    fn pick_lets_go(&mut self, frame: u64) {
+        for from in 0..HEARD_BY_SPLITTERS {
+            for channel in 0..16usize {
+                let mut notes = std::mem::take(&mut self.held[from].pick[channel]);
+                while notes != 0 {
+                    let note = notes.trailing_zeros() as u8;
+                    notes &= notes - 1;
+                    self.make_an_end(frame, [0x80 | channel as u8, note, 0], Output::Pick);
+                    if self.made.len() < MAX_EVENTS_PER_BLOCK - RESERVED_FOR_ENDS {
+                        self.held[from].rest[channel] |= 1u128 << note;
+                        let velocity = self.pick_velocity[channel][usize::from(note)];
+                        self.made.push(Made { frame, bytes: [0x90 | channel as u8, note, velocity], output: Output::Rest });
+                    } else {
+                        self.count_out(note);
+                    }
+                }
+            }
         }
     }
 
@@ -523,20 +560,167 @@ mod tests {
         assert_eq!(splitter.keys_held(), 0);
     }
 
-    #[test]
-    fn a_lower_key_that_is_pressed_later_is_the_pick_as_well_and_the_one_before_it_stays() {
-        let mut splitter = Splitter::new(0);
-        run(&mut splitter, &keys(&[(0, on(55))]));
-        assert_eq!(run(&mut splitter, &keys(&[(0, on(48))])), [(Pick, 0, on(48))], "lower than the G that is held");
-        assert_eq!((splitter.holds(KEYS, 0, 55), splitter.holds(KEYS, 0, 48)), (Some(Pick), Some(Pick)), "the pick's output has two notes");
-        assert_eq!(run(&mut splitter, &keys(&[(0, off(55)), (1, off(48))])), [(Pick, 0, off(55)), (Pick, 1, off(48))]);
+    /// What each output has sounding (by pitch, channel 0), from what the splitter made: a note-on adds one, a note-off takes one away.
+    fn sound(sounding: &mut [[i32; 128]; 2], made: &[(Output, u64, [u8; 3])]) {
+        for &(output, _, bytes) in made {
+            match (bytes[0] & 0xF0, bytes[2]) {
+                (0x90, velocity) if velocity > 0 => sounding[output as usize][usize::from(bytes[1])] += 1,
+                (0x80, _) | (0x90, _) => sounding[output as usize][usize::from(bytes[1])] -= 1,
+                _ => {}
+            }
+        }
+    }
+
+    /// The pitches that an output has sounding, lowest first.
+    fn sounding_on(sounding: &[[i32; 128]; 2], output: Output) -> Vec<u8> {
+        (0..128u8).filter(|&note| sounding[output as usize][usize::from(note)] > 0).collect()
     }
 
     #[test]
-    fn a_chord_that_straddles_two_blocks_gives_the_pick_its_first_note_as_well_which_is_what_a_chord_window_is_for() {
+    fn a_lower_key_that_is_pressed_later_takes_the_pick_and_the_key_that_had_it_lets_go_of_it_and_goes_to_the_rest() {
+        let mut splitter = Splitter::new(0);
+        // The G is on channel 3, struck at 77.
+        run(&mut splitter, &keys(&[(0, [0x92, 55, 77])]));
+        let made = run(&mut splitter, &keys(&[(4, on(48))]));
+        assert_eq!(
+            made,
+            [(Pick, 4, on(48)), (Pick, 4, [0x82, 55, 0]), (Rest, 4, [0x92, 55, 77])],
+            "the C is the pick; the G ends there after the C has begun (a synth that slides from one note to the next slides), and begins on the rest as it did: on its channel and as hard"
+        );
+        assert_eq!((splitter.holds(KEYS, 2, 55), splitter.holds(KEYS, 0, 48), splitter.keys_held()), (Some(Rest), Some(Pick), 2), "the pick has one key, and the G is a key of the rest from now on");
+        assert_eq!(run(&mut splitter, &keys(&[(0, [0x82, 55, 0]), (1, off(48))])), [(Rest, 0, [0x82, 55, 0]), (Pick, 1, off(48))], "each ends where it is now");
+        assert_eq!(splitter.keys_held(), 0);
+    }
+
+    #[test]
+    fn a_chord_that_is_held_and_a_lower_note_pressed_after_it_leave_the_chord_to_the_rest_and_the_note_alone_on_the_pick() {
+        let mut splitter = Splitter::new(0);
+        let mut sounding = [[0i32; 128]; 2];
+        // C5, E5 and G5 in one block: the C is the pick.
+        let made = run(&mut splitter, &keys(&[(0, on(72)), (1, on(76)), (2, on(79))]));
+        assert_eq!(made, [(Pick, 0, on(72)), (Rest, 1, on(76)), (Rest, 2, on(79))]);
+        sound(&mut sounding, &made);
+        // C3, pressed after, is the lowest: it is the pick, and the C5 lets go of the pick and goes to the rest with the E and the G.
+        let made = run(&mut splitter, &keys(&[(10, on(48))]));
+        assert_eq!(made, [(Pick, 10, on(48)), (Pick, 10, off(72)), (Rest, 10, on(72))]);
+        sound(&mut sounding, &made);
+        assert_eq!((sounding_on(&sounding, Pick), sounding_on(&sounding, Rest)), (vec![48], vec![72, 76, 79]), "the bass is the C3 alone, and the chord is the whole chord");
+        // The C3 comes up: the chord is as it was and the pick has nothing (no key moves up into the bass), and the next low key is the pick again.
+        let made = run(&mut splitter, &keys(&[(0, off(48))]));
+        assert_eq!(made, [(Pick, 0, off(48))]);
+        sound(&mut sounding, &made);
+        assert_eq!((sounding_on(&sounding, Pick), sounding_on(&sounding, Rest)), (vec![], vec![72, 76, 79]));
+        assert_eq!(run(&mut splitter, &keys(&[(0, on(50))])), [(Pick, 0, on(50))]);
+    }
+
+    #[test]
+    fn the_highest_key_that_is_pressed_later_takes_the_pick_when_the_highest_is_picked_and_a_lower_key_is_the_rest() {
+        let mut splitter = Splitter::new(0);
+        splitter.set_settings(Settings { pick: Pick_::Highest, ..Settings::default() });
+        run(&mut splitter, &keys(&[(0, on(55))]));
+        assert_eq!(run(&mut splitter, &keys(&[(3, on(64))])), [(Pick, 3, on(64)), (Pick, 3, off(55)), (Rest, 3, on(55))], "the E is higher than the G that is held: it is the pick, and the G is the rest");
+        assert_eq!(run(&mut splitter, &keys(&[(0, on(60))])), [(Rest, 0, on(60))], "a key that is not above the pick is the rest, and nothing moves");
+        assert_eq!(splitter.holds(KEYS, 0, 64), Some(Pick));
+    }
+
+    #[test]
+    fn a_key_that_is_not_lower_than_what_is_held_does_not_take_the_pick_and_nothing_moves() {
+        let mut splitter = Splitter::new(0);
+        run(&mut splitter, &keys(&[(0, on(48))]));
+        assert_eq!(run(&mut splitter, &keys(&[(0, on(52)), (1, on(48 + 12))])), [(Rest, 0, on(52)), (Rest, 1, on(60))]);
+        // The same key, struck again, is not a lower key either.
+        assert_eq!(run(&mut splitter, &keys(&[(0, on(48))])), [(Pick, 0, on(48))]);
+        assert_eq!((splitter.holds(KEYS, 0, 48), splitter.keys_held()), (Some(Pick), 3));
+    }
+
+    #[test]
+    fn a_chord_that_straddles_blocks_ends_with_its_lowest_note_on_the_pick_and_the_others_on_the_rest_in_whatever_order_it_came() {
+        let notes = [72u8, 76, 79];
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let mut splitter = Splitter::new(0);
+            let mut sounding = [[0i32; 128]; 2];
+            // Each note in a block of its own: what is judged is the keys that are held, and a note that is first and is not the lowest is the pick for as long as it takes the others to come.
+            for (at, &which) in order.iter().enumerate() {
+                let made = run(&mut splitter, &keys(&[(at as u64 * 3, on(notes[which]))]));
+                sound(&mut sounding, &made);
+            }
+            assert_eq!((sounding_on(&sounding, Pick), sounding_on(&sounding, Rest)), (vec![72], vec![76, 79]), "in the order {order:?}");
+            // Everything is let go of where it is: nothing hangs on either output.
+            let ends: Vec<(u64, [u8; 3])> = notes.iter().map(|&note| (0, off(note))).collect();
+            let made = run(&mut splitter, &keys(&ends));
+            sound(&mut sounding, &made);
+            assert!(sounding.iter().flatten().all(|&n| n == 0), "in the order {order:?}");
+            assert_eq!(splitter.keys_held(), 0);
+        }
+    }
+
+    #[test]
+    fn the_pick_that_lets_go_goes_to_the_rest_as_hard_as_it_was_struck_the_last_time() {
+        let mut splitter = Splitter::new(0);
+        run(&mut splitter, &keys(&[(0, [0x90, 55, 60])]));
+        assert_eq!(run(&mut splitter, &keys(&[(0, [0x90, 55, 90])])), [(Pick, 0, [0x90, 55, 90])], "struck again while it is down: it goes where it went");
+        assert_eq!(run(&mut splitter, &keys(&[(0, on(48))])), [(Pick, 0, on(48)), (Pick, 0, off(55)), (Rest, 0, [0x90, 55, 90])]);
+    }
+
+    #[test]
+    fn the_pick_of_another_source_and_channel_lets_go_as_the_key_it_was() {
+        let mut splitter = Splitter::new(0);
+        run(&mut splitter, &[(DEVICE, 0, [0x93, 64, 33])]);
+        let made = run(&mut splitter, &[(KEYS, 2, on(50))]);
+        assert_eq!(made, [(Pick, 2, on(50)), (Pick, 2, [0x83, 64, 0]), (Rest, 2, [0x93, 64, 33])], "on the channel it was on, and as hard");
+        assert_eq!((splitter.holds(DEVICE, 3, 64), splitter.holds(KEYS, 0, 50)), (Some(Rest), Some(Pick)), "the device's key is the rest's now, under its own source");
+        // The device's key comes up, and the note-off goes to the rest, where the key is.
+        assert_eq!(run(&mut splitter, &[(DEVICE, 0, [0x83, 64, 0])]), [(Rest, 0, [0x83, 64, 0])]);
+        // A device that goes lets go of a key that moved, on the output it is on now.
+        run(&mut splitter, &[(DEVICE, 0, [0x91, 40, 70])]);
+        assert_eq!(splitter.holds(DEVICE, 1, 40), Some(Pick));
+        run(&mut splitter, &[(KEYS, 1, [0x90, 30, 70])]);
+        assert_eq!(splitter.holds(DEVICE, 1, 40), Some(Rest));
+        splitter.release_input(DEVICE);
+        assert_eq!(run(&mut splitter, &[]), [(Rest, 0, [0x81, 40, 0])]);
+    }
+
+    #[test]
+    fn a_poly_aftertouch_goes_to_the_pick_before_its_key_lets_go_of_it_and_to_the_rest_after() {
+        let mut splitter = Splitter::new(0);
+        run(&mut splitter, &keys(&[(0, on(55))]));
+        assert_eq!(run(&mut splitter, &keys(&[(0, [0xA0, 55, 20])])), [(Pick, 0, [0xA0, 55, 20])]);
+        run(&mut splitter, &keys(&[(0, on(48))]));
+        assert_eq!(run(&mut splitter, &keys(&[(0, [0xA0, 55, 21]), (1, [0xA0, 48, 22])])), [(Rest, 0, [0xA0, 55, 21]), (Pick, 1, [0xA0, 48, 22])]);
+    }
+
+    #[test]
+    fn a_pick_that_lets_go_has_its_end_made_whatever_the_room_and_begins_on_the_rest_only_where_a_note_has_room() {
+        let room = MAX_EVENTS_PER_BLOCK - RESERVED_FOR_ENDS;
+        // `before` events are made before the lower key: it begins (it has room while `before` is below `room`), the end of the key that had the pick is made after it (an end has room to the end of the block),
+        // and that key begins on the rest if there is room for a note after both: `before + 2` below `room`.
+        for before in [room - 3, room - 2, room - 1] {
+            let mut splitter = Splitter::new(0);
+            // The C4 is the pick and the C5 the rest, which the block's poly aftertouch is of (one event each).
+            run(&mut splitter, &keys(&[(0, on(60)), (1, on(72))]));
+            let mut block: Vec<(Source, u64, [u8; 3])> = (0..before).map(|at| (KEYS, 0, [0xA0, 72, (at % 100) as u8])).collect();
+            block.push((KEYS, 1, on(48)));
+            let made = run(&mut splitter, &block);
+            let has_room = before + 2 < room;
+            assert_eq!(made.len(), before + 2 + usize::from(has_room), "{before} events before the lower key");
+            assert_eq!(&made[before..before + 2], [(Pick, 1, on(48)), (Pick, 1, off(60))], "the key that takes the pick, and the end of the key that had it: the end is made whatever the room ({before})");
+            if has_room {
+                assert_eq!(made[before + 2], (Rest, 1, on(60)), "the key that let go begins on the rest ({before})");
+                assert_eq!((splitter.holds(KEYS, 0, 60), splitter.keys_held(), splitter.pitches), (Some(Rest), 3, 1u128 << 48 | 1u128 << 60 | 1u128 << 72), "{before}");
+                assert_eq!(run(&mut splitter, &keys(&[(0, off(60))])), [(Rest, 0, off(60))], "and ends there ({before})");
+            } else {
+                assert_eq!((splitter.holds(KEYS, 0, 60), splitter.holds(KEYS, 0, 48), splitter.holds(KEYS, 0, 72), splitter.keys_held()), (None, Some(Pick), Some(Rest), 2), "the C4 is held nowhere ({before})");
+                assert_eq!(splitter.pitches, 1u128 << 48 | 1u128 << 72, "and its pitch is not counted ({before})");
+                assert!(run(&mut splitter, &keys(&[(0, off(60))])).is_empty(), "so its note-off is dropped, as the note-off of a note that was not begun is ({before})");
+            }
+        }
+    }
+
+    #[test]
+    fn a_chord_that_straddles_two_blocks_gives_the_pick_its_first_note_for_as_long_as_it_takes_the_next_block_to_come() {
         let mut splitter = Splitter::new(0);
         assert_eq!(run(&mut splitter, &keys(&[(250, on(55))])), [(Pick, 250, on(55))], "the G is the lowest that anyone has pressed so far");
-        assert_eq!(run(&mut splitter, &keys(&[(2, on(48))])), [(Pick, 2, on(48))], "and the C, in the next block, is lower");
+        assert_eq!(run(&mut splitter, &keys(&[(2, on(48))])), [(Pick, 2, on(48)), (Pick, 2, off(55)), (Rest, 2, on(55))], "and the C, in the next block, is lower: the G is the rest's from there on");
     }
 
     #[test]
@@ -730,7 +914,7 @@ mod tests {
         splitter.set_settings(Settings { pick: Pick_::Highest, ..Settings::default() });
         assert_eq!(splitter.holds(KEYS, 0, 48), Some(Pick), "it does not move");
         assert_eq!(run(&mut splitter, &keys(&[(0, on(40))])), [(Rest, 0, on(40))], "and a note is judged by the new rule: the C is held, and the lower note is not the highest");
-        assert_eq!(run(&mut splitter, &keys(&[(0, on(60))])), [(Pick, 0, on(60))]);
+        assert_eq!(run(&mut splitter, &keys(&[(0, on(60))])), [(Pick, 0, on(60)), (Pick, 0, off(48)), (Rest, 0, on(48))], "a note that is the highest takes the pick from the C, which had it from before: the C is the rest's now");
     }
 
     #[test]
@@ -776,7 +960,11 @@ mod tests {
             block.push((KEYS, 2, on(second)));
             let made = run(&mut splitter, &block);
             let notes: Vec<_> = made.iter().filter(|&&(_, _, bytes)| bytes[0] == 0x90).collect();
-            assert_eq!(notes, [&(Pick, 1, on(first)), &(Pick, 2, on(second))], "past what is looked over a note is judged as it comes, against the keys that are held: both are picks, picking the {pick:?}");
+            assert_eq!(
+                notes,
+                [&(Pick, 1, on(first)), &(Pick, 2, on(second)), &(Rest, 2, on(first))],
+                "past what is looked over a note is judged as it comes, against the keys that are held: both are picks, picking the {pick:?}, and the second takes the pick from the first, which goes to the rest"
+            );
         }
     }
 
@@ -910,11 +1098,11 @@ mod tests {
 
     // ---- the randomised test: a reference model that is as simple as it can be ----------------------------------------------------------
 
-    /// The same rule as the splitter's, with plain lists: the keys that are held (the source, the channel, the pitch and the output), and what comes later is looked at by going down the rest of the block.
+    /// The same rule as the splitter's, with plain lists: the keys that are held (the source, the channel, the pitch, the output and how hard it was last struck), and what comes later is looked at by going down the rest of the block.
     struct Reference {
         pick: Pick_,
         inputs: SourceSet,
-        held: Vec<(Source, u8, u8, Output)>,
+        held: Vec<(Source, u8, u8, Output, u8)>,
     }
 
     impl Reference {
@@ -924,8 +1112,8 @@ mod tests {
                 if source.is_broadcast() {
                     let channel = bytes[0] & 0x0F;
                     match (bytes[0] & 0xF0, bytes[1]) {
-                        (0x80, note) | (0x90, note) if bytes[0] & 0xF0 == 0x80 || bytes[2] == 0 => self.held.retain(|&(_, c, n, _)| !(c == channel && n == note)),
-                        (0xB0, 120) | (0xB0, 123) => self.held.retain(|&(_, c, _, _)| c != channel),
+                        (0x80, note) | (0x90, note) if bytes[0] & 0xF0 == 0x80 || bytes[2] == 0 => self.held.retain(|&(_, c, n, _, _)| !(c == channel && n == note)),
+                        (0xB0, 120) | (0xB0, 123) => self.held.retain(|&(_, c, _, _, _)| c != channel),
                         _ => {}
                     }
                     continue;
@@ -934,25 +1122,40 @@ mod tests {
                     continue;
                 }
                 let (channel, note) = (bytes[0] & 0x0F, bytes[1] & 0x7F);
-                let where_it_is = self.held.iter().find(|&&(s, c, n, _)| s == source && c == channel && n == note).map(|&(_, _, _, output)| output);
+                let where_it_is = self.held.iter().find(|&&(s, c, n, _, _)| s == source && c == channel && n == note).map(|&(_, _, _, output, _)| output);
                 match bytes[0] & 0xF0 {
                     0x90 if bytes[2] > 0 => {
                         let output = where_it_is.unwrap_or_else(|| {
                             let later = block[at + 1..].iter().filter(|&&(s, _, b)| !s.is_broadcast() && self.inputs.contains(s) && b[0] & 0xF0 == 0x90 && b[2] > 0).map(|&(_, _, b)| b[1] & 0x7F);
                             let picked = match self.pick {
-                                Pick_::Lowest => self.held.iter().all(|&(_, _, n, _)| note < n) && later.clone().all(|n| note <= n),
-                                Pick_::Highest => self.held.iter().all(|&(_, _, n, _)| note > n) && later.clone().all(|n| note >= n),
+                                Pick_::Lowest => self.held.iter().all(|&(_, _, n, _, _)| note < n) && later.clone().all(|n| note <= n),
+                                Pick_::Highest => self.held.iter().all(|&(_, _, n, _, _)| note > n) && later.clone().all(|n| note >= n),
                             };
                             if picked { Pick } else { Rest }
                         });
-                        if where_it_is.is_none() {
-                            self.held.push((source, channel, note, output));
-                        }
                         made.push((output, frame, bytes));
+                        if where_it_is.is_some() {
+                            // Struck again while it is down: it is one key, and how hard it was struck is the last time.
+                            for key in self.held.iter_mut().filter(|key| (key.0, key.1, key.2) == (source, channel, note)) {
+                                key.4 = bytes[2];
+                            }
+                        } else {
+                            if output == Pick {
+                                // The keys that have the pick let go of it, after this key begins: each ends on the pick and begins on the rest as it did, in the order of the sources, the channels and the pitches.
+                                let mut letting_go: Vec<usize> = (0..self.held.len()).filter(|&at| self.held[at].3 == Pick).collect();
+                                letting_go.sort_by_key(|&at| (self.held[at].0.number(), self.held[at].1, self.held[at].2));
+                                for at in letting_go {
+                                    let (_, c, n, _, velocity) = self.held[at];
+                                    self.held[at].3 = Rest;
+                                    made.extend([(Pick, frame, [0x80 | c, n, 0]), (Rest, frame, [0x90 | c, n, velocity])]);
+                                }
+                            }
+                            self.held.push((source, channel, note, output, bytes[2]));
+                        }
                     }
                     0x80 | 0x90 => {
                         if let Some(output) = where_it_is {
-                            self.held.retain(|&(s, c, n, _)| !(s == source && c == channel && n == note));
+                            self.held.retain(|&(s, c, n, _, _)| !(s == source && c == channel && n == note));
                             made.push((output, frame, bytes));
                         }
                     }
@@ -962,7 +1165,7 @@ mod tests {
                         }
                     }
                     0xB0 if bytes[1] == 120 || bytes[1] == 123 => {
-                        self.held.retain(|&(s, c, _, _)| !(s == source && c == channel));
+                        self.held.retain(|&(s, c, _, _, _)| !(s == source && c == channel));
                         made.extend([(Pick, frame, bytes), (Rest, frame, bytes)]);
                     }
                     _ => made.extend([(Pick, frame, bytes), (Rest, frame, bytes)]),
@@ -1027,13 +1230,13 @@ mod tests {
                     // (A note that is struck again while it is down is one key and has two note-ons: the count may be 2, and a panic or an all-notes-off ends what it ends without a note-off.)
                 }
                 // A key is on exactly one output, and the splitter and the list agree on which.
-                for &(source, channel, note, output) in &reference.held {
+                for &(source, channel, note, output, _) in &reference.held {
                     assert_eq!(splitter.holds(source, usize::from(channel), note), Some(output), "block {block}");
                 }
                 assert_eq!(splitter.keys_held(), reference.held.len(), "block {block}");
             }
             // Everything ends: a note-off for every key that is held, and nothing is left sounding on either output except what an all-notes-off ended (which the outputs' controllers say).
-            let ends: Vec<(Source, u64, [u8; 3])> = reference.held.iter().map(|&(source, channel, note, _)| (source, 0, [0x80 | channel, note, 0])).collect();
+            let ends: Vec<(Source, u64, [u8; 3])> = reference.held.iter().map(|&(source, channel, note, _, _)| (source, 0, [0x80 | channel, note, 0])).collect();
             run(&mut splitter, &ends);
             assert_eq!(splitter.keys_held(), 0);
             assert!(splitter.pitches == 0 && splitter.counts.iter().all(|&count| count == 0), "the counts of the pitches that are held are 0 when no key is");
@@ -1042,7 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn every_note_that_begins_ends_on_the_output_it_began_on_when_nothing_ends_it_but_its_own_note_off() {
+    fn every_note_that_an_output_begins_ends_on_that_output_when_nothing_ends_it_but_its_own_note_off_and_the_pick_has_one_note_at_the_most() {
         for pick in [Pick_::Lowest, Pick_::Highest] {
             let mut dice = Dice(0xD1B5_4A32_D192_ED03);
             let mut splitter = Splitter::new(2);
@@ -1079,12 +1282,15 @@ mod tests {
                         assert!(picked + rest <= 2, "block {block}: channel {channel}, note {note}");
                     }
                 }
+                // The pick has one note at the most: a key that takes it has it from the key that had it, and the lanes are told so.
+                let on_the_pick: i32 = sounding[Pick as usize].iter().flatten().sum();
+                assert!(on_the_pick <= 1, "block {block}: the pick has {on_the_pick} notes, picking the {pick:?}");
             }
             let ends: Vec<(Source, u64, [u8; 3])> = down.iter().map(|&(source, channel, note)| (source, 0, [0x80 | channel, note, 0])).collect();
             for (output, _, bytes) in run(&mut splitter, &ends) {
                 sounding[output as usize][usize::from(bytes[0] & 0x0F)][usize::from(bytes[1])] -= 1;
             }
-            assert!(sounding.iter().flatten().flatten().all(|&n| n == 0), "every note that began ended, on the output it began on, picking the {pick:?}");
+            assert!(sounding.iter().flatten().flatten().all(|&n| n == 0), "every note that an output began ended, on that output, picking the {pick:?}");
             assert_eq!(splitter.keys_held(), 0);
         }
     }
@@ -1097,11 +1303,15 @@ mod tests {
         let sources: Vec<Source> = chord.iter().map(|&(source, _, _)| source).collect();
         let panic = [(0u64, [0xB0u8, 123, 0]), (0, [0x80, 48, 0])];
         let panic_sources = [Source::BROADCAST; 2];
+        let lower = [(0u64, on(40))];
+        let lower_sources = [KEYS];
         let ((), allocations) = allocations_in(|| {
             for _ in 0..100 {
                 splitter.process(Events::new(&list, &sources));
                 splitter.process(Events::new(&panic, &panic_sources));
                 splitter.process(Events::new(&list, &sources));
+                // A key that is lower than the pick takes it: the pick lets go.
+                splitter.process(Events::new(&lower, &lower_sources));
                 splitter.set_settings(Settings { pick: Pick_::Highest, inputs: only(&[DEVICE]) });
                 splitter.process(Events::new(&[], &[]));
                 splitter.set_settings(Settings::default());

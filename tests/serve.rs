@@ -1626,7 +1626,7 @@ async fn a_browser_makes_a_note_splitter_and_cables_its_second_output_to_a_lane_
     tell(&mut client, json!({"type": "noteOff", "note": 64})).await;
     peak_until(&mut client, &tang, at, SOON, "the keys let go of", |peak| peak < 0.001).await;
 
-    // The splitter is made to pick the highest note: with a key held, the next that is higher is the pick (it is not heard) and the next that is lower is the rest (it is).
+    // The splitter is made to pick the highest note: with a key held, the next that is higher takes the pick (it is not heard) and the key that had it goes to the rest (it is heard from then on), and the next that is lower is the rest (it is).
     tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "setSplitterField", "node": splitter, "field": {"type": "pick", "pick": "highest"}}})).await;
     let (answered, said) = answer_with_what_came_before(&mut client, 4).await;
     assert_eq!(answered["type"], "ack", "{answered}");
@@ -1637,11 +1637,13 @@ async fn a_browser_makes_a_note_splitter_and_cables_its_second_output_to_a_lane_
     let quiet = peak_after(&mut client, at, Duration::from_millis(300)).await;
     assert!(quiet < 0.001, "the first key is the pick, whatever it is: {quiet}");
     tell(&mut client, json!({"type": "noteOn", "note": 67, "velocity": 100})).await;
-    let quiet = peak_after(&mut client, at, Duration::from_millis(600)).await;
-    assert!(quiet < 0.001, "a key above the one that is held is the pick, which the lane does not hear: {quiet}");
+    peak_until(&mut client, &tang, at, SOON, "the key that had the pick, which a key above it took (step 129: it goes to the rest, which the lane hears)", |peak| peak > 0.02).await;
+    // The key that went to the rest is let go of there: the pick, which the lane does not hear, is all that is held.
+    tell(&mut client, json!({"type": "noteOff", "note": 64})).await;
+    peak_until(&mut client, &tang, at, SOON, "the key that went to the rest, let go of", |peak| peak < 0.001).await;
     tell(&mut client, json!({"type": "noteOn", "note": 60, "velocity": 100})).await;
-    peak_until(&mut client, &tang, at, SOON, "a key below the ones that are held, which is the rest", |peak| peak > 0.02).await;
-    for note in [60, 64, 67] {
+    peak_until(&mut client, &tang, at, SOON, "a key below the one that is held, which is the rest", |peak| peak > 0.02).await;
+    for note in [60, 67] {
         tell(&mut client, json!({"type": "noteOff", "note": note})).await;
     }
 

@@ -1,6 +1,6 @@
 # Example: a chord split into its bass note and the rest (a note splitter).
 # The lowest key that is pressed goes to the bass, a saw with a sub that sounds an octave under the key; every other key goes to the pad, a soft triangle through a reverb.
-# Play a chord: its lowest note is the bass and the rest is the pad. A note stays on the instrument that it began on until you let go of it.
+# Play a chord: its lowest note is the bass and the rest is the pad. A key that you press below the keys that are held takes the bass, and the key that had it goes to the pad.
 # For the top note of a chord (a melody over the pad) put `pick = "highest"` in the splitter, and swap what the two outputs are cabled to.
 # On the page the splitter is a node with two outputs (the pick, and the rest); in this file they are `splitter[0]` and `splitter[0].rest`.
 
