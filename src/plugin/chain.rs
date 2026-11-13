@@ -3816,9 +3816,10 @@ impl AudioGraph {
     /// of the events that they come from, and they are merged into the block's events by frame (at one frame, those that came in first, and then the splitters', in the order they were added), each with the source of its
     /// output, so that the lanes that hear an output play it as they play a key. **What came in stays in the block**: the lanes that hear a key hear it as they did. A block in which no splitter makes anything is given back
     /// as it came.
-    fn run_splitters<'a>(&mut self, input: Events<'a>, merge: &'a mut BoxMerge) -> Events<'a> {
+    fn run_splitters<'a>(&mut self, input: Events<'a>, frames: usize, merge: &'a mut BoxMerge) -> Events<'a> {
+        let sample_rate = self.graph_sample_rate();
         for slot in &mut self.splitters {
-            slot.splitter.process(input);
+            slot.splitter.process(input, frames, sample_rate);
         }
         if self.splitters.iter().all(|slot| slot.splitter.events().is_empty()) {
             return input;
@@ -4938,7 +4939,7 @@ impl AudioGraph {
         let midi_events = if self.boxes.is_empty() || frames == 0 { input_events } else { self.run_boxes(input_events, frames, &mut merge) };
         // The note splitters (P4i) hear what the inputs and the boxes play, and what they make of it is among the events from here on, as the notes of their outputs' sources. With none, the events are as they came.
         let mut split_merge = std::mem::take(&mut self.split_merge);
-        let midi_events = if self.splitters.is_empty() || frames == 0 { midi_events } else { self.run_splitters(midi_events, &mut split_merge) };
+        let midi_events = if self.splitters.is_empty() || frames == 0 { midi_events } else { self.run_splitters(midi_events, frames, &mut split_merge) };
 
         // How far a meter's peak falls over this buffer, if anything is measured.
         let fall = self
@@ -10816,6 +10817,71 @@ mod tests {
         run_block(&mut graph, &[(Source::KEYS, 1, [0x80, 72, 0]), (Source::KEYS, 2, [0x80, 48, 0]), (Source::KEYS, 3, [0x80, 76, 0]), (Source::KEYS, 4, [0x80, 79, 0])]);
         assert_eq!(given(&pick_lane)[3..], [(2, [0x80, 48, 0])]);
         assert_eq!(given(&rest_lane)[3..], [(1, [0x80, 72, 0]), (3, [0x80, 76, 0]), (4, [0x80, 79, 0])]);
+    }
+
+    /// Let a while go by with nothing played: a hundred blocks, which is longer than the keys of a chord take to come down.
+    fn let_time_go_by(graph: &mut AudioGraph) {
+        for _ in 0..100 {
+            run_block(graph, &[]);
+        }
+    }
+
+    #[test]
+    fn a_pick_that_is_let_go_of_falls_back_to_the_key_it_took_the_pick_from_and_the_lanes_hear_it() {
+        // The user's, step 130: "if I hold down a note, play a lower one and let go of the lower one, it does not go back to the higher one: it is silent".
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
+        run_block(&mut graph, &[on_at(64, 3)]);
+        let_time_go_by(&mut graph);
+        run_block(&mut graph, &[on_at(48, 5)]);
+        let_time_go_by(&mut graph);
+        run_block(&mut graph, &[(Source::KEYS, 7, [0x80, 48, 0])]);
+        assert_eq!(
+            given(&pick_lane),
+            [(3, [0x90, 64, 100]), (5, [0x90, 48, 100]), (5, [0x80, 64, 0]), (7, [0x90, 64, 100]), (7, [0x80, 48, 0])],
+            "the bass synth has the E, then the C (the E lets go), then the E again (it begins before the C ends)"
+        );
+        assert_eq!(given(&rest_lane), [(5, [0x90, 64, 100]), (7, [0x80, 64, 0])], "the chord synth has the E while the C is the bass, and not after");
+    }
+
+    #[test]
+    fn a_higher_key_that_was_pressed_before_the_pick_was_let_go_of_is_the_bass_from_then_on() {
+        // The user's, step 130: "if you play a little too fast when you change from a lower note to a higher one, it is silent too".
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
+        run_block(&mut graph, &[on_at(48, 3)]);
+        let_time_go_by(&mut graph);
+        run_block(&mut graph, &[on_at(52, 5)]);
+        let_time_go_by(&mut graph);
+        run_block(&mut graph, &[(Source::KEYS, 7, [0x80, 48, 0])]);
+        assert_eq!(given(&pick_lane), [(3, [0x90, 48, 100]), (7, [0x90, 52, 100]), (7, [0x80, 48, 0])], "the bass synth slides from the C to the E, which was held");
+        assert_eq!(given(&rest_lane), [(5, [0x90, 52, 100]), (7, [0x80, 52, 0])]);
+    }
+
+    #[test]
+    fn the_bass_of_a_chord_that_comes_up_first_leaves_the_rest_of_the_chord_where_it_is() {
+        let (mut graph, cmd_tx, _rr) = make_graph(2);
+        let pick_lane = keeper_lane(&mut graph, &cmd_tx, 0);
+        let rest_lane = keeper_lane(&mut graph, &cmd_tx, 1);
+        add_splitter(&cmd_tx, 0);
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 0, sources: only(&[pick_of(0)]) }).unwrap();
+        cmd_tx.send(GraphCommand::SetLaneSources { inst: 1, sources: only(&[rest_of(0)]) }).unwrap();
+        // The E first, then the C and the G, each in a block of its own (a few ms apart): a chord. It is held for a while, and the C comes up first.
+        run_block(&mut graph, &[on_at(52, 3)]);
+        run_block(&mut graph, &[on_at(48, 3)]);
+        run_block(&mut graph, &[on_at(55, 3)]);
+        let_time_go_by(&mut graph);
+        run_block(&mut graph, &[(Source::KEYS, 7, [0x80, 48, 0])]);
+        assert_eq!(given(&pick_lane), [(3, [0x90, 52, 100]), (3, [0x90, 48, 100]), (3, [0x80, 52, 0]), (7, [0x80, 48, 0])], "the bass of the chord comes up, and no ghost of the E is left in it");
+        assert_eq!(given(&rest_lane), [(3, [0x90, 52, 100]), (3, [0x90, 55, 100])]);
     }
 
     #[test]

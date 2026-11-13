@@ -228,7 +228,7 @@ pub enum Intent {
     AddSplitter,
     /// Set one setting of the note splitter `node` (`SplitterField`): its name, or which note it picks. Saved with the session. A step of the history in the words of the setting, merged with the next change of it soon after (typing a name). What is as it
     /// is asked to be changes nothing and keeps no step. Refused, with nothing changed, for a node that is not a note splitter and a name of more than `MAX_NAME` characters or with a control character in it (a name of nothing is "Splitter"). A note
-    /// that is held does not move when this is set (a key that is pressed later and takes the pick takes it from the key that had it).
+    /// that is held does not move when this is set (a key that is pressed later and takes the pick takes it from the key that had it, and a pick that is let go of falls back to the key next in line).
     SetSplitterField { node: NodeId, field: SplitterField },
     /// Say where a front-end draws a node, in the pixels of its canvas, or `None` to give the node back to the
     /// front-end's own layout. `node` is any node of the session, the master (`NodeId::MASTER`) included. A place is

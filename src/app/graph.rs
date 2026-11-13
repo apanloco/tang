@@ -99,7 +99,7 @@ pub enum NodeKind {
     /// what is there, `click` whether the metronome counts a recording in, and `status` what the audio thread last said it is doing (nothing of it is saved). Its name is the node's.
     Pattern { looping: bool, sync: PatternSync, overdub: bool, click: bool, length_beats: f32, notes: Vec<PatternNote>, status: PatternStatus },
     /// A note splitter (P4i of `docs/patch-graph.md` §11.6): it takes in the notes of the sources and boxes that cables of notes come from (every input if none does) and sends the lowest of them, or the highest (`pick`), out at its
-    /// first output of events (`eventsOut`) and the others out at its second (`eventsOutRest`), to the lanes that cables from them go to. A note is judged when it is pressed, and a key that takes the pick takes it from the key that had it (which goes to the rest: step 129). Its name is the node's.
+    /// first output of events (`eventsOut`) and the others out at its second (`eventsOutRest`), to the lanes that cables from them go to. A note is judged when it is pressed, a key that takes the pick takes it from the key that had it (which goes to the rest: step 129), and a pick that is let go of falls back to the key that is next in line unless that was pressed with it (step 130). Its name is the node's.
     Splitter { pick: SplitterPick },
     /// A module that was added to the session as one thing (step 108): `name` is what it is called in the library, and `members` the lanes and the modulators that came with it, which a front-end draws as one
     /// box (the effects of a lane are in the lane: they are in the module with it). The nodes in it are in the graph as any are, and the cables to them: a module is the record of what came together, and has no
