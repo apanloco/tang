@@ -625,7 +625,7 @@ const PATTERN_EDITS: [(u64, Edit); 21] = [
 /// What is done to a note splitter in `CABLED` while it plays, through the real engine (step 127; the tempo is 300 beats a minute, so that a beat is 9 600 frames): a splitter is made (it picks the lowest note and hears every
 /// input); lane 1 is cabled from its pick and lane 0, which is in the group, from its rest (each hears that output and nothing else: the chord of the keys, C3 and E3 and G3 together at 4 800, goes to them as one block's notes
 /// are judged, C3 to lane 1 and E3 and G3 to lane 0); a pattern box is made, given four notes that overlap and put in a loop of two beats, cabled to the splitter (it hears the box and no key now: the chord that the keys hold in
-/// it is let go of on both outputs) and played on its own clock; the splitter picks the highest note (what is held stays where it went); the keys are put in as a source and cabled to the splitter (it hears them again: the
+/// it is let go of on both outputs) and played on its own clock; the splitter picks the highest note (nothing that is held moves; the G4 of the box, which is higher than the C4 and the E4 that are held, takes the pick, and the C4 that had it goes to the rest); the keys are put in as a source and cabled to the splitter (it hears them again: the
 /// keys' note-offs for notes that it did not begin are dropped); lane 0 is cabled from the pick as well and Undo takes that cable back; the splitter picks the lowest note again; the cable from the pick to lane 1 is taken out
 /// (lane 1 hears every source again, and lets go of the C4 that the pick has sounding in it); the splitter is taken out with its cables, put back by Undo (with its cables, and the lanes hear it again), taken out again by Redo
 /// and put back by Undo. Each is made (`Counts` says so: none is skipped or refused), and after each block the engine's splitters and boxes, and what its lanes hear, are the model's.
@@ -1665,7 +1665,7 @@ mod tests {
     }
 
     #[test]
-    fn the_splitters_scenario_is_heard_through_the_splitter_from_the_block_that_has_the_chord_and_a_note_goes_where_it_went_when_it_was_pressed() {
+    fn the_splitters_scenario_is_heard_through_the_splitter_from_the_block_that_has_the_chord_and_a_key_that_takes_the_pick_has_it_from_the_one_that_had_it() {
         let scenario = edited().into_iter().find(|scenario| scenario.id.starts_with("edited:splitters")).expect("a scenario of the corpus");
         assert!(scenario.has_splitters() && !scenario.is_in_the_old_loop(), "the loop that the plan replaced does not run splitters");
         // (A splitter is in the scenario's file or made by its edits, and a scenario that has none is what the loop can run.)
@@ -1693,10 +1693,12 @@ mod tests {
         // Without the first Play (9 500) the box is silent, and is heard from its first frames.
         let played = first_frame(&without(9_500));
         assert!((9_500 - 9_500 % BLOCK..9_500 - 9_500 % BLOCK + 64).contains(&played), "the first frame that differs is {played}");
-        // The pick that is the highest from 14 000 changes what goes to which lane from the next note that is pressed (the G4 of the box, at 14 272: higher than the E4 and the C4 that are held), and not what is held.
+        // The pick that is the highest from 14 000 moves nothing by itself, and changes what goes to which lane from the next note that is pressed: the G4 of the box (at 14 271: the box's frames are floors), which is higher than the
+        // E4 and the C4 that are held, takes the pick, and the C4, which had it, lets go of it and goes to the other lane at that frame (step 129: until then a note stayed on the output it began on, and the first frame that
+        // differed was the one after the G4's, where its first sample was nothing).
         let highest = first_frame(&without(14_000));
         assert!((14_000..14_000 + 512).contains(&highest), "the first frame that differs is {highest}");
-        assert!(highest >= 14_272, "nothing that is held moves to the other lane: the first frame that differs is {highest}");
+        assert!(highest >= 14_271, "the setting moves nothing that is held, whatever it picks now: the first frame that differs is {highest}");
     }
 
     #[test]

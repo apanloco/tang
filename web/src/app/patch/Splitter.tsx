@@ -1,6 +1,6 @@
 // The note splitter on the canvas (docs/patch-graph.md §11.6, P4i-C; the user's "I want a midi-box that takes keyboard in, finds the lowest or highest note (configurable) and only sends that forward. Imagine I play a chord and I want
 // the bass note sent to one synth, and the rest to another? Maybe we can have 2 outputs from it, the bass and the rest?"): a node that takes notes in at its port on the left and has two outputs of notes on the right. The first sends the
-// lowest (or the highest) of the keys that are held, the second sends every other key; a key is judged when it is pressed and stays on the output it began on until it is let go. Which note the first takes is a switch in the node.
+// lowest (or the highest) of the keys that are held, the second sends every other key; a key is judged when it is pressed, and a key that takes the first output takes it from the key that had it, which goes to the second. Which note the first takes is a switch in the node.
 //
 // What the splitter picks is read from the store here, and not from the node's data: the data is the structure of the session, and the node draws the switch from what the session says at the moment.
 import { memo, useCallback, useState } from "react";
