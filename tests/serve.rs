@@ -1622,9 +1622,22 @@ async fn a_browser_makes_a_note_splitter_and_cables_its_second_output_to_a_lane_
     assert!(quiet < 0.001, "the lowest key is the pick, and the lane hears the rest: {quiet}");
     tell(&mut client, json!({"type": "noteOn", "note": 64, "velocity": 100})).await;
     peak_until(&mut client, &tang, at, SOON, "the second key, which is not the lowest", |peak| peak > 0.02).await;
+    // The lowest key is let go of while the next is held: the next is the bass from there on (step 130, the user's "if you play a little too fast when you change from a lower note to a higher one, it is silent"), which the lane does not hear.
     tell(&mut client, json!({"type": "noteOff", "note": 60})).await;
+    peak_until(&mut client, &tang, at, SOON, "the key that was held, which is the bass now", |peak| peak < 0.001).await;
     tell(&mut client, json!({"type": "noteOff", "note": 64})).await;
     peak_until(&mut client, &tang, at, SOON, "the keys let go of", |peak| peak < 0.001).await;
+
+    // A key is held, a lower one takes the bass from it (it goes to the rest, which the lane hears), and when the lower one is let go of the held one is the bass again (step 130, the user's "if I hold down a note, play a lower one and let go of the lower one, it is silent"): the lane hears it go.
+    tell(&mut client, json!({"type": "noteOn", "note": 64, "velocity": 100})).await;
+    let quiet = peak_after(&mut client, at, Duration::from_millis(300)).await;
+    assert!(quiet < 0.001, "the key that is held alone is the pick: {quiet}");
+    tell(&mut client, json!({"type": "noteOn", "note": 48, "velocity": 100})).await;
+    peak_until(&mut client, &tang, at, SOON, "the key that the lower one took the bass from, which is the rest's now", |peak| peak > 0.02).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 48})).await;
+    peak_until(&mut client, &tang, at, SOON, "the lower key let go of: the held key is the bass again", |peak| peak < 0.001).await;
+    tell(&mut client, json!({"type": "noteOff", "note": 64})).await;
+    peak_until(&mut client, &tang, at, SOON, "everything let go of", |peak| peak < 0.001).await;
 
     // The splitter is made to pick the highest note: with a key held, the next that is higher takes the pick (it is not heard) and the key that had it goes to the rest (it is heard from then on), and the next that is lower is the rest (it is).
     tell(&mut client, json!({"type": "request", "reqId": 4, "intent": {"type": "setSplitterField", "node": splitter, "field": {"type": "pick", "pick": "highest"}}})).await;
