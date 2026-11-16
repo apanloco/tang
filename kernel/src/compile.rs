@@ -876,9 +876,9 @@ mod tests {
                 for m in 0..op.outputs.len() {
                     expected[lives.outputs[&(at, m)].0].push(op.outputs[m]);
                 }
-                for k in 0..op.inputs.len() {
+                for (k, &input) in op.inputs.iter().enumerate() {
                     if let Some(sum) = lives.sums.get(&(at, k)) {
-                        expected[sum.0].push(op.inputs[k]);
+                        expected[sum.0].push(input);
                     }
                 }
             }
