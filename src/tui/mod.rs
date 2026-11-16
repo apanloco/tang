@@ -1897,6 +1897,8 @@ where
                 web::resync(&mut s.ctl);
             }
             recv(requests) -> request => match (request, web.as_deref_mut()) {
+                // (Without the `web` feature a request and the web runtime have no values: this arm cannot be taken, and a compiler that sees that says so.)
+                #[allow(unreachable_code)]
                 (Ok(request), Some(web)) => {
                     for applied in web.serve(&mut s.ctl, request) {
                         s.react_to(&applied);

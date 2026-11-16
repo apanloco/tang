@@ -7404,12 +7404,12 @@ mod tests {
             // The engine, as the wiring says.
             let (mut graph, cmd_tx, _rr) = make_graph(2);
             swap_instrument(&cmd_tx, ConstInstrument::new(wiring.levels[0]));
-            for lane in 1..lane_count {
-                another_lane(&mut graph, &cmd_tx, wiring.levels[lane]);
+            for &level in &wiring.levels[1..] {
+                another_lane(&mut graph, &cmd_tx, level);
             }
-            for group in 0..group_count {
+            for (group, &value) in wiring.group_volumes.iter().enumerate() {
                 graph.groups.push(Group::new(group_node(group)));
-                cmd_tx.send(GraphCommand::SetGroupVolume { group, value: wiring.group_volumes[group] }).unwrap();
+                cmd_tx.send(GraphCommand::SetGroupVolume { group, value }).unwrap();
             }
             for lane in 0..lane_count {
                 graph.instruments[lane].group = wiring.lane_group[lane];
@@ -7417,8 +7417,8 @@ mod tests {
                     effect_of(&cmd_tx, lane, index, fx.plugin());
                 }
             }
-            for group in 0..group_count {
-                for (index, fx) in wiring.group_effects[group].iter().enumerate() {
+            for (group, effects) in wiring.group_effects.iter().enumerate() {
+                for (index, fx) in effects.iter().enumerate() {
                     cmd_tx.send(GraphCommand::InsertGroupEffect { group, index, effect: fx.plugin(), mix: 1.0, node: bus_effect_node(group, index) }).unwrap();
                 }
             }
