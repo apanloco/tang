@@ -199,8 +199,11 @@ const KNOB_THAT_IS_NOT_THERE: &str = "[[instrument]]\nplugin = \"builtin:osc\"\n
 ///
 /// With no terminal `play` is at an end as soon as the session is loaded and the engine runs, for it has no keys to take, and what it has told by then is the log of a session as far as the log goes. It is
 /// made the leader of a session of its own, which has no terminal for raw mode to find at `/dev/tty`: it would take that one, wait for keys at it, and leave the terminal of a person who runs the tests in raw mode.
+///
+/// `None` where the machine has no MIDI subsystem (a runner of Linux in CI has no ALSA sequencer, and the first run of the jobs on one said so): `play` opens the MIDI inputs before it loads the session, and ends with an error where
+/// `serve` warns and carries on, so that the log of a session is not there to be had. The other systems always have one, and so has a Linux that a person plays on.
 #[cfg(unix)]
-fn play_says(flags: &[&str], rust_log: Option<&str>) -> String {
+fn play_says(flags: &[&str], rust_log: Option<&str>) -> Option<String> {
     use std::os::unix::process::CommandExt;
     let dir = tempfile::tempdir().expect("a directory");
     let session = dir.path().join("knob.toml");
@@ -222,14 +225,18 @@ fn play_says(flags: &[&str], rust_log: Option<&str>) -> String {
     }
     let output = command.output().expect("tang runs");
     let said = String::from_utf8_lossy(&output.stderr).to_string();
+    if said.contains("MIDI support could not be initialized") {
+        eprintln!("skipped: this machine has no MIDI subsystem, which `play` needs before it loads the session: {said}");
+        return None;
+    }
     assert!(said.contains("Error: "), "it went as far as it could, and ended with the error of having no terminal: {said}");
-    said
+    Some(said)
 }
 
 #[test]
 #[cfg(unix)]
 fn a_session_tells_of_warnings_and_errors_and_not_of_what_it_does_unless_it_is_told_to() {
-    let said = play_says(&[], None);
+    let Some(said) = play_says(&[], None) else { return };
     assert!(said.contains(" WARN] Unknown instrument parameter 'no such knob'"), "a warning is told: {said}");
     assert!(!said.contains(" INFO]"), "and nothing that is only what the program does (the MIDI that comes in among it): {said}");
     assert!(!said.contains("MIDI inputs connected") && !said.contains("Audio stream started"), "{said}");
@@ -254,7 +261,7 @@ fn v_says_how_much_a_session_tells_and_what_it_says_is_more_than_what_rust_log_s
         (&["-v", "error"][..], Some("info"), false, false),
         (&["-v", "off"][..], None, false, false),
     ] {
-        let said = play_says(flags, rust_log);
+        let Some(said) = play_says(flags, rust_log) else { return };
         assert_eq!(said.contains("MIDI inputs connected"), start, "{flags:?} with RUST_LOG {rust_log:?}: the start of the program: {said}");
         assert_eq!(said.contains("Unknown instrument parameter 'no such knob'"), warning, "{flags:?} with RUST_LOG {rust_log:?}: the warning: {said}");
     }
