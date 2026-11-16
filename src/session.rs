@@ -2700,6 +2700,12 @@ fn inline_remap_entries(input: &str) -> anyhow::Result<String> {
 mod tests {
     use super::*;
 
+    /// A path as these tests compare it, with `/` all through: the folder that they make up is `/songs`, and what `Path::join` puts between it and a name is a `\` on Windows (`/songs\diva.clap`, a path that Windows takes as well; the test was written on a
+    /// system that has no other, and the first run of the jobs on Windows said so).
+    fn slashes(path: impl AsRef<str>) -> String {
+        path.as_ref().replace('\\', "/")
+    }
+
     #[test]
     fn a_bare_clap_id_is_not_made_a_path_and_a_relative_bundle_still_is() {
         let dir = Path::new("/songs");
@@ -2709,15 +2715,15 @@ mod tests {
         for same in ["builtin:osc", "clap:com.u-he.diva", "vst3:Pianoteq 9", "/usr/lib/clap/diva.clap"] {
             assert_eq!(resolve_plugin_path(same, dir), same, "{same}");
         }
-        assert_eq!(resolve_plugin_path("diva.clap", dir), "/songs/diva.clap");
-        assert_eq!(resolve_plugin_path("plugins/diva.clap", dir), "/songs/plugins/diva.clap");
+        assert_eq!(slashes(resolve_plugin_path("diva.clap", dir)), "/songs/diva.clap");
+        assert_eq!(slashes(resolve_plugin_path("plugins/diva.clap", dir)), "/songs/plugins/diva.clap");
         // What has a slash is a path whatever dots it has (a folder that is called `my.plugins`), and a name with no dot at all is one too: a bare id is dots and no slash.
-        assert_eq!(resolve_plugin_path("my.plugins/synth", dir), "/songs/my.plugins/synth");
-        assert_eq!(resolve_plugin_path("synth", dir), "/songs/synth");
+        assert_eq!(slashes(resolve_plugin_path("my.plugins/synth", dir)), "/songs/my.plugins/synth");
+        assert_eq!(slashes(resolve_plugin_path("synth", dir)), "/songs/synth");
         // (A bundle is told by its extension, as `plugin::autodetect` tells it; a bundle that is written as a folder has a slash at its end, which is a path too.)
-        assert_eq!(resolve_plugin_path("diva.vst3/", dir), "/songs/diva.vst3/");
-        assert_eq!(resolve_plugin_path("diva.vst3", dir), "/songs/diva.vst3");
-        assert_eq!(resolve_plugin_path("diva.lv2", dir), "/songs/diva.lv2");
+        assert_eq!(slashes(resolve_plugin_path("diva.vst3/", dir)), "/songs/diva.vst3/");
+        assert_eq!(slashes(resolve_plugin_path("diva.vst3", dir)), "/songs/diva.vst3");
+        assert_eq!(slashes(resolve_plugin_path("diva.lv2", dir)), "/songs/diva.lv2");
     }
 
     /// What the loader does with the name of a plugin in a file is `resolve_plugin_path` and then `plugin::autodetect::resolve`: a bare id has to come out of the two as the CLAP plugin that it names (f200: the first made it a path in the
@@ -2732,7 +2738,7 @@ mod tests {
         }
         // A relative bundle is still found in the session's folder, which is a path that the second step takes.
         let (kind, source) = crate::plugin::autodetect::resolve(&resolve_plugin_path("diva.clap", dir)).unwrap();
-        assert_eq!((kind, source.as_str()), (PluginType::Clap, "/songs/diva.clap"));
+        assert_eq!((kind, slashes(source).as_str()), (PluginType::Clap, "/songs/diva.clap"));
     }
 
     #[test]
