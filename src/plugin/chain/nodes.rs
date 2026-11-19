@@ -40,6 +40,8 @@ pub(super) struct BlockCx<'a> {
     /// Where what is measured is published, and how far a meter's peak falls over this block, if anything is measured.
     pub telemetry: Option<&'a Telemetry>,
     pub fall: Option<f32>,
+    /// Where how long each plugin took is put, if anything is measured.
+    pub loads: Option<&'a mut LoadMeter>,
 }
 
 /// What a node of the plan is: a part of a lane or of a group, named by the id of the lane or the group (or of the effect), or the output mix.
@@ -496,6 +498,23 @@ impl<'a, 'cx> Nodes<Stage, BlockCx<'cx>> for Store<'a> {
         if stage == Stage::Master {
             return self.master.run_node(io, cx);
         }
+        // (A lane's head is its instrument, and an effect is a plugin: what they take is what a person is shown of each. The rest is the engine's.)
+        let plugin = match stage {
+            Stage::Head(id) | Stage::Fx(id) => Some(id),
+            _ => None,
+        };
+        let Some(id) = plugin.filter(|_| cx.loads.is_some()) else { return self.run(stage, io, cx) };
+        let started = std::time::Instant::now();
+        let ran = self.run(stage, io, cx);
+        if let Some(loads) = cx.loads.as_deref_mut() {
+            loads.record(id.0, started.elapsed());
+        }
+        ran
+    }
+}
+
+impl Store<'_> {
+    fn run(&mut self, stage: Stage, io: &mut Io, cx: &mut BlockCx<'_>) -> Result<()> {
         let Ok(found) = self.places.binary_search_by_key(&stage, |&(stage, _)| stage) else { return Ok(()) };
         // A node that is not at its place any more (the lane that was there is gone: the plan is made again before the next block) makes silence, and is not taken for the one
         // that is at its place now.
@@ -1324,7 +1343,7 @@ mod tests {
     fn run_with(schedule: &mut Schedule, lanes: &mut [InstrumentLane], groups: &mut [Group], midi: &[(u64, [u8; 3])], frames: usize) -> Vec<Vec<f32>> {
         let mut master = Master::new();
         let mut out = vec![vec![1.0f32; frames]; 2];
-        let mut cx = BlockCx { midi: Events::keys(midi), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None };
+        let mut cx = BlockCx { midi: Events::keys(midi), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None, loads: None };
         schedule.run(lanes, groups, &mut master, frames, &mut cx).unwrap();
         out
     }
@@ -1877,7 +1896,7 @@ mod tests {
         schedule.refresh(&lanes, &groups, 2, 128);
         let mut master = Master::new();
         let mut out = vec![vec![0.0f32; 128]; 2];
-        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None };
+        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None, loads: None };
         let (result, asked) = allocations_in(|| schedule.run(&mut lanes, &mut groups, &mut master, 128, &mut cx));
         result.unwrap();
         assert_eq!(asked, 0, "refresh made the room, as the pool of the kernel has it made before a block");
@@ -2396,7 +2415,7 @@ mod tests {
         assert!(schedule.delay_frames().len() == 2 && schedule.dry_frames(lanes[0].effect_nodes[0]).is_some());
         let mut master = Master::new();
         let mut out = vec![vec![0.0f32; 256]; 2];
-        let mut cx = BlockCx { midi: Events::keys(&NOTE_ON), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None };
+        let mut cx = BlockCx { midi: Events::keys(&NOTE_ON), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None, loads: None };
         let (_, asked) = allocations_in(|| {
             for _ in 0..8 {
                 schedule.refresh(&lanes, &groups, 2, 256);
@@ -2924,7 +2943,7 @@ mod tests {
         render(&mut schedule, &mut lanes, &mut [], &[], 64, 0, 128);
         let mut master = Master::new();
         let mut out = vec![vec![0.0f32; 64]; 2];
-        let mut cx = BlockCx { midi: Events::keys(&NOTE_ON), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None };
+        let mut cx = BlockCx { midi: Events::keys(&NOTE_ON), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: None, fall: None, loads: None };
         let (_, asked) = allocations_in(|| {
             for _ in 0..8 {
                 schedule.refresh(&lanes, &groups, 2, 64);
@@ -2988,7 +3007,7 @@ mod tests {
         let mut io = Io::from_buffers(frames, vec![mix.to_vec()], vec![]);
         let mut out = vec![vec![7.0f32; frames]; mix.len()];
         let fall = telemetry.map(|_| telemetry::peak_fall(frames as f32 / 48_000.0));
-        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry, fall };
+        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry, fall, loads: None };
         master.run_node(&mut io, &mut cx).unwrap();
         out
     }
@@ -3220,13 +3239,13 @@ mod tests {
         let telemetry = Telemetry::new();
         let fall = telemetry::peak_fall(256.0 / 48_000.0);
         for _ in 0..3 {
-            let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: Some(&telemetry), fall: Some(fall) };
+            let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: Some(&telemetry), fall: Some(fall), loads: None };
             let (result, asked) = allocations_in(|| master.run_node(&mut io, &mut cx));
             result.unwrap();
             assert_eq!(asked, 0);
         }
         master.configure(1.0, false, -1.0, 44_100.0);
-        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: Some(&telemetry), fall: Some(fall) };
+        let mut cx = BlockCx { midi: Events::keys(&[]), audio_out: &mut out, num_channels: 2, scale: Default::default(), telemetry: Some(&telemetry), fall: Some(fall), loads: None };
         let (result, asked) = allocations_in(|| master.run_node(&mut io, &mut cx));
         result.unwrap();
         assert_eq!(asked, 0, "not even when the rate is told again (the lines are made for the longest look-ahead)");

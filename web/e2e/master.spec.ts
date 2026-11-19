@@ -180,6 +180,7 @@ test("the limiter on the real program holds a sound that would clip under its ce
   await volume(page).focus();
   await page.keyboard.press("Home");
   await expect(volume(page)).toHaveAttribute("aria-valuenow", "0");
+  await expect(page.getByRole("button", { name: /^Undo/ })).toHaveAccessibleName("Undo set the master volume");
   await press();
   expect(await loudest(page, 800), "a volume of 0 is silence").toBeLessThan(-50);
   await release();

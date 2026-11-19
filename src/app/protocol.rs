@@ -129,6 +129,10 @@ pub enum TelemetryChannel {
     /// The last frames of the output mix, for a scope: `SCOPE_FRAME_LENGTH` values of the left side, the latest last, and then as many of the
     /// right side (`telemetry::ScopeRing`). It follows no layout (its `layout_rev` is 0).
     Scope,
+    /// What share of a block's time the whole block took, and each plugin: 1 is all of it, and over 1 the sound is late (`telemetry::Loads`). The whole block's first, then for each plugin
+    /// that ran lately its node (the bits of the id, as a `u32` where a float would be) and its load. It follows no layout (its `layout_rev` is 0): a plugin that comes or goes changes no
+    /// layout. Its number is 5, after the probes' 4.
+    Loads,
 }
 
 /// How many frames of each side a scope frame has: what a reader may take of the engine's ring at once (`telemetry::SCOPE_READ_MAX`), 43 ms at 48 kHz.
@@ -195,6 +199,7 @@ pub fn telemetry_frame(channel: TelemetryChannel, layout_rev: u32, values: &[f32
             TelemetryChannel::Modulation => 1,
             TelemetryChannel::Held => 2,
             TelemetryChannel::Scope => 3,
+            TelemetryChannel::Loads => 5,
         },
         layout_rev,
         values,

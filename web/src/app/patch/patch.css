@@ -77,6 +77,11 @@
   --kind: var(--tang-root);
 }
 
+/* (The master's last row, the limiter's reduction, has a number at its right too: the load's has a line of its own under it, with the switch that shows the loads at its left.) */
+.tang-node--master > .tang-reduction {
+  padding-bottom: 22px;
+}
+
 .tang-node--source {
   --kind: var(--tang-notes);
 }
@@ -478,6 +483,71 @@
   text-align: right;
   font: 11px / 1.4 var(--tang-mono);
   color: var(--tang-text-muted);
+}
+
+/* How much of the block's time a plugin takes, and the whole block's on the master's card: quiet while it is low, then in the colours of a warning. */
+.tang-load {
+  font: 10px / 1.2 var(--tang-mono);
+  color: var(--tang-text-muted);
+}
+
+/* A plugin's, and the master's for the whole block, along the bottom edge of its card as the level is along its top (3 px, over the border), and the number in its bottom right corner: no card is
+   taller for it. */
+.tang-node__load {
+  position: absolute;
+  bottom: -1px;
+  left: -1px;
+  right: -1px;
+  height: 3px;
+  pointer-events: none;
+}
+
+.tang-node__load .tang-livebar {
+  display: block;
+  height: 3px;
+  border-radius: 0 0 var(--tang-radius) var(--tang-radius);
+  background: transparent;
+  --bar: var(--tang-text-muted);
+}
+
+.tang-node__load-value {
+  position: absolute;
+  right: var(--tang-space-2);
+  bottom: 5px;
+}
+
+.tang-loads-switch {
+  position: absolute;
+  left: var(--tang-space-2);
+  bottom: 5px;
+  display: flex;
+  align-items: center;
+  gap: var(--tang-space-1);
+  font-size: var(--tang-text-small);
+  color: var(--tang-text-muted);
+  cursor: pointer;
+}
+
+.tang-loads-switch input {
+  margin: 0;
+}
+
+/* Yellow close to the block's time, and red at it or over it: the bar and the number alike. */
+.tang-node__load[data-level="high"] .tang-livebar {
+  --bar: var(--tang-warn);
+}
+
+.tang-node__load[data-level="over"] .tang-livebar {
+  --bar: var(--tang-danger);
+}
+
+.tang-node__load[data-level="high"] .tang-load {
+  color: var(--tang-warn);
+}
+
+.tang-node__load[data-level="over"] .tang-load {
+  color: var(--tang-danger);
+  font-weight: 600;
 }
 
 /* The mute and the solo of a lane or a group, in a cell like the keys': two small buttons side by side, a pressed one in the colour of what it does. */

@@ -484,6 +484,7 @@ export class Client {
     // (The notes that were held, as far as this page knew, are held no more as far as it knows, and the sound that it drew is not one that it hears.)
     this.telemetry.forgetHeld();
     this.telemetry.forgetScope();
+    this.telemetry.forgetLoads();
     this.telemetry.forgetProbes();
     if (this.store.getState().probed.length > 0) this.#set({ probed: [] });
     this.#rejectPending("The connection was lost before the server answered.");

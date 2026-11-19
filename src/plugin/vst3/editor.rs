@@ -203,6 +203,8 @@ impl Vst3Editor {
             size: Cell::new((width, height)),
             telling: Cell::new(false),
             open: Cell::new(true),
+            #[cfg(target_os = "linux")]
+            watches: Default::default(),
         });
         let frame = ComWrapper::new(TangPlugFrame { shared: shared.clone() });
         let Some(frame_ptr) = frame.to_com_ptr::<IPlugFrame>() else {
@@ -271,6 +273,18 @@ struct Shared {
     telling: Cell<bool>,
     /// Whether the view is in the window: set from before the view is attached until it is taken off. A plugin that asks for a size outside of that is refused, since the view may be gone.
     open: Cell<bool>,
+    /// What the plugin asked the run loop to call (Linux: `IRunLoop`), by the handler that asked: taken out when the plugin says, and when the frame goes.
+    #[cfg(target_os = "linux")]
+    watches: std::cell::RefCell<Vec<(usize, window::Watch)>>,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Shared {
+    fn drop(&mut self) {
+        for (_, watch) in self.watches.take() {
+            window::unwatch(watch);
+        }
+    }
 }
 
 impl Shared {
@@ -317,8 +331,80 @@ struct TangPlugFrame {
     shared: Rc<Shared>,
 }
 
+#[cfg(not(target_os = "linux"))]
 impl Class for TangPlugFrame {
     type Interfaces = (IPlugFrame,);
+}
+
+/// On Linux the frame is the plugin's run loop too: a VST3 plugin there has no loop of its own, and asks the host for its file descriptors and timers through the frame (`IRunLoop`), which `window::pump` serves.
+#[cfg(target_os = "linux")]
+impl Class for TangPlugFrame {
+    type Interfaces = (IPlugFrame, vst3::Steinberg::Linux::IRunLoop);
+}
+
+#[cfg(target_os = "linux")]
+mod run_loop {
+    use std::rc::Rc;
+
+    use vst3::ComRef;
+    use vst3::Steinberg::Linux::{FileDescriptor, IEventHandler, IEventHandlerTrait as _, IRunLoopTrait, ITimerHandler, ITimerHandlerTrait as _, TimerInterval};
+    use vst3::Steinberg::{kInvalidArgument, kResultFalse, kResultOk, tresult};
+
+    use super::TangPlugFrame;
+    use crate::window;
+
+    impl TangPlugFrame {
+        fn watch(&self, handler: *mut std::ffi::c_void, watch: impl FnOnce() -> window::Watch) -> tresult {
+            if std::thread::current().id() != self.shared.owner {
+                log::warn!("VST3 plugin asked the run loop for something from a thread that is not the main one: refused");
+                return kResultFalse;
+            }
+            self.shared.watches.borrow_mut().push((handler as usize, watch()));
+            kResultOk
+        }
+
+        fn unwatch(&self, handler: *mut std::ffi::c_void) -> tresult {
+            let mut watches = self.shared.watches.borrow_mut();
+            let before = watches.len();
+            watches.retain(|&(of, watch)| {
+                let keep = of != handler as usize;
+                if !keep {
+                    window::unwatch(watch);
+                }
+                keep
+            });
+            if watches.len() == before { kResultFalse } else { kResultOk }
+        }
+    }
+
+    impl IRunLoopTrait for TangPlugFrame {
+        unsafe fn registerEventHandler(&self, handler: *mut IEventHandler, fd: FileDescriptor) -> tresult {
+            // Safety: a plugin gives a handler of its own, or none; the reference that is taken here keeps it until it is unregistered.
+            let Some(held) = (unsafe { ComRef::from_raw(handler) }).map(|handler| handler.to_com_ptr()) else {
+                return kInvalidArgument;
+            };
+            // Safety: the handler is held, and is called on the main thread, as the format says.
+            self.watch(handler.cast(), || window::watch_fd(fd, libc::POLLIN, Rc::new(move |_| unsafe { held.onFDIsSet(fd) })))
+        }
+
+        unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
+            self.unwatch(handler.cast())
+        }
+
+        unsafe fn registerTimer(&self, handler: *mut ITimerHandler, milliseconds: TimerInterval) -> tresult {
+            // Safety: as above.
+            let Some(held) = (unsafe { ComRef::from_raw(handler) }).map(|handler| handler.to_com_ptr()) else {
+                return kInvalidArgument;
+            };
+            let interval = std::time::Duration::from_millis(milliseconds);
+            // Safety: as above.
+            self.watch(handler.cast(), || window::every(interval, Rc::new(move || unsafe { held.onTimer() })))
+        }
+
+        unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
+            self.unwatch(handler.cast())
+        }
+    }
 }
 
 impl IPlugFrameTrait for TangPlugFrame {

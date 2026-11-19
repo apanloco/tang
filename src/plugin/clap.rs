@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use clack_extensions::gui::{GuiSize, HostGui, HostGuiImpl, PluginGui};
 use clack_extensions::latency::PluginLatency;
+use clack_extensions::log::{HostLog, HostLogImpl, LogSeverity};
 use clack_extensions::audio_ports::{
     AudioPortInfoBuffer, HostAudioPorts, HostAudioPortsImpl, PluginAudioPorts, RescanType,
 };
@@ -38,7 +39,12 @@ struct TangHost;
 struct TangHostShared {
     asked: Arc<Asked>,
 }
-struct TangHostMainThread;
+#[derive(Default)]
+struct TangHostMainThread {
+    /// What the plugin asks of the host's run loop on Linux (`timer-support`, `posix-fd-support`): served by the loop that turns the windows.
+    #[cfg(target_os = "linux")]
+    run_loop: super::clap_run_loop::PluginRunLoop,
+}
 
 impl HostHandlers for TangHost {
     type Shared<'a> = TangHostShared;
@@ -48,8 +54,14 @@ impl HostHandlers for TangHost {
     fn declare_extensions(builder: &mut HostExtensions<Self>, _shared: &Self::Shared<'_>) {
         builder.register::<HostAudioPorts>();
         builder.register::<HostGui>();
+        builder.register::<HostLog>();
         builder.register::<HostParams>();
         builder.register::<HostPresetLoad>();
+        #[cfg(target_os = "linux")]
+        {
+            builder.register::<clack_extensions::timer::HostTimer>();
+            builder.register::<clack_extensions::posix_fd::HostPosixFd>();
+        }
     }
 }
 
@@ -66,7 +78,50 @@ impl<'a> SharedHandler<'a> for TangHostShared {
     }
 }
 
-impl<'a> MainThreadHandler<'a> for TangHostMainThread {}
+impl<'a> MainThreadHandler<'a> for TangHostMainThread {
+    #[cfg(target_os = "linux")]
+    fn initialized(&mut self, instance: InitializedPluginHandle<'a>) {
+        self.run_loop.initialized(instance);
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl clack_extensions::timer::HostTimerImpl for TangHostMainThread {
+    fn register_timer(&mut self, period_ms: u32) -> Result<clack_extensions::timer::TimerId, HostError> {
+        self.run_loop.register_timer(period_ms)
+    }
+
+    fn unregister_timer(&mut self, timer_id: clack_extensions::timer::TimerId) -> Result<(), HostError> {
+        self.run_loop.unregister_timer(timer_id)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl clack_extensions::posix_fd::HostPosixFdImpl for TangHostMainThread {
+    fn register_fd(&mut self, fd: std::os::fd::RawFd, flags: clack_extensions::posix_fd::FdFlags) -> Result<(), HostError> {
+        self.run_loop.register_fd(fd, flags)
+    }
+
+    fn modify_fd(&mut self, fd: std::os::fd::RawFd, flags: clack_extensions::posix_fd::FdFlags) -> Result<(), HostError> {
+        self.run_loop.modify_fd(fd, flags)
+    }
+
+    fn unregister_fd(&mut self, fd: std::os::fd::RawFd) -> Result<(), HostError> {
+        self.run_loop.unregister_fd(fd)
+    }
+}
+
+impl HostLogImpl for TangHostShared {
+    fn log(&self, severity: LogSeverity, message: &str) {
+        let level = match severity {
+            LogSeverity::Debug => log::Level::Debug,
+            LogSeverity::Info => log::Level::Info,
+            LogSeverity::Warning => log::Level::Warn,
+            _ => log::Level::Error,
+        };
+        log::log!(target: "tang::plugin::clap::said", level, "{message}");
+    }
+}
 
 /// What a plugin says to the host about its window (step 114, part C): written down for the window's loop to answer, from whichever thread the plugin says it on.
 impl HostGuiImpl for TangHostShared {
@@ -515,7 +570,7 @@ fn scan_bundle(path: &Path) -> Option<Vec<PluginInfo>> {
         let plugin_id = std::ffi::CString::new(id.as_str()).ok()?;
         let param_count = PluginInstance::<TangHost>::new(
             |_| TangHostShared::default(),
-            |_| TangHostMainThread,
+            |_| TangHostMainThread::default(),
             &bundle,
             &plugin_id,
             &host_info,
@@ -575,7 +630,7 @@ fn load_found(
     // Instantiate
     let mut instance = PluginInstance::<TangHost>::new(
         |_| TangHostShared::default(),
-        |_shared| TangHostMainThread,
+        |_shared| TangHostMainThread::default(),
         &bundle,
         &plugin_id,
         &host_info,

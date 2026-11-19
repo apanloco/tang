@@ -27,6 +27,7 @@ import { controlDetail, kindOf, outputScale, seconds, settingsOf } from "./descr
 import { HearsMenu } from "./HearsMenu";
 import { InspectorContext, paramsButtonId } from "./inspector";
 import { LevelStrip } from "./LevelStrip";
+import { BlockLoad, LoadsSwitch, PluginLoad } from "./LoadMeter";
 import { ModulateMenu } from "./ModulateMenu";
 import { ModuleTagButton } from "./ModuleTag";
 import { NodeScope, ScopeButton, ScopePanel } from "./NodeScope";
@@ -457,6 +458,7 @@ export function PluginNode({ data, type }: NodeProps<PatchNode>) {
     <div className={`tang-node tang-node--${type}${unheard} nokey`}>
       {/* (A lane of a module that is open has the tag that closes the module again: the effect that stands for a lane that has no card has it.) */}
       {data.module ? <ModuleTagButton tag={data.module} /> : null}
+      {silent ? null : <PluginLoad node={data.node} name={data.name} />}
       {/* (An effect takes audio in, at two places if it has a second input, and a lane takes notes in, from the sources: but not a lane whose instrument takes no notes, an audio input.) */}
       {effect ? (
         data.side ? (
@@ -713,6 +715,7 @@ export function MasterNode({ data }: NodeProps<PatchNode>) {
   return (
     <div className="tang-node tang-node--master nokey">
       <AudioPort node={data.node} direction="in" />
+      <BlockLoad />
       <Header name={data.name} />
       <div className="tang-node__body">
         <Meter label="Master level" readPeak={readPeak} readClips={readClips} frames={frames} />
@@ -724,6 +727,7 @@ export function MasterNode({ data }: NodeProps<PatchNode>) {
         <LimiterCell />
       </div>
       <ReductionMeter node={data.node} />
+      <LoadsSwitch />
     </div>
   );
 }

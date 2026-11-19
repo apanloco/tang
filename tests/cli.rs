@@ -107,19 +107,23 @@ fn window_for_a_plugin_that_has_no_window_says_so_and_ends_with_status_1_having_
     let said = String::from_utf8_lossy(&output.stderr);
     assert!(said.starts_with("Error: "), "{said}");
     assert!(
-        said.contains("Oscillator has no window of its own") || said.contains("has no screen") || said.contains("macOS only"),
+        said.contains("Oscillator has no window of its own") || said.contains("has no screen") || said.contains("only so far"),
         "{said}"
     );
     assert!(output.stdout.is_empty(), "it printed nothing but the error: {}", String::from_utf8_lossy(&output.stdout));
 }
 
-/// Opens the window of a plugin on the screen for a second, and takes a picture of it: for a person at a Mac that has a VST3 plugin installed, since a window is not for a machine that has no screen and no plugin.
-/// `cargo test --test cli -- --ignored`.
+/// Opens the window of a plugin on the screen for a second, and takes a picture of it: for a person at a Mac or a Linux desktop that has a VST3 plugin installed, since a window is not for a machine that has no screen and no
+/// plugin. `cargo test --test cli -- --ignored`.
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[ignore = "opens a plugin's window on the screen for a second: cargo test --test cli -- --ignored"]
 fn window_opens_a_plugin_that_is_installed_and_takes_a_picture_of_it_and_closes_it() {
-    let mut bundles: Vec<_> = std::fs::read_dir("/Library/Audio/Plug-Ins/VST3")
+    #[cfg(target_os = "macos")]
+    let (folder, the_window) = ("/Library/Audio/Plug-Ins/VST3", "NSView ");
+    #[cfg(target_os = "linux")]
+    let (folder, the_window) = ("/usr/lib/vst3", "window 0x");
+    let mut bundles: Vec<_> = std::fs::read_dir(folder)
         .map(|entries| entries.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|ext| ext == "vst3")).collect())
         .unwrap_or_default();
     bundles.sort();
@@ -138,7 +142,7 @@ fn window_opens_a_plugin_that_is_installed_and_takes_a_picture_of_it_and_closes_
     }
     assert_eq!(output.status.code(), Some(0), "{said}{err}");
     assert!(said.contains(": a window of "), "{said}");
-    assert!(said.contains("What the plugin made in the window:\nNSView "), "{said}");
+    assert!(said.contains(&format!("What the plugin made in the window:\n{the_window}")), "{said}");
     assert!(said.contains("Snapshot: ") && said.trim_end().ends_with(" s."), "{said}");
     let png = std::fs::read(&picture).expect("the picture was written");
     assert!(png.starts_with(b"\x89PNG"), "{:?}", &png[..8.min(png.len())]);

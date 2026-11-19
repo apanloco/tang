@@ -7,6 +7,8 @@ pub mod chain;
 pub mod clap;
 pub mod clap_callbacks;
 pub mod clap_editor;
+#[cfg(target_os = "linux")]
+mod clap_run_loop;
 pub mod editors;
 #[cfg(test)]
 pub mod fake;

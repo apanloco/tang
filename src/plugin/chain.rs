@@ -16,7 +16,7 @@ use crate::notesplit::{self, Splitter};
 use crate::patternbox::{self, BoxNotification, BoxPlan, BoxPlayer, Click, Tick};
 use crate::session::{self, RemapTarget, Route};
 use crate::source::{Events, MAX_BOXES, MAX_SOURCES, MAX_SPLITTERS, Output, Source, SourceSet};
-use crate::telemetry::{self, Meter, MeterSlots, Slot, Telemetry};
+use crate::telemetry::{self, LoadMeter, Meter, MeterSlots, Slot, Telemetry};
 
 mod limiter;
 mod nodes;
@@ -3612,6 +3612,8 @@ pub struct AudioGraph {
     gain_ramps: Vec<GainRamp>,
     /// Where what the graph measures is published; `None` publishes nothing.
     telemetry: Option<Arc<Telemetry>>,
+    /// How long each plugin took to run the block, and the block itself: published with the telemetry.
+    loads: LoadMeter,
     /// The output mix: its meter, and what it writes to the output.
     master: Master,
     /// The seed that the next modulator to come in is given (`next_modulator_seed`).
@@ -3663,6 +3665,7 @@ impl AudioGraph {
             free_gain_drives: Vec::with_capacity(SCRATCH_CAPACITY),
             gain_ramps: Vec::with_capacity(SCRATCH_CAPACITY),
             telemetry: None,
+            loads: LoadMeter::default(),
             master: Master::new(),
             modulator_seeds: 0,
             bpm: DEFAULT_BPM,
@@ -4926,6 +4929,7 @@ impl AudioGraph {
         input_events: Events<'_>,
         audio_out: &mut [Vec<f32>],
     ) -> anyhow::Result<()> {
+        let started = self.telemetry.is_some().then(std::time::Instant::now);
         self.drain_commands();
         // The plugins hear the tempo that the commands and the host have made it (a plugin that the commands put in is told before its first block).
         self.tell_the_plugins_the_tempo();
@@ -5013,6 +5017,7 @@ impl AudioGraph {
                 scale,
                 telemetry: self.telemetry.as_deref(),
                 fall,
+                loads: started.map(|_| &mut self.loads),
             };
             self.schedule.run(&mut self.instruments, &mut self.groups, &mut self.master, frames, &mut cx)
         };
@@ -5040,6 +5045,10 @@ impl AudioGraph {
             self.schedule.refresh(&self.instruments, &self.groups, self.num_channels, frames);
         }
 
+        if let (Some(started), Some(telemetry)) = (started, &self.telemetry) {
+            let period = std::time::Duration::from_secs_f64(frames as f64 / f64::from(self.graph_sample_rate()));
+            self.loads.finish(telemetry, period, started.elapsed());
+        }
         Ok(())
     }
 
@@ -12652,6 +12661,74 @@ mod tests {
         rig.cmd_tx.send(GraphCommand::SetModulatorOutput { location: ModulatorLocation::Free, index: 3, slot }).unwrap();
         rig.process(&[]);
         assert_eq!(rig.read(slot), 0.0);
+    }
+
+    /// An effect that passes its input through and takes `busy` of the processor's time to do it.
+    struct SlowEffect {
+        busy: std::time::Duration,
+    }
+
+    impl Plugin for SlowEffect {
+        fn name(&self) -> &str {
+            "SlowEffect"
+        }
+        fn is_instrument(&self) -> bool {
+            false
+        }
+        fn audio_output_count(&self) -> usize {
+            2
+        }
+        fn audio_input_count(&self) -> usize {
+            2
+        }
+        fn process(&mut self, _midi_events: &[(u64, [u8; 3])], audio_in: &[&[f32]], audio_out: &mut [&mut [f32]]) -> anyhow::Result<()> {
+            let started = std::time::Instant::now();
+            for (out, inp) in audio_out.iter_mut().zip(audio_in) {
+                out.copy_from_slice(inp);
+            }
+            while started.elapsed() < self.busy {
+                std::hint::spin_loop();
+            }
+            Ok(())
+        }
+        fn sample_rate(&self) -> f32 {
+            48000.0
+        }
+        fn parameters(&self) -> Vec<ParameterInfo> {
+            Vec::new()
+        }
+        fn get_parameter(&mut self, _idx: u32) -> Option<f32> {
+            None
+        }
+        fn set_parameter(&mut self, idx: u32, _value: f32) -> anyhow::Result<()> {
+            anyhow::bail!("no parameter {idx}")
+        }
+        fn presets(&self) -> Vec<Preset> {
+            Vec::new()
+        }
+        fn load_preset(&mut self, id: &str) -> anyhow::Result<()> {
+            anyhow::bail!("no preset {id}")
+        }
+    }
+
+    #[test]
+    fn each_plugin_publishes_its_share_of_the_block_and_the_block_its_own_and_measuring_asks_for_no_memory() {
+        let mut rig = two_lanes_in_a_group();
+        let block = std::time::Duration::from_secs_f64(FRAMES as f64 / 48000.0);
+        rig.cmd_tx.send(GraphCommand::InsertEffect { inst: 0, index: 1, effect: Box::new(SlowEffect { busy: block * 3 / 10 }), mix: 1.0, node: effect_node(0, 1) }).unwrap();
+        rig.cmd_tx.send(GraphCommand::InsertGroupEffect { group: 0, index: 1, effect: Box::new(SlowEffect { busy: block / 5 }), mix: 1.0, node: bus_effect_node(0, 1) }).unwrap();
+        rig.process(&[note_on(60)]);
+        let loads = &rig.telemetry.loads;
+        let (slow, bus) = (loads.of(effect_node(0, 1).0), loads.of(bus_effect_node(0, 1).0));
+        assert!(slow >= 0.3 && bus >= 0.2, "each its own share: {slow} and {bus}");
+        assert!(loads.total() >= 0.5, "the block took what they did and more: {}", loads.total());
+        assert!(loads.of(lane_node(0).0) < slow, "an instrument that does almost nothing: {}", loads.of(lane_node(0).0));
+        let mut out = make_output();
+        let ((), allocations) = crate::alloc_guard::allocations_in(|| rig.graph.process(&[], &mut out).unwrap());
+        assert_eq!(allocations, 0);
+        rig.cmd_tx.send(GraphCommand::RemoveEffect { inst: 0, index: 1, keep: None }).unwrap();
+        rig.process(&[]);
+        assert_eq!(rig.telemetry.loads.of(effect_node(0, 1).0), 0.0, "a plugin that is taken out has no load");
     }
 
     /// Two lanes in group 0, each with a constant instrument and a

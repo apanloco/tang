@@ -424,9 +424,9 @@ describe("the nodes on the canvas", () => {
     expect(ENVELOPE_NODE_HEIGHT).toBeGreaterThanOrEqual(315);
     expect(ENVELOPE_NODE_HEIGHT).toBeLessThanOrEqual(325);
     expect(nodeHeight(master, 0)).toBe(MASTER_HEIGHT);
-    // (Measured in a browser: 373 for the master's, with its scope and the choices of the view under its meter, the row of the volume, the ceiling and the limiter, and the reduction.)
-    expect(MASTER_HEIGHT).toBeGreaterThanOrEqual(373);
-    expect(MASTER_HEIGHT).toBeLessThanOrEqual(385);
+    // (Measured in a browser: 385 for the master's, with its scope and the choices of the view under its meter, the row of the volume, the ceiling and the limiter, the reduction and the room for the load's number.)
+    expect(MASTER_HEIGHT).toBeGreaterThanOrEqual(385);
+    expect(MASTER_HEIGHT).toBeLessThanOrEqual(397);
   });
 
   test("leave room above a strip for the tallest of its modulators, and no more", () => {
@@ -2900,12 +2900,13 @@ describe("the nodes arranged for short cables", () => {
     const places = new Map(before.places);
     const second = places.get(2);
     if (!second) throw new Error("the layout has not placed the effect");
-    // (Below the master, which is 378 tall since step 102 and stays where it was: a node that is kept on it is moved clear of it.)
-    places.set(2, { ...second, x: second.x + 100, y: second.y + 400 });
+    // (Below the master, which stays where it was: a node that is kept on it is moved clear of it.)
+    const below = MASTER_HEIGHT + 22;
+    places.set(2, { ...second, x: second.x + 100, y: second.y + below });
     const longer: Graph = { nodes: [instrument(1), effect(2, 1), effect(3, 1), master], edges: [audio(1, 2), audio(2, 3), audio(3, MASTER)] };
     const after = toFlow(longer, places);
-    expect(at(after, 3).position).toEqual({ x: at(before, 2).position.x + 100 + COLUMN, y: at(before, 2).position.y + 400 });
-    expect(at(after, 2).position).toEqual({ x: at(before, 2).position.x + 100, y: at(before, 2).position.y + 400 });
+    expect(at(after, 3).position).toEqual({ x: at(before, 2).position.x + 100 + COLUMN, y: at(before, 2).position.y + below });
+    expect(at(after, 2).position).toEqual({ x: at(before, 2).position.x + 100, y: at(before, 2).position.y + below });
   });
 
   test("is not asked of a session in which a person has placed a node: that node is a pin that the arrangement would have to keep, and the layout is the rows'", () => {
