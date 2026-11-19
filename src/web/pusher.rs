@@ -26,7 +26,7 @@ use crate::web::Shared;
 use crate::web::hub::{Hub, Outgoing};
 
 /// Every channel there is, in the order of their numbers.
-const CHANNELS: [TelemetryChannel; 4] = [TelemetryChannel::Meters, TelemetryChannel::Modulation, TelemetryChannel::Held, TelemetryChannel::Scope];
+const CHANNELS: [TelemetryChannel; 5] = [TelemetryChannel::Meters, TelemetryChannel::Modulation, TelemetryChannel::Held, TelemetryChannel::Scope, TelemetryChannel::Loads];
 
 /// The frame of `channel`: the value of every entry of its list in `layout`, in order,
 /// as the atomics hold it now. A count (how many buffers clipped) goes as a float, which
@@ -38,6 +38,7 @@ pub fn frame(channel: TelemetryChannel, layout: &TelemetryLayout, telemetry: &Te
         TelemetryChannel::Modulation => &layout.modulation,
         TelemetryChannel::Held => return held_frame(held),
         TelemetryChannel::Scope => return scope_frame(telemetry),
+        TelemetryChannel::Loads => return loads_frame(telemetry),
     };
     let values: Vec<f32> = entries
         .iter()
@@ -47,6 +48,15 @@ pub fn frame(channel: TelemetryChannel, layout: &TelemetryLayout, telemetry: &Te
         })
         .collect();
     telemetry_frame(channel, layout.rev, &values)
+}
+
+/// The frame of the loads: the whole block's, and then each plugin's node and its load. It follows no layout. (A node is sent as its bits, which a client reads as a `u32`.)
+pub fn loads_frame(telemetry: &Telemetry) -> Vec<u8> {
+    let mut values = vec![telemetry.loads.total()];
+    for (node, load) in telemetry.loads.each() {
+        values.extend([f32::from_bits(node), load]);
+    }
+    telemetry_frame(TelemetryChannel::Loads, 0, &values)
 }
 
 /// The frame of the held notes: a value for each of the 128 notes, 1 for one that is held, 0 for the rest, at the place
@@ -348,6 +358,25 @@ type = "steps"
         let left: Vec<f32> = (3000 - n..3000).map(|i| i as f32).collect();
         assert_eq!(decoded.values[..n], left[..]);
         assert!(decoded.values[n..].iter().zip(&left).all(|(right, left)| *right == -left), "the right side follows the left");
+    }
+
+    #[test]
+    fn the_loads_are_a_frame_of_the_whole_blocks_and_then_each_plugins_node_and_load_and_follow_no_layout() {
+        let telemetry = Telemetry::new();
+        let decoded = decode(&frame(TelemetryChannel::Loads, &layout(), &telemetry, &HeldNotes::new()));
+        assert_eq!((decoded.channel, decoded.rev, decoded.values), (5, 0, vec![0.0]), "nothing has run: the block's, of nothing");
+        let mut meter = crate::telemetry::LoadMeter::default();
+        let block = Duration::from_millis(100);
+        meter.record(3, block / 4);
+        meter.record(u32::MAX - 1, block / 10);
+        meter.finish(&telemetry, block, block / 2);
+        let bytes = frame(TelemetryChannel::Loads, &layout(), &telemetry, &HeldNotes::new());
+        let decoded = decode(&bytes);
+        assert_eq!((decoded.channel, decoded.rev, decoded.values.len()), (5, 0, 5));
+        let word = |at: usize| u32::from_le_bytes(bytes[FRAME_HEADER_LEN + 4 * at..FRAME_HEADER_LEN + 4 * at + 4].try_into().unwrap());
+        assert_eq!((word(1), word(3)), (3, u32::MAX - 1), "the nodes, as their bits");
+        let loads = [decoded.values[0], decoded.values[2], decoded.values[4]];
+        assert!(loads.iter().zip([0.5, 0.25, 0.1]).all(|(load, expected)| (load - expected).abs() < 1e-5), "{loads:?}");
     }
 
     #[test]

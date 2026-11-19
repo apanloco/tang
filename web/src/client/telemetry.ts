@@ -4,8 +4,8 @@
 import { FRAME_HEADER_LEN, SCOPE_FRAME_LENGTH } from "../protocol";
 import type { NodeId, Port, SlotKind, TelemetryChannel, TelemetryLayout } from "../protocol";
 
-/** The channel numbers of a frame's header, in order. */
-const CHANNELS: readonly TelemetryChannel[] = ["meters", "modulation", "held", "scope"];
+/** The channel numbers of a frame's header, in order (4 is the probes', which is no channel a client asks for). */
+const CHANNELS: readonly (TelemetryChannel | undefined)[] = ["meters", "modulation", "held", "scope", undefined, "loads"];
 
 /** The number of the channel of the probes' frames, which no client asks for as a channel: each node that is watched has frames of its own (`ClientMessage::Probes`). */
 const PROBE_CHANNEL = 4;
@@ -13,8 +13,8 @@ const PROBE_CHANNEL = 4;
 /** How many values a probe's frame has: the left side and then the right, as many of each as the scope's. */
 const PROBE_LENGTH = 2 * SCOPE_FRAME_LENGTH;
 
-/** The channels whose values are the entries of a list in the layout (the held notes and the scope follow none). */
-export type LayoutChannel = Exclude<TelemetryChannel, "held" | "scope">;
+/** The channels whose values are the entries of a list in the layout (the held notes, the scope and the loads follow none). */
+export type LayoutChannel = Exclude<TelemetryChannel, "held" | "scope" | "loads">;
 const LAYOUT_CHANNELS: readonly LayoutChannel[] = ["meters", "modulation"];
 
 /** How many notes there are: a frame of the held notes has a value for each of them, at the place of its number. */
@@ -22,7 +22,7 @@ export const NOTES = 128;
 
 /** One telemetry frame: the current values of one channel. */
 export interface LayoutFrame {
-  channel: TelemetryChannel;
+  channel: Exclude<TelemetryChannel, "loads">;
   /** The `rev` of the layout the values follow (0 for the held notes and the scope, which follow none). */
   layoutRev: number;
   /** Value *i* belongs to entry *i* of the channel's list in that layout. */
@@ -38,7 +38,16 @@ export interface ProbeFrame {
   values: Float32Array;
 }
 
-export type Frame = LayoutFrame | ProbeFrame;
+/** How much of a block's time the whole block took, and each plugin that ran lately: `values` has the block's first and then each plugin's, and `nodes` the plugins, in the same order. */
+export interface LoadsFrame {
+  channel: "loads";
+  layoutRev: 0;
+  values: Float32Array;
+  nodes: Uint32Array;
+  node?: undefined;
+}
+
+export type Frame = LayoutFrame | ProbeFrame | LoadsFrame;
 
 /**
  * Decode a binary frame (`u8 channel | u8 flags | u16 n | u32 layout_rev | n × f32`,
@@ -56,6 +65,19 @@ export function decodeFrame(data: ArrayBuffer | ArrayBufferView): Frame | null {
   const values = new Float32Array(count);
   for (let i = 0; i < count; i++) values[i] = view.getFloat32(FRAME_HEADER_LEN + 4 * i, true);
   const tag = view.getUint32(4, true);
+  // (The loads are the block's, and then a node and its load for each plugin: a node is the bits of its id where a float would be.)
+  if (channel === "loads") {
+    if (count % 2 !== 1) return null;
+    const plugins = (count - 1) / 2;
+    const loads = new Float32Array(1 + plugins);
+    const nodes = new Uint32Array(plugins);
+    loads[0] = view.getFloat32(FRAME_HEADER_LEN, true);
+    for (let i = 0; i < plugins; i++) {
+      nodes[i] = view.getUint32(FRAME_HEADER_LEN + 4 * (1 + 2 * i), true);
+      loads[1 + i] = view.getFloat32(FRAME_HEADER_LEN + 4 * (2 + 2 * i), true);
+    }
+    return { channel, layoutRev: 0, values: loads, nodes };
+  }
   return channel === undefined ? { channel: "probe", layoutRev: 0, node: tag, values } : { channel, layoutRev: tag, values };
 }
 
@@ -101,6 +123,9 @@ export class TelemetryIndex {
  */
 export class TelemetryBuffers {
   #index: TelemetryIndex | null = null;
+  /** The load of each plugin that ran lately, and of the whole block, as of the latest frame of the loads. */
+  #loads = new Map<NodeId, number>();
+  #blockLoad: number | undefined;
   readonly #latest = new Map<TelemetryChannel, Float32Array>([
     ["held", new Float32Array(NOTES)],
     ["scope", new Float32Array(2 * SCOPE_FRAME_LENGTH)],
@@ -123,6 +148,23 @@ export class TelemetryBuffers {
     }
   }
 
+  /** What share of a block's time the plugin at `node` took, lately: 1 is all of it, and over 1 the sound is late. 0 for one that has not run, and undefined before a frame of the loads has come. */
+  load(node: NodeId): number | undefined {
+    if (this.#blockLoad === undefined) return undefined;
+    return this.#loads.get(node) ?? 0;
+  }
+
+  /** What share of its time the whole block took, lately: the plugins and the engine's own work. Undefined before a frame of the loads has come. */
+  blockLoad(): number | undefined {
+    return this.#blockLoad;
+  }
+
+  /** Forget the loads: the connection that told is gone, and what the engine takes now is not known until a frame says. */
+  forgetLoads(): void {
+    this.#loads = new Map();
+    this.#blockLoad = undefined;
+  }
+
   /** The `rev` of the layout that is set: what a reader that has found a slot goes by to know the slot may have moved. */
   get layoutRev(): number | undefined {
     return this.#index?.layout.rev;
@@ -140,6 +182,7 @@ export class TelemetryBuffers {
    */
   accept(frame: Frame): boolean {
     if (frame.channel === "probe") return this.#acceptProbe(frame);
+    if (frame.channel === "loads") return this.#acceptLoads(frame);
     const latest = this.#latest.get(frame.channel);
     // (The held notes and the scope follow no layout: a frame of them is taken at any time, if it is the length it should be.)
     const fits = frame.channel === "held" || frame.channel === "scope" ? true : this.#index?.layout.rev === frame.layoutRev;
@@ -147,6 +190,15 @@ export class TelemetryBuffers {
     latest.set(frame.values);
     this.#heard.add(frame.channel);
     this.#counts.set(frame.channel, (this.#counts.get(frame.channel) ?? 0) + 1);
+    this.#frames += 1;
+    return true;
+  }
+
+  /** A frame of the loads is taken at any time: it says every plugin that ran lately, and one it does not name has not. */
+  #acceptLoads(frame: LoadsFrame): boolean {
+    this.#loads = new Map(Array.from(frame.nodes, (node, i) => [node, frame.values[1 + i] ?? 0]));
+    this.#blockLoad = frame.values[0];
+    this.#counts.set("loads", (this.#counts.get("loads") ?? 0) + 1);
     this.#frames += 1;
     return true;
   }

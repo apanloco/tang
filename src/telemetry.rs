@@ -13,6 +13,7 @@
 //! more than one reader must see, because nobody has to reset it.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::Duration;
 
 /// How many slots a session gets (the last, `MASTER_REDUCTION`, is the engine's). A modulator takes one, each of its targets one,
 /// a meter two: a session with hundreds of nodes is far below this, and 16 KiB is
@@ -78,6 +79,8 @@ pub struct Telemetry {
     /// The node that each ring of `probes` is for, as its id and one (0 for none): written by the controller, which says who is listened to, and read by whoever sends
     /// a ring's frames to the clients that watch that node.
     probe_nodes: [AtomicU32; PROBES],
+    /// How much of each block's time each plugin takes, and the whole block does (`LoadMeter`).
+    pub loads: Loads,
 }
 
 impl Telemetry {
@@ -87,6 +90,7 @@ impl Telemetry {
             scope: ScopeRing::new(),
             probes: (0..PROBES).map(|_| ScopeRing::new()).collect(),
             probe_nodes: std::array::from_fn(|_| AtomicU32::new(0)),
+            loads: Loads::new(),
         }
     }
 
@@ -273,6 +277,103 @@ impl Meter {
     }
 }
 
+/// How many plugins the engine publishes a load for: a session with more has the others without one.
+pub const LOADS: usize = 256;
+
+/// How long a load takes to fall to half of its peak: a peak is seen for a moment, and gone in a second (the user found a second's half-life "too much smoothing").
+const LOAD_HALF_LIFE_SECONDS: f32 = 0.25;
+
+/// What share of the time that a block lasts each plugin took to run it, by the plugin's node, and what share the whole block took: 1 is all of it, and over 1 the sound is late and is heard
+/// as clicks and gaps. Kept by the engine's node and not by a slot, so that a plugin that comes or goes needs nothing of the model: a reader is given the nodes with their loads. Each entry is
+/// the node's id in the high half and the load's bits in the low half, so that a reader never takes a load for another node's.
+pub struct Loads {
+    entries: Box<[AtomicU64]>,
+    count: AtomicU32,
+    total: AtomicU32,
+}
+
+impl Loads {
+    fn new() -> Self {
+        Loads { entries: (0..LOADS).map(|_| AtomicU64::new(0)).collect(), count: AtomicU32::new(0), total: AtomicU32::new(0) }
+    }
+
+    fn publish(&self, loads: &[(u32, f32)], total: f32) {
+        for (entry, &(node, load)) in self.entries.iter().zip(loads) {
+            entry.store((u64::from(node) << 32) | u64::from(load.to_bits()), Ordering::Relaxed);
+        }
+        self.count.store(loads.len().min(LOADS) as u32, Ordering::Relaxed);
+        self.total.store(total.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The load of the plugin at `node`: 0 for one that has not run.
+    #[cfg(test)]
+    pub fn of(&self, node: u32) -> f32 {
+        let count = self.count.load(Ordering::Relaxed) as usize;
+        self.entries[..count.min(LOADS)]
+            .iter()
+            .map(|entry| entry.load(Ordering::Relaxed))
+            .find(|entry| (entry >> 32) as u32 == node)
+            .map_or(0.0, |entry| f32::from_bits(entry as u32))
+    }
+
+    /// The load of the whole block: the plugins, and the engine's own work around them.
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime reads the loads for its telemetry frames"))]
+    pub fn total(&self) -> f32 {
+        f32::from_bits(self.total.load(Ordering::Relaxed))
+    }
+
+    /// Each plugin that ran lately, by its node, and its load.
+    #[cfg_attr(not(any(test, feature = "web")), expect(dead_code, reason = "only the web runtime reads the loads for its telemetry frames"))]
+    pub fn each(&self) -> Vec<(u32, f32)> {
+        let count = self.count.load(Ordering::Relaxed) as usize;
+        self.entries[..count.min(LOADS)].iter().map(|entry| entry.load(Ordering::Relaxed)).map(|entry| ((entry >> 32) as u32, f32::from_bits(entry as u32))).collect()
+    }
+}
+
+/// What the audio thread keeps of the loads between blocks: how long each plugin took in this one (`record`), and the loads as they are published, each falling from its peak. Its lists have
+/// their room from the start, so that the audio thread asks the allocator for nothing.
+pub struct LoadMeter {
+    took: Vec<(u32, Duration)>,
+    shown: Vec<(u32, f32)>,
+    next: Vec<(u32, f32)>,
+    total: f32,
+}
+
+impl Default for LoadMeter {
+    fn default() -> Self {
+        LoadMeter { took: Vec::with_capacity(LOADS), shown: Vec::with_capacity(LOADS), next: Vec::with_capacity(LOADS), total: 0.0 }
+    }
+}
+
+impl LoadMeter {
+    /// The plugin at `node` took `took` to run this block.
+    pub fn record(&mut self, node: u32, took: Duration) {
+        if self.took.len() < LOADS {
+            self.took.push((node, took));
+        }
+    }
+
+    /// The block is over: it lasts `period` of sound and took `took` to make. Publish each plugin's share of the period, or what is left of its peak if that is more; a plugin that did not run
+    /// this block is not published any more.
+    pub fn finish(&mut self, telemetry: &Telemetry, period: Duration, took: Duration) {
+        let seconds = period.as_secs_f32();
+        if seconds <= 0.0 {
+            self.took.clear();
+            return;
+        }
+        let fall = 0.5f32.powf(seconds / LOAD_HALF_LIFE_SECONDS);
+        self.next.clear();
+        for &(node, took) in &self.took {
+            let before = self.shown.iter().find(|(shown, _)| *shown == node).map_or(0.0, |&(_, load)| load);
+            self.next.push((node, (took.as_secs_f32() / seconds).max(before * fall)));
+        }
+        std::mem::swap(&mut self.shown, &mut self.next);
+        self.took.clear();
+        self.total = (took.as_secs_f32() / seconds).max(self.total * fall);
+        telemetry.loads.publish(&self.shown, self.total);
+    }
+}
+
 /// How the main thread hands out slots. Slots are never taken back or reused: a
 /// session would have to add and remove thousands of modulators to run out, and
 /// when it does the item just has no telemetry (the audio is unaffected).
@@ -319,6 +420,41 @@ impl SlotAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugins_load_is_its_share_of_the_block_and_falls_from_its_peak_and_one_that_stops_running_has_none() {
+        let t = Telemetry::new();
+        let mut meter = LoadMeter::default();
+        let block = Duration::from_millis(20);
+        meter.record(7, Duration::from_millis(10));
+        meter.record(9, Duration::from_millis(2));
+        meter.finish(&t, block, Duration::from_millis(15));
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!(close(t.loads.of(7), 0.5) && close(t.loads.of(9), 0.1) && close(t.loads.total(), 0.75));
+        assert_eq!(t.loads.of(8), 0.0, "a node that did not run");
+        meter.record(7, Duration::ZERO);
+        meter.record(9, Duration::from_millis(16));
+        meter.finish(&t, block, Duration::from_millis(17));
+        let fall = 0.5f32.powf(0.02 / LOAD_HALF_LIFE_SECONDS);
+        assert!(close(t.loads.of(7), 0.5 * fall), "what is left of its peak");
+        assert!(close(t.loads.of(9), 0.8), "a new peak");
+        assert!(close(t.loads.total(), 0.85));
+        meter.record(9, Duration::ZERO);
+        meter.finish(&t, block, Duration::ZERO);
+        assert_eq!(t.loads.of(7), 0.0, "taken out of the session");
+    }
+
+    #[test]
+    fn the_loads_of_more_plugins_than_there_is_room_for_are_left_out() {
+        let t = Telemetry::new();
+        let mut meter = LoadMeter::default();
+        for node in 0..LOADS as u32 + 3 {
+            meter.record(node + 1, Duration::from_millis(1));
+        }
+        meter.finish(&t, Duration::from_millis(10), Duration::from_millis(10));
+        assert!((t.loads.of(LOADS as u32) - 0.1).abs() < 1e-5);
+        assert_eq!(t.loads.of(LOADS as u32 + 1), 0.0);
+    }
 
     #[test]
     fn a_float_comes_back_as_published() {

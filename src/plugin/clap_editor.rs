@@ -83,8 +83,10 @@ pub trait GuiCalls {
 fn parent_window(parent: *mut c_void) -> ClapWindow<'static> {
     #[cfg(windows)]
     return ClapWindow::from_win32_hwnd(parent);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     return ClapWindow::from_cocoa_nsview(parent);
+    #[cfg(not(any(windows, target_os = "macos")))]
+    return ClapWindow::from_x11_handle(parent as usize as std::ffi::c_ulong);
 }
 
 /// What the plugin is asked for: a window that goes in the host's, for the API that this system's windows are.
@@ -183,7 +185,7 @@ impl ClapEditor {
             return Err(format!("{name} has no window that Tang can put in one of its own (it has none, or makes a floating one itself, which Tang does not show yet)"));
         }
         self.gui.create().map_err(|why| format!("{name}: the window could not be made: {why}"))?;
-        // (macOS counts points and has scaled them already, as a host there says: the scale is 1.)
+        // (macOS counts points and has scaled them already, as a host there says: the scale is 1. X11 counts pixels, and Tang does not scale them yet.)
         self.gui.set_scale(1.0);
         let (width, height) = self.gui.size().unwrap_or((640, 480));
         let resizable = self.gui.can_resize();

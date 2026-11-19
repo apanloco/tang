@@ -85,7 +85,7 @@ describe("decoding a frame", () => {
   test("gives null for what is not a frame", () => {
     expect(decodeFrame(new ArrayBuffer(0))).toBeNull();
     expect(decodeFrame(new ArrayBuffer(7))).toBeNull();
-    expect(decodeFrame(frame(5, 1, [1]))).toBeNull(); // a channel this client does not know
+    expect(decodeFrame(frame(6, 1, [1]))).toBeNull(); // a channel this client does not know
     expect(decodeFrame(frame(255, 1, []))).toBeNull();
     const short = new Uint8Array(frame(0, 1, [1, 2])).subarray(0, 12); // says two values, has one
     expect(decodeFrame(short)).toBeNull();
@@ -507,4 +507,55 @@ describe("the buffers", () => {
 /** For the places a test has already shown a value is there. */
 function never(): never {
   throw new Error("expected a decoded frame");
+}
+
+describe("the loads in the buffers", () => {
+  /** A frame of the loads as the server writes it: the whole block's, then each plugin's node (the bits of its id) and its load. */
+  function loadsFrame(block: number, plugins: readonly (readonly [number, number])[]): ArrayBuffer {
+    const words = 1 + 2 * plugins.length;
+    const buffer = new ArrayBuffer(8 + 4 * words);
+    const view = new DataView(buffer);
+    view.setUint8(0, 5);
+    view.setUint16(2, words, true);
+    view.setFloat32(8, block, true);
+    plugins.forEach(([node, load], i) => {
+      view.setUint32(12 + 8 * i, node, true);
+      view.setFloat32(16 + 8 * i, load, true);
+    });
+    return buffer;
+  }
+
+  test("decode the nodes by their bits, whatever float those are, and refuse a frame that has half a plugin", () => {
+    const decoded = decodeFrame(loadsFrame(0.75, [[3, 0.5], [0x7fc00001, 0.25]]));
+    expect(decoded?.channel).toBe("loads");
+    expect(decoded?.layoutRev).toBe(0);
+    expect(decoded?.channel === "loads" ? Array.from(decoded.nodes) : []).toEqual([3, 0x7fc00001]);
+    expect(Array.from(decoded?.values ?? [])).toEqual([0.75, 0.5, 0.25]);
+    expect(decodeFrame(frame(5, 0, [0.5, 1]))).toBeNull();
+  });
+
+  test("are unknown before a frame of them, each plugin's after it (0 for one that did not run), and the whole block's, and do not follow the layout", () => {
+    const buffers = new TelemetryBuffers();
+    expect([buffers.load(filter.id), buffers.blockLoad()]).toEqual([undefined, undefined]);
+    expect(buffers.accept(decodeFrame(loadsFrame(0.5, [[filter.id, 0.25]])) ?? fail())).toBe(true);
+    expect([buffers.load(filter.id), buffers.load(lfo.id), buffers.blockLoad()]).toEqual([0.25, 0, 0.5]);
+    buffers.setLayout({ ...layout, rev: layout.rev + 1 });
+    expect(buffers.load(filter.id), "a new layout").toBe(0.25);
+    expect(buffers.accept(decodeFrame(loadsFrame(0.125, [])) ?? fail())).toBe(true);
+    expect(buffers.load(filter.id), "a plugin that the next frame does not name has not run").toBe(0);
+    expect(buffers.framesOf("loads")).toBe(2);
+  });
+
+  test("can be forgotten, and are known again by the next frame", () => {
+    const buffers = new TelemetryBuffers();
+    buffers.accept(decodeFrame(loadsFrame(0.5, [[filter.id, 0.25]])) ?? fail());
+    buffers.forgetLoads();
+    expect([buffers.load(filter.id), buffers.blockLoad()]).toEqual([undefined, undefined]);
+    buffers.accept(decodeFrame(loadsFrame(0.5, [[filter.id, 0.25]])) ?? fail());
+    expect(buffers.load(filter.id)).toBe(0.25);
+  });
+});
+
+function fail(): never {
+  throw new Error("the frame does not decode");
 }

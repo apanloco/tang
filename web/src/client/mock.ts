@@ -1861,7 +1861,8 @@ function shape(waveform: Waveform, turns: number, seed: number): number {
 }
 
 /** The number of a channel in the header of its frames. */
-const CHANNEL_NUMBERS: Record<TelemetryChannel, number> = { meters: 0, modulation: 1, held: 2, scope: 3 };
+const CHANNEL_NUMBERS: Record<TelemetryChannel, number> = { meters: 0, modulation: 1, held: 2, scope: 3, loads: 5 };
+
 
 /** The number of the channel of a probe's frames, which has the node where the others have the layout's revision (`probe_frame`). */
 const PROBE_CHANNEL_NUMBER = 4;
@@ -1878,6 +1879,21 @@ function frameBytes(channel: TelemetryChannel | "probe", layoutRev: number, valu
   view.setUint32(4, layoutRev, true);
   values.forEach((value, i) => {
     view.setFloat32(8 + 4 * i, value, true);
+  });
+  return buffer;
+}
+
+/** A frame of the loads as the server writes it (`loads_frame`): the whole block's, and then each plugin's node, as the bits of its id, and its load. */
+function loadsBytes(block: number, plugins: readonly (readonly [NodeId, number])[]): ArrayBuffer {
+  const count = 1 + 2 * plugins.length;
+  const buffer = new ArrayBuffer(8 + 4 * count);
+  const view = new DataView(buffer);
+  view.setUint8(0, CHANNEL_NUMBERS.loads);
+  view.setUint16(2, count, true);
+  view.setFloat32(8, block, true);
+  plugins.forEach(([node, load], i) => {
+    view.setUint32(12 + 8 * i, node, true);
+    view.setFloat32(16 + 8 * i, load, true);
   });
   return buffer;
 }
@@ -2684,6 +2700,12 @@ export class MockServer {
     const sounding = nodes.some((n) => n.kind === "instrument" && n.plugin !== null && audible.get(n.id) === true);
     // (The scope follows none either: the frames of the left side and then of the right, as many of each as the real server's.)
     if (channel === "scope") return frameBytes(channel, 0, scopeValues(sounding ? this.heldNotes : new Set<number>(), seconds, this.#snapshot.meta.sampleRate));
+    // (A plugin takes a little of the block, and more while a note is held; the whole block takes what they do and a little more. A node goes as the bits of its id.)
+    if (channel === "loads") {
+      const each = this.heldNotes.size > 0 ? 0.12 : 0.02;
+      const plugins = nodes.filter((n) => (n.kind === "instrument" || n.kind === "effect") && n.plugin !== null).map((n) => n.id);
+      return loadsBytes(each * plugins.length + 0.01, plugins.map((node) => [node, each]));
+    }
     const outputOf = (id: NodeId): number => {
       const node = nodes.find((n) => n.id === id);
       return node ? this.#modulatorOutput(node, seconds) : 0;

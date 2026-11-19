@@ -718,6 +718,13 @@ master peak and clip, and the last frames of the output mix, which a scope draws
     that the controller has told the audio thread the node has (`GraphCommand::SetProbe`; a lane or a group that nothing listens to has an empty list of taps, a check at each stage). The rings are made with the telemetry, so that asking for a node's signal allocates nothing on the audio
     thread, and are shared: which node each is for is the controller's (`Controller::set_probes`, `src/app/probes.rs`), and is
     in the telemetry for a reader to ask (`Telemetry::probe_node`). A reader copies the latest frames as it does the output's.
+  - *How much of a block's time each plugin takes* (`Telemetry.loads`, `telemetry::Loads`; step 131): the audio thread times each
+    instrument (its lane's head) and each effect as the plan runs it, and the whole block from its first command to its end, and
+    publishes each as a share of the time the block lasts (1 is all of it, and over 1 the sound is late), held at its peak and falling
+    to half of it in a quarter of a second (`LoadMeter`). Kept by the plugin's node in a table of its own (256 entries, each the node's id and the load's
+    bits in one 64-bit cell), not in slots: a plugin that comes or goes needs nothing of the model and changes no layout. A plugin
+    that does not run in a block is not in the table after it. Work that a plugin does on threads of its own is not counted: it does
+    not take the audio thread's time. Only measured when there is a telemetry (the oracle has none).
 - **Layout.** A `TelemetryLayout { rev, meters, modulation }` tells clients what
   each slot means: two lists, one per channel group, of `{ slot, node, port, kind
   }` with `kind` one of `peak`, `clips`, `modOutput`, `effective`. A frame carries
@@ -766,6 +773,9 @@ master peak and clip, and the last frames of the output mix, which a scope draws
   nodes, by `probes { nodes }`, §7): the same 2 × 2048 values as the scope's, the left side and then the right, and the node's id where a
   frame of the others has the layout's revision, since a probe follows no layout. A client is sent one for each node that it watches and that
   has a ring, 30 times a second (`web::pusher`).
+  **The loads (step 131):** channel number 5, `loads`, which a client asks for as it asks for the scope, while it shows them. A frame follows
+  no layout (`layout_rev` 0): the whole block's load, and then for each plugin that ran lately its node, as the bits of its id where a float
+  would be (a client reads that word as a `u32`), and its load (`loads_frame`).
 - **Visual vocabulary.** Knob = base value; ring = modulation extent (depth ×
   range); dot = effective value. A setting of a modulator (an LFO's rate, a stage of an
   envelope) that a cable drives has the same since step 39 (D41), and the depth of a cable that

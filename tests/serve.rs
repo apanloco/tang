@@ -2456,8 +2456,47 @@ fn windows_on_screen(pid: u32) -> usize {
     String::from_utf8_lossy(&output.stdout).trim().parse().unwrap_or_else(|_| panic!("osascript said {output:?}"))
 }
 
+/// How many windows of the process `pid` are on the screen: the windows that the window manager lists (`_NET_CLIENT_LIST`) and says are the process's (`_NET_WM_PID`).
+#[cfg(target_os = "linux")]
+fn windows_on_screen(pid: u32) -> usize {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+    let (conn, screen) = x11rb::connect(None).expect("an X server");
+    let root = conn.setup().roots[screen].root;
+    let atom = |name: &[u8]| conn.intern_atom(false, name).unwrap().reply().unwrap().atom;
+    let (clients, wm_pid) = (atom(b"_NET_CLIENT_LIST"), atom(b"_NET_WM_PID"));
+    let list = conn.get_property(false, root, clients, AtomEnum::WINDOW, 0, 4096).unwrap().reply().unwrap();
+    list.value32()
+        .into_iter()
+        .flatten()
+        .filter(|&window| {
+            let owner = conn.get_property(false, window, wm_pid, AtomEnum::CARDINAL, 0, 1).ok().and_then(|cookie| cookie.reply().ok());
+            owner.and_then(|reply| reply.value32().and_then(|mut values| values.next())) == Some(pid)
+        })
+        .count()
+}
+
+/// Ask each window of the program on the screen to close, as the window manager does when a person clicks its close button.
+#[cfg(target_os = "linux")]
+fn close_windows(pid: u32) {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt, EventMask};
+    let (conn, screen) = x11rb::connect(None).expect("an X server");
+    let root = conn.setup().roots[screen].root;
+    let atom = |name: &[u8]| conn.intern_atom(false, name).unwrap().reply().unwrap().atom;
+    let (clients, wm_pid, protocols, delete) = (atom(b"_NET_CLIENT_LIST"), atom(b"_NET_WM_PID"), atom(b"WM_PROTOCOLS"), atom(b"WM_DELETE_WINDOW"));
+    let list = conn.get_property(false, root, clients, AtomEnum::WINDOW, 0, 4096).unwrap().reply().unwrap();
+    for window in list.value32().into_iter().flatten() {
+        let owner = conn.get_property(false, window, wm_pid, AtomEnum::CARDINAL, 0, 1).ok().and_then(|cookie| cookie.reply().ok());
+        if owner.and_then(|reply| reply.value32().and_then(|mut values| values.next())) == Some(pid) {
+            conn.send_event(false, window, EventMask::NO_EVENT, ClientMessageEvent::new(32, window, protocols, [delete, 0, 0, 0, 0])).unwrap();
+        }
+    }
+    conn.flush().unwrap();
+}
+
 /// Wait until `expected` windows of the program are on the screen.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn wait_for_windows(tang: &Tang, expected: usize, what: &str) {
     let pid = tang.child.0.id();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -2474,12 +2513,16 @@ fn wait_for_windows(tang: &Tang, expected: usize, what: &str) {
 /// A plugin's own window, through the whole program (step 112, part B): the hello says that the machine can show windows and the plugin that it has one, a request opens it, and it leaves the screen with its plugin, when the
 /// instrument is taken out of the lane, and is there again for the plugin that an undo brings back. *What found it:* the window of a plugin that was taken out was closed by the controller and stayed on the screen, shut and
 /// frozen, since nothing turned the loop that makes AppKit tell the window server once the last window was closed (`window::macos`, `close`). For a person at a Mac that has a VST3 plugin installed, since a window is not for a
-/// machine that has no screen and no plugin; the window takes the keyboard from the terminal for a few seconds. `cargo test --features web --test serve -- --ignored`.
-#[cfg(target_os = "macos")]
+/// machine that has no screen and no plugin; the window takes the keyboard from the terminal for a few seconds. On Linux the same, with an X11 window. `cargo test --features web --test serve -- --ignored`.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 #[ignore = "opens a plugin's window on the screen for a few seconds, and takes the keyboard: cargo test --features web --test serve -- --ignored"]
 async fn a_plugins_own_window_opens_through_the_server_and_leaves_the_screen_with_its_plugin() {
-    let mut bundles: Vec<_> = std::fs::read_dir("/Library/Audio/Plug-Ins/VST3")
+    #[cfg(target_os = "macos")]
+    let folder = "/Library/Audio/Plug-Ins/VST3";
+    #[cfg(target_os = "linux")]
+    let folder = "/usr/lib/vst3";
+    let mut bundles: Vec<_> = std::fs::read_dir(folder)
         .map(|entries| entries.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|ext| ext == "vst3")).collect())
         .unwrap_or_default();
     bundles.sort();
@@ -2537,6 +2580,16 @@ async fn a_plugins_own_window_opens_through_the_server_and_leaves_the_screen_wit
     assert_eq!(windows_on_screen(tang.child.0.id()), 0, "the plugin is back, and its window is not");
     assert_eq!(ask(json!({"type": "openEditor", "node": node})).await["type"], "ack");
     wait_for_windows(&tang, 1, "the window of the plugin that an undo brought back");
+
+    // The person closes it, as the window manager tells it: the program goes on, and it opens again.
+    #[cfg(target_os = "linux")]
+    {
+        close_windows(tang.child.0.id());
+        wait_for_windows(&tang, 0, "the window that the person closed");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(ask(json!({"type": "openEditor", "node": node})).await["type"], "ack", "{}", tang.log());
+        wait_for_windows(&tang, 1, "the window opened again after the person closed it");
+    }
     assert!(!tang.log().contains("let go of on a thread that is not the main one"), "{}", tang.log());
 }
 

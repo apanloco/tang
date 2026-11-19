@@ -39,6 +39,7 @@ test("a knob turned in one go is put back by one Undo, by the button and by the 
   await page.keyboard.press("ControlOrMeta+Shift+Z");
   await expect(detune).toHaveAttribute("aria-valuenow", turned);
   await expect(redo).toBeDisabled();
+  await expect(undo).toBeEnabled();
   await page.keyboard.press("ControlOrMeta+Z");
   await expect(detune).toHaveAttribute("aria-valuenow", "0");
   await expect(redo).toBeEnabled();

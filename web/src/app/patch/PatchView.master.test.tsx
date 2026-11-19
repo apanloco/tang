@@ -6,6 +6,8 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { MASTER, tracerSnapshot } from "../../client/fixtures";
 import { decodeFrame } from "../../client/telemetry";
+import { showLoads } from "../loadsShown";
+import { levelOf } from "./LoadMeter";
 import type { Clock } from "../../client/testing";
 import type { Snapshot, TelemetryLayout } from "../../protocol";
 import { rig } from "../testing";
@@ -39,6 +41,21 @@ function reductionFrame(layout: TelemetryLayout, reduction: number): ArrayBuffer
   data.setUint32(4, layout.rev, true);
   values.forEach((value, i) => {
     data.setFloat32(8 + 4 * i, value, true);
+  });
+  return buffer;
+}
+
+/** A frame of the loads as the server writes it (channel 5): the whole block's, then each plugin's node (the bits of its id) and its load. */
+function loadsFrame(block: number, plugins: readonly (readonly [number, number])[]): ArrayBuffer {
+  const words = 1 + 2 * plugins.length;
+  const buffer = new ArrayBuffer(8 + 4 * words);
+  const data = new DataView(buffer);
+  data.setUint8(0, 5);
+  data.setUint16(2, words, true);
+  data.setFloat32(8, block, true);
+  plugins.forEach(([node, load], i) => {
+    data.setUint32(12 + 8 * i, node, true);
+    data.setFloat32(16 + 8 * i, load, true);
   });
   return buffer;
 }
@@ -160,6 +177,55 @@ describe("the output mix", () => {
       });
       expect(card.querySelector(".tang-reduction__value")?.textContent, `${String(reduction)} dB`).toBe(text);
       expect(Number(bar.getAttribute("aria-valuenow"))).toBeCloseTo(reduction, 5);
+    }
+  });
+
+  test("shows how much of each block's time the whole block takes along the bottom edge of the master, and each plugin along its own, coloured as it comes close to all of it, and nothing before it is known", async () => {
+    const { client, clock } = await rig(<PatchView />, { telemetryPeriod: 3_600_000 });
+    const card = await master();
+    const plugin = tracerSnapshot.graph.nodes.find((n) => n.kind === "instrument" && n.plugin !== null);
+    if (!plugin) throw new Error("no instrument");
+    const pluginCard = await screen.findByTestId(`rf__node-${String(plugin.id)}`);
+    const shown = pluginCard.querySelector(".tang-node__load-value");
+    const row = card.querySelector(".tang-node--master > .tang-node__load");
+    const total = row?.querySelector(".tang-node__load-value");
+    const bar = within(card).getByRole("meter", { name: "Audio load" });
+    act(() => {
+      clock.tick(0);
+    });
+    expect([shown?.textContent, total?.textContent]).toEqual(["", ""]);
+    for (const [load, text, level] of [[0.3, "30%", "low"], [0.62, "62%", "high"], [1.4, "140%", "over"]] as const) {
+      const decoded = decodeFrame(loadsFrame(load, [[plugin.id, load / 2]]));
+      if (!decoded) throw new Error("the frame does not decode");
+      client.telemetry.accept(decoded);
+      act(() => {
+        clock.tick(0);
+      });
+      expect(total?.textContent).toBe(text);
+      expect(row?.getAttribute("data-level")).toBe(level);
+      expect(pluginCard.querySelector(".tang-node__load")?.getAttribute("data-level")).toBe(levelOf(load / 2));
+      expect(shown?.textContent).toBe(`${String(Math.round((load / 2) * 100))}%`);
+      expect(Number(bar.getAttribute("aria-valuenow"))).toBeCloseTo(load, 5);
+      expect(Number(within(pluginCard).getByRole("meter", { name: `Load of ${plugin.name}` }).getAttribute("aria-valuenow"))).toBeCloseTo(load / 2, 5);
+    }
+  });
+
+  test("shows no load anywhere while the master's switch has them hidden, and shows them again when it is turned on", async () => {
+    showLoads(false);
+    try {
+      await rig(<PatchView />);
+      const card = await master();
+      expect(document.querySelector(".tang-node__load")).toBeNull();
+      const toggle = within(card).getByRole<HTMLInputElement>("checkbox", { name: "Load" });
+      expect(toggle.checked).toBe(false);
+      fireEvent.click(toggle);
+      expect(toggle.checked).toBe(true);
+      expect(card.querySelector(".tang-node--master > .tang-node__load")).not.toBeNull();
+      expect(document.querySelectorAll(".tang-node__load").length).toBeGreaterThan(1);
+      fireEvent.click(toggle);
+      expect(document.querySelector(".tang-node__load")).toBeNull();
+    } finally {
+      showLoads(true);
     }
   });
 
