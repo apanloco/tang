@@ -32,8 +32,10 @@ toml = "0.8"
 toml_edit = "0.22"
 serde = { version = "1", features = ["derive"] }
 clack-host = { git = "https://github.com/prokopyl/clack", rev = "57e89b356f16194a04fa03cc5c5a87d88db560c7" }
+# The raw structs of the extensions that a plugin is called back through from the run loop on Linux (`plugin::clap_run_loop`): the version that clack has.
+clap-sys = "0.5"
 clack-finder = { git = "https://github.com/prokopyl/clack", rev = "57e89b356f16194a04fa03cc5c5a87d88db560c7" }
-clack-extensions = { git = "https://github.com/prokopyl/clack", rev = "57e89b356f16194a04fa03cc5c5a87d88db560c7", features = ["clack-host", "audio-ports", "gui", "latency", "note-ports", "params", "preset-discovery", "state"] }
+clack-extensions = { git = "https://github.com/prokopyl/clack", rev = "57e89b356f16194a04fa03cc5c5a87d88db560c7", features = ["clack-host", "audio-ports", "gui", "latency", "log", "note-ports", "params", "posix-fd", "preset-discovery", "state", "timer"] }
 vst3 = { version = "0.3", optional = true }
 libloading = { version = "0.8", optional = true }
 ts-rs = { version = "12", optional = true }
@@ -59,6 +61,9 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.15", features = ["jack"] }
 jack = "0.11"
+# The window that a plugin's own editor is put in on Linux (`window::x11`): an X11 window by x11rb, and its picture as a PNG.
+png = "0.18"
+x11rb = "0.14"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CoreMIDI only learns of a device that is plugged in or unplugged on the run loop of a thread (`midi::let_the_system_see_the_devices`): the version that cpal's CoreAudio has already.

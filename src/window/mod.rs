@@ -16,10 +16,14 @@ use std::time::Duration;
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{available, open, pump};
+#[cfg(target_os = "linux")]
+mod x11;
+#[cfg(target_os = "linux")]
+pub use x11::{Watch, available, every, open, pump, unwatch, watch_fd};
 
 /// How a window is to be opened.
-// (The macOS window reads every field; a platform that has no window does not, and says so in its answer to `open`.)
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+// (The macOS and X11 windows read every field; a platform that has no window does not, and says so in its answer to `open`.)
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub struct Spec<'a> {
     pub title: &'a str,
     /// The size of what is inside the window, in points (see [`Window::size`]).
@@ -33,10 +37,10 @@ pub struct Spec<'a> {
 
 /// A window with a plugin's view in it, as a plugin format sees it.
 pub trait Window {
-    /// What the plugin attaches its view to: the window's content view (an `NSView *` on macOS). It is good for as long as the window is.
+    /// What the plugin attaches its view to: the window's content view (an `NSView *` on macOS), or the window's id as a pointer (X11). It is good for as long as the window is.
     fn parent(&self) -> *mut c_void;
 
-    /// The size of what is inside the window, in points, the unit that a plugin's view is measured in on macOS (a platform that counts pixels will say so here when it is built).
+    /// The size of what is inside the window, in points, the unit that a plugin's view is measured in on macOS, and in pixels on X11, which is what a plugin's view is measured in there.
     fn size(&self) -> (i32, i32);
 
     /// Make what is inside the window this size.
@@ -60,15 +64,15 @@ pub trait Window {
     fn describe(&self) -> String;
 }
 
-/// What a platform that has no windows says to every question: Tang opens a plugin's window on macOS only so far.
-#[cfg(not(target_os = "macos"))]
+/// What a platform that has no windows says to every question: Tang opens a plugin's window on macOS and Linux only so far.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod unsupported {
     use std::rc::Rc;
     use std::time::Duration;
 
     use super::{Spec, Window};
 
-    const WHY: &str = "Tang shows a plugin's own window on macOS only so far";
+    const WHY: &str = "Tang shows a plugin's own window on macOS and Linux only so far";
 
     pub fn available() -> Result<(), String> {
         Err(WHY.to_string())
@@ -82,7 +86,7 @@ mod unsupported {
         std::thread::sleep(limit);
     }
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub use unsupported::{available, open, pump};
 
 /// The type of [`open`], which the editors take as an argument so that a test can give them a window that is not on any screen.
