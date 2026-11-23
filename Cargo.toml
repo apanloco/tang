@@ -80,7 +80,7 @@ serde_json = "1"
 # A CLAP plugin of the tests' own, run through the program's host as the plugin of a file is (`plugin::clap`'s tests: what a plugin that is hosted is given of time, step 120). The same clack as everywhere.
 clack-plugin = { git = "https://github.com/prokopyl/clack", rev = "57e89b356f16194a04fa03cc5c5a87d88db560c7" }
 clack-host = { git = "https://github.com/prokopyl/clack", rev = "57e89b356f16194a04fa03cc5c5a87d88db560c7", features = ["clack-plugin"] }
-clack-extensions = { git = "https://github.com/prokopyl/clack", rev = "57e89b356f16194a04fa03cc5c5a87d88db560c7", features = ["clack-plugin", "audio-ports"] }
+clack-extensions = { git = "https://github.com/prokopyl/clack", rev = "57e89b356f16194a04fa03cc5c5a87d88db560c7", features = ["clack-plugin", "audio-ports", "gui", "params", "state"] }
 
 # lv2-sys upstream (RustAudio/rust-lv2) doesn't compile on macOS — its
 # unsupported.rs hits a compile_error! instead of using the Linux bindings.
