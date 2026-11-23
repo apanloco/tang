@@ -8,7 +8,7 @@
 // changes round them (a cable drawn, a node added or taken out: `toFlow` is given where it put them last) until the person asks for
 // the nodes to be arranged again. (Step 105: a button turns choosing on, and what is chosen, the plugins in it, is saved as a module: see `selection.ts`. Step 107: a box drawn with Shift held chooses at any time, a click
 // with Shift or Control or Command held adds a node to what is chosen, a node that is chosen is moved with the others, and a right click opens a menu of what is under the pointer: see `contextMenus.ts`.)
-import { Background, Controls, Panel, ReactFlow, useKeyPress, useReactFlow, useStore } from "@xyflow/react";
+import { Background, Controls, Panel, ReactFlow, useKeyPress, useReactFlow, useStore, useUpdateNodeInternals } from "@xyflow/react";
 import type { Connection, Edge, EdgeTypes, NodeChange, NodeTypes, OnConnectStart, ReactFlowInstance } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
@@ -157,6 +157,18 @@ function FitWhenArranged({ requests, arranging }: { requests: number; arranging:
     shown.current = requests;
     void canvas.fitView({ padding: FIT_PADDING, maxZoom: 1, duration: MOVE_MS });
   }, [canvas, requests, arranging]);
+  return null;
+}
+
+/**
+ * Measures the nodes again when the session has been laid out again: a node keeps the size it was measured at (`keepHeld`), and where its ports are can have changed with what it holds. Draws
+ * nothing; it is in the canvas for the instance of it.
+ */
+function MeasureWhenLaidOut({ flow }: { flow: Flow }) {
+  const measure = useUpdateNodeInternals();
+  useEffect(() => {
+    measure(flow.nodes.map((node) => node.id));
+  }, [measure, flow]);
   return null;
 }
 
@@ -480,6 +492,7 @@ function PatchCanvas() {
                     </Panel>
                     <ShowWhatWasAdded graph={graph} flow={flow} />
                     <FitWhenArranged requests={arrangements} arranging={arranging} />
+                    <MeasureWhenLaidOut flow={flow} />
                   </ReactFlow>
                 </ConnectingContext.Provider>
               </StructureContext.Provider>

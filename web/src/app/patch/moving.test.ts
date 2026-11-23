@@ -15,13 +15,25 @@ const node = (id: string, x: number, y: number, dragging?: boolean, selected?: b
 const held = (...ids: string[]): ReadonlySet<string> => new Set(ids);
 
 describe("keeping the nodes a person has in hand", () => {
-  test("with none in hand the canvas is what the layout says, the very nodes of it", () => {
+  test("with none in hand the canvas is what the layout says", () => {
     const incoming = [node("1", 0, 0), node("2", 400, 0)];
     const current = [node("1", 50, 50), node("2", 450, 50)];
     const kept = keepHeld(incoming, current, held());
     expect(kept).toEqual(incoming);
-    expect(kept[0]).toBe(incoming[0]);
     expect(kept).not.toBe(incoming);
+  });
+
+  test("a node keeps the size it was measured at, held or not, and a new node has none: one that has none is hidden with its cables until it is measured again", () => {
+    const measured = { width: 304, height: 380 };
+    const incoming = [node("1", 0, 0), node("2", 400, 0), node("3", 800, 0)];
+    const current = [{ ...node("1", 50, 50), measured }, { ...node("2", 450, 50, false), measured }];
+    const kept = keepHeld(incoming, current, held("2"));
+    expect(kept.map((n) => [n.id, n.position, n.measured])).toEqual([
+      ["1", { x: 0, y: 0 }, measured],
+      ["2", { x: 450, y: 50 }, measured],
+      ["3", { x: 800, y: 0 }, undefined],
+    ]);
+    expect(kept[2]).toBe(incoming[2]);
   });
 
   test("a node in hand stays where it is on the canvas, whatever the layout says, and keeps being dragged; the others go where the layout says", () => {
