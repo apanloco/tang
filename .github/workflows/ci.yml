@@ -8,6 +8,11 @@ on:
   # A run that is started by hand (the Actions tab, or `gh workflow run ci.yml --ref BRANCH`): for a branch that is on a fork and has no pull request yet, which is how the Windows file of the plugin (step 113) is built to be tried.
   workflow_dispatch:
 
+# A push to a pull request cancels the run of the one before it. A run on main is never cancelled, so that every merge says whether it broke main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 

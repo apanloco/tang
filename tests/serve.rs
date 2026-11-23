@@ -226,6 +226,18 @@ async fn peak_until(client: &mut Client, tang: &Tang, at: usize, within: Duratio
     panic!("{what}: the master's peak was {last} after {within:?}\n{}", tang.log());
 }
 
+/// Read frames until the note that is playing is heard and steady, two readings of the master's peak in a row within 1% of each other, and return the peak. (The first reading that is heard can be
+/// on the way up: the master's peak was held to it, and a slow runner waited for a level that the note had passed.)
+async fn steady_peak(client: &mut Client, tang: &Tang, at: usize) -> f32 {
+    let last = std::cell::Cell::new(f32::NAN);
+    peak_until(client, tang, at, SOON, "the note, steady", |peak| {
+        let steady = peak > 0.02 && (peak - last.get()).abs() < 0.01 * peak;
+        last.set(peak);
+        steady
+    })
+    .await
+}
+
 /// Connected, subscribed, and asking for the meters: the client, and where the master's peak is.
 async fn listening(tang: &Tang) -> (Client, usize, Value) {
     let mut client = connect(tang).await;
@@ -1084,8 +1096,7 @@ async fn a_browser_draws_a_send_and_hears_it_in_the_meter_and_the_saved_file_has
     let lane = id_of(&snapshot, "Oscillator");
 
     tell(&mut client, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
-    let dry = peak_until(&mut client, &tang, at, SOON, "the note", |peak| peak > 0.02).await;
-    let dry = peak_until(&mut client, &tang, at, SOON, "the note, steady", |peak| (peak - dry).abs() < 0.01 * dry).await;
+    let dry = steady_peak(&mut client, &tang, at).await;
     assert!((0.03..0.08).contains(&dry), "a sine at a level of 0.2 peaks at a quarter of it, the oscillator's own level: {dry}");
 
     // The lane's instrument into the mix, as it is: what the lane puts out is in the mix twice. Told as a snapshot, since a cable came.
@@ -1152,8 +1163,7 @@ async fn a_browser_draws_a_cable_between_the_ends_of_a_link_that_is_cut_and_the_
     let (start, end) = (json!({"node": lane, "port": {"type": "audioOut"}}), json!({"node": MASTER, "port": {"type": "audioIn"}}));
 
     tell(&mut client, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
-    let dry = peak_until(&mut client, &tang, at, SOON, "the note", |peak| peak > 0.02).await;
-    let dry = peak_until(&mut client, &tang, at, SOON, "the note, steady", |peak| (peak - dry).abs() < 0.01 * dry).await;
+    let dry = steady_peak(&mut client, &tang, at).await;
 
     // The link is there: a cable between its two ends is refused, in the words of a second cable between two places, and nothing is heard of it.
     tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addCable", "from": start, "to": end, "gain": null}})).await;
@@ -1510,8 +1520,7 @@ async fn a_browser_wires_a_lane_to_a_device_that_is_not_there_and_the_lane_goes_
     let lane = id_of(&snapshot, "Oscillator");
 
     tell(&mut client, json!({"type": "noteOn", "note": 69, "velocity": 100})).await;
-    let dry = peak_until(&mut client, &tang, at, SOON, "the note", |peak| peak > 0.02).await;
-    let dry = peak_until(&mut client, &tang, at, SOON, "the note, steady", |peak| (peak - dry).abs() < 0.01 * dry).await;
+    let dry = steady_peak(&mut client, &tang, at).await;
 
     // The keys and a device are put in as sources: told as a snapshot, with a link from each to the lane, which hears every source (it has no cable). Nothing that is heard changes.
     tell(&mut client, json!({"type": "request", "reqId": 1, "intent": {"type": "addSource", "source": {"type": "keys"}}})).await;

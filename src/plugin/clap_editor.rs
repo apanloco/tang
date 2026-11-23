@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use clack_extensions::gui::{GuiApiType, GuiConfiguration, GuiSize, PluginGui, Window as ClapWindow};
-use clack_host::prelude::{PluginBundle, PluginMainThreadHandle};
+use clack_extensions::params::PluginParams;
+use clack_extensions::state::PluginState;
+use clack_host::prelude::{ClapId, PluginBundle, PluginMainThreadHandle};
 
 use super::{Editor, OpenEditor};
 use crate::window::{self, Window};
@@ -60,7 +62,8 @@ impl Asked {
     }
 }
 
-/// The calls into a plugin's `gui` extension that the editor makes. The plugin's own are `RealGui`; a test's write them down.
+/// The calls into a plugin that its editor makes: its `gui` extension's, and its `state` and the values of its `params`, which a session reads and gives through the editor as it does a VST3 plugin's (`plugin::editors::state`).
+/// The plugin's own are `RealGui`; a test's write them down.
 pub trait GuiCalls {
     /// Whether the plugin can put its window in a window of the host's, for this system's own API.
     fn embedded_supported(&self) -> bool;
@@ -77,6 +80,12 @@ pub trait GuiCalls {
     fn show(&self) -> Result<(), String>;
     fn hide(&self);
     fn destroy(&self);
+    /// The plugin's state, from its `state` extension: none for a plugin that has none, or that did not give it.
+    fn state(&self) -> Option<Vec<u8>>;
+    /// Give the plugin a state that `state` made; the reason in words if it has no `state` extension or does not take it.
+    fn set_state(&self, state: &[u8]) -> Result<(), String>;
+    /// What the plugin's parameters are now, by the index that the session has for each.
+    fn values(&self) -> Vec<(u32, f32)>;
 }
 
 /// The window of this system's own kind that the plugin is given.
@@ -94,11 +103,14 @@ fn configuration() -> Option<GuiConfiguration<'static>> {
     GuiApiType::default_for_current_platform().map(|api_type| GuiConfiguration { api_type, is_floating: false })
 }
 
-/// A plugin's `gui` extension and the handle that it is called through.
+/// A plugin's `gui` extension, its `state` and its `params` if it has them, and the handle that they are called through.
 pub struct RealGui {
     /// The plugin's main-thread handle, made `'static` when the plugin was loaded: good for as long as the plugin is, which the registry holds the editor to (see the module's own words).
     handle: RefCell<PluginMainThreadHandle<'static>>,
     gui: PluginGui,
+    state: Option<PluginState>,
+    /// The plugin's `params`, and the id of each parameter at the index that the session has for it.
+    params: Option<(PluginParams, Vec<ClapId>)>,
 }
 
 impl RealGui {
@@ -106,10 +118,10 @@ impl RealGui {
     ///
     /// `handle` must be the handle of an instance that is not destroyed while this is used: the editor is let go of, with its window closed, before the plugin is (`ClapPlugin::drop`), and calls nothing in a plugin whose
     /// token is gone. Every call is the main thread's.
-    pub unsafe fn new(handle: PluginMainThreadHandle<'_>, gui: PluginGui) -> RealGui {
+    pub unsafe fn new(handle: PluginMainThreadHandle<'_>, gui: PluginGui, state: Option<PluginState>, params: Option<(PluginParams, Vec<ClapId>)>) -> RealGui {
         // SAFETY: only the lifetime is made another; the caller keeps the instance for as long as this is used.
         let handle = unsafe { std::mem::transmute::<PluginMainThreadHandle<'_>, PluginMainThreadHandle<'static>>(handle) };
-        RealGui { handle: RefCell::new(handle), gui }
+        RealGui { handle: RefCell::new(handle), gui, state, params }
     }
 }
 
@@ -159,6 +171,28 @@ impl GuiCalls for RealGui {
 
     fn destroy(&self) {
         self.gui.destroy(&mut self.handle.borrow_mut());
+    }
+
+    fn state(&self) -> Option<Vec<u8>> {
+        let mut bytes = Vec::new();
+        match self.state?.save(&mut self.handle.borrow_mut(), &mut bytes) {
+            Ok(()) => Some(bytes),
+            Err(why) => {
+                log::warn!("a CLAP plugin did not give its state: {why}");
+                None
+            }
+        }
+    }
+
+    fn set_state(&self, state: &[u8]) -> Result<(), String> {
+        let extension = self.state.ok_or("this plugin keeps no state")?;
+        extension.load(&mut self.handle.borrow_mut(), &mut &state[..]).map_err(|why| why.to_string())
+    }
+
+    fn values(&self) -> Vec<(u32, f32)> {
+        let Some((params, ids)) = &self.params else { return Vec::new() };
+        let mut handle = self.handle.borrow_mut();
+        (0u32..).zip(ids).filter_map(|(index, &id)| params.get_value(&mut handle, id).map(|value| (index, value as f32))).collect()
     }
 }
 
@@ -220,6 +254,23 @@ impl ClapEditor {
 impl Editor for ClapEditor {
     fn open(&self, title: &str, focus: bool) -> Result<Box<dyn OpenEditor>, String> {
         self.open_in(title, focus, &window::open)
+    }
+
+    fn state(&self) -> Option<Vec<u8>> {
+        self.alive.upgrade()?;
+        self.gui.state()
+    }
+
+    fn set_state(&self, state: &[u8]) -> Result<(), String> {
+        self.alive.upgrade().ok_or("the plugin is gone")?;
+        self.gui.set_state(state)
+    }
+
+    fn values(&self) -> Vec<(u32, f32)> {
+        if self.alive.upgrade().is_none() {
+            return Vec::new();
+        }
+        self.gui.values()
     }
 }
 
@@ -417,6 +468,21 @@ mod tests {
         fn destroy(&self) {
             self.say("gui.destroy".to_string());
         }
+
+        fn state(&self) -> Option<Vec<u8>> {
+            self.say("state.save".to_string());
+            Some(b"kept".to_vec())
+        }
+
+        fn set_state(&self, state: &[u8]) -> Result<(), String> {
+            self.say(format!("state.load({})", String::from_utf8_lossy(state)));
+            Ok(())
+        }
+
+        fn values(&self) -> Vec<(u32, f32)> {
+            self.say("params.values".to_string());
+            vec![(0, 0.5)]
+        }
     }
 
     /// A window that is on no screen.
@@ -506,6 +572,20 @@ mod tests {
         fn window(&self) -> Rc<FakeWindow> {
             self.window.borrow().clone().expect("a window was opened")
         }
+    }
+
+    #[test]
+    fn the_state_and_the_values_are_the_plugins_and_a_plugin_that_is_gone_is_asked_for_neither() {
+        let rig = Rig::new();
+        assert_eq!(rig.editor.state(), Some(b"kept".to_vec()));
+        assert_eq!(rig.editor.set_state(b"given"), Ok(()));
+        assert_eq!(rig.editor.values(), vec![(0, 0.5)]);
+        assert_eq!(rig.said(), ["state.save", "state.load(given)", "params.values"]);
+        rig.plugin_goes();
+        assert_eq!(rig.editor.state(), None);
+        assert!(rig.editor.set_state(b"given").is_err());
+        assert!(rig.editor.values().is_empty());
+        assert!(rig.said().is_empty(), "nothing is asked of a plugin that is gone");
     }
 
     #[test]

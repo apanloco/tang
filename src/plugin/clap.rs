@@ -14,6 +14,7 @@ use clack_extensions::params::{
     ParamRescanFlags, PluginParams,
 };
 use clack_extensions::preset_discovery::HostPresetLoadImpl;
+use clack_extensions::state::PluginState;
 use clack_extensions::preset_discovery::prelude::{
     FileType, Flags, HostPresetLoad, IndexerImpl, Location, LocationInfo, MetadataReceiverImpl,
     PluginPresetLoad, PresetDiscoveryFactory, Provider, Soundpack, Timestamp, UniversalPluginId,
@@ -791,7 +792,9 @@ fn load_found(
     let callback_id = clap_callbacks::register(Rc::new(unsafe { clap_callbacks::RealCall::new(instance.plugin_handle()) }), asked.clone(), &alive);
     let editor_id = gui.map(|gui| {
         // SAFETY: the editor is forgotten, with its window closed, before the plugin is let go of (`Drop for ClapPlugin`), and calls nothing in a plugin whose token is gone.
-        let calls = unsafe { clap_editor::RealGui::new(instance.plugin_handle(), gui) };
+        let state: Option<PluginState> = instance.plugin_shared_handle().get_extension();
+        let params = params_ext.map(|params| (params, param_ids.clone()));
+        let calls = unsafe { clap_editor::RealGui::new(instance.plugin_handle(), gui, state, params) };
         editors::register(Rc::new(clap_editor::ClapEditor::new(Rc::new(calls), &name, asked, &alive, Some(bundle.clone()))), &alive)
     });
 
@@ -1322,6 +1325,202 @@ mod tests {
             block(&mut plugin);
             assert_eq!(f64::from_bits(probe::TEMPO.load(Relaxed)), 120.5, "{kind}");
         }
+    }
+
+    /// A CLAP plugin of the tests' own that has a window (which it never shows), one parameter and a state: the parameter's value and a name that is not a parameter, as the sound that a person picks in a
+    /// plugin's window is. A state that is too short to have the value is refused.
+    mod keeper {
+        use std::io::{Read, Write};
+
+        use clack_extensions::audio_ports::{AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts, PluginAudioPortsImpl};
+        use clack_extensions::gui::{GuiConfiguration, GuiSize, PluginGui, PluginGuiImpl, Window};
+        use clack_extensions::params::{ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, PluginAudioProcessorParams, PluginMainThreadParams, PluginParams};
+        use clack_extensions::state::{PluginState, PluginStateImpl};
+        use clack_plugin::entry::DefaultPluginFactory;
+        use clack_plugin::prelude::*;
+        use clack_plugin::stream::{InputStream, OutputStream};
+        use clack_plugin::utils::Cookie;
+
+        pub const ID: &str = "tang.test.state-keeper";
+        pub type Entry = SinglePluginEntry<Keeper>;
+
+        /// The state that the plugin gives for a value of its parameter and a name.
+        pub fn state(level: f64, name: &[u8]) -> Vec<u8> {
+            [&level.to_le_bytes()[..], name].concat()
+        }
+
+        pub struct Keeper;
+
+        pub struct MainThread {
+            level: f64,
+            name: Vec<u8>,
+        }
+
+        impl Plugin for Keeper {
+            type AudioProcessor<'a> = Processor;
+            type Shared<'a> = ();
+            type MainThread<'a> = MainThread;
+
+            fn declare_extensions(builder: &mut PluginExtensions<Self>, _shared: Option<&()>) {
+                builder.register::<PluginAudioPorts>().register::<PluginGui>().register::<PluginParams>().register::<PluginState>();
+            }
+        }
+
+        impl DefaultPluginFactory for Keeper {
+            fn get_descriptor() -> PluginDescriptor {
+                PluginDescriptor::new(ID, "State keeper")
+            }
+
+            fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
+                Ok(())
+            }
+
+            fn new_main_thread<'a>(_host: HostMainThreadHandle<'a>, _shared: &'a Self::Shared<'a>) -> Result<Self::MainThread<'a>, PluginError> {
+                Ok(MainThread { level: 0.25, name: Vec::new() })
+            }
+        }
+
+        impl<'a> PluginMainThread<'a, ()> for MainThread {}
+
+        impl PluginAudioPortsImpl for MainThread {
+            fn count(&mut self, is_input: bool) -> u32 {
+                u32::from(!is_input)
+            }
+
+            fn get(&mut self, index: u32, is_input: bool, writer: &mut AudioPortInfoWriter) {
+                if index == 0 && !is_input {
+                    writer.set(&AudioPortInfo { id: ClapId::new(1), name: b"out", channel_count: 2, flags: AudioPortFlags::IS_MAIN, port_type: Some(AudioPortType::STEREO), in_place_pair: None });
+                }
+            }
+        }
+
+        impl PluginGuiImpl for MainThread {
+            fn is_api_supported(&mut self, _configuration: GuiConfiguration) -> bool {
+                false
+            }
+
+            fn get_preferred_api(&mut self) -> Option<GuiConfiguration<'_>> {
+                None
+            }
+
+            fn create(&mut self, _configuration: GuiConfiguration) -> Result<(), PluginError> {
+                Err(PluginError::Message("no window here"))
+            }
+
+            fn destroy(&mut self) {}
+
+            fn set_scale(&mut self, _scale: f64) -> Result<(), PluginError> {
+                Ok(())
+            }
+
+            fn get_size(&mut self) -> Option<GuiSize> {
+                None
+            }
+
+            fn set_size(&mut self, _size: GuiSize) -> Result<(), PluginError> {
+                Ok(())
+            }
+
+            fn set_parent(&mut self, _window: Window) -> Result<(), PluginError> {
+                Ok(())
+            }
+
+            fn set_transient(&mut self, _window: Window) -> Result<(), PluginError> {
+                Ok(())
+            }
+
+            fn show(&mut self) -> Result<(), PluginError> {
+                Ok(())
+            }
+
+            fn hide(&mut self) -> Result<(), PluginError> {
+                Ok(())
+            }
+        }
+
+        impl PluginMainThreadParams for MainThread {
+            fn count(&mut self) -> u32 {
+                1
+            }
+
+            fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
+                if param_index == 0 {
+                    info.set(&ParamInfo { id: ClapId::new(7), flags: ParamInfoFlags::IS_AUTOMATABLE, cookie: Cookie::empty(), name: b"Level", module: b"", min_value: 0.0, max_value: 1.0, default_value: 0.25 });
+                }
+            }
+
+            fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
+                (param_id == ClapId::new(7)).then_some(self.level)
+            }
+
+            fn value_to_text(&mut self, _param_id: ClapId, value: f64, writer: &mut ParamDisplayWriter) -> std::fmt::Result {
+                std::fmt::Write::write_fmt(writer, format_args!("{value}"))
+            }
+
+            fn text_to_value(&mut self, _param_id: ClapId, _text: &std::ffi::CStr) -> Option<f64> {
+                None
+            }
+
+            fn flush(&mut self, _input_parameter_changes: &InputEvents, _output_parameter_changes: &mut OutputEvents) {}
+        }
+
+        impl PluginStateImpl for MainThread {
+            fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+                output.write_all(&state(self.level, &self.name))?;
+                Ok(())
+            }
+
+            fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+                let mut bytes = Vec::new();
+                input.read_to_end(&mut bytes)?;
+                let (level, name) = bytes.split_at_checked(8).ok_or(PluginError::Message("the state is too short"))?;
+                self.level = f64::from_le_bytes(level.try_into().map_err(|_| PluginError::Message("the state is too short"))?);
+                self.name = name.to_vec();
+                Ok(())
+            }
+        }
+
+        pub struct Processor;
+
+        impl<'a> PluginAudioProcessor<'a, (), MainThread> for Processor {
+            fn activate(_host: HostAudioProcessorHandle<'a>, _main_thread: &mut MainThread, _shared: &'a (), _config: PluginAudioConfiguration) -> Result<Self, PluginError> {
+                Ok(Processor)
+            }
+
+            fn process(&mut self, _process: Process, _audio: Audio, _events: Events) -> Result<ProcessStatus, PluginError> {
+                Ok(ProcessStatus::Continue)
+            }
+        }
+
+        impl PluginAudioProcessorParams for Processor {
+            fn flush(&mut self, _input_parameter_changes: &InputEvents, _output_parameter_changes: &mut OutputEvents) {}
+        }
+    }
+
+    #[test]
+    fn a_clap_plugin_with_a_window_gives_its_state_to_the_session_takes_one_back_and_says_what_its_parameters_are_then() {
+        use keeper::state;
+
+        let bundle = PluginBundle::load_from_clack::<keeper::Entry>(c"").expect("the entry of the keeper loads");
+        let plugin = load_found(bundle, keeper::ID.to_string(), "State keeper".to_string(), true, 48_000.0, 256).expect("the host makes the plugin");
+        let editor = plugin.editor_id().expect("a plugin that has a window has an editor, which the session reads its state through");
+        assert_eq!(editors::state(editor), Some(state(0.25, b"")), "the state that it starts with");
+        assert_eq!(editors::values(editor), vec![(0, 0.25)]);
+
+        // A state that the session kept is taken, what is not a parameter and the parameter that it sets alike, and is what it gives back.
+        editors::set_state(editor, &state(0.75, b"Dusk")).expect("the plugin takes its own state");
+        assert_eq!(editors::state(editor), Some(state(0.75, b"Dusk")));
+        assert_eq!(editors::values(editor), vec![(0, 0.75)], "the parameter that the state set is read back");
+
+        // One that it refuses is said so, and changes nothing.
+        assert!(editors::set_state(editor, b"short").is_err());
+        assert_eq!(editors::state(editor), Some(state(0.75, b"Dusk")));
+
+        // And a plugin that is let go of has none to give.
+        drop(plugin);
+        assert_eq!(editors::state(editor), None);
+        assert!(editors::set_state(editor, &state(0.5, b"")).is_err());
+        assert!(editors::values(editor).is_empty());
     }
 
     #[test]

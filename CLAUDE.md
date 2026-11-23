@@ -215,7 +215,7 @@ plugin = "builtin:osc"
 
 Each plugin slot has:
 - `plugin` — plugin path or URI (required)
-- `state` — the plugin's own state as base64 text (optional; written by Tang, never by hand): what a person picked in the plugin's own window that is not a parameter, which the plugin gives back when it is loaded. Only a VST3 plugin has one so far. Read leniently: a `state` that is not base64, or is more than 32 MiB, is left out with a warning, and the plugin starts as its preset and parameters say. It is read from the plugin when its window is closed and when the session is saved (see "A plugin's own window" in `docs/reference/plugins.md`)
+- `state` — the plugin's own state as base64 text (optional; written by Tang, never by hand): what a person picked in the plugin's own window that is not a parameter, which the plugin gives back when it is loaded. A VST3 plugin has one, and a CLAP plugin that has a window (step 132). Read leniently: a `state` that is not base64, or is more than 32 MiB, is left out with a warning, and the plugin starts as its preset and parameters say. It is read from the plugin when its window is closed and when the session is saved (see "A plugin's own window" in `docs/reference/plugins.md`)
 - `preset` — preset name to load (optional)
 - `params` — parameter overrides applied after preset (optional)
 
